@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" role="img" aria-label="Orbit 1 project visual">
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#dce8ef"/>
+      <stop offset=".58" stop-color="#f0f2f2"/>
+      <stop offset="1" stop-color="#5c6670"/>
+    </linearGradient>
+  </defs>
+  <rect width="1000" height="1000" fill="url(#bg)"/>
+  <rect x="190" y="298" width="622" height="468" rx="20" fill="#c9b184"/>
+  <rect x="244" y="236" width="516" height="530" rx="18" fill="#d8dde0"/>
+  <g fill="#2d3842" opacity=".7">
+    <rect x="292" y="300" width="92" height="54" rx="4"/>
+    <rect x="452" y="300" width="92" height="54" rx="4"/>
+    <rect x="612" y="300" width="92" height="54" rx="4"/>
+    <rect x="292" y="430" width="92" height="54" rx="4"/>
+    <rect x="452" y="430" width="92" height="54" rx="4"/>
+    <rect x="612" y="430" width="92" height="54" rx="4"/>
+    <rect x="292" y="560" width="92" height="54" rx="4"/>
+    <rect x="452" y="560" width="92" height="54" rx="4"/>
+    <rect x="612" y="560" width="92" height="54" rx="4"/>
+  </g>
+  <rect x="126" y="766" width="748" height="82" rx="41" fill="#29333b"/>
+  <path d="M0 838h1000v162H0z" fill="#202930"/>
+  <text x="64" y="930" fill="#fff" font-family="Georgia, serif" font-size="78" font-weight="700">Orbit 1</text>
+</svg>

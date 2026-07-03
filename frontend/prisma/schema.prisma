@@ -1,0 +1,261 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  UPPER_MANAGEMENT
+  PR_TEAM
+}
+
+model User {
+  id        String   @id @default(uuid())
+  name      String
+  email     String   @unique
+  role      Role     @default(PR_TEAM)
+  avatar    String?
+  createdAt DateTime @default(now())
+}
+
+model ProjectSite {
+  id              String            @id @default(uuid())
+  name            String
+  clientName      String
+  location        String
+  projectValue    Float
+  startDate       DateTime
+  endDate         DateTime
+  progress        Float             @default(0.0)
+  currentPhase    String            @default("Planning")
+  status          String            @default("Active")
+  budget          Float
+  actualSpend     Float             @default(0.0)
+  dailyActivities DailyActivity[]
+  materials       MaterialStock[]
+  boqItems        BOQItem[]
+  procurements    ProcurementReq[]
+  labourRecords   LabourRecord[]
+  equipments      EquipmentRecord[]
+  tasks           GanttTask[]
+  documents       Document[]
+  chats           ChatMessage[]
+  createdAt       DateTime          @default(now())
+}
+
+model DailyActivity {
+  id             String      @id @default(uuid())
+  projectId      String
+  project        ProjectSite @relation(fields: [projectId], references: [id])
+  date           DateTime    @default(now())
+  engineerName   String
+  weather        String
+  workCompleted  String
+  issues         String?
+  risks          String?
+  progressDelta  Float
+  images         String[]
+}
+
+model MaterialStock {
+  id             String                @id @default(uuid())
+  projectId      String
+  project        ProjectSite           @relation(fields: [projectId], references: [id])
+  itemName       String
+  category       String
+  quantity       Float                 @default(0.0)
+  unit           String
+  reorderLevel   Float
+  stockValue     Float                 @default(0.0)
+  supplierName   String?
+  transactions   MaterialTransaction[]
+}
+
+model MaterialTransaction {
+  id             String        @id @default(uuid())
+  materialId     String
+  material       MaterialStock @relation(fields: [materialId], references: [id])
+  type           String
+  quantity       Float
+  date           DateTime      @default(now())
+  cost           Float         @default(0.0)
+  referenceNo    String
+}
+
+model BOQItem {
+  id             String      @id @default(uuid())
+  projectId      String
+  project        ProjectSite @relation(fields: [projectId], references: [id])
+  code           String
+  description    String
+  unit           String
+  rate           Float
+  estimatedQty   Float
+  consumedQty    Float       @default(0.0)
+  approved       Boolean     @default(false)
+}
+
+model ProcurementReq {
+  id             String      @id @default(uuid())
+  projectId      String
+  project        ProjectSite @relation(fields: [projectId], references: [id])
+  requisitionNo  String      @unique
+  title          String
+  status         String
+  vendorName     String?
+  vendorId       String?     @map("vendor_id")
+  vendor         Vendor?     @relation(fields: [vendorId], references: [id])
+  cost           Float
+  requestedDate  DateTime    @default(now()) @map("requested_date")
+  deliveryDate   DateTime?   @map("delivery_date")
+
+  @@map("procurement_reqs")
+}
+
+model LabourRecord {
+  id             String      @id @default(uuid())
+  projectId      String
+  project        ProjectSite @relation(fields: [projectId], references: [id])
+  date           DateTime
+  contractorName String
+  presentCount   Int
+  absentCount    Int
+  overtimeHours  Float       @default(0.0)
+  productivity   Float       @default(100.0)
+}
+
+model EquipmentRecord {
+  id              String      @id @default(uuid())
+  projectId       String
+  project         ProjectSite @relation(fields: [projectId], references: [id])
+  name            String
+  status          String
+  usageHours      Float       @default(0.0)
+  fuelConsumed    Float       @default(0.0)
+  lastMaintenance DateTime
+}
+
+model GanttTask {
+  id             String      @id @default(uuid())
+  projectId      String
+  project        ProjectSite @relation(fields: [projectId], references: [id])
+  name           String
+  startDate      DateTime
+  endDate        DateTime
+  progress       Float       @default(0.0)
+  dependencies   String?
+  isCriticalPath Boolean     @default(false)
+}
+
+model Document {
+  id             String      @id @default(uuid())
+  projectId      String
+  project        ProjectSite @relation(fields: [projectId], references: [id])
+  name           String
+  category       String
+  version        String      @default("1.0.0")
+  url            String
+  uploadDate     DateTime    @default(now())
+  status         String      @default("PENDING")
+}
+
+model ChatMessage {
+  id             String      @id @default(uuid())
+  projectId      String
+  project        ProjectSite @relation(fields: [projectId], references: [id])
+  senderName     String
+  senderRole     String
+  message        String
+  timestamp      DateTime    @default(now())
+  attachments    String[]
+}
+
+model Vendor {
+  id                String              @id @default(uuid())
+  name              String              @unique
+  gstNumber         String?             @unique @map("gst_number")
+  email             String?
+  phone             String?
+  address           String?
+  category          String
+  rating            Float               @default(0.0)
+  createdAt         DateTime            @default(now()) @map("created_at")
+  updatedAt         DateTime            @updatedAt @map("updated_at")
+
+  quotations        VendorQuotation[]
+  bills             VendorBill[]
+  payments          VendorPayment[]
+  performanceLogs   VendorPerformance[]
+  procurements      ProcurementReq[]
+  
+  @@map("vendors")
+}
+
+model VendorQuotation {
+  id                String              @id @default(uuid())
+  vendorId          String              @map("vendor_id")
+  vendor            Vendor              @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  projectId         String              @map("project_id")
+  project           ProjectSite         @relation(fields: [projectId], references: [id])
+  materialCategory  String              @map("material_category")
+  unitRate          Float               @map("unit_rate")
+  leadTimeDays      Int                 @map("lead_time_days")
+  gstDetails        String?             @map("gst_details")
+  paymentTerms      String?             @map("payment_terms")
+  status            String              @default("PENDING")
+  submittedAt       DateTime            @default(now()) @map("submitted_at")
+
+  @@map("vendor_quotations")
+}
+
+model VendorBill {
+  id                String              @id @default(uuid())
+  vendorId          String              @map("vendor_id")
+  vendor            Vendor              @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  projectId         String              @map("project_id")
+  project           ProjectSite         @relation(fields: [projectId], references: [id])
+  invoiceNumber     String              @map("invoice_number")
+  amount            Float
+  date              DateTime
+  status            String              @default("DUE")
+  ref               String?
+  createdAt         DateTime            @default(now()) @map("created_at")
+  payments          VendorPayment[]
+
+  @@unique([vendorId, invoiceNumber])
+  @@map("vendor_bills")
+}
+
+model VendorPayment {
+  id                String              @id @default(uuid())
+  vendorId          String              @map("vendor_id")
+  vendor            Vendor              @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  billId            String?             @map("bill_id")
+  bill              VendorBill?         @relation(fields: [billId], references: [id], onDelete: SetNull)
+  amount            Float
+  date              DateTime
+  status            String              @default("PROCESSING")
+  paymentRef        String              @unique @map("payment_ref")
+  createdAt         DateTime            @default(now()) @map("created_at")
+
+  @@map("vendor_payments")
+}
+
+model VendorPerformance {
+  id                String              @id @default(uuid())
+  vendorId          String              @map("vendor_id")
+  vendor            Vendor              @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  projectId         String              @map("project_id")
+  project           ProjectSite         @relation(fields: [projectId], references: [id])
+  deliveryScore     Float               @default(100.0) @map("delivery_score")
+  qualityScore      Float               @default(100.0) @map("quality_score")
+  priceScore        Float               @default(100.0) @map("price_score")
+  responseScore     Float               @default(100.0) @map("response_score")
+  feedback          String?
+  evaluationDate    DateTime            @default(now()) @map("evaluation_date")
+
+  @@map("vendor_performances")
+}

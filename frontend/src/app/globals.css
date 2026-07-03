@@ -1,0 +1,167 @@
+@import "tailwindcss";
+
+@variant dark (&:where(.dark, .dark *));
+
+:root {
+  --background: #f4f6f8;
+  --foreground: #0f172a;
+  
+  --card: #ffffff;
+  --card-foreground: #0f172a;
+  
+  --popover: #ffffff;
+  --popover-foreground: #0f172a;
+  
+  --primary: #b68d40;
+  --primary-foreground: #ffffff;
+  
+  --secondary: #f1f5f9;
+  --secondary-foreground: #0f172a;
+  
+  --accent: #f8fafc;
+  --accent-foreground: #0f172a;
+  
+  --muted: #f1f5f9;
+  --muted-foreground: #64748b;
+  
+  --border: #e2e8f0;
+  --input: #e2e8f0;
+  
+  --ring: #b68d40;
+  
+  --success: #10b981;
+  --warning: #f59e0b;
+  --danger: #ef4444;
+
+  --radius: 0.75rem;
+}
+
+.dark {
+  --background: #0b0f19;
+  --foreground: #f8fafc;
+  
+  --card: #111827;
+  --card-foreground: #f8fafc;
+  
+  --popover: #111827;
+  --popover-foreground: #f8fafc;
+  
+  --primary: #b68d40;
+  --primary-foreground: #ffffff;
+  
+  --secondary: #1e293b;
+  --secondary-foreground: #f8fafc;
+  
+  --accent: #1e293b;
+  --accent-foreground: #f8fafc;
+  
+  --muted: #1f2937;
+  --muted-foreground: #9ca3af;
+  
+  --border: #1f2937;
+  --input: #1f2937;
+  
+  --ring: #b68d40;
+  
+  --success: #10b981;
+  --warning: #f59e0b;
+  --danger: #ef4444;
+}
+
+@theme {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
+
+  --font-sans: var(--font-sans);
+  --font-heading: var(--font-sans);
+  --font-mono: var(--font-mono);
+
+  --shadow-premium: 0 4px 24px -6px rgba(15, 23, 42, 0.05), 0 2px 8px -2px rgba(15, 23, 42, 0.03);
+  --shadow-premium-dark: 0 4px 24px -6px rgba(0, 0, 0, 0.5), 0 2px 8px -2px rgba(0, 0, 0, 0.3);
+}
+
+html, body, table, th, td, input, select, textarea, button, svg text, .recharts-text, .recharts-cartesian-axis-tick-value, .recharts-legend-item-text, .recharts-tooltip-item-value, .recharts-tooltip-item-name {
+  font-variant-numeric: tabular-nums !important;
+}
+
+/* Enforce Geist Mono for currency, percentages, counts, stats, and numeric table cells */
+.font-mono,
+.tabular-nums,
+td.text-right,
+.recharts-text,
+.recharts-cartesian-axis-tick-value,
+.recharts-legend-item-text,
+.recharts-tooltip-item-value,
+.recharts-tooltip-item-name,
+.recharts-label,
+article p.text-xl,
+article p.text-2xl,
+article p.text-3xl,
+article p.text-4xl,
+article .text-xl,
+article .text-2xl,
+article .text-3xl,
+article .text-4xl,
+div.grid div.group span.text-sm.font-black,
+.metric-value,
+.stat-val,
+.kpi-value {
+  font-family: var(--font-mono), monospace !important;
+  font-variant-numeric: tabular-nums !important;
+}
+
+html, body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  font-feature-settings: "cv02", "cv03", "cv04", "tnum";
+  font-variant-numeric: tabular-nums;
+  text-rendering: optimizeLegibility;
+  overflow-x: hidden;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-heading), var(--font-sans);
+  letter-spacing: -0.01em;
+}
+
+button, input, select, textarea {
+  font: inherit;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted-foreground);
+}

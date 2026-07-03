@@ -1,0 +1,393 @@
+Implementation Phases
+Phase 1: Database Stabilization
+Apply the production Supabase migration in a staging project first.
+Things to do:
+Run the migration from supabase/migrations/20260620103334_production_architecture.sql.
+Use Supabase SQL Editor with RLS enabled.
+Verify all tables, enums, indexes, triggers, constraints, and policies are created.
+Confirm no existing tables are dropped or renamed.
+Confirm existing app tables still work:profiles
+projects
+project_members
+tasks
+materials
+material_transactions
+inbox/chat tables
+checklist tables
+communication tables
+
+Add or verify storage buckets for:inbox media
+documents
+vendor documents
+QC evidence
+DPR attachments
+billing documents
+
+Run Supabase advisors and resolve RLS, index, and security warnings.
+Things to change:
+Treat the new production schema as the system of record.
+Keep legacy tables for compatibility until the UI is fully migrated.
+Do not remove mock data yet.
+Phase 2: Seed and Backfill Compatibility Data
+Create a clean bridge between existing app IDs and production database records.
+Things to do:
+Create a default organization.
+Link existing profiles to organization membership.
+Backfill existing projects into project sites where required.
+Backfill project_members into role-aware project membership.
+Backfill simple materials into item master, stock locations, stock balances, and stock ledger.
+Backfill existing material transactions into normalized inventory ledger entries.
+Backfill tasks into construction activities where they represent execution work.
+Create default UOMs, material categories, budget heads, cost codes, workflow definitions, and approval roles.
+Things to change:
+Replace hardcoded project/user UUID mapping over time with database lookup helpers.
+Keep the existing mappings temporarily so current screens do not break during transition.
+Phase 3: Shared Data Access Layer
+Create a consistent Supabase access layer before wiring individual modules.
+Things to do:
+Add domain repository modules for:projects
+execution
+procurement
+inventory
+QC
+billing
+budget
+vendors
+documents
+notifications
+reports
+communication
+users and roles
+
+Add mapper functions to convert database snake_case rows into UI camelCase models.
+Add shared validation helpers for required fields, status transitions, and project membership checks.
+Use browser Supabase client for simple RLS-protected CRUD.
+Use Next.js route handlers or Supabase RPCs for transactional workflows.
+Things to change:
+Stop writing complex business workflows directly inside the Zustand store.
+Keep Zustand as UI state and caching only.
+Move database reads/writes into typed service/repository functions.
+Phase 4: Auth, Users, Roles, and Permissions
+Make access control production-ready.
+Things to do:
+Wire Users page to profiles, organization membership, project membership, roles, and permission tables.
+Implement role assignment by organization and project.
+Support these personas:super admin
+project director
+project manager
+site engineer
+procurement manager
+store manager
+QC engineer
+finance manager
+vendor
+client
+
+Add UI permission guards for module visibility and action buttons.
+Validate RLS policies using all personas.
+Things to change:
+Replace mock user role checks with database-backed permissions.
+Keep client-side guards for UX, but rely on RLS/server validation for security.
+Phase 5: Projects and Execution
+Make projects, phases, activities, DPR, and delay tracking functional.
+Things to do:
+Wire project pages to:projects
+project_sites
+project_phases
+construction_activities
+activity_dependencies
+daily_progress_reports
+dpr_activity_lines
+delay_events
+entity_attachments
+
+Implement activity lifecycle:planned
+ready
+in progress
+blocked
+completed
+QC pending
+approved
+
+Implement DPR creation by date, project, site, labour, equipment, material usage, photos, and activity progress.
+Implement delay capture with reason, responsible party, impact days, severity, resolution owner, and closure status.
+Soft-delete activities only, with reason capture and audit entry.
+Things to change:
+Replace addDailyActivity mock-only behavior with real DPR/activity update writes.
+Project detail tabs should read from normalized execution tables, not mock arrays.
+Phase 6: Inventory Foundation
+Make inventory usable before procurement and GRN workflows depend on it.
+Things to do:
+Wire inventory screens to:item master
+categories
+UOMs
+warehouses / stock locations
+stock balances
+stock ledger
+stock reservations
+stock transfers
+issue slips
+consumption variance
+
+Implement stock movement types:opening balance
+GRN receipt
+site issue
+transfer
+return
+adjustment
+consumption
+
+Add low-stock alerts through notification queue.
+Keep legacy materials and material_transactions synchronized during transition.
+Things to change:
+Inventory UI should stop treating materials as the final source of truth.
+New stock numbers should come from stock_balances and stock_ledger.
+Phase 7: Procurement Workflow
+Implement the full request-to-GRN flow.
+Things to do:
+Wire procurement screens to:material requests
+purchase requisitions
+procurement assignments
+RFQs
+RFQ vendors
+quotations
+quotation line items
+comparison scoring
+vendor finalization
+purchase orders
+PO lines
+deliveries
+GRNs
+
+Implement workflow:Site engineer raises material request.
+Project manager reviews.
+Procurement manager converts to PR/RFQ.
+Vendors submit quotations.
+System generates comparison.
+Authorized user finalizes vendor.
+PO is generated.
+Delivery is recorded.
+GRN posts stock to inventory.
+
+Generate notifications for each assignment, approval, rejection, and overdue action.
+Things to change:
+Replace addProcurementReq mock-only flow with database-backed procurement records.
+Add transactional server logic for PR to PO and GRN to stock posting.
+Phase 8: Vendors
+Make vendor management production-ready.
+Things to do:
+Wire Vendors page to:vendor master
+vendor contacts
+vendor documents
+vendor categories
+vendor performance evaluations
+duplicate prevention keys
+
+Add vendor onboarding workflow.
+Add GST/PAN/contact duplicate checks where applicable.
+Link vendors to RFQs, quotations, POs, bills, and performance records.
+Things to change:
+Vendor data should no longer live only inside procurement mock objects.
+Vendor selection must reference vendor master records.
+Phase 9: Work Orders, Labour, and Equipment
+Make site operations trackable.
+Things to do:
+Wire Work Orders to:work orders
+work order line items
+contractors
+activity links
+progress updates
+
+Wire Labour to:labour attendance
+labour categories
+contractor teams
+daily deployment
+
+Wire Equipment to:equipment assets
+equipment logs
+maintenance records
+fuel/usage readings
+
+Link labour and equipment usage into DPRs.
+Things to change:
+Labour and equipment pages should stop using standalone mock records.
+DPR should become the daily operational hub that references labour, equipment, material, and activity progress.
+Phase 10: QC and Completion Control
+Make quality checks drive billing eligibility.
+Things to do:
+Wire QC screens to:QC templates
+QC inspections
+QC inspection items
+NCR records
+rework records
+evidence attachments
+
+Implement QC lifecycle:scheduled
+in progress
+passed
+failed
+rework required
+approved
+
+Block billing until:work is complete
+QC is approved
+required documents exist
+duplicate bill checks pass
+
+Things to change:
+Replace addQCItem mock-only behavior with real inspection records.
+Completion status must be validated from activities, work orders, and QC records.
+Phase 11: Billing, Finance, and Budget
+Make financial control end-to-end.
+Things to do:
+Wire Billing to:vendor bills
+bill lines
+bill documents
+duplicate checks
+three-way matching
+payment approvals
+
+Wire Budget to:budget heads
+cost codes
+budget allocations
+budget ledger
+commitments
+budget alerts
+
+Implement billing workflow:Vendor bill is submitted.
+Duplicate detection runs.
+PO/GRN/work completion/QC matching runs.
+Finance reviews.
+Approval workflow runs.
+Budget ledger is updated.
+Payment approval is recorded.
+
+Generate budget overrun and near-limit alerts.
+Things to change:
+Replace addInvoice mock-only behavior with real vendor bill records.
+Budget should be updated from commitments and approved bills, not manually edited totals.
+Phase 12: Documents
+Make documents a shared cross-module service.
+Things to do:
+Wire Documents page to:entity attachments
+document folders
+document metadata
+storage objects
+approval documents
+
+Support attachments for:projects
+activities
+DPRs
+RFQs
+quotations
+POs
+GRNs
+QC inspections
+bills
+vendors
+work orders
+
+Add document type, entity type, entity ID, uploaded by, visibility, status, and required-document flags.
+Things to change:
+Stop storing document references as isolated mock arrays.
+Use one reusable attachment model across all modules.
+Phase 13: Communication and Messaging
+Complete communication integration.
+Things to do:
+Implement missing POST /api/send-message.
+Wire communication page to:raw messages
+clean messages
+outbound messages
+message threads
+WhatsApp numbers
+media files
+transcriptions
+user site assignments
+
+Secure existing /api/transcribe and /api/site-inspection routes with auth and project access checks.
+Link messages to project, site, thread, sender, receiver, media, and processing status.
+Add retry/error handling for outbound messages.
+Things to change:
+Keep inbox/chat behavior intact.
+Separate internal app chat from WhatsApp/external communication processing.
+Phase 14: Notifications and Automation
+Make system events visible and actionable.
+Things to do:
+Wire Notifications page to:notification queue
+notification preferences
+user notification status
+automation jobs
+automation rules
+
+Generate notifications for:approval requests
+rejected requests
+overdue procurement actions
+low stock
+budget threshold breaches
+QC failures
+NCR assignments
+bill approval requests
+document requirements
+delay events
+
+Add scheduled automation for overdue workflows and reminders.
+Things to change:
+Replace static notification mocks with queue-backed notifications.
+Notifications should be created by workflow events, not manually invented in UI state.
+Phase 15: Reports, Analytics, and Dashboard
+Make reporting database-backed.
+Things to do:
+Wire dashboard and reports to reporting views or report query services.
+Add report definitions and report run history.
+Implement reports for:project progress
+DPR summary
+procurement aging
+PO and GRN status
+inventory stock
+low stock
+material consumption variance
+QC status
+NCR/rework
+vendor performance
+bill aging
+budget utilization
+delay impact
+labour productivity
+equipment utilization
+
+Use pre-aggregated reporting tables or materialized views where performance requires it.
+Things to change:
+Dashboard cards should read from real aggregate queries.
+Mock analytics should become fallback/demo data only.
+Phase 16: AI Assistant
+Make AI useful without bypassing permissions.
+Things to do:
+Limit AI context to projects and records the user can access.
+Add retrieval helpers for project summaries, procurement status, inventory status, DPRs, delays, QC, and billing.
+Log AI requests and outputs where required.
+Prevent AI from directly mutating production data without explicit workflow action.
+Things to change:
+AI should not read raw unrestricted database content.
+AI output should be advisory unless routed through approved actions.
+Phase 17: Remove Mock Dependencies
+Complete the transition from demo app to production app.
+Things to do:
+Convert mock data into seed/demo fixtures only.
+Remove mock-only writes from Zustand actions.
+Replace hardcoded project/user mapping with database-backed lookup.
+Keep simulation mode only if explicitly needed for demos.
+Ensure every page has loading, empty, error, and permission-denied states.
+Things to change:
+Zustand should become UI/cache state, not the business database.
+All production writes should go through repositories, route handlers, RPCs, or Supabase client calls protected by RLS.
+Required API and Service Additions
+Add or complete these server/API capabilities:
+POST /api/send-message for outbound communication.
+Secure /api/transcribe.
+Secure /api/site-inspection.
+Procurement transaction endpoints or RPCs for PR approval, RFQ creation, quotation comparison, vendor finalization, PO creation, and GRN posting.
+Inventory transaction endpoints or RPCs for stock issue, transfer, adjustment, and reservation.
+Billing endpoints or RPCs for duplicate detection, three-way match, approval, and payment status updates.
+Report run endpoint for heavy reports.
+Notification processing job for queue delivery.
+Automation job runner for overdue workflow reminders.

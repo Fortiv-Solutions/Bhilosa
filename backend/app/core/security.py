@@ -1,0 +1,59 @@
+from fastapi import HTTPException, Security, Depends
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jose import jwt, JWTError
+import time
+from .. import config
+
+security_bearer = HTTPBearer(auto_error=False)
+
+def is_supabase_auth_enabled() -> bool:
+    # If the JWT secret is missing, we bypass authentication for local development ease.
+    return bool(config.SUPABASE_JWT_SECRET)
+
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security_bearer)) -> dict:
+    if not is_supabase_auth_enabled():
+        # Bypass mode (returns a dummy admin user if auth is not configured locally)
+        return {
+            "id": "00000000-0000-0000-0000-000000000000",
+            "email": "local-dev@example.com",
+            "role": "upper_management",
+            "name": "Local Developer"
+        }
+
+    if not credentials:
+        raise HTTPException(
+            status_code=401, 
+            detail="Authorization header is missing or invalid. Format: 'Bearer <token>'"
+        )
+
+    token = credentials.credentials
+    try:
+        # Supabase uses HS256 algorithms and signs with SUPABASE_JWT_SECRET
+        payload = jwt.decode(
+            token, 
+            config.SUPABASE_JWT_SECRET, 
+            algorithms=["HS256"],
+            options={"verify_aud": False} # Supabase aud can sometimes be "authenticated"
+        )
+        
+        # Check expiration
+        exp = payload.get("exp")
+        if exp and exp < time.time():
+            raise HTTPException(status_code=401, detail="Token has expired")
+            
+        user_id = payload.get("sub")
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Token payload missing subject claim ('sub')")
+            
+        # Extract user metadata or role if present
+        user_metadata = payload.get("user_metadata", {})
+        role = payload.get("role", "anon")
+        
+        return {
+            "id": user_id,
+            "email": payload.get("email"),
+            "role": role,
+            "name": user_metadata.get("name", "User")
+        }
+    except JWTError as e:
+        raise HTTPException(status_code=401, detail=f"Invalid authentication token: {str(e)}")

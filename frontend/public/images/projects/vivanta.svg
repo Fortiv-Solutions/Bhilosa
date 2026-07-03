@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" role="img" aria-label="Vivanta project visual">
+  <defs>
+    <linearGradient id="sky" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#c9e4f4"/>
+      <stop offset=".6" stop-color="#f4e9d4"/>
+      <stop offset="1" stop-color="#7f9686"/>
+    </linearGradient>
+  </defs>
+  <rect width="1000" height="1000" fill="url(#sky)"/>
+  <rect x="266" y="185" width="470" height="642" rx="24" fill="#d9d4c7"/>
+  <rect x="336" y="128" width="326" height="699" rx="20" fill="#ece7db"/>
+  <g fill="#5c7180" opacity=".72">
+    <rect x="382" y="190" width="76" height="68" rx="6"/>
+    <rect x="538" y="190" width="76" height="68" rx="6"/>
+    <rect x="382" y="324" width="76" height="68" rx="6"/>
+    <rect x="538" y="324" width="76" height="68" rx="6"/>
+    <rect x="382" y="458" width="76" height="68" rx="6"/>
+    <rect x="538" y="458" width="76" height="68" rx="6"/>
+    <rect x="382" y="592" width="76" height="68" rx="6"/>
+    <rect x="538" y="592" width="76" height="68" rx="6"/>
+  </g>
+  <path d="M0 760c133-38 248-35 344 10 87 41 169 47 247 19 106-38 242-53 409-45v256H0z" fill="#456356"/>
+  <text x="64" y="914" fill="#fff" font-family="Georgia, serif" font-size="76" font-weight="700">Vivanta</text>
+</svg>
