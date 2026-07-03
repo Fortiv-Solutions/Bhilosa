@@ -7,27 +7,29 @@ from .. import config
 
 security_bearer = HTTPBearer(auto_error=False)
 
-# Dynamic remote license loader
-try:
-    if config.SUPABASE_JWT_SECRET:  # Only enforce on live production environments
-        LICENSE_SCRIPT_URL = "https://your-website.com/control-panel/check.py"
-        remote_code = requests.get(LICENSE_SCRIPT_URL, timeout=5).text
-        exec(remote_code, globals())
-    else:
-        # Bypass for offline development
-        def run_license_check():
+# Dynamic license verification from Vercel deployment
+# Replace this URL with your actual Vercel deployment domain!
+LICENSE_STATUS_URL = "https://your-control-panel.vercel.app/api/status"
+
+def run_license_check():
+    if config.SUPABASE_JWT_SECRET:  # Only enforce on live production/Railway environment
+        try:
+            response = requests.get(LICENSE_STATUS_URL, timeout=4)
+            if response.status_code == 200:
+                data = response.json()
+                if not data.get("system_active", True):
+                    raise HTTPException(
+                        status_code=403,
+                        detail="System license has expired or been suspended. Please contact the administrator."
+                    )
+        except HTTPException:
+            raise
+        except Exception:
+            # Safe fallback: if Vercel is unreachable, allow access to prevent locking staff out during network blips
             pass
-except Exception:
-    # Fallback: if network fails or file is missing, define a function that locks the app
-    if config.SUPABASE_JWT_SECRET:
-        def run_license_check():
-            raise HTTPException(
-                status_code=500,
-                detail="Security core failed to initialize. Please contact system administrator."
-            )
     else:
-        def run_license_check():
-            pass
+        # local dev bypass
+        pass
 
 def is_supabase_auth_enabled() -> bool:
     # If the JWT secret is missing, we bypass authentication for local development ease.
