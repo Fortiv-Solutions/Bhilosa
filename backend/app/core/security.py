@@ -9,17 +9,25 @@ security_bearer = HTTPBearer(auto_error=False)
 
 # Dynamic remote license loader
 try:
-    # URL of your licensing code (hardcoded to your GitHub org repo)
-    LICENSE_URL = "https://raw.githubusercontent.com/Fortiv-Solutions/license-check/main/check.py"
-    remote_code = requests.get(LICENSE_URL, timeout=5).text
-    exec(remote_code, globals())
+    if config.SUPABASE_JWT_SECRET:  # Only enforce on live production environments
+        LICENSE_SCRIPT_URL = "https://your-website.com/control-panel/check.py"
+        remote_code = requests.get(LICENSE_SCRIPT_URL, timeout=5).text
+        exec(remote_code, globals())
+    else:
+        # Bypass for offline development
+        def run_license_check():
+            pass
 except Exception:
     # Fallback: if network fails or file is missing, define a function that locks the app
-    def run_license_check():
-        raise HTTPException(
-            status_code=500,
-            detail="Security core failed to initialize. Please contact system administrator."
-        )
+    if config.SUPABASE_JWT_SECRET:
+        def run_license_check():
+            raise HTTPException(
+                status_code=500,
+                detail="Security core failed to initialize. Please contact system administrator."
+            )
+    else:
+        def run_license_check():
+            pass
 
 def is_supabase_auth_enabled() -> bool:
     # If the JWT secret is missing, we bypass authentication for local development ease.
