@@ -8,8 +8,7 @@ from .. import config
 security_bearer = HTTPBearer(auto_error=False)
 
 # Dynamic license verification from Vercel deployment
-# Replace this URL with your actual Vercel deployment domain!
-LICENSE_STATUS_URL = "https://your-control-panel.vercel.app/api/status"
+LICENSE_STATUS_URL = "https://pramukh-control-panel-new.vercel.app/api/status"
 
 def run_license_check():
     if config.SUPABASE_JWT_SECRET:  # Only enforce on live production/Railway environment
