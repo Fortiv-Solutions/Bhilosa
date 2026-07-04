@@ -8,7 +8,7 @@ const nextConfig: NextConfig = {
   },
   async rewrites() {
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://abxzyhgaityhgwbltjwu.supabase.co";
-    const pythonBackendUrl = process.env.PYTHON_BACKEND_URL || "http://127.0.0.1:8000";
+    const pythonBackendUrl = process.env.PYTHON_BACKEND_URL || process.env.BACKEND_URL || "http://127.0.0.1:8000";
     return [
       {
         source: "/supabase-api/:path*",
