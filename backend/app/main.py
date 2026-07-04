@@ -30,6 +30,13 @@ if config.DATABASE_URL.startswith("sqlite"):
     from .models import database_models
     Base.metadata.create_all(bind=engine)
 
+from .core.security import run_license_check
+
+@app.get("/api/check-license")
+def check_license():
+    run_license_check()
+    return {"status": "active"}
+
 @app.get("/")
 def read_root():
     return {"status": "healthy", "service": "Pramukh ERP Python Backend"}

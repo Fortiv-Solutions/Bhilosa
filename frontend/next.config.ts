@@ -46,6 +46,10 @@ const nextConfig: NextConfig = {
         source: "/api/procurement/purchase-requisitions/:id/pdf",
         destination: `${pythonBackendUrl}/api/procurement/purchase-requisitions/:id/pdf`,
       },
+      {
+        source: "/api/check-license",
+        destination: `${pythonBackendUrl}/api/check-license`,
+      },
     ];
   },
 };
