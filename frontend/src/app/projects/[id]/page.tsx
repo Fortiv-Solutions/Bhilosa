@@ -1684,7 +1684,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
     const noRework = rwCount === 0;
     const photoProof = wc.photos && wc.photos.length > 0;
     const measurementApproved = mv ? mv.status === 'Approved' : true;
-    const invoiceCreated = project!.invoices.some(inv => inv.desc.includes(wc.activityName));
+    const invoiceCreated = project?.invoices?.some(inv => inv.desc.includes(wc.activityName)) || false;
 
     return (isCompleted && isQcApproved && noRework && photoProof && measurementApproved) || invoiceCreated;
   }).length;
