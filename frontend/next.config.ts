@@ -7,8 +7,18 @@ const nextConfig: NextConfig = {
     root: path.resolve(process.cwd()),
   },
   async rewrites() {
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://abxzyhgaityhgwbltjwu.supabase.co";
-    const pythonBackendUrl = process.env.PYTHON_BACKEND_URL || process.env.BACKEND_URL || "http://127.0.0.1:8000";
+    let supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://abxzyhgaityhgwbltjwu.supabase.co";
+    supabaseUrl = supabaseUrl.replace(/\/$/, "");
+    if (!supabaseUrl.startsWith("http://") && !supabaseUrl.startsWith("https://")) {
+      supabaseUrl = `https://${supabaseUrl}`;
+    }
+
+    let pythonBackendUrl = process.env.PYTHON_BACKEND_URL || process.env.BACKEND_URL || "http://127.0.0.1:8000";
+    pythonBackendUrl = pythonBackendUrl.replace(/\/$/, "");
+    if (!pythonBackendUrl.startsWith("http://") && !pythonBackendUrl.startsWith("https://")) {
+      pythonBackendUrl = `https://${pythonBackendUrl}`;
+    }
+
     return [
       {
         source: "/supabase-api/:path*",
