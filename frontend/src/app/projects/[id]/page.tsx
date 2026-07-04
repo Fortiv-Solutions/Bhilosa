@@ -1068,14 +1068,14 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
           .from('daily_logs')
           .select('*')
           .eq('project_id', dbSiteId)
-          .eq('log_type', 'work');
+          .eq('type', 'work');
 
         if (logsError) {
           const { data: logsData2, error: logsError2 } = await supabase
             .from('daily_logs')
             .select('*')
             .eq('project_id', dbSiteId)
-            .eq('type', 'work');
+            .eq('log_type', 'work');
           if (!logsError2 && logsData2) {
             mapWorkLogs(logsData2);
           }
