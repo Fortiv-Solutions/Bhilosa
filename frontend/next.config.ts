@@ -29,6 +29,10 @@ const nextConfig: NextConfig = {
         destination: `${pythonBackendUrl}/api/transcribe`,
       },
       {
+        source: "/api/ai/chat",
+        destination: `${pythonBackendUrl}/api/ai/chat`,
+      },
+      {
         source: "/api/send-message",
         destination: `${pythonBackendUrl}/api/send-message`,
       },

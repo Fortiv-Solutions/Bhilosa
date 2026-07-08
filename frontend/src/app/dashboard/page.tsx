@@ -35,6 +35,7 @@ import {
 } from 'lucide-react';
 import { useAppStore } from '@/store/use-app-store';
 import { formatIndianCurrency } from '@/utils/format-currency';
+import FloatingChatbot from '@/components/floating-chatbot';
 import { isLiveSupabase } from '@/lib/erp/supabase-modules';
 import { listProcurementDashboard, type ProcurementDashboardData } from '@/lib/procurement';
 import { getDPRs } from '@/lib/dpr';
@@ -1139,6 +1140,7 @@ export default function DashboardPage() {
           <span className="text-xs font-bold">{toastMsg}</span>
         </div>
       )}
+      <FloatingChatbot />
     </div>
   );
 }
