@@ -208,6 +208,7 @@ export const useAppStore = create<AppState>((set) => ({
           email: profile.email,
           role,
           avatar: '',
+          project_id: profile.project_id,
         },
       });
     } catch {

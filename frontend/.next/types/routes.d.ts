@@ -5,7 +5,7 @@ type AppRoutes = "/" | "/activities" | "/ai-assistant" | "/analytics" | "/billin
 type PageRoutes = never
 type LayoutRoutes = "/"
 type RedirectRoutes = never
-type RewriteRoutes = "/api/procurement/purchase-orders/[id]/pdf" | "/api/procurement/purchase-requisitions/[id]/pdf" | "/api/qc/analyze" | "/api/send-message" | "/api/site-inspection" | "/api/transcribe" | "/api/users" | "/api/users/[id]" | "/supabase-api/[[...path]]"
+type RewriteRoutes = "/api/check-license" | "/api/procurement/purchase-orders/[id]/pdf" | "/api/procurement/purchase-requisitions/[id]/pdf" | "/api/qc/analyze" | "/api/send-message" | "/api/site-inspection" | "/api/transcribe" | "/api/users" | "/api/users/[id]" | "/supabase-api/[[...path]]"
 type Routes = AppRoutes | PageRoutes | LayoutRoutes | RedirectRoutes | RewriteRoutes
 
 
@@ -14,6 +14,7 @@ interface ParamMap {
   "/activities": {}
   "/ai-assistant": {}
   "/analytics": {}
+  "/api/check-license": {}
   "/api/procurement/purchase-orders/[id]/pdf": { "id": string; }
   "/api/procurement/purchase-requisitions/[id]/pdf": { "id": string; }
   "/api/qc/analyze": {}

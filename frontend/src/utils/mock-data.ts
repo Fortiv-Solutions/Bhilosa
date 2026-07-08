@@ -7,6 +7,7 @@ export interface User {
   email: string;
   role: Role;
   avatar: string;
+  project_id?: string | null;
 }
 
 export interface DPRActivityLine {

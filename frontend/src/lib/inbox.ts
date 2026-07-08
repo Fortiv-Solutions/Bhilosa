@@ -2,7 +2,7 @@ import { supabase } from '@/utils/supabase-client';
 import { normalizeDatabaseRole, roleToDatabaseRole } from '@/lib/rbac';
 import type { DatabaseRole } from '@/lib/roles';
 
-export type Profile={id:string;name:string;email:string;role:DatabaseRole};
+export type Profile={id:string;name:string;email:string;role:DatabaseRole;project_id?:string|null};
 export type InboxProject={id:string;code:string;name:string};
 export type Conversation={id:string;project_id:string;type:'project_group'|'channel'|'direct';title:string|null;updated_at:string;latest_message?:string|null;unread_count?:number};
 export type Attachment={id:string;storage_path:string;mime_type:string;size_bytes:number;duration_seconds:number|null};

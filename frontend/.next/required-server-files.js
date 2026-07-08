@@ -346,6 +346,10 @@ self.__SERVER_FILES_MANIFEST={
         {
           "source": "/api/procurement/purchase-requisitions/:id/pdf",
           "destination": "http://127.0.0.1:8000/api/procurement/purchase-requisitions/:id/pdf"
+        },
+        {
+          "source": "/api/check-license",
+          "destination": "http://127.0.0.1:8000/api/check-license"
         }
       ],
       "fallback": []
