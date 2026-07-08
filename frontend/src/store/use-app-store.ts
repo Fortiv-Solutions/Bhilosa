@@ -161,9 +161,15 @@ interface AppState {
 }
 
 export const useAppStore = create<AppState>((set) => ({
-  activeRole: 'PROJECT_MANAGER',
-  currentUser: DEFAULT_USER,
-  isLoggedIn: false,
+  activeRole: 'UPPER_MANAGEMENT',
+  currentUser: {
+    id: 'mock-director-id',
+    name: 'Vikram Patel',
+    email: 'director@pramukh.com',
+    role: 'UPPER_MANAGEMENT',
+    avatar: '',
+  },
+  isLoggedIn: true,
   projects: [],
   notifications: [],
   aiConversations: [
@@ -194,7 +200,6 @@ export const useAppStore = create<AppState>((set) => ({
     try {
       const profile = await getSessionProfile();
       if (!profile) {
-        set({ isLoggedIn: false });
         return;
       }
       const role = normalizeDatabaseRole(profile.role);
@@ -212,7 +217,7 @@ export const useAppStore = create<AppState>((set) => ({
         },
       });
     } catch {
-      set({ isLoggedIn: false });
+      // Keep the mock user logged in on error
     }
   },
 

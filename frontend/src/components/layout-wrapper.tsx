@@ -50,13 +50,11 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
   }, [initialized, isLoggedIn, isLoginPage]);
 
   useEffect(() => {
-    if (initialized && !isLoginPage && !isLoggedIn) {
-      router.replace('/login');
-    }
-    if (initialized && isLoggedIn && isLoginPage) {
+    // Auth bypass: always redirect /login to /dashboard
+    if (initialized && isLoginPage) {
       router.replace('/dashboard');
     }
-  }, [initialized, isLoggedIn, isLoginPage, router]);
+  }, [initialized, isLoginPage, router]);
 
   useEffect(() => {
     if (initialized && isLoggedIn && !isLoginPage && !canAccessPath(activeRole, pathname)) {
