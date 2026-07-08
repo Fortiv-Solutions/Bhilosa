@@ -57,3 +57,6 @@ backend/local_dev_fallback.db
 venv/
 __pycache__/
 *.pyc
+
+# Railway
+.railway/

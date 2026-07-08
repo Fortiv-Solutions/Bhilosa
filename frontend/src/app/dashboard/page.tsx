@@ -143,13 +143,15 @@ export default function DashboardPage() {
   // §1 — health data resolver
   // ────────────────────────────────────────────────────────────────────────
   const healthKpis = useMemo(() => {
+    const pendingPRsCount = liveProcurement?.purchaseRequisitions?.filter((pr: any) => pr.status === 'PENDING').length || 6;
     switch (persona) {
       case 'DIRECTOR':
         return [
           { label: 'Revenue Realized', value: '₹84.6 Cr', detail: '+8.5% vs. Q2 billing target', icon: CircleDollarSign, color: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400', link: '/finance', isPositive: true },
           { label: 'Cash Position', value: '₹12.4 Cr', detail: '₹45L overdue AR follows up today', icon: TrendingUp, color: 'bg-amber-500/10 text-amber-600 dark:text-amber-455', link: '/finance', isPositive: false },
           { label: 'Schedule Adherence', value: `${adherenceRate}%`, detail: '2 critical path sites require review', icon: Clock3, color: 'bg-blue-500/10 text-blue-600 dark:text-blue-400', link: '/projects', isPositive: true },
-          { label: 'Safety Incidents', value: '0', detail: '45 safe days; zero warnings', icon: HardHat, color: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400', link: '/safety-qc', isPositive: true }
+          { label: 'Safety Incidents', value: '0', detail: '45 safe days; zero warnings', icon: HardHat, color: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400', link: '/safety-qc', isPositive: true },
+          { label: 'PRs Pending', value: `${pendingPRsCount}`, detail: 'Awaiting director approval', icon: FileText, color: 'bg-amber-500/10 text-amber-600 dark:text-amber-455', link: '/procurement', isPositive: false }
         ];
       case 'PURCHASE': {
         const openReqsCount = (liveProcurement?.purchaseRequisitions?.length || 0) + (projects.reduce((acc, p) => acc + (p.procurements?.length || 0), 0));
@@ -159,7 +161,8 @@ export default function DashboardPage() {
           { label: 'Open Requests', value: `${Math.max(14, openReqsCount)}`, detail: '6 PRs awaiting quote comparison', icon: ShoppingBag, color: 'bg-amber-500/10 text-amber-600 dark:text-amber-455', link: '/procurement', isPositive: false },
           { label: 'Pipeline Committed', value: '₹3.2 Cr', detail: 'Liability up 12% on steel orders', icon: CircleDollarSign, color: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400', link: '/procurement', isPositive: true },
           { label: 'Late Deliveries', value: `${Math.max(5, overdueDeliveries)}`, detail: '3 cement POs overdue by 4+ days', icon: Clock3, color: 'bg-rose-500/10 text-rose-605 dark:text-rose-400', link: '/procurement', isPositive: false },
-          { label: 'Stockout Risks', value: `${Math.max(8, lowStockItems)}`, detail: 'Cement & sand below reorder trigger', icon: AlertTriangle, color: 'bg-amber-500/10 text-amber-600 dark:text-amber-455', link: '/inventory', isPositive: false }
+          { label: 'Stockout Risks', value: `${Math.max(8, lowStockItems)}`, detail: 'Cement & sand below reorder trigger', icon: AlertTriangle, color: 'bg-amber-500/10 text-amber-600 dark:text-amber-455', link: '/inventory', isPositive: false },
+          { label: 'PRs Pending', value: `${pendingPRsCount}`, detail: 'Awaiting rate comparisons', icon: FileText, color: 'bg-amber-500/10 text-amber-600 dark:text-amber-455', link: '/procurement', isPositive: false }
         ];
       }
       case 'PMC':
@@ -170,7 +173,8 @@ export default function DashboardPage() {
           { label: 'Schedule Adherence', value: `${adherenceRate}%`, detail: '2 critical path delays logged today', icon: Clock3, color: 'bg-blue-500/10 text-blue-600 dark:text-blue-400', link: '/projects', isPositive: true },
           { label: 'DPR Compliance', value: '67%', detail: '3 sites missing yesterday\'s log', icon: FileText, color: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-450', link: '/activities', isPositive: true },
           { label: 'Unresolved Delays', value: `${Math.max(12, unresolvedDelays)}`, detail: '8 delays from subcontractor lag', icon: AlertCircle, color: 'bg-rose-500/10 text-rose-605 dark:text-rose-400', link: '/activities', isPositive: false },
-          { label: 'QC Pending', value: `${Math.max(7, pendingQC)}`, detail: '4 core test reviews due tomorrow', icon: ClipboardCheck, color: 'bg-amber-500/10 text-amber-600 dark:text-amber-455', link: '/safety-qc', isPositive: false }
+          { label: 'QC Pending', value: `${Math.max(7, pendingQC)}`, detail: '4 core test reviews due tomorrow', icon: ClipboardCheck, color: 'bg-amber-500/10 text-amber-600 dark:text-amber-455', link: '/safety-qc', isPositive: false },
+          { label: 'PRs Pending', value: `${pendingPRsCount}`, detail: 'Awaiting technical verification', icon: FileText, color: 'bg-amber-500/10 text-amber-600 dark:text-amber-455', link: '/procurement', isPositive: false }
         ];
       }
     }
@@ -350,25 +354,29 @@ export default function DashboardPage() {
       {/* ────────────────────────────────────────────────────────────────────────
           §1 — "How healthy is everything right now?"
           ──────────────────────────────────────────────────────────────────────── */}
-      <section className="grid grid-cols-2 gap-4 md:grid-cols-4">
+      <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
         {healthKpis.map((kpi, idx) => {
           const IconComponent = kpi.icon;
           return (
-            <Link key={idx} href={kpi.link} className="group rounded-2xl border border-border bg-card p-5 shadow-xs transition-all duration-300 hover:shadow-premium hover:border-primary/45">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground truncate">{kpi.label}</p>
-                  <p className="mt-2 text-2xl md:text-3xl font-mono font-extrabold text-foreground group-hover:text-primary transition-colors">
-                    {kpi.value}
-                  </p>
-                  <div className={`mt-2 flex items-center gap-1 text-xs font-bold ${kpi.isPositive ? 'text-emerald-600 dark:text-emerald-500' : 'text-amber-600 dark:text-amber-500'}`}>
-                    <span>{kpi.detail}</span>
-                  </div>
+            <Link 
+              key={idx} 
+              href={kpi.link} 
+              className="group flex flex-col justify-between rounded-xl border border-border bg-card p-4 transition-all duration-300 hover:shadow-premium hover:border-primary/40 hover:scale-[1.01]"
+            >
+              <div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[9px] font-extrabold uppercase tracking-wider text-muted-foreground truncate">{kpi.label}</span>
+                  <span className={`grid h-7 w-7 flex-shrink-0 place-items-center rounded-lg ${kpi.color}`}>
+                    <IconComponent className="h-3.5 w-3.5" />
+                  </span>
                 </div>
-                <span className={`grid h-10 w-10 flex-shrink-0 place-items-center rounded-xl ${kpi.color}`}>
-                  <IconComponent className="h-5 w-5" />
-                </span>
+                <p className="mt-2.5 text-xl lg:text-2xl font-mono font-black text-foreground group-hover:text-primary transition-colors leading-none">
+                  {kpi.value}
+                </p>
               </div>
+              <p className={`mt-3.5 text-[10px] font-semibold leading-relaxed ${kpi.isPositive ? 'text-emerald-600 dark:text-emerald-500' : 'text-amber-600 dark:text-amber-500'}`}>
+                {kpi.detail}
+              </p>
             </Link>
           );
         })}
@@ -377,68 +385,7 @@ export default function DashboardPage() {
 
 
       {/* ────────────────────────────────────────────────────────────────────────
-          §2 — Pending Approvals & Decisions
-          ──────────────────────────────────────────────────────────────────────── */}
-      <section className="rounded-2xl border border-border bg-card p-6 shadow-sm">
-        <div className="flex items-center justify-between border-b border-border/60 pb-4 mb-4">
-          <div className="flex items-center gap-2">
-            <h2 className="text-sm font-heading font-bold text-foreground uppercase tracking-wider">Pending Approvals & Decisions</h2>
-            <span className="inline-flex h-5.5 w-5.5 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
-              {rawDecisions.filter(d => !approvedActionIds.includes(d.id)).length}
-            </span>
-          </div>
-          {rawDecisions.filter(d => !approvedActionIds.includes(d.id)).length > 4 && (
-            <button 
-              onClick={() => setShowAllDecisions(!showAllDecisions)}
-              className="text-xs font-bold text-primary hover:text-primary/80 flex items-center gap-1 transition-colors cursor-pointer"
-            >
-              {showAllDecisions ? (
-                <>Collapse <ChevronUp className="h-3.5 w-3.5" /></>
-              ) : (
-                <>View all decisions <ChevronDown className="h-3.5 w-3.5" /></>
-              )}
-            </button>
-          )}
-        </div>
-
-        {visibleDecisions.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-8 text-center bg-muted/20 rounded-xl border border-dashed border-border">
-            <CheckCircle2 className="h-10 w-10 text-emerald-500 mb-2" />
-            <p className="text-sm font-bold text-foreground">All clear!</p>
-            <p className="text-xs text-muted-foreground mt-0.5">No pending approval tickets or reviews assigned to you.</p>
-          </div>
-        ) : (
-          <div className="divide-y divide-border/60">
-            {visibleDecisions.map((decision) => {
-              const IconComponent = decision.icon;
-              return (
-                <div key={decision.id} className="flex items-center justify-between py-4 first:pt-0 last:pb-0 gap-4">
-                  <div className="flex items-start gap-3 min-w-0">
-                    <span className={`grid h-9 w-9 flex-shrink-0 place-items-center rounded-xl ${decision.color}`}>
-                      <IconComponent className="h-4.5 w-4.5" />
-                    </span>
-                    <div className="min-w-0">
-                      <p className="text-sm font-bold text-foreground truncate">{decision.title}</p>
-                      <p className="mt-1 text-xs text-muted-foreground font-medium">{decision.context} · Due {decision.due}</p>
-                    </div>
-                  </div>
-                  <div className="flex-shrink-0 flex gap-2">
-                    <button
-                      onClick={() => handleApprove(decision.id, decision.title)}
-                      className="px-3.5 py-1.5 text-xs font-bold bg-primary/10 border border-primary/20 hover:bg-primary text-primary hover:text-white rounded-lg transition-all shadow-xs cursor-pointer"
-                    >
-                      Approve
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </section>
-
-      {/* ────────────────────────────────────────────────────────────────────────
-          §3 — Portfolio Status (Visible Immediately)
+          §2 — Portfolio Status (Visible Immediately)
           ──────────────────────────────────────────────────────────────────────── */}
       <section className="rounded-2xl border border-border bg-card p-6 shadow-sm">
         <div className="flex items-center justify-between border-b border-border/60 pb-4 mb-4">
@@ -511,6 +458,67 @@ export default function DashboardPage() {
                     </div>
                   </div>
                 </Link>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      {/* ────────────────────────────────────────────────────────────────────────
+          §3 — Pending Approvals & Decisions
+          ──────────────────────────────────────────────────────────────────────── */}
+      <section className="rounded-2xl border border-border bg-card p-6 shadow-sm">
+        <div className="flex items-center justify-between border-b border-border/60 pb-4 mb-4">
+          <div className="flex items-center gap-2">
+            <h2 className="text-sm font-heading font-bold text-foreground uppercase tracking-wider">Pending Approvals & Decisions</h2>
+            <span className="inline-flex h-5.5 w-5.5 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
+              {rawDecisions.filter(d => !approvedActionIds.includes(d.id)).length}
+            </span>
+          </div>
+          {rawDecisions.filter(d => !approvedActionIds.includes(d.id)).length > 4 && (
+            <button 
+              onClick={() => setShowAllDecisions(!showAllDecisions)}
+              className="text-xs font-bold text-primary hover:text-primary/80 flex items-center gap-1 transition-colors cursor-pointer"
+            >
+              {showAllDecisions ? (
+                <>Collapse <ChevronUp className="h-3.5 w-3.5" /></>
+              ) : (
+                <>View all decisions <ChevronDown className="h-3.5 w-3.5" /></>
+              )}
+            </button>
+          )}
+        </div>
+
+        {visibleDecisions.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-8 text-center bg-muted/20 rounded-xl border border-dashed border-border">
+            <CheckCircle2 className="h-10 w-10 text-emerald-500 mb-2" />
+            <p className="text-sm font-bold text-foreground">All clear!</p>
+            <p className="text-xs text-muted-foreground mt-0.5">No pending approval tickets or reviews assigned to you.</p>
+          </div>
+        ) : (
+          <div className="divide-y divide-border/60">
+            {visibleDecisions.map((decision) => {
+              const IconComponent = decision.icon;
+              return (
+                <div key={decision.id} className="flex items-center justify-between py-4 first:pt-0 last:pb-0 gap-4">
+                  <div className="flex items-start gap-3 min-w-0">
+                    <span className={`grid h-9 w-9 flex-shrink-0 place-items-center rounded-xl ${decision.color}`}>
+                      <IconComponent className="h-4.5 w-4.5" />
+                    </span>
+                    <div className="min-w-0">
+                      <p className="text-sm font-bold text-foreground truncate">{decision.title}</p>
+                      <p className="mt-1 text-xs text-muted-foreground font-medium">{decision.context} · Due {decision.due}</p>
+                    </div>
+                  </div>
+                  <div className="flex-shrink-0 flex gap-2">
+                    <button
+                      onClick={() => handleApprove(decision.id, decision.title)}
+                      className="px-3.5 py-1.5 text-xs font-bold bg-primary/10 border border-primary/20 hover:bg-primary text-primary hover:text-white rounded-lg transition-all shadow-xs cursor-pointer"
+                    >
+                      Approve
+                    </button>
+                  </div>
+                </div>
               );
             })}
           </div>
@@ -923,15 +931,37 @@ export default function DashboardPage() {
               </Link>
             </div>
 
-            <div className="space-y-3.5">
-              <div className="flex justify-between items-center bg-muted/20 border border-border p-3.5 rounded-xl text-xs">
-                <span className="font-semibold text-muted-foreground">QC Inspections Pass Yield</span>
-                <span className="font-mono font-extrabold text-emerald-600 bg-emerald-500/10 px-2.5 py-0.5 rounded">91.4% Passed</span>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="p-3.5 border border-border rounded-xl bg-muted/20 flex flex-col justify-between">
+                <span className="text-[10px] font-bold text-muted-foreground uppercase">QC Inspections Pass Yield</span>
+                <div className="mt-2">
+                  <p className="text-lg font-mono font-extrabold text-emerald-600">91.4% Passed</p>
+                  <p className="text-[9px] text-muted-foreground mt-0.5">32 checklist inspections passed</p>
+                </div>
               </div>
 
-              <div className="flex justify-between items-center bg-muted/20 border border-border p-3.5 rounded-xl text-xs">
-                <span className="font-semibold text-muted-foreground">DPR Submission Status</span>
-                <span className="font-mono font-extrabold text-amber-600 bg-amber-500/10 px-2.5 py-0.5 rounded">6/9 Logged Today</span>
+              <div className="p-3.5 border border-border rounded-xl bg-muted/20 flex flex-col justify-between">
+                <span className="text-[10px] font-bold text-muted-foreground uppercase">DPR Submission Status</span>
+                <div className="mt-2">
+                  <p className="text-lg font-mono font-extrabold text-amber-600">6/9 Logged</p>
+                  <p className="text-[9px] text-muted-foreground mt-0.5">3 sites pending submission logs</p>
+                </div>
+              </div>
+
+              <div className="p-3.5 border border-border rounded-xl bg-muted/20 flex flex-col justify-between">
+                <span className="text-[10px] font-bold text-muted-foreground uppercase">HSE Safe Man-Hours</span>
+                <div className="mt-2">
+                  <p className="text-lg font-mono font-extrabold text-emerald-600">12,450 Hrs</p>
+                  <p className="text-[9px] text-muted-foreground mt-0.5">Zero safety violations reported</p>
+                </div>
+              </div>
+
+              <div className="p-3.5 border border-border rounded-xl bg-muted/20 flex flex-col justify-between">
+                <span className="text-[10px] font-bold text-muted-foreground uppercase">Compliance Audits</span>
+                <div className="mt-2">
+                  <p className="text-lg font-mono font-extrabold text-foreground">2 Pending</p>
+                  <p className="text-[9px] text-muted-foreground mt-0.5">Electrical & fire safety scheduled</p>
+                </div>
               </div>
             </div>
           </div>
@@ -1119,17 +1149,77 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        <div className="space-y-4 max-h-80 overflow-y-auto pr-1">
-          {activityFeed.map((activity) => (
-            <div key={activity.id} className="flex gap-4.5 items-start">
-              <span className="text-[10px] font-mono font-bold text-muted-foreground min-w-[70px] pt-0.5">{activity.time}</span>
-              <div className="w-1.5 h-1.5 rounded-full bg-primary mt-1.5 flex-shrink-0"></div>
-              <div>
-                <p className="text-xs font-bold text-foreground">{activity.text}</p>
-                <p className="text-[10px] text-muted-foreground">{activity.subtext}</p>
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          {/* Left Column: Timeline Feed */}
+          <div className="lg:col-span-8 space-y-3.5 max-h-80 overflow-y-auto pr-2">
+            {activityFeed.map((activity) => {
+              // Determine tag badge color based on type
+              let badgeColor = 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-350';
+              if (activity.type === 'procurement') badgeColor = 'bg-amber-500/10 text-amber-600 dark:text-amber-450';
+              if (activity.type === 'execution') badgeColor = 'bg-blue-500/10 text-blue-600 dark:text-blue-450';
+              if (activity.type === 'quality') badgeColor = 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-455';
+              if (activity.type === 'delay') badgeColor = 'bg-rose-500/10 text-rose-600 dark:text-rose-450';
+              if (activity.type === 'system') badgeColor = 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-450';
+
+              return (
+                <div key={activity.id} className="flex gap-4 items-start p-2.5 hover:bg-muted/15 rounded-xl transition-all border border-transparent hover:border-border/40">
+                  <span className="text-[10px] font-mono font-bold text-muted-foreground min-w-[75px] pt-1">{activity.time}</span>
+                  <div className="w-1.5 h-1.5 rounded-full bg-primary mt-2.5 flex-shrink-0"></div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-bold text-foreground">{activity.text}</p>
+                    <p className="text-[10px] text-muted-foreground mt-0.5">{activity.subtext}</p>
+                  </div>
+                  <span className={`text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded ${badgeColor} flex-shrink-0`}>
+                    {activity.type}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Right Column: Audit Summary Checklist */}
+          <div className="lg:col-span-4 rounded-xl border border-border bg-muted/10 p-5 flex flex-col justify-between">
+            <div>
+              <h3 className="text-xs font-bold text-foreground uppercase tracking-wider mb-4">Daily Activity Audit</h3>
+              <div className="space-y-3.5">
+                <div className="flex justify-between items-center text-xs">
+                  <span className="text-muted-foreground font-semibold flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                    System Integrity
+                  </span>
+                  <span className="font-mono font-black text-emerald-600 bg-emerald-500/10 px-2 py-0.5 rounded">Active</span>
+                </div>
+                <div className="flex justify-between items-center text-xs">
+                  <span className="text-muted-foreground font-semibold flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-primary"></span>
+                    Transactions Logged
+                  </span>
+                  <span className="font-mono font-extrabold text-foreground">42 Events</span>
+                </div>
+                <div className="flex justify-between items-center text-xs">
+                  <span className="text-muted-foreground font-semibold flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-amber-500"></span>
+                    Procurement Tasks
+                  </span>
+                  <span className="font-mono font-semibold text-foreground">12 Active</span>
+                </div>
+                <div className="flex justify-between items-center text-xs">
+                  <span className="text-muted-foreground font-semibold flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-rose-500"></span>
+                    Schedule Deviations
+                  </span>
+                  <span className="font-mono font-extrabold text-rose-600 bg-rose-500/10 px-2 py-0.5 rounded">2 Alerts</span>
+                </div>
               </div>
             </div>
-          ))}
+            
+            <div className="mt-4 pt-4 border-t border-border/60">
+              <div className="flex justify-between items-center text-[10px] font-bold text-muted-foreground uppercase">
+                <span>Last Updated</span>
+                <span className="font-mono">Just now</span>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 

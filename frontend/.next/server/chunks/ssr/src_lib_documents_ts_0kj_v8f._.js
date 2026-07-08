@@ -1,3 +1,0 @@
-module.exports=[43723,a=>{"use strict";var b=a.i(89419);async function c(a,c,d,e,f){let g=`${a}/${c}/${d}/${Date.now()}-${f.name.replace(/[^a-zA-Z0-9.-]/g,"_")}`,{error:h}=await b.supabase.storage.from("project-documents").upload(g,f);if(h)throw h;let{data:{user:i}}=await b.supabase.auth.getUser(),{error:j}=await b.supabase.from("entity_attachments").insert({project_id:a,entity_table:c,entity_id:d,document_type:e,file_name:f.name,storage_bucket:"project-documents",storage_path:g,mime_type:f.type,size_bytes:f.size,created_by:i?.id});if(j)throw j}a.s(["uploadEntityAttachment",0,c])}];
-
-//# sourceMappingURL=src_lib_documents_ts_0kj_v8f._.js.map

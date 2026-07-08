@@ -229,7 +229,7 @@ export default function FloatingChatbot() {
         dailyActivities: (p.dailyActivities || []).slice(0, 3).map(da => ({
           date: da.date,
           status: da.status,
-          notes: da.notes
+          notes: da.workCompleted
         }))
       })),
       vendors: vendors.slice(0, 10).map(v => ({

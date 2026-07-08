@@ -43,8 +43,8 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
       };
       
       checkLicense();
-      // Check every 10 seconds to respond quickly to toggling
-      const interval = setInterval(checkLicense, 10000);
+      // Check every 1 hour to verify license status
+      const interval = setInterval(checkLicense, 3600000);
       return () => clearInterval(interval);
     }
   }, [initialized, isLoggedIn, isLoginPage]);
@@ -52,6 +52,9 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
   useEffect(() => {
     if (initialized && !isLoginPage && !isLoggedIn) {
       router.replace('/login');
+    }
+    if (initialized && isLoggedIn && isLoginPage) {
+      router.replace('/dashboard');
     }
   }, [initialized, isLoggedIn, isLoginPage, router]);
 

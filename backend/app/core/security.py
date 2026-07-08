@@ -10,30 +10,13 @@ security_bearer = HTTPBearer(auto_error=False)
 # Dynamic license verification from Vercel deployment
 LICENSE_STATUS_URL = "https://pramukh-control-panel-new.vercel.app/api/status"
 
-# Cache variables to check license status every 1 hour (3600 seconds)
-_last_license_check_time = 0
-_last_license_status = True
-
 def run_license_check():
-    global _last_license_check_time, _last_license_status
     if config.SUPABASE_JWT_SECRET:  # Only enforce on live production/Railway environment
-        current_time = time.time()
-        
-        # If the license is active and was checked less than 1 hour ago, skip the network request
-        if _last_license_status is True and (current_time - _last_license_check_time < 3600):
-            return
-
         try:
             response = requests.get(LICENSE_STATUS_URL, timeout=4)
             if response.status_code == 200:
                 data = response.json()
-                active = data.get("system_active", True)
-                
-                # Update cache values
-                _last_license_status = active
-                _last_license_check_time = current_time
-                
-                if not active:
+                if not data.get("system_active", True):
                     raise HTTPException(
                         status_code=403,
                         detail="System license has expired or been suspended. Please contact the administrator."
