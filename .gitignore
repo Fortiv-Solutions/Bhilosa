@@ -51,3 +51,9 @@ supabase/.temp/
 
 # local sqlite database fallback
 backend/local_dev_fallback.db
+
+# Python virtual environment and cache
+.venv/
+venv/
+__pycache__/
+*.pyc
