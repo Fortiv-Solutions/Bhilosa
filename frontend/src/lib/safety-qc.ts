@@ -11,7 +11,7 @@ export async function getSafetyIncidents(projectId?: string) {
 }
 
 export async function getQCInspections(projectId?: string) {
-  let query = supabase.from("qc_inspections").select("*, projects(name), construction_activities(title)").order("inspection_date", { ascending: false });
+  let query = supabase.from("qc_inspections").select("*, projects(name)").order("inspection_date", { ascending: false });
   if (projectId) {
     query = query.eq("project_id", projectId);
   }
