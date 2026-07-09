@@ -29,24 +29,28 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
 
   // Periodically check system status if logged in and not on login page
   useEffect(() => {
-    if (initialized && isLoggedIn && !isLoginPage) {
-      const checkLicense = () => {
-        fetch("/api/check-license")
-          .then((res) => {
-            if (res.status === 403) {
-              setIsSuspended(true);
-            } else {
-              setIsSuspended(false);
-            }
-          })
-          .catch(() => {});
-      };
-      
-      checkLicense();
-      // Check every 1 hour to verify license status
-      const interval = setInterval(checkLicense, 3600000);
-      return () => clearInterval(interval);
+    if (!initialized || !isLoggedIn || isLoginPage) {
+      return;
     }
+
+    const checkLicense = () => {
+      fetch("/api/check-license")
+        .then((res) => {
+          if (res.status === 403) {
+            setIsSuspended(true);
+          } else {
+            setIsSuspended(false);
+          }
+        })
+        .catch(() => {});
+    };
+    
+    checkLicense();
+    // Check every 1 hour to verify license status
+    const interval = setInterval(checkLicense, 3600000);
+    return () => {
+      clearInterval(interval);
+    };
   }, [initialized, isLoggedIn, isLoginPage]);
 
   useEffect(() => {
