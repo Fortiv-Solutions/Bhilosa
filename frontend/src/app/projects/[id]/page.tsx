@@ -3209,110 +3209,139 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   const isLegacyCommunicationModuleEnabled = false;
 
   return (
-    <div className="w-full p-2 sm:p-3 lg:p-4 max-w-[1920px] mx-auto space-y-5 min-h-screen pb-24 md:pb-6">
-      {/* New Top Navbar */}
-      <div className="flex items-center justify-between bg-white/70 dark:bg-gray-900/70 backdrop-blur-xl border border-gray-200/50 dark:border-gray-800/50 p-2 sm:p-3 rounded-xl shadow-sm mb-4 relative z-50 sticky top-2">
-        {/* Left: Exit Button, Menu Toggle, Brand Logo & Name */}
-        <div className="flex items-center gap-2 sm:gap-4 pl-1 sm:pl-2">
-          <Link href="/projects" className="w-11 h-11 flex items-center justify-center rounded-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 hover:border-gray-300 dark:hover:border-gray-600 transition-all text-gray-600 dark:text-gray-300 shadow-sm group" title="Back to Projects">
-            <ArrowLeft className="w-5 h-5 transition-transform group-hover:-translate-x-0.5" />
-          </Link>
-          <button onClick={() => setIsMobileMenuOpen(true)} className="md:hidden w-11 h-11 flex items-center justify-center rounded-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300 shadow-sm transition-all">
-            <Menu className="w-5 h-5" />
-          </button>
-          <div className="w-[1px] h-6 bg-gray-200 dark:bg-gray-800 mx-1 hidden sm:block"></div>
-          <svg className="w-8 h-8 text-[#b68d40] drop-shadow-md hidden sm:block" viewBox="30 1 36 29" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path className="fill-[#b68d40]" d="M52.13,17.62v2.6s7.81,1.18,9,9.31h4.34a4.39,4.39,0,0,1-1.9-2.21C63,25.74,60.25,18.65,52.13,17.62ZM34.47,3.9H44.72V14.23C37.23,14.15,34.62,13.2,34.47,3.9ZM30,1.38A5.14,5.14,0,0,1,32,5.24v.63c.71,9.31,4.65,10.57,12.7,10.65V27.16h-.08s-.4,2.21-1.58,2.37h4.18V1.38H30ZM43.53,17.62v2.6s-7.8,1.18-8.91,9.31H30.29a4.07,4.07,0,0,0,1.81-2.21C32.65,25.74,35.49,18.65,43.53,17.62ZM51,14.23V3.9H61.28C61,13.2,58.44,14.15,51,14.23ZM63.8,1.38H48.5V29.53h4.1C51.5,29.37,51,27.16,51,27.16h0V16.52c8-0.08,12-1.34,12.61-10.65a1.71,1.71,0,0,0,.08-.63,4.93,4.93,0,0,1,2-3.86Z"/>
-          </svg>
-          <span className="font-bold text-base hidden lg:block text-gray-900 dark:text-white">{project!.name}</span>
-        </div>
+    <div className="flex w-full min-h-screen bg-gray-50 dark:bg-black/95">
+      {/* Left Sidebar - Hidden on mobile, visible on medium screens and up */}
+      <aside className="hidden md:flex flex-col w-64 border-r border-gray-200/50 dark:border-gray-800/50 bg-white dark:bg-gray-900 h-screen sticky top-0 shrink-0 z-40 p-4 justify-between select-none">
+        <div className="flex flex-col gap-6 overflow-y-auto scrollbar-none flex-1">
+          {/* Top: Exit Button & Brand Logo */}
+          <div className="flex items-center gap-3 pb-4 border-b border-gray-200/50 dark:border-gray-800/50">
+            <Link href="/projects" className="w-9 h-9 flex items-center justify-center rounded-full bg-gray-50 dark:bg-gray-850 border border-gray-200/50 dark:border-gray-800/50 hover:bg-gray-100 dark:hover:bg-gray-800 hover:border-gray-300 dark:hover:border-gray-700 transition-all text-gray-600 dark:text-gray-300 shadow-xs" title="Back to Projects">
+              <ArrowLeft className="w-4 h-4" />
+            </Link>
+            <div className="flex items-center gap-2 min-w-0">
+              <svg className="w-6 h-6 text-[#b68d40] drop-shadow-md flex-shrink-0" viewBox="30 1 36 29" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path className="fill-[#b68d40]" d="M52.13,17.62v2.6s7.81,1.18,9,9.31h4.34a4.39,4.39,0,0,1-1.9-2.21C63,25.74,60.25,18.65,52.13,17.62ZM34.47,3.9H44.72V14.23C37.23,14.15,34.62,13.2,34.47,3.9ZM30,1.38A5.14,5.14,0,0,1,32,5.24v.63c.71,9.31,4.65,10.57,12.7,10.65V27.16h-.08s-.4,2.21-1.58,2.37h4.18V1.38H30ZM43.53,17.62v2.6s-7.8,1.18-8.91,9.31H30.29a4.07,4.07,0,0,0,1.81-2.21C32.65,25.74,35.49,18.65,43.53,17.62ZM51,14.23V3.9H61.28C61,13.2,58.44,14.15,51,14.23ZM63.8,1.38H48.5V29.53h4.1C51.5,29.37,51,27.16,51,27.16h0V16.52c8-0.08,12-1.34,12.61-10.65a1.71,1.71,0,0,0,.08-.63,4.93,4.93,0,0,1,2-3.86Z"/>
+              </svg>
+              <span className="font-heading font-black text-sm text-gray-900 dark:text-white truncate" title={project!.name}>{project!.name}</span>
+            </div>
+          </div>
 
-        {/* Center: Categorized Pills Navigation */}
-        <div className="hidden md:flex items-center gap-1.5">
-          {/* Overview */}
-          <button
-            onClick={() => setActiveTab('project-management')}
-            className={`px-4 lg:px-5 py-2.5 rounded-full text-[13px] font-bold transition-all duration-300 ${activeTab === 'project-management' ? 'bg-[#b68d40] text-white shadow-sm shadow-[#b68d40]/20' : 'text-gray-600 dark:text-gray-400 hover:text-[#b68d40] dark:hover:text-[#b68d40] hover:bg-gray-100 dark:hover:bg-gray-800'}`}
-          >
-            Overview
-          </button>
-
-          {/* Inbox */}
-          <button
-            onClick={() => setActiveTab('inbox')}
-            className={`px-4 lg:px-5 py-2.5 rounded-full text-[13px] font-bold flex items-center gap-1.5 transition-all duration-300 ${activeTab === 'inbox' ? 'bg-[#b68d40] text-white shadow-sm shadow-[#b68d40]/20' : 'text-gray-600 dark:text-gray-400 hover:text-[#b68d40] dark:hover:text-[#b68d40] hover:bg-gray-100 dark:hover:bg-gray-800'}`}
-          >
-            <MessageSquare className="w-3.5 h-3.5" /> Inbox
-          </button>
-
-          {/* Operations Dropdown */}
-          <div className="relative group">
-            <button className={`px-4 lg:px-5 py-2.5 rounded-full text-[13px] font-bold flex items-center gap-1.5 transition-all duration-300 ${['site-operations', 'quality-control', 'tasks', 'equipment-tracking'].includes(activeTab) ? 'bg-[#b68d40] text-white shadow-sm shadow-[#b68d40]/20' : 'text-gray-600 dark:text-gray-400 hover:text-[#b68d40] dark:hover:text-[#b68d40] hover:bg-gray-100 dark:hover:bg-gray-800'}`}>
-              Operations <ChevronDown className="w-3.5 h-3.5" />
+          {/* Navigation Menu Stack */}
+          <nav className="flex flex-col gap-1.5">
+            {/* Overview */}
+            <button
+              onClick={() => setActiveTab('project-management')}
+              className={`flex items-center gap-3 px-3 py-2 rounded-xl text-[13px] font-bold transition-all duration-200 ${activeTab === 'project-management' ? 'bg-[#b68d40]/10 text-[#b68d40]' : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-800'}`}
+            >
+              <Building2 className="w-4 h-4 flex-shrink-0" />
+              <span>Overview</span>
             </button>
-            <div className="absolute top-full left-0 mt-2 w-48 bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-xl shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-50 py-2">
+
+            {/* Inbox */}
+            <button
+              onClick={() => setActiveTab('inbox')}
+              className={`flex items-center gap-3 px-3 py-2 rounded-xl text-[13px] font-bold transition-all duration-200 ${activeTab === 'inbox' ? 'bg-[#b68d40]/10 text-[#b68d40]' : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-800'}`}
+            >
+              <MessageSquare className="w-4 h-4 flex-shrink-0" />
+              <span>Inbox</span>
+            </button>
+
+            {/* Operations Section */}
+            <div className="flex flex-col gap-1 mt-2">
+              <span className="px-3 text-[10px] font-extrabold uppercase tracking-wider text-gray-400 dark:text-gray-600">Operations</span>
               {projectModules.filter(m => ['site-operations', 'quality-control', 'tasks', 'equipment-tracking'].includes(m.id)).map(module => {
                 const Icon = module.icon;
-                const isItemActive = activeTab === module.id;
+                const isActive = activeTab === module.id;
                 return (
-                  <button key={module.id} onClick={() => setActiveTab(module.id)} className={`w-full flex items-center gap-3 px-4 py-2.5 text-[13px] text-left hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors ${isItemActive ? 'text-[#b68d40] bg-[#b68d40]/5 font-bold' : 'text-gray-700 dark:text-gray-300'}`}>
-                    <Icon className="w-4 h-4" /> {module.label}
+                  <button
+                    key={module.id}
+                    onClick={() => setActiveTab(module.id)}
+                    className={`flex items-center gap-3 px-3 py-2 rounded-xl text-[13px] font-semibold transition-all duration-200 ${isActive ? 'bg-[#b68d40]/10 text-[#b68d40] font-bold' : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-800'}`}
+                  >
+                    <Icon className="w-4 h-4 flex-shrink-0" />
+                    <span>{module.label}</span>
                   </button>
                 )
               })}
             </div>
-          </div>
 
-          {/* Supply Chain Dropdown */}
-          <div className="relative group">
-            <button className={`px-4 lg:px-5 py-2.5 rounded-full text-[13px] font-bold flex items-center gap-1.5 transition-all duration-300 ${['procurement', 'inventory', 'vendor-management'].includes(activeTab) ? 'bg-[#b68d40] text-white shadow-sm shadow-[#b68d40]/20' : 'text-gray-600 dark:text-gray-400 hover:text-[#b68d40] dark:hover:text-[#b68d40] hover:bg-gray-100 dark:hover:bg-gray-800'}`}>
-              Supply Chain <ChevronDown className="w-3.5 h-3.5" />
-            </button>
-            <div className="absolute top-full left-0 mt-2 w-48 bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-xl shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-50 py-2">
+            {/* Supply Chain Section */}
+            <div className="flex flex-col gap-1 mt-2">
+              <span className="px-3 text-[10px] font-extrabold uppercase tracking-wider text-gray-400 dark:text-gray-600">Supply Chain</span>
               {projectModules.filter(m => ['procurement', 'inventory', 'vendor-management'].includes(m.id)).map(module => {
                 const Icon = module.icon;
-                const isItemActive = activeTab === module.id;
+                const isActive = activeTab === module.id;
                 return (
-                  <button key={module.id} onClick={() => setActiveTab(module.id)} className={`w-full flex items-center gap-3 px-4 py-2.5 text-[13px] text-left hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors ${isItemActive ? 'text-[#b68d40] bg-[#b68d40]/5 font-bold' : 'text-gray-700 dark:text-gray-300'}`}>
-                    <Icon className="w-4 h-4" /> {module.label}
+                  <button
+                    key={module.id}
+                    onClick={() => setActiveTab(module.id)}
+                    className={`flex items-center gap-3 px-3 py-2 rounded-xl text-[13px] font-semibold transition-all duration-200 ${isActive ? 'bg-[#b68d40]/10 text-[#b68d40] font-bold' : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-800'}`}
+                  >
+                    <Icon className="w-4 h-4 flex-shrink-0" />
+                    <span>{module.label}</span>
                   </button>
                 )
               })}
             </div>
-          </div>
 
-          {/* Standalone Documents tab */}
-          <button
-            onClick={() => setActiveTab('document-control')}
-            className={`px-4 lg:px-5 py-2.5 rounded-full text-[13px] font-bold flex items-center gap-1.5 transition-all duration-300 ${activeTab === 'document-control' ? 'bg-[#b68d40] text-white shadow-sm shadow-[#b68d40]/20' : 'text-gray-600 dark:text-gray-400 hover:text-[#b68d40] dark:hover:text-[#b68d40] hover:bg-gray-100 dark:hover:bg-gray-800'}`}
-          >
-            <FileText className="w-3.5 h-3.5" /> Documents
-          </button>
-
-          {/* Financials Dropdown */}
-          <div className="relative group">
-            <button className={`px-4 lg:px-5 py-2.5 rounded-full text-[13px] font-bold flex items-center gap-1.5 transition-all duration-300 ${['budget', 'billing', 'analytics'].includes(activeTab) ? 'bg-[#b68d40] text-white shadow-sm shadow-[#b68d40]/20' : 'text-gray-600 dark:text-gray-400 hover:text-[#b68d40] dark:hover:text-[#b68d40] hover:bg-gray-100 dark:hover:bg-gray-800'}`}>
-              Financials <ChevronDown className="w-3.5 h-3.5" />
+            {/* Documents */}
+            <button
+              onClick={() => setActiveTab('document-control')}
+              className={`flex items-center gap-3 px-3 py-2 rounded-xl text-[13px] font-bold mt-2 transition-all duration-200 ${activeTab === 'document-control' ? 'bg-[#b68d40]/10 text-[#b68d40]' : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-800'}`}
+            >
+              <FileText className="w-4 h-4 flex-shrink-0" />
+              <span>Documents</span>
             </button>
-            <div className="absolute top-full left-0 mt-2 w-48 bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-xl shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-50 py-2">
+
+            {/* Financials Section */}
+            <div className="flex flex-col gap-1 mt-2">
+              <span className="px-3 text-[10px] font-extrabold uppercase tracking-wider text-gray-400 dark:text-gray-600">Financials</span>
               {projectModules.filter(m => ['budget', 'billing', 'analytics'].includes(m.id)).map(module => {
                 const Icon = module.icon;
-                const isItemActive = activeTab === module.id;
+                const isActive = activeTab === module.id;
                 return (
-                  <button key={module.id} onClick={() => setActiveTab(module.id)} className={`w-full flex items-center gap-3 px-4 py-2.5 text-[13px] text-left hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors ${isItemActive ? 'text-[#b68d40] bg-[#b68d40]/5 font-bold' : 'text-gray-700 dark:text-gray-300'}`}>
-                    <Icon className="w-4 h-4" /> {module.label}
+                  <button
+                    key={module.id}
+                    onClick={() => setActiveTab(module.id)}
+                    className={`flex items-center gap-3 px-3 py-2 rounded-xl text-[13px] font-semibold transition-all duration-200 ${isActive ? 'bg-[#b68d40]/10 text-[#b68d40] font-bold' : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-800'}`}
+                  >
+                    <Icon className="w-4 h-4 flex-shrink-0" />
+                    <span>{module.label}</span>
                   </button>
                 )
               })}
             </div>
-          </div>
+          </nav>
         </div>
+      </aside>
 
-        {/* Right: Utils */}
-        <div className="flex items-center gap-2 pr-1">
-          <button className="w-11 h-11 flex items-center justify-center rounded-full bg-gray-50 dark:bg-gray-800/80 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-gray-600 dark:text-gray-300 shadow-sm border border-gray-100 dark:border-gray-800">
-            <Search className="w-5 h-5" />
-          </button>
+      {/* Main Content Area */}
+      <div className="flex-1 flex flex-col min-w-0 p-2 sm:p-3 lg:p-4 max-w-[1920px] mx-auto space-y-5 pb-24 md:pb-6">
+        {/* Top Navbar */}
+        <div className="flex items-center justify-between bg-white/70 dark:bg-gray-900/70 backdrop-blur-xl border border-gray-200/50 dark:border-gray-800/50 p-2 sm:p-3 rounded-xl shadow-sm mb-4 relative z-50 sticky top-2">
+          {/* Left: Exit/Menu/Brand or active tab title */}
+          <div className="flex items-center gap-2 sm:gap-4 pl-1 sm:pl-2">
+            <button onClick={() => setIsMobileMenuOpen(true)} className="md:hidden w-11 h-11 flex items-center justify-center rounded-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300 shadow-sm transition-all">
+              <Menu className="w-5 h-5" />
+            </button>
+            <div className="flex items-center gap-2 md:hidden">
+              <svg className="w-8 h-8 text-[#b68d40] drop-shadow-md" viewBox="30 1 36 29" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path className="fill-[#b68d40]" d="M52.13,17.62v2.6s7.81,1.18,9,9.31h4.34a4.39,4.39,0,0,1-1.9-2.21C63,25.74,60.25,18.65,52.13,17.62ZM34.47,3.9H44.72V14.23C37.23,14.15,34.62,13.2,34.47,3.9ZM30,1.38A5.14,5.14,0,0,1,32,5.24v.63c.71,9.31,4.65,10.57,12.7,10.65V27.16h-.08s-.4,2.21-1.58,2.37h4.18V1.38H30ZM43.53,17.62v2.6s-7.8,1.18-8.91,9.31H30.29a4.07,4.07,0,0,0,1.81-2.21C32.65,25.74,35.49,18.65,43.53,17.62ZM51,14.23V3.9H61.28C61,13.2,58.44,14.15,51,14.23ZM63.8,1.38H48.5V29.53h4.1C51.5,29.37,51,27.16,51,27.16h0V16.52c8-0.08,12-1.34,12.61-10.65a1.71,1.71,0,0,0,.08-.63,4.93,4.93,0,0,1,2-3.86Z"/>
+              </svg>
+              <span className="font-bold text-sm text-gray-900 dark:text-white">{project!.name}</span>
+            </div>
+            
+            {/* Active Tab Label Title (Shown on Desktop) */}
+            <h1 className="hidden md:block text-base font-heading font-black text-gray-950 dark:text-white uppercase tracking-wider pl-2">
+              {activeTab === 'project-management' ? 'Overview' : projectModules.find(m => m.id === activeTab)?.label || 'Overview'}
+            </h1>
+          </div>
+
+          {/* Right: Utils */}
+          <div className="flex items-center gap-2 pr-1">
+            <button className="w-11 h-11 flex items-center justify-center rounded-full bg-gray-50 dark:bg-gray-800/80 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-gray-600 dark:text-gray-300 shadow-sm border border-gray-100 dark:border-gray-800">
+              <Search className="w-5 h-5" />
+            </button>
           
           <div ref={notificationMenuRef} className="relative">
             <button 
@@ -7871,6 +7900,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
         )}
       </AnimatePresence>
 
+    </div>
     </div>
   );
 }
