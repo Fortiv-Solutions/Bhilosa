@@ -3,8 +3,10 @@
 import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import Sidebar from "@/components/sidebar";
+import FloatingChatbot from "@/components/floating-chatbot";
 import MobileNavbar from "@/components/mobile-navbar";
 import HeaderNavbar from "@/components/header-navbar";
+import SubNavBar from "@/components/sub-navbar";
 import { useAppStore } from "@/store/use-app-store";
 import { canAccessPath } from "@/lib/rbac";
 
@@ -94,7 +96,7 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
           <h1 className="text-2xl font-black font-heading text-white mb-2 tracking-tight">
             System Suspended
           </h1>
-          <p className="text-[10px] font-extrabold tracking-widest uppercase text-red-550 mb-4">
+          <p className="text-[10px] font-extrabold tracking-widest uppercase text-red-555 mb-4">
             License Expired or Revoked
           </p>
           
@@ -126,28 +128,35 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
 
   if (isProjectDetails) {
     return (
-      <div className="flex flex-1 bg-background w-full min-h-screen">
+      <div className="flex flex-1 bg-background w-full min-h-screen relative">
         <main className="flex-1 flex flex-col min-w-0 w-full">
           <div className="flex min-h-0 flex-1 flex-col w-full">
             {children}
           </div>
         </main>
+        <FloatingChatbot />
       </div>
     );
   }
 
   return (
-    <>
-      <MobileNavbar />
-      <div className="flex flex-1 bg-background p-2 lg:p-4 gap-2 lg:gap-6">
+    <div className="flex flex-col h-screen w-full overflow-hidden bg-background">
+      <HeaderNavbar />
+      <div className="flex flex-1 min-h-0">
         <Sidebar />
-        <main className="flex-1 flex flex-col min-w-0 py-2 lg:py-0 pt-[4.25rem] lg:pt-0">
-          <HeaderNavbar />
-          <div className="flex min-h-0 flex-1 flex-col">
-            {children}
+        <div className="flex flex-1 flex-col min-w-0">
+          <MobileNavbar />
+          <SubNavBar />
+          <div className="flex flex-1 min-h-0 relative">
+            <main className="flex-1 flex flex-col min-w-0 overflow-y-auto">
+              <div className="flex min-h-0 flex-1 flex-col px-6 pt-4 pb-6">
+                {children}
+              </div>
+            </main>
+            <FloatingChatbot />
           </div>
-        </main>
+        </div>
       </div>
-    </>
+    </div>
   );
 }

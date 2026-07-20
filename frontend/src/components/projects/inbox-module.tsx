@@ -304,7 +304,7 @@ export function InboxModule({project}:{project:ProjectSite}) {
     } catch(e){setError(e instanceof Error?e.message:'Direct conversation could not be opened.');}
   };
 
-  if(loading)return <div className="h-[620px] grid place-items-center"><Loader2 className="animate-spin text-[#b68d40]"/></div>;
+  if(loading)return <div className="h-[calc(100vh-140px)] grid place-items-center"><Loader2 className="animate-spin text-[#b68d40]"/></div>;
 
   const getInitials = (name?: string | null) => (name || '?').substring(0, 2).toUpperCase();
 
@@ -314,7 +314,7 @@ export function InboxModule({project}:{project:ProjectSite}) {
     </div>
   );
 
-  return <div className="h-[min(800px,85vh)] min-h-[520px] flex overflow-hidden rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-[#111] shadow-md dark:shadow-none">
+  return <div className="h-[calc(100vh-140px)] flex overflow-hidden rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-[#111] shadow-md dark:shadow-none">
     <aside className={`w-full md:w-72 shrink-0 border-r border-gray-200 dark:border-gray-800 flex flex-col bg-gray-50/50 dark:bg-[#161616] ${active ? 'hidden md:flex' : 'flex'}`}>
       <div className="h-16 px-5 flex flex-col justify-center border-b border-gray-200 dark:border-gray-800 bg-white/50 dark:bg-transparent">
         <h2 className="text-[15px] font-semibold tracking-tight text-gray-900 dark:text-gray-100 flex items-center justify-between">

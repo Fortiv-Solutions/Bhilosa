@@ -19,6 +19,7 @@ import {
   RefreshCw
 } from 'lucide-react';
 import { useAppStore } from '@/store/use-app-store';
+import { listProjects as getInboxProjects, listConversations as getConversations, listMessages as getMessages } from '@/lib/inbox';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -184,6 +185,47 @@ export default function FloatingChatbot() {
 
   const { projects, vendors, vendorBills, currentUser } = useAppStore();
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [isInitialized, setIsInitialized] = useState(false);
+
+  // Load chat history from localStorage on mount
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const stored = localStorage.getItem('pramukh_chat_history');
+      if (stored) {
+        try {
+          const parsed = JSON.parse(stored);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setMessages(parsed.map((m: any) => ({
+              ...m,
+              timestamp: new Date(m.timestamp)
+            })));
+          }
+        } catch (e) {
+          console.error("Failed to load chat history from localStorage", e);
+        }
+      }
+      setIsInitialized(true);
+    }
+  }, []);
+
+  // Save chat history to localStorage when messages change
+  useEffect(() => {
+    if (isInitialized && typeof window !== 'undefined') {
+      localStorage.setItem('pramukh_chat_history', JSON.stringify(messages));
+    }
+  }, [messages, isInitialized]);
+
+  const clearChatHistory = () => {
+    const defaultMsg: Message = {
+      role: 'assistant',
+      content: 'Hello! I am your Pramukh Group Project Intelligence Assistant. Ask me anything about project schedules, delays, budget burn, or inventory stock levels.',
+      timestamp: new Date(),
+    };
+    setMessages([defaultMsg]);
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('pramukh_chat_history');
+    }
+  };
 
   // Auto scroll to bottom
   useEffect(() => {
@@ -209,6 +251,36 @@ export default function FloatingChatbot() {
     const newMessages = [...messages, { role: 'user', content: messageText, timestamp: new Date() }];
     setMessages(newMessages as any);
     setIsLoading(true);
+
+    // Fetch inbox context asynchronously
+    let inboxContext: any[] = [];
+    try {
+      const inboxProjects = await getInboxProjects();
+      for (const p of inboxProjects.slice(0, 2)) {
+        const convs = await getConversations(p.id);
+        const convData = [];
+        for (const c of convs.slice(0, 3)) {
+          const msgs = await getMessages(c.id);
+          convData.push({
+            id: c.id,
+            title: c.title || (c.type === 'project_group' ? 'General' : 'Direct Message'),
+            type: c.type,
+            messages: msgs.slice(-8).map((m: any) => ({
+              sender: m.profiles?.name || 'Unknown',
+              body: m.body,
+              type: m.type,
+              timestamp: m.created_at
+            }))
+          });
+        }
+        inboxContext.push({
+          project: p.name,
+          conversations: convData
+        });
+      }
+    } catch (e) {
+      console.warn("Failed to fetch inbox context for chatbot:", e);
+    }
 
     // Build context summary from Zustand store
     const erpContext = {
@@ -248,7 +320,8 @@ export default function FloatingChatbot() {
       currentUser: {
         name: currentUser?.name,
         role: currentUser?.role
-      }
+      },
+      inbox: inboxContext
     };
 
     try {
@@ -259,6 +332,7 @@ export default function FloatingChatbot() {
         },
         body: JSON.stringify({
           message: messageText,
+          history: messages.map(m => ({ role: m.role, content: m.content })),
           context: erpContext
         }),
       });
@@ -313,13 +387,25 @@ export default function FloatingChatbot() {
                   <span className="block text-[10px] text-white/80">ERP Intelligence Engine</span>
                 </div>
               </div>
-              <button 
-                onClick={toggleChat}
-                className="rounded-lg p-1 text-white/85 hover:bg-white/10 hover:text-white transition-colors"
-                aria-label="Close Chat"
-              >
-                <X className="h-5 w-5" />
-              </button>
+              <div className="flex items-center gap-1">
+                {messages.length > 1 && (
+                  <button 
+                    onClick={clearChatHistory}
+                    className="rounded-lg p-1 text-white/85 hover:bg-white/10 hover:text-white transition-colors mr-1"
+                    title="Clear Chat History"
+                    type="button"
+                  >
+                    <RefreshCw className="h-4 w-4" />
+                  </button>
+                )}
+                <button 
+                  onClick={toggleChat}
+                  className="rounded-lg p-1 text-white/85 hover:bg-white/10 hover:text-white transition-colors"
+                  aria-label="Close Chat"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
             </div>
 
             {/* Chat Area */}

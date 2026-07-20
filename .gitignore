@@ -60,3 +60,7 @@ __pycache__/
 
 # Railway
 .railway/
+
+# Media and screen recordings
+*.mp4
+/frames/

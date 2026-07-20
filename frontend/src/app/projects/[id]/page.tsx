@@ -3209,12 +3209,12 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   const isLegacyCommunicationModuleEnabled = false;
 
   return (
-    <div className="flex w-full min-h-screen bg-gray-50 dark:bg-black/95">
-      {/* Left Sidebar - Hidden on mobile, visible on medium screens and up */}
-      <aside className="hidden md:flex flex-col w-64 border-r border-gray-200/50 dark:border-gray-800/50 bg-white dark:bg-gray-900 h-screen sticky top-0 shrink-0 z-40 p-4 justify-between select-none">
-        <div className="flex flex-col gap-6 overflow-y-auto scrollbar-none flex-1">
+    <div className="flex w-full h-screen overflow-hidden bg-gray-50 dark:bg-black/95">
+      {/* Left Sidebar */}
+      <aside className="hidden md:flex flex-col w-64 border-r border-gray-200/50 dark:border-gray-800/50 bg-white dark:bg-gray-900 h-full shrink-0 z-40 pb-2 justify-between select-none">
+        <div className="flex flex-col overflow-y-auto scrollbar-none flex-1">
           {/* Top: Exit Button & Brand Logo */}
-          <div className="flex items-center gap-3 pb-4 border-b border-gray-200/50 dark:border-gray-800/50">
+          <div className="flex items-center gap-3 h-14 px-5 flex-shrink-0">
             <Link href="/projects" className="w-9 h-9 flex items-center justify-center rounded-full bg-gray-50 dark:bg-gray-850 border border-gray-200/50 dark:border-gray-800/50 hover:bg-gray-100 dark:hover:bg-gray-800 hover:border-gray-300 dark:hover:border-gray-700 transition-all text-gray-600 dark:text-gray-300 shadow-xs" title="Back to Projects">
               <ArrowLeft className="w-4 h-4" />
             </Link>
@@ -3226,12 +3226,17 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
             </div>
           </div>
 
-          {/* Navigation Menu Stack */}
-          <nav className="flex flex-col gap-1.5">
+          {/* Navigation Menu */}
+          <nav className="flex flex-col">
+
             {/* Overview */}
             <button
               onClick={() => setActiveTab('project-management')}
-              className={`flex items-center gap-3 px-3 py-2 rounded-xl text-[13px] font-bold transition-all duration-200 ${activeTab === 'project-management' ? 'bg-[#b68d40]/10 text-[#b68d40]' : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-800'}`}
+              className={`flex items-center gap-3 w-full pl-[17px] pr-4 py-1.5 text-[13px] font-semibold transition-all duration-150 border-l-[3px] rounded-none ${
+                activeTab === 'project-management'
+                  ? 'bg-[#b68d40]/10 text-[#b68d40] border-[#b68d40]'
+                  : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 border-transparent'
+              }`}
             >
               <Building2 className="w-4 h-4 flex-shrink-0" />
               <span>Overview</span>
@@ -3240,85 +3245,92 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
             {/* Inbox */}
             <button
               onClick={() => setActiveTab('inbox')}
-              className={`flex items-center gap-3 px-3 py-2 rounded-xl text-[13px] font-bold transition-all duration-200 ${activeTab === 'inbox' ? 'bg-[#b68d40]/10 text-[#b68d40]' : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-800'}`}
+              className={`flex items-center gap-3 w-full pl-[17px] pr-4 py-1.5 text-[13px] font-semibold transition-all duration-150 border-l-[3px] rounded-none ${
+                activeTab === 'inbox'
+                  ? 'bg-[#b68d40]/10 text-[#b68d40] border-[#b68d40]'
+                  : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 border-transparent'
+              }`}
             >
               <MessageSquare className="w-4 h-4 flex-shrink-0" />
               <span>Inbox</span>
             </button>
 
-            {/* Operations Section */}
-            <div className="flex flex-col gap-1 mt-2">
-              <span className="px-3 text-[10px] font-extrabold uppercase tracking-wider text-gray-400 dark:text-gray-600">Operations</span>
-              {projectModules.filter(m => ['site-operations', 'quality-control', 'tasks', 'equipment-tracking'].includes(m.id)).map(module => {
-                const Icon = module.icon;
-                const isActive = activeTab === module.id;
-                return (
-                  <button
-                    key={module.id}
-                    onClick={() => setActiveTab(module.id)}
-                    className={`flex items-center gap-3 px-3 py-2 rounded-xl text-[13px] font-semibold transition-all duration-200 ${isActive ? 'bg-[#b68d40]/10 text-[#b68d40] font-bold' : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-800'}`}
-                  >
-                    <Icon className="w-4 h-4 flex-shrink-0" />
-                    <span>{module.label}</span>
-                  </button>
-                )
-              })}
-            </div>
+            {/* OPERATIONS */}
+            <p className="pl-5 pr-4 pt-2 pb-0.5 text-[10px] font-extrabold uppercase tracking-widest text-gray-400 dark:text-gray-600 m-0">Operations</p>
+            {projectModules.filter(m => ['site-operations', 'quality-control', 'tasks', 'equipment-tracking'].includes(m.id)).map(module => {
+              const Icon = module.icon;
+              const isActive = activeTab === module.id;
+              return (
+                <button
+                  key={module.id}
+                  onClick={() => setActiveTab(module.id)}
+                  className={`flex items-center gap-3 w-full pl-[17px] pr-4 py-1.5 text-[13px] font-semibold transition-all duration-150 border-l-[3px] rounded-none ${
+                    isActive ? 'bg-[#b68d40]/10 text-[#b68d40] border-[#b68d40]' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 border-transparent'
+                  }`}
+                >
+                  <Icon className="w-4 h-4 flex-shrink-0" />
+                  <span>{module.label}</span>
+                </button>
+              );
+            })}
 
-            {/* Supply Chain Section */}
-            <div className="flex flex-col gap-1 mt-2">
-              <span className="px-3 text-[10px] font-extrabold uppercase tracking-wider text-gray-400 dark:text-gray-600">Supply Chain</span>
-              {projectModules.filter(m => ['procurement', 'inventory', 'vendor-management'].includes(m.id)).map(module => {
-                const Icon = module.icon;
-                const isActive = activeTab === module.id;
-                return (
-                  <button
-                    key={module.id}
-                    onClick={() => setActiveTab(module.id)}
-                    className={`flex items-center gap-3 px-3 py-2 rounded-xl text-[13px] font-semibold transition-all duration-200 ${isActive ? 'bg-[#b68d40]/10 text-[#b68d40] font-bold' : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-800'}`}
-                  >
-                    <Icon className="w-4 h-4 flex-shrink-0" />
-                    <span>{module.label}</span>
-                  </button>
-                )
-              })}
-            </div>
+            {/* SUPPLY CHAIN */}
+            <p className="pl-5 pr-4 pt-2 pb-0.5 text-[10px] font-extrabold uppercase tracking-widest text-gray-400 dark:text-gray-600 m-0">Supply Chain</p>
+            {projectModules.filter(m => ['procurement', 'inventory', 'vendor-management'].includes(m.id)).map(module => {
+              const Icon = module.icon;
+              const isActive = activeTab === module.id;
+              return (
+                <button
+                  key={module.id}
+                  onClick={() => setActiveTab(module.id)}
+                  className={`flex items-center gap-3 w-full pl-[17px] pr-4 py-1.5 text-[13px] font-semibold transition-all duration-150 border-l-[3px] rounded-none ${
+                    isActive ? 'bg-[#b68d40]/10 text-[#b68d40] border-[#b68d40]' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 border-transparent'
+                  }`}
+                >
+                  <Icon className="w-4 h-4 flex-shrink-0" />
+                  <span>{module.label}</span>
+                </button>
+              );
+            })}
 
-            {/* Documents */}
+            {/* Documents (standalone) */}
             <button
               onClick={() => setActiveTab('document-control')}
-              className={`flex items-center gap-3 px-3 py-2 rounded-xl text-[13px] font-bold mt-2 transition-all duration-200 ${activeTab === 'document-control' ? 'bg-[#b68d40]/10 text-[#b68d40]' : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-800'}`}
+              className={`flex items-center gap-3 w-full pl-[17px] pr-4 py-1.5 text-[13px] font-semibold mt-3 transition-all duration-150 border-l-[3px] rounded-none ${
+                activeTab === 'document-control' ? 'bg-[#b68d40]/10 text-[#b68d40] border-[#b68d40]' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 border-transparent'
+              }`}
             >
               <FileText className="w-4 h-4 flex-shrink-0" />
               <span>Documents</span>
             </button>
 
-            {/* Financials Section */}
-            <div className="flex flex-col gap-1 mt-2">
-              <span className="px-3 text-[10px] font-extrabold uppercase tracking-wider text-gray-400 dark:text-gray-600">Financials</span>
-              {projectModules.filter(m => ['budget', 'billing', 'analytics'].includes(m.id)).map(module => {
-                const Icon = module.icon;
-                const isActive = activeTab === module.id;
-                return (
-                  <button
-                    key={module.id}
-                    onClick={() => setActiveTab(module.id)}
-                    className={`flex items-center gap-3 px-3 py-2 rounded-xl text-[13px] font-semibold transition-all duration-200 ${isActive ? 'bg-[#b68d40]/10 text-[#b68d40] font-bold' : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-800'}`}
-                  >
-                    <Icon className="w-4 h-4 flex-shrink-0" />
-                    <span>{module.label}</span>
-                  </button>
-                )
-              })}
-            </div>
+            {/* FINANCIALS */}
+            <p className="pl-5 pr-4 pt-2 pb-0.5 text-[10px] font-extrabold uppercase tracking-widest text-gray-400 dark:text-gray-600 m-0">Financials</p>
+            {projectModules.filter(m => ['budget', 'billing', 'analytics'].includes(m.id)).map(module => {
+              const Icon = module.icon;
+              const isActive = activeTab === module.id;
+              return (
+                <button
+                  key={module.id}
+                  onClick={() => setActiveTab(module.id)}
+                  className={`flex items-center gap-3 w-full pl-[17px] pr-4 py-1.5 text-[13px] font-semibold transition-all duration-150 border-l-[3px] rounded-none ${
+                    isActive ? 'bg-[#b68d40]/10 text-[#b68d40] border-[#b68d40]' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 border-transparent'
+                  }`}
+                >
+                  <Icon className="w-4 h-4 flex-shrink-0" />
+                  <span>{module.label}</span>
+                </button>
+              );
+            })}
+
           </nav>
         </div>
       </aside>
 
       {/* Main Content Area */}
-      <div className="flex-1 flex flex-col min-w-0 p-2 sm:p-3 lg:p-4 max-w-[1920px] mx-auto space-y-5 pb-24 md:pb-6">
+      <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden w-full">
         {/* Top Navbar */}
-        <div className="flex items-center justify-between bg-white/70 dark:bg-gray-900/70 backdrop-blur-xl border border-gray-200/50 dark:border-gray-800/50 p-2 sm:p-3 rounded-xl shadow-sm mb-4 relative z-50 sticky top-2">
+        <div className="flex items-center justify-between bg-white dark:bg-gray-900 border-b border-gray-200/60 dark:border-gray-800/60 px-4 h-14 flex-shrink-0">
           {/* Left: Exit/Menu/Brand or active tab title */}
           <div className="flex items-center gap-2 sm:gap-4 pl-1 sm:pl-2">
             <button onClick={() => setIsMobileMenuOpen(true)} className="md:hidden w-11 h-11 flex items-center justify-center rounded-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300 shadow-sm transition-all">
@@ -3529,16 +3541,18 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
         })}
       </div>
 
-      {/* Tab Panels with Framer Motion */}
-      <div className="min-h-[400px]">
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={activeTab}
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 10 }}
-            transition={{ duration: 0.15 }}
-          >
+      {/* Scrollable content body */}
+      <div className="flex-1 overflow-y-auto w-full">
+        {/* Tab Panels with Framer Motion */}
+        <div className="min-h-[400px] px-6 pt-4 pb-6">
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={activeTab}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 10 }}
+              transition={{ duration: 0.15 }}
+            >
             {/* 0. DASHBOARD BENTO GRID */}
             {false && activeTab === 'dashboard' && (
               <div className="grid grid-cols-1 md:grid-cols-12 gap-3 sm:gap-4">
@@ -3832,81 +3846,11 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
             {activeTab === 'project-management' && (
               <div className="space-y-4">
 
-                {/* ─── NEW CUSP LAYOUT: Image (Left) + KPIs (Right) ─── */}
-                <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch">
-                  
-                  {/* LEFT: Feature Image Card */}
-                  <div className="lg:col-span-5 rounded-[24px] overflow-hidden relative group min-h-[320px] lg:min-h-[340px] shadow-sm flex flex-col">
-                    {project!.galleryImages && project!.galleryImages.length > 0 ? (
-                      <ImageSlider
-                        images={project!.galleryImages}
-                        interval={4500}
-                        className="absolute inset-0 h-full w-full transition-transform duration-1000 ease-out group-hover:scale-105"
-                      />
-                    ) : project!.image ? (
-                      <img
-                        src={project!.image}
-                        alt={project!.name}
-                        className="absolute inset-0 h-full w-full object-cover transition-transform duration-1000 ease-out group-hover:scale-105"
-                      />
-                    ) : (
-                      <div className="absolute inset-0 bg-slate-200 dark:bg-slate-800"></div>
-                    )}
-                    
-                    {/* Gradient Overlay for Text Readability */}
-                    <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-black/40" />
+                {/* ─── KPI Grid ─── */}
+                <div className="grid grid-cols-1 gap-4 items-stretch">
 
-                    {/* Top Status & Weather Overlays */}
-                    <div className="absolute top-5 left-5 right-5 flex justify-between items-start z-10">
-                      <div className="flex flex-col gap-2">
-                        <span className="bg-[#FF7D29] text-white px-3 py-1.5 rounded-full text-[9px] font-bold uppercase tracking-widest shadow-lg self-start">
-                          AI OPTIMIZED
-                        </span>
-                        <span className="bg-white/10 backdrop-blur-md border border-white/20 text-white px-3 py-1.5 rounded-full text-[9px] font-semibold flex items-center gap-1.5">
-                          <MapPin className="w-3 h-3" /> {project!.location}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="bg-white/10 backdrop-blur-md border border-white/20 text-white px-3 py-1.5 rounded-full text-[9px] font-semibold flex items-center gap-1.5 hidden sm:flex">
-                          <CloudSun className="w-3 h-3 text-[#f4d08b]" /> {projectWeather.temp} | {projectWeather.desc.split(',')[0]}
-                        </span>
-                        <span className={`px-3 py-1.5 rounded-full text-[9px] font-bold uppercase tracking-widest border backdrop-blur-md ${
-                          project!.status === 'Active' ? 'text-emerald-300 bg-black/20 border-emerald-400/30' : 
-                          project!.status === 'Delayed' ? 'text-red-300 bg-black/20 border-red-400/30' : 
-                          'text-amber-300 bg-black/20 border-amber-400/30'
-                        }`}>
-                          {project!.status}
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Bottom Main Info & Glass Panels */}
-                    <div className="absolute bottom-5 left-5 right-5 z-10 flex flex-col items-start gap-4">
-                      <div className="w-full">
-                        <h2 className="text-3xl md:text-4xl font-heading font-black text-white leading-tight drop-shadow-md">
-                          {project!.name}
-                        </h2>
-                        <p className="text-sm text-slate-200 font-medium mt-1">{overviewData.propertyType} • {project!.currentPhase}</p>
-                        
-                        {/* Project Progress Bar */}
-                        <div className="mt-4 bg-white/10 backdrop-blur-md border border-white/20 rounded-xl p-3.5 text-white w-full">
-                          <div className="flex justify-between items-end mb-2.5">
-                            <span className="text-[10px] uppercase tracking-wider text-slate-300 font-bold">Project Progress</span>
-                            <span className="text-lg font-black leading-none">{overviewData.physicalProgress}%</span>
-                          </div>
-                          <div className="h-2 w-full bg-black/30 rounded-full overflow-hidden backdrop-blur-sm border border-white/5">
-                            <div 
-                              className="h-full bg-gradient-to-r from-[#FF7D29] to-[#ff9b57] rounded-full shadow-[0_0_10px_rgba(255,125,41,0.4)]" 
-                              style={{ width: `${overviewData.physicalProgress}%` }}
-                            />
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* RIGHT: KPI Grid Panel */}
-                  <div className="lg:col-span-7 bg-card rounded-[24px] border border-border/40 p-5 shadow-sm flex flex-col">
+                  {/* KPI Grid Panel - full width */}
+                  <div className="bg-card rounded-[24px] border border-border/40 p-5 shadow-sm flex flex-col">
                     <h3 className="text-[11px] font-heading font-black uppercase tracking-widest text-foreground mb-4 flex items-center gap-2">
                       <span className="w-2 h-4 bg-[#FF7D29] rounded-full"></span> Key Metrics
                     </h3>
@@ -7899,6 +7843,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
           </div>
         )}
       </AnimatePresence>
+      </div>
 
     </div>
     </div>

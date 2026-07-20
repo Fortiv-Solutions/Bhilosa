@@ -34,24 +34,25 @@ export interface ErpNavigationItem {
   icon: LucideIcon;
   exact?: boolean;
   allowedRoles?: Role[];
+  group?: string; // Section header label
 }
 
 export const erpNavigationItems: ErpNavigationItem[] = [
-  { label: 'Overview', path: '/dashboard', icon: LayoutGrid, exact: true },
-  { label: 'Inbox', path: '/inbox', icon: MessageSquare },
-  { label: 'Projects', path: '/projects', icon: Building2, allowedRoles: ['UPPER_MANAGEMENT', 'PROJECT_MANAGER'] },
-  { label: 'Execution', path: '/activities', icon: Construction, allowedRoles: ['UPPER_MANAGEMENT', 'PROJECT_MANAGER'] },
-  { label: 'Procurement', path: '/procurement', icon: ShoppingCart },
-  { label: 'Vendors', path: '/vendors', icon: Handshake, allowedRoles: ['UPPER_MANAGEMENT', 'PR_TEAM'] },
-  { label: 'Inventory', path: '/inventory', icon: Boxes },
-  { label: 'Labour', path: '/labour', icon: Users },
-  { label: 'Equipment', path: '/equipment', icon: Truck },
-  { label: 'Safety & QC', path: '/safety-qc', icon: ShieldCheck, allowedRoles: ['UPPER_MANAGEMENT', 'PROJECT_MANAGER'] },
-  { label: 'Finance', path: '/finance', icon: IndianRupee, allowedRoles: ['UPPER_MANAGEMENT'] },
-  { label: 'Budget', path: '/budget', icon: CircleDollarSign, allowedRoles: ['UPPER_MANAGEMENT'] },
-  { label: 'Documents', path: '/documents', icon: FileText },
-  { label: 'Reports', path: '/reports', icon: BarChart3 },
-  { label: 'Admin', path: '/settings', icon: Settings2, allowedRoles: ['UPPER_MANAGEMENT'] },
+  { label: 'Overview',     path: '/dashboard',   icon: LayoutGrid,        exact: true },
+  { label: 'Inbox',        path: '/inbox',        icon: MessageSquare },
+  { label: 'Projects',     path: '/projects',     icon: Building2,         group: 'Projects & Execution', allowedRoles: ['UPPER_MANAGEMENT', 'PROJECT_MANAGER'] },
+  { label: 'Execution',    path: '/activities',   icon: Construction,      allowedRoles: ['UPPER_MANAGEMENT', 'PROJECT_MANAGER'] },
+  { label: 'Procurement',  path: '/procurement',  icon: ShoppingCart,      group: 'Supply Chain' },
+  { label: 'Vendors',      path: '/vendors',      icon: Handshake,         allowedRoles: ['UPPER_MANAGEMENT', 'PR_TEAM'] },
+  { label: 'Inventory',    path: '/inventory',    icon: Boxes },
+  { label: 'Labour',       path: '/labour',       icon: Users,             group: 'Workforce' },
+  { label: 'Equipment',    path: '/equipment',    icon: Truck },
+  { label: 'Safety & QC',  path: '/safety-qc',    icon: ShieldCheck,       allowedRoles: ['UPPER_MANAGEMENT', 'PROJECT_MANAGER'] },
+  { label: 'Finance',      path: '/finance',      icon: IndianRupee,       group: 'Financials', allowedRoles: ['UPPER_MANAGEMENT'] },
+  { label: 'Budget',       path: '/budget',       icon: CircleDollarSign,  allowedRoles: ['UPPER_MANAGEMENT'] },
+  { label: 'Documents',    path: '/documents',    icon: FileText,          group: 'Documents' },
+  { label: 'Reports',      path: '/reports',      icon: BarChart3 },
+  { label: 'Admin',        path: '/settings',     icon: Settings2,         group: 'Settings', allowedRoles: ['UPPER_MANAGEMENT'] },
 ];
 
 export const erpUtilityNavigationItems: ErpNavigationItem[] = [

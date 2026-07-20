@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, List
 import re
 import base64
 import requests
@@ -158,8 +158,13 @@ async def transcribe(
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
 class ChatRequest(BaseModel):
     message: str
+    history: Optional[List[ChatMessage]] = None
     context: Optional[dict] = None
 
 def generate_local_fallback(message: str, context: Optional[dict]) -> str:
@@ -276,6 +281,36 @@ def generate_local_fallback(message: str, context: Optional[dict]) -> str:
             response += f"| **{v.get('name')}** | {v.get('category')} | {stars} ({rating}/5) | {v.get('email') or 'No email'} · {v.get('phone') or ''} |\n"
         return response
 
+    elif any(x in message_lower for x in ["inbox", "message", "chat", "communication", "thread", "channel"]):
+        inbox = (context or {}).get("inbox", [])
+        if not inbox:
+            return (
+                "### 📥 Project Inbox & Messaging\n\n"
+                "No recent inbox messages or active conversation threads were found in the current context."
+            )
+        
+        response = "### 📥 Recent Project Inbox Messages\n\n"
+        for proj in inbox:
+            response += f"#### 🏢 Project: {proj.get('project')}\n"
+            for conv in proj.get("conversations", []):
+                response += f"- **💬 Channel/Thread: {conv.get('title')}** ({conv.get('type')})\n"
+                msgs = conv.get("messages", [])
+                if not msgs:
+                    response += "  - *(No messages in this thread)*\n"
+                else:
+                    for m in msgs[-5:]: # Show last 5 messages in this channel
+                        sender = m.get("sender", "Unknown")
+                        body = m.get("body") or "*(attachment)*"
+                        timestamp = m.get("timestamp")
+                        try:
+                            ts_obj = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                            ts_formatted = ts_obj.strftime('%I:%M %p')
+                        except:
+                            ts_formatted = timestamp
+                        response += f"  - **{sender}** [{ts_formatted}]: {body}\n"
+            response += "\n"
+        return response
+
     else:
         user_name = current_user.get("name", "User")
         response = f"### 👋 Hello {user_name}!\n\n"
@@ -283,7 +318,8 @@ def generate_local_fallback(message: str, context: Optional[dict]) -> str:
         response += "1. **📅 Schedule & Delays**: Ask me about delays, contract completion dates, or schedule timelines (e.g., 'Show project delays').\n"
         response += "2. **📊 Budget Burn**: Ask me to compare project budgets, expenditures, or cost overruns (e.g., 'budget overrun').\n"
         response += "3. **📦 Inventory & Materials**: Ask me about low stock or material shortages (e.g., 'material shortage').\n"
-        response += "4. **👥 Vendors & Bills**: Ask me about active vendors or supplier performance.\n\n"
+        response += "4. **👥 Vendors & Bills**: Ask me about active vendors or supplier performance.\n"
+        response += "5. **📥 Project Inbox**: Ask me about recent messages, active channels, or chat threads (e.g., 'show recent messages').\n\n"
         if projects:
             response += f"Currently managing **{len(projects)} active project sites**:\n"
             for p in projects:
@@ -306,7 +342,8 @@ async def ai_chat(
             "You are the Pramukh Group Project Intelligence Assistant, a premium AI bot integrated "
             "into Pramukh Group's Construction Operations Platform. You have access to real-time ERP data "
             "provided in the context, including active projects, construction activities, procurement status, "
-            "inventory, vendors, and budgets. Answer user queries accurately and professionally. "
+            "inventory, vendors, budgets, and project inbox messages. Answer user queries accurately and professionally. "
+            "If the user asks about the inbox, list recent messages, summarize threads, or help draft replies. "
             "Use clean markdown formatting, tables, list items, and bold text for clarity and readability. "
             "Do not output internal details or developer warnings to the user."
         )
@@ -318,13 +355,23 @@ async def ai_chat(
             context_summary += f"Current ERP state context:\n{json.dumps(payload.context)}"
             
         try:
+            openai_messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "system", "content": f"ERP Context:\n{context_summary}"}
+            ]
+            
+            # Add conversation history
+            if payload.history:
+                for h_msg in payload.history:
+                    if h_msg.role in ("user", "assistant", "system"):
+                        openai_messages.append({"role": h_msg.role, "content": h_msg.content})
+            
+            # Add current user message
+            openai_messages.append({"role": "user", "content": payload.message})
+
             chat_completion = openai_client.chat.completions.create(
                 model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "system", "content": f"ERP Context:\n{context_summary}"},
-                    {"role": "user", "content": payload.message}
-                ],
+                messages=openai_messages,
                 max_tokens=800,
                 temperature=0.7
             )

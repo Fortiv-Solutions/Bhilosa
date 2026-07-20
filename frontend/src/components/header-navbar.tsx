@@ -60,19 +60,37 @@ export default function HeaderNavbar() {
   const title = getPageTitle(pathname);
 
   return (
-    <header className="hidden lg:flex items-center justify-between px-6 h-16 bg-card border border-border rounded-3xl shadow-xs transition-all duration-300 mb-6">
-      {/* Left side: Breadcrumb & Search */}
-      <div className="flex items-center gap-8">
-        {/* Breadcrumbs */}
-        {pathname !== '/dashboard' && (
-          <div className="flex items-center gap-2 select-none">
-            <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">PRAGATI</span>
-            <span className="text-muted-foreground/50 text-xs">/</span>
-            <span className="text-xs font-bold text-primary uppercase tracking-wider font-heading">
-              {title}
-            </span>
-          </div>
-        )}
+    <header className="hidden lg:flex items-center justify-between h-14 bg-card border-b border-border transition-all duration-300 w-full flex-shrink-0">
+      {/* Left side: Logo, Title & Search */}
+      <div className="flex items-center h-full gap-5">
+        {/* Logo Icon Container (Matches sidebar width: 80px) */}
+        <Link href="/dashboard" className="w-20 h-full flex items-center justify-center border-r border-border hover:bg-muted/30 transition-colors flex-shrink-0">
+          <svg
+            className="w-6.5 h-6.5 text-[#b68d40] drop-shadow-md flex-shrink-0"
+            viewBox="30 1 36 29"
+            fill="none"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <path
+              className="fill-[#b68d40]"
+              d="M52.13,17.62v2.6s7.81,1.18,9,9.31h4.34a4.39,4.39,0,0,1-1.9-2.21C63,25.74,60.25,18.65,52.13,17.62ZM34.47,3.9H44.72V14.23C37.23,14.15,34.62,13.2,34.47,3.9ZM30,1.38A5.14,5.14,0,0,1,32,5.24v.63c.71,9.31,4.65,10.57,12.7,10.65V27.16h-.08s-.4,2.21-1.58,2.37h4.18V1.38H30ZM43.53,17.62v2.6s-7.8,1.18-8.91,9.31H30.29a4.07,4.07,0,0,0,1.81-2.21C32.65,25.74,35.49,18.65,43.53,17.62ZM51,14.23V3.9H61.28C61,13.2,58.44,14.15,51,14.23ZM63.8,1.38H48.5V29.53h4.1C51.5,29.37,51,27.16,51,27.16h0V16.52c8-.08,12-1.34,12.61-10.65a1.71,1.71,0,0,0,.08-.63,4.93,4.93,0,0,1,2-3.86Z"
+            />
+          </svg>
+        </Link>
+
+        {/* Brand Text and Page Title */}
+        <div className="flex items-center gap-2 select-none">
+          <span className="text-[14px] font-heading font-black tracking-wider text-[#b68d40] leading-none uppercase">
+            PRAGATI
+          </span>
+          <span className="text-muted-foreground/30 text-xs">/</span>
+          <span className="text-[11px] font-extrabold text-muted-foreground uppercase tracking-widest leading-none">
+            {title}
+          </span>
+        </div>
+
+        {/* Separator line */}
+        <div className="h-5 w-[1px] bg-border/80" />
 
         {/* Global Search bar */}
         <div className="relative max-w-xs w-64 hidden xl:block">
@@ -80,18 +98,18 @@ export default function HeaderNavbar() {
           <input
             type="text"
             placeholder="Search projects, materials, bills..."
-            className="w-full pl-9 pr-4 py-1.5 text-[11px] font-semibold rounded-xl border border-border bg-muted/20 focus:bg-background focus:border-primary/50 outline-none transition-all placeholder:text-muted-foreground/60"
+            className="w-full pl-9 pr-4 py-1.5 text-[11px] font-semibold rounded-md border border-border bg-muted/20 focus:bg-background focus:border-primary/50 outline-none transition-all placeholder:text-muted-foreground/60"
           />
         </div>
       </div>
 
       {/* Right side: Actions & Profile */}
-      <div className="flex items-center gap-4">
+      <div className="flex items-center gap-4 pr-5">
         {/* Theme Toggle */}
         <button
           type="button"
           onClick={toggleTheme}
-          className="grid h-9 w-9 place-items-center rounded-xl text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors cursor-pointer"
+          className="grid h-9 w-9 place-items-center rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors cursor-pointer"
           aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
           title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
         >
@@ -103,7 +121,7 @@ export default function HeaderNavbar() {
           <button
             type="button"
             onClick={() => setIsNotificationsOpen(!isNotificationsOpen)}
-            className="grid h-9 w-9 place-items-center rounded-xl text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors cursor-pointer relative"
+            className="grid h-9 w-9 place-items-center rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors cursor-pointer relative"
             title="Notifications"
           >
             <Bell className="h-4.5 w-4.5" strokeWidth={1.8} />
@@ -116,7 +134,7 @@ export default function HeaderNavbar() {
             <>
               {/* Backdrop */}
               <div className="fixed inset-0 z-30" onClick={() => setIsNotificationsOpen(false)} />
-              <div className="absolute right-0 top-12 z-50 w-80 rounded-xl border border-border bg-popover p-2 shadow-premium animate-in fade-in slide-in-from-top-1 duration-200">
+              <div className="absolute right-0 top-12 z-50 w-80 rounded-md border border-border bg-popover p-2 shadow-premium animate-in fade-in slide-in-from-top-1 duration-200">
                 <div className="flex items-center justify-between border-b border-border px-2.5 pb-2 pt-1">
                   <div className="flex items-center gap-1.5">
                     <span className="text-xs font-bold text-foreground">Notifications</span>
@@ -204,7 +222,7 @@ export default function HeaderNavbar() {
           <button
             type="button"
             onClick={() => setIsProfileOpen((isOpen) => !isOpen)}
-            className="flex h-10 items-center gap-2 rounded-xl px-2 hover:bg-muted/50 transition-colors cursor-pointer text-left"
+            className="flex h-10 items-center gap-2 rounded-md px-2 hover:bg-muted/50 transition-colors cursor-pointer text-left"
             aria-label="Open profile menu"
             aria-expanded={isProfileOpen}
           >
@@ -224,7 +242,7 @@ export default function HeaderNavbar() {
             <>
               {/* Backdrop */}
               <div className="fixed inset-0 z-30" onClick={() => setIsProfileOpen(false)} />
-              <div className="absolute right-0 top-12 z-50 w-56 rounded-xl border border-border bg-popover p-2 shadow-premium animate-in fade-in slide-in-from-top-1 duration-200">
+              <div className="absolute right-0 top-12 z-50 w-56 rounded-md border border-border bg-popover p-2 shadow-premium animate-in fade-in slide-in-from-top-1 duration-200">
                 <div className="border-b border-border px-2.5 pb-2 pt-1">
                   <p className="truncate text-sm font-semibold text-foreground">{currentUser.name}</p>
                   <p className="mt-0.5 text-[10px] font-bold uppercase tracking-wide text-primary">
@@ -238,7 +256,7 @@ export default function HeaderNavbar() {
                   <a
                     href="tel:+919876543210"
                     onClick={() => setIsProfileOpen(false)}
-                    className="flex w-full items-center gap-2 rounded-xl px-2 py-2 text-left text-xs font-semibold text-muted-foreground transition-colors hover:bg-muted cursor-pointer"
+                    className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs font-semibold text-muted-foreground transition-colors hover:bg-muted cursor-pointer"
                   >
                     <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
                       <Phone className="h-3.5 w-3.5" strokeWidth={1.8} />
@@ -256,7 +274,7 @@ export default function HeaderNavbar() {
                       logout();
                       router.push('/login');
                     }}
-                    className="flex w-full items-center gap-2 rounded-xl px-2 py-2 text-left text-xs font-semibold text-red-500 transition-colors hover:bg-red-500/10 cursor-pointer"
+                    className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs font-semibold text-red-500 transition-colors hover:bg-red-500/10 cursor-pointer"
                   >
                     <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-red-500/10">
                       <LogOut className="h-3.5 w-3.5" />
