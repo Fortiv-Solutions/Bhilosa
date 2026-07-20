@@ -121,7 +121,11 @@ function VoicePlayer({url,mine}:{url:string;mine:boolean}) {
 function Media({ message,mine }:{message:InboxMessage;mine:boolean}) {
   const [url,setUrl]=useState('');
   const attachment=message.message_attachments?.[0];
-  useEffect(()=>{if(attachment)attachmentUrl(attachment.storage_path).then(setUrl).catch(()=>setUrl(''));},[attachment]);
+  useEffect(() => {
+    if (attachment) {
+      void attachmentUrl(attachment.storage_path).then(setUrl).catch(() => setUrl(''));
+    }
+  }, [attachment]);
   if(!attachment)return null;
   if(!url)return <div className="mt-2 h-20 rounded-lg bg-gray-100 dark:bg-gray-800 animate-pulse"/>;
   return message.type==='image'
@@ -257,12 +261,13 @@ export function InboxModule({project}:{project:ProjectSite}) {
     setActive(current=>current ? rows.find(row=>row.id===current.id)??rows[0]??null : rows[0]??null);
   },[]);
 
-  useEffect(()=>{
-    let live=true;
-    (async()=>{
+  useEffect(() => {
+    let live = true;
+    
+    const initInbox = async () => {
       try {
-        const me=await getSessionProfile();
-        if(!me) {
+        const me = await getSessionProfile();
+        if (!me) {
           const currentUser = useAppStore.getState().currentUser;
           if (currentUser) {
             setIsMockInbox(true);
@@ -319,21 +324,31 @@ export function InboxModule({project}:{project:ProjectSite}) {
             ];
             setConversations(mockConversations);
             setActive(mockConversations[0]);
-            if(live) setLoading(false);
+            if (live) setLoading(false);
             return;
           } else {
             throw new Error('Sign in with Supabase to use the inbox.');
           }
         }
-        const dbProject=await ensureProject(project.id,project.name);
-        const [memberRows]=await Promise.all([listProjectMembers(dbProject.id),refreshConversations(dbProject.id)]);
-        if(!live)return;
-        setProfile(me);setDbProjectId(dbProject.id);setMembers(memberRows as unknown as MemberRow[]);
-      } catch(e){setError(e instanceof Error?e.message:'Inbox could not be loaded.');}
-      finally{if(live)setLoading(false);}
-    })();
-    return()=>{live=false;};
-  },[project.id,project.name,refreshConversations]);
+        const dbProject = await ensureProject(project.id, project.name);
+        const [memberRows] = await Promise.all([listProjectMembers(dbProject.id), refreshConversations(dbProject.id)]);
+        if (!live) return;
+        setProfile(me);
+        setDbProjectId(dbProject.id);
+        setMembers(memberRows as unknown as MemberRow[]);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Inbox could not be loaded.');
+      } finally {
+        if (live) setLoading(false);
+      }
+    };
+
+    void initInbox();
+    
+    return () => {
+      live = false;
+    };
+  }, [project.id, project.name, refreshConversations]);
 
   const loadMessages=useCallback(async(conversation:Conversation)=>{
     if (isMockInbox) {
@@ -361,27 +376,41 @@ export function InboxModule({project}:{project:ProjectSite}) {
     catch(e){setError(e instanceof Error?e.message:'Messages could not be loaded.');}
   },[isMockInbox, project.id, project.chats]);
 
-  useEffect(()=>{
-    if(!active)return;
-    const initialLoad=setTimeout(()=>void loadMessages(active),0);
+  useEffect(() => {
+    if (!active) return;
+    const initialLoad = setTimeout(() => {
+      void loadMessages(active);
+    }, 0);
     if (isMockInbox) {
-      return () => clearTimeout(initialLoad);
+      return () => {
+        clearTimeout(initialLoad);
+      };
     }
-    const channel=supabase.channel(`conversation:${active.id}`)
-      .on('postgres_changes',{event:'*',schema:'public',table:'messages',filter:`conversation_id=eq.${active.id}`},
-        ()=>loadMessages(active)).subscribe();
-    return()=>{clearTimeout(initialLoad);void supabase.removeChannel(channel);};
-  },[active,loadMessages,isMockInbox]);
+    const channel = supabase.channel(`conversation:${active.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'messages', filter: `conversation_id=eq.${active.id}` }, () => {
+        void loadMessages(active);
+      })
+      .subscribe();
+    return () => {
+      clearTimeout(initialLoad);
+      void supabase.removeChannel(channel);
+    };
+  }, [active, loadMessages, isMockInbox]);
 
-  useEffect(()=>bottom.current?.scrollIntoView({behavior:'smooth'}),[messages]);
+  useEffect(() => {
+    bottom.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
   useEffect(() => {
     if (!profile || !dbProjectId || isMockInbox) return;
     const channel = supabase.channel(`invites:${profile.id}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'conversation_members', filter: `user_id=eq.${profile.id}` }, () => {
         void refreshConversations(dbProjectId);
-      }).subscribe();
-    return () => { void supabase.removeChannel(channel); };
+      })
+      .subscribe();
+    return () => {
+      void supabase.removeChannel(channel);
+    };
   }, [profile, dbProjectId, refreshConversations, isMockInbox]);
 
   const submit=async(file?:File,duration?:number)=>{
