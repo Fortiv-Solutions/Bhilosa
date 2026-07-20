@@ -7,6 +7,8 @@ import {
   ShieldCheck, AlertCircle, ArrowLeft
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
+import { useAppStore } from '@/store/use-app-store';
+import { normalizeDatabaseRole, roleToDatabaseRole } from '@/lib/rbac';
 import type { ProjectSite } from '@/utils/mock-data';
 import { supabase, getDbSiteId } from '@/utils/supabase-client';
 import {
@@ -139,6 +141,7 @@ export function InboxModule({project}:{project:ProjectSite}) {
   const [sending,setSending]=useState(false);
   const [error,setError]=useState('');
   const [recording,setRecording]=useState(false);
+  const [isMockInbox, setIsMockInbox] = useState(false);
   const recorder=useRef<MediaRecorder|null>(null);
   const chunks=useRef<Blob[]>([]);
   const recordingStarted=useRef(0);
@@ -215,6 +218,24 @@ export function InboxModule({project}:{project:ProjectSite}) {
     setCreatingChannel(true);
     setError('');
     try {
+      if (isMockInbox) {
+        const newConv: Conversation = {
+          id: 'mock-channel-' + Math.random().toString(),
+          project_id: project.id,
+          type: 'channel',
+          title: newChannelName,
+          updated_at: new Date().toISOString(),
+          latest_message: 'Channel created.',
+          unread_count: 0,
+        };
+        setConversations(prev => [newConv, ...prev]);
+        setActive(newConv);
+        setShowCreateModal(false);
+        setNewChannelName('');
+        setSelectedMembers([]);
+        setCreatingChannel(false);
+        return;
+      }
       const id = await createGroupChannel(dbProjectId, newChannelName, selectedMembers);
       await refreshConversations(dbProjectId);
       const rows = await listConversations(dbProjectId);
@@ -241,7 +262,69 @@ export function InboxModule({project}:{project:ProjectSite}) {
     (async()=>{
       try {
         const me=await getSessionProfile();
-        if(!me)throw new Error('Sign in with Supabase to use the inbox.');
+        if(!me) {
+          const currentUser = useAppStore.getState().currentUser;
+          if (currentUser) {
+            setIsMockInbox(true);
+            setProfile({
+              id: currentUser.id || 'mock-user-id',
+              name: currentUser.name || 'Demo User',
+              email: currentUser.email || 'demo@pramukh.com',
+              role: roleToDatabaseRole(normalizeDatabaseRole(currentUser.role)),
+            });
+            setDbProjectId(project.id);
+            const mockMembers: MemberRow[] = [
+              {
+                user_id: currentUser.id || 'mock-user-id',
+                project_role: 'manager',
+                profiles: {
+                  id: currentUser.id || 'mock-user-id',
+                  name: currentUser.name || 'Demo User',
+                  email: currentUser.email || 'demo@pramukh.com',
+                  role: currentUser.role,
+                }
+              },
+              {
+                user_id: 'mock-member-1',
+                project_role: 'member',
+                profiles: {
+                  id: 'mock-member-1',
+                  name: 'Priya Nair',
+                  email: 'priya@pramukh.com',
+                  role: 'SITE_ENGINEER',
+                }
+              },
+              {
+                user_id: 'mock-member-2',
+                project_role: 'member',
+                profiles: {
+                  id: 'mock-member-2',
+                  name: 'Dhruv Shah',
+                  email: 'dhruv@pramukh.com',
+                  role: 'QA_QC_ENGINEER',
+                }
+              }
+            ];
+            setMembers(mockMembers);
+            const mockConversations: Conversation[] = [
+              {
+                id: 'mock-group-channel',
+                project_id: project.id,
+                type: 'project_group',
+                title: 'Project Group Feed',
+                updated_at: new Date().toISOString(),
+                latest_message: 'Welcome to the project inbox feed.',
+                unread_count: 0,
+              }
+            ];
+            setConversations(mockConversations);
+            setActive(mockConversations[0]);
+            if(live) setLoading(false);
+            return;
+          } else {
+            throw new Error('Sign in with Supabase to use the inbox.');
+          }
+        }
         const dbProject=await ensureProject(project.id,project.name);
         const [memberRows]=await Promise.all([listProjectMembers(dbProject.id),refreshConversations(dbProject.id)]);
         if(!live)return;
@@ -253,33 +336,104 @@ export function InboxModule({project}:{project:ProjectSite}) {
   },[project.id,project.name,refreshConversations]);
 
   const loadMessages=useCallback(async(conversation:Conversation)=>{
+    if (isMockInbox) {
+      const mockMsgs: InboxMessage[] = (project.chats || []).map(c => ({
+        id: c.id,
+        conversation_id: conversation.id,
+        project_id: project.id,
+        sender_id: c.senderName === 'Priya Nair' ? 'mock-member-1' : c.senderName === 'Dhruv Shah' ? 'mock-member-2' : 'mock-user-id',
+        body: c.message,
+        type: 'text',
+        created_at: c.timestamp,
+        profiles: {
+          name: c.senderName,
+        },
+        message_attachments: []
+      }));
+      setMessages(prev => {
+        const localOnly = prev.filter(m => m.id.startsWith('local-mock-'));
+        const filteredLocal = localOnly.filter(l => !mockMsgs.some(m => m.id === l.id));
+        return [...mockMsgs, ...filteredLocal].sort((a,b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+      });
+      return;
+    }
     try {setMessages(await listMessages(conversation.id));await markRead(conversation.id);}
     catch(e){setError(e instanceof Error?e.message:'Messages could not be loaded.');}
-  },[]);
+  },[isMockInbox, project.id, project.chats]);
 
   useEffect(()=>{
     if(!active)return;
     const initialLoad=setTimeout(()=>void loadMessages(active),0);
+    if (isMockInbox) {
+      return () => clearTimeout(initialLoad);
+    }
     const channel=supabase.channel(`conversation:${active.id}`)
       .on('postgres_changes',{event:'*',schema:'public',table:'messages',filter:`conversation_id=eq.${active.id}`},
         ()=>loadMessages(active)).subscribe();
     return()=>{clearTimeout(initialLoad);void supabase.removeChannel(channel);};
-  },[active,loadMessages]);
+  },[active,loadMessages,isMockInbox]);
 
   useEffect(()=>bottom.current?.scrollIntoView({behavior:'smooth'}),[messages]);
 
   useEffect(() => {
-    if (!profile || !dbProjectId) return;
+    if (!profile || !dbProjectId || isMockInbox) return;
     const channel = supabase.channel(`invites:${profile.id}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'conversation_members', filter: `user_id=eq.${profile.id}` }, () => {
         void refreshConversations(dbProjectId);
       }).subscribe();
     return () => { void supabase.removeChannel(channel); };
-  }, [profile, dbProjectId, refreshConversations]);
+  }, [profile, dbProjectId, refreshConversations, isMockInbox]);
 
   const submit=async(file?:File,duration?:number)=>{
     if(!active||(!text.trim()&&!file))return;
     setSending(true);setError('');
+    
+    if (isMockInbox) {
+      const newMsgId = 'local-mock-' + Math.random().toString();
+      const userMsg: InboxMessage = {
+        id: newMsgId,
+        conversation_id: active.id,
+        project_id: project.id,
+        sender_id: profile?.id || 'mock-user-id',
+        body: text,
+        type: 'text',
+        created_at: new Date().toISOString(),
+        profiles: {
+          name: profile?.name || 'Demo User',
+        },
+        message_attachments: []
+      };
+      setMessages(prev => [...prev, userMsg]);
+      setText('');
+      setSending(false);
+      
+      setTimeout(() => {
+        const replies = [
+          "Got it! I will check the reinforcement drawings and get back to you shortly.",
+          "Received. Let's make sure the site supervisor signs off on this before we pour.",
+          "Noted. I will schedule a QA check for tomorrow morning.",
+          "Thanks for the update. Let's keep a close eye on the curing temperature."
+        ];
+        const randomReply = replies[Math.floor(Math.random() * replies.length)];
+        const replyMsg: InboxMessage = {
+          id: 'local-mock-' + Math.random().toString(),
+          conversation_id: active.id,
+          project_id: project.id,
+          sender_id: 'mock-member-1',
+          body: randomReply,
+          type: 'text',
+          created_at: new Date().toISOString(),
+          profiles: {
+            name: 'Priya Nair',
+          },
+          message_attachments: []
+        };
+        setMessages(prev => [...prev, replyMsg]);
+      }, 1500);
+      
+      return;
+    }
+    
     try {await sendMessage(active,text,file,duration);setText('');await loadMessages(active);await refreshConversations(dbProjectId);}
     catch(e){setError(e instanceof Error?e.message:'Message failed to send.');}
     finally{setSending(false);}
@@ -297,6 +451,25 @@ export function InboxModule({project}:{project:ProjectSite}) {
 
   const openDirect=async(userId:string)=>{
     try {
+      if (isMockInbox) {
+        const otherMember = members.find(m => m.user_id === userId);
+        const newConv: Conversation = {
+          id: 'mock-direct-' + userId,
+          project_id: project.id,
+          type: 'direct',
+          title: otherMember?.profiles?.name || 'Direct Chat',
+          updated_at: new Date().toISOString(),
+          latest_message: 'Direct conversation started.',
+          unread_count: 0,
+        };
+        setConversations(prev => {
+          const exists = prev.find(p => p.id === newConv.id);
+          if (exists) return prev;
+          return [newConv, ...prev];
+        });
+        setActive(newConv);
+        return;
+      }
       const id=await createDirectConversation(dbProjectId,userId);
       await refreshConversations(dbProjectId);
       const rows=await listConversations(dbProjectId);
