@@ -55,6 +55,7 @@ import {
   type ProcurementDashboardData,
   type ProcurementProjectOption,
   type PurchaseOrderRow,
+  type ProcurementLineRow,
   type PurchaseRequisitionRow,
   type QuotationRow,
   type GeneratePurchaseOrderInput,
@@ -64,7 +65,7 @@ import {
   type InventorySnapshotRow,
 } from '@/lib/procurement';
 import { formatCurrency, statusLabel, StatusBadge, EmptyState, Panel } from '@/components/procurement/shared';
-import { PurchaseRequisitionWorkbench } from '@/components/procurement/purchase-requisition-workbench';
+import { PurchaseRequisitionWorkspace } from '@/components/procurement/purchase-requisition/purchase-requisition-workspace';
 import { RfqWorkbench } from '@/components/procurement/rfq-workbench';
 import MaterialRequestWorkQueue from '@/components/procurement/material-request-work-queue';
 import { PurchaseOrderWorkbench } from '@/components/procurement/purchase-order-workbench';
@@ -73,7 +74,7 @@ import { GrnWorkbench } from '@/components/procurement/grn-workbench';
 import { InventoryWorkbench } from '@/components/procurement/inventory-workbench';
 import { useAppStore } from '@/store/use-app-store';
 
-type TabId = 'requests' | 'requisitions' | 'rfq' | 'orders' | 'grn' | 'billing' | 'inventory';
+type TabId = 'requests' | 'requisitions' | 'rfq' | 'orders' | 'grn' | 'billing';
 
 const tabs: { id: TabId; label: string; icon: typeof ClipboardList }[] = [
   { id: 'requests', label: 'MR', icon: ClipboardList },
@@ -82,7 +83,6 @@ const tabs: { id: TabId; label: string; icon: typeof ClipboardList }[] = [
   { id: 'orders', label: 'PO', icon: Truck },
   { id: 'grn', label: 'GRN', icon: PackageCheck },
   { id: 'billing', label: 'Bills', icon: ReceiptIndianRupee },
-  { id: 'inventory', label: 'Inventory', icon: Warehouse },
 ];
 
 const emptyData: ProcurementDashboardData = {
@@ -110,7 +110,7 @@ export default function ProcurementPage() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [selectedProjectId, setSelectedProjectId] = useState(activeProjectId || projects[0]?.id || '');
+  const [selectedProjectId, setSelectedProjectId] = useState('all');
   const [mrTitle, setMrTitle] = useState('Cement and steel requirement for upcoming slab');
   const [mrItem, setMrItem] = useState('OPC Cement');
   const [mrQuantity, setMrQuantity] = useState(500);
@@ -216,7 +216,6 @@ export default function ProcurementPage() {
   const selectedProject = projectOptions.find((project) => project.id === selectedProjectId) ?? projectOptions[0];
 
   const refresh = useCallback(async () => {
-    if (!liveMode) return;
     setLoading(true);
     setError(null);
     try {
@@ -226,7 +225,7 @@ export default function ProcurementPage() {
     } finally {
       setLoading(false);
     }
-  }, [liveMode, selectedProjectId]);
+  }, [selectedProjectId]);
 
   useEffect(() => {
     if (!liveMode) return;
@@ -252,6 +251,33 @@ export default function ProcurementPage() {
     }, 0);
     return () => window.clearTimeout(timer);
   }, [refresh]);
+
+  // Real-time Supabase Subscription for instant Sync with Mobile App & Submissions
+  useEffect(() => {
+    if (!liveMode) return;
+    const client = getSupabaseClient();
+    if (!client) return;
+
+    const channel = client
+      .channel('procurement-realtime-sync')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'material_requests' }, (payload) => {
+        if (payload.eventType === 'INSERT') {
+          setMessage(`📱 New Material Request #${(payload.new as { mr_number?: string }).mr_number || ''} submitted from Mobile App!`);
+        }
+        void refresh();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'purchase_requisitions' }, (payload) => {
+        if (payload.eventType === 'INSERT') {
+          setMessage(`⚡ Auto-Draft Purchase Requisition #${(payload.new as { pr_number?: string }).pr_number || ''} created.`);
+        }
+        void refresh();
+      })
+      .subscribe();
+
+    return () => {
+      void client.removeChannel(channel);
+    };
+  }, [liveMode, refresh]);
 
   async function runAction(label: string, action: () => Promise<{ error: Error | null }>) {
     setError(null);
@@ -365,9 +391,15 @@ export default function ProcurementPage() {
     updatePrLinesAndRecalculate(updated);
   };
 
-  function openPrModal(mr: MaterialRequestRow) {
-    const lines = mr.material_request_lines || [];
-    const initialLines = lines.map(line => ({
+  function openPrModal(mr: MaterialRequestRow, approvedLines?: ProcurementLineRow[]) {
+    const allLines = mr.material_request_lines || [];
+    const targetLines = approvedLines && approvedLines.length > 0 
+      ? approvedLines 
+      : allLines.filter((l) => l.line_status === 'approved_for_pr').length > 0 
+        ? allLines.filter((l) => l.line_status === 'approved_for_pr')
+        : allLines;
+
+    const initialLines = targetLines.map(line => ({
       item_description: line.item_description,
       quantity: Number(line.quantity || 0),
       estimated_rate: Number(line.estimated_rate || 0),
@@ -718,7 +750,7 @@ export default function ProcurementPage() {
           <button
             type="button"
             onClick={refresh}
-            disabled={!liveMode || loading}
+            disabled={loading}
             className="inline-flex h-10 items-center gap-2 rounded-lg border border-border bg-card px-3 text-sm font-semibold text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
           >
             <RefreshCcw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
@@ -727,11 +759,6 @@ export default function ProcurementPage() {
         </div>
       </header>
 
-      {!liveMode && (
-        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-800">
-          Supabase is not configured. Procurement requires live database workflow tables before records can be viewed or mutated.
-        </div>
-      )}
       {message && <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-700">{message}</div>}
       {error && <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</div>}
 
@@ -742,8 +769,8 @@ export default function ProcurementPage() {
         <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
           <button onClick={() => setActiveTab('requests')} className="text-left rounded-lg border border-border p-3 hover:bg-muted/50 transition-colors">
             <p className="text-[10px] font-bold uppercase text-muted-foreground flex items-center gap-1.5"><ClipboardList className="w-3 h-3" /> Material Req</p>
-            <p className="mt-1 text-2xl font-bold text-foreground">{data.materialRequests.filter(m => m.status === 'approved' || m.status === 'in_review').length}</p>
-            <p className="text-xs text-muted-foreground mt-1">Pending PR</p>
+            <p className="mt-1 text-2xl font-bold text-foreground">{data.materialRequests.length}</p>
+            <p className="text-xs text-muted-foreground mt-1">Total Requests</p>
           </button>
           
           <button onClick={() => setActiveTab('requisitions')} className="text-left rounded-lg border border-border p-3 hover:bg-muted/50 transition-colors">
@@ -760,7 +787,7 @@ export default function ProcurementPage() {
                 <p className="text-[10px] text-muted-foreground">Draft</p>
               </div>
               <div>
-                <p className="text-xl font-bold text-foreground">{data.rfqs.filter(r => r.status === 'submitted' /* or whatever means sent for RFQ */).length}</p>
+                <p className="text-xl font-bold text-foreground">{data.rfqs.filter(r => r.status === 'submitted').length}</p>
                 <p className="text-[10px] text-muted-foreground">Sent</p>
               </div>
             </div>
@@ -817,34 +844,32 @@ export default function ProcurementPage() {
 
       {activeTab === 'requests' && (
         <Panel title="Material Requests" icon={ClipboardList}>
-          {liveMode ? (
-            <MaterialRequestWorkQueue
-              materialRequests={data.materialRequests}
-              purchaseRequisitions={data.purchaseRequisitions}
-              inventorySnapshots={data.inventorySnapshots}
-              projectOptions={projectOptions}
-              activeRole={activeRole as 'UPPER_MANAGEMENT' | 'PR_TEAM' | 'PROJECT_MANAGER'}
-              loading={loading}
-              onConvertToPr={openPrModal}
-              onRefresh={refresh}
-              onMessage={(msg) => setMessage(msg)}
-              onError={(msg) => setError(msg)}
-            />
-          ) : (
-            <EmptyState message="Configure Supabase to load and manage live material requests." />
-          )}
+          <MaterialRequestWorkQueue
+            materialRequests={data.materialRequests}
+            purchaseRequisitions={data.purchaseRequisitions}
+            inventorySnapshots={data.inventorySnapshots}
+            projectOptions={projectOptions}
+            activeRole={activeRole as 'UPPER_MANAGEMENT' | 'PR_TEAM' | 'PROJECT_MANAGER'}
+            loading={loading}
+            onConvertToPr={openPrModal}
+            onRefresh={refresh}
+            onMessage={(msg) => setMessage(msg)}
+            onError={(msg) => setError(msg)}
+          />
         </Panel>
       )}
 
       {activeTab === 'requisitions' && (
         <Panel title="Purchase Requisitions" icon={ShoppingCart}>
-          <PurchaseRequisitionWorkbench
+          <PurchaseRequisitionWorkspace
             rows={data.purchaseRequisitions}
             attachments={data.prAttachments || []}
             materialRequests={data.materialRequests}
             rfqs={data.rfqs}
             quotations={data.quotations}
             selections={data.vendorSelections}
+            projectOptions={projectOptions}
+            activeRole={activeRole as 'UPPER_MANAGEMENT' | 'PROJECT_MANAGER' | 'PR_TEAM'}
             selectedPrId={selectedPrId}
             onSelectPr={setSelectedPrId}
             onAssign={(row) => runAction('Purchase requisition assigned.', () => assignPrToCurrentUser(row))}
@@ -853,6 +878,9 @@ export default function ProcurementPage() {
             onPdf={(row) => void handlePrPdf(row)}
             onOpenPdf={(row) => void handleOpenPrPdf(row)}
             onGeneratePo={handleGeneratePoFromPr}
+            onRefresh={refresh}
+            onMessage={(msg) => setMessage(msg)}
+            onError={(msg) => setError(msg)}
           />
         </Panel>
       )}
@@ -941,101 +969,99 @@ export default function ProcurementPage() {
 
       {prModalOpen && selectedMrForPr && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 overflow-y-auto">
-          <div className="w-full max-w-3xl rounded-xl border border-border bg-card p-6 shadow-2xl max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between mb-4 border-b border-border pb-3">
-              <h3 className="text-xl font-bold">Generate Purchase Requisition</h3>
-              <button onClick={() => setPrModalOpen(false)} className="text-muted-foreground hover:text-foreground">
+          <div className="w-full max-w-2xl rounded-2xl border border-border bg-card p-6 shadow-2xl overflow-hidden space-y-4">
+            
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b border-border pb-3">
+              <div>
+                <h3 className="text-lg font-bold text-foreground font-heading flex items-center gap-2">
+                  <ShoppingCart className="h-5 w-5 text-primary" /> Generate Purchase Requisition
+                </h3>
+                <p className="text-xs text-muted-foreground mt-0.5">Creating formal PR for approved items from {selectedMrForPr.mr_number}</p>
+              </div>
+              <button onClick={() => setPrModalOpen(false)} className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground">
                 <X className="h-5 w-5" />
               </button>
             </div>
             
-            <div className="mb-4 rounded-lg bg-muted/50 p-4 text-sm border border-border">
-              <p className="font-bold text-foreground">Source: {selectedMrForPr.mr_number}</p>
-              <p className="text-muted-foreground">{selectedMrForPr.justification || 'Material Request'}</p>
+            {/* Important Context Header Box */}
+            <div className="rounded-xl border border-primary/20 bg-primary/5 p-3.5 space-y-2 text-xs">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <span className="text-[10px] font-bold uppercase text-primary tracking-wider block">Source Request</span>
+                  <span className="font-mono font-bold text-foreground text-sm">{selectedMrForPr.mr_number}</span>
+                </div>
+                <div>
+                  <span className="text-[10px] font-bold uppercase text-muted-foreground tracking-wider block">Project Location</span>
+                  <span className="font-semibold text-foreground">{selectedMrForPr.projects?.name ?? 'Main Site'}</span>
+                </div>
+                <div>
+                  <span className="text-[10px] font-bold uppercase text-muted-foreground tracking-wider block">Target Delivery</span>
+                  <span className="font-semibold text-foreground">{selectedMrForPr.required_date}</span>
+                </div>
+              </div>
+              
+              {selectedMrForPr.justification && (
+                <p className="text-muted-foreground italic border-t border-primary/10 pt-2 text-[11px]">
+                  "{selectedMrForPr.justification}"
+                </p>
+              )}
             </div>
 
             <form onSubmit={handleGeneratePrSubmit} className="space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
                 <div>
-                  <label className="block text-xs font-bold uppercase text-muted-foreground mb-1">PR Title *</label>
-                  <input value={prTitle} onChange={e => setPrTitle(e.target.value)} className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary font-semibold" required />
+                  <label className="block font-bold text-muted-foreground mb-1">PR Title / Subject *</label>
+                  <input
+                    value={prTitle}
+                    onChange={e => setPrTitle(e.target.value)}
+                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-xs font-semibold outline-none focus:border-primary"
+                    required
+                  />
                 </div>
                 
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs font-bold uppercase text-muted-foreground mb-1">Required Date *</label>
-                    <input type="date" value={prRequiredDate} onChange={e => setPrRequiredDate(e.target.value)} className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary font-medium" required />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-bold uppercase text-muted-foreground mb-1">Approval Stage</label>
-                    <select value={prApprovalStage} onChange={e => setPrApprovalStage(e.target.value)} className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary font-medium">
-                      <option value="pr_team">PR Team Review</option>
-                      <option value="upper_management">Upper Management</option>
-                    </select>
-                  </div>
+                <div>
+                  <label className="block font-bold text-muted-foreground mb-1">Required On Site Date *</label>
+                  <input
+                    type="date"
+                    value={prRequiredDate}
+                    onChange={e => setPrRequiredDate(e.target.value)}
+                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-xs font-medium outline-none focus:border-primary"
+                    required
+                  />
                 </div>
               </div>
 
-              {/* Editable Line Items Table */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between border-b border-border pb-1">
-                  <label className="block text-xs font-bold uppercase text-muted-foreground">Line Items</label>
-                  <button type="button" onClick={handleAddPrLine} className="inline-flex items-center gap-1 text-xs font-bold text-[#b68d40] hover:text-[#967332]">
-                    <Plus className="h-3.5 w-3.5" /> Add Item
-                  </button>
-                </div>
-                <div className="rounded-lg border border-border overflow-hidden bg-background">
+              {/* Items Selected for PR Approval Table */}
+              <div className="space-y-1.5">
+                <span className="block text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                  Items Selected for PR Generation ({prLines.length})
+                </span>
+                
+                <div className="rounded-xl border border-border overflow-hidden bg-background">
                   <table className="w-full text-xs text-left">
-                    <thead className="bg-muted text-muted-foreground uppercase font-bold border-b border-border">
+                    <thead className="bg-muted text-muted-foreground uppercase font-bold text-[10px] tracking-wider border-b border-border">
                       <tr>
-                        <th className="px-3 py-2">Item Description</th>
-                        <th className="px-3 py-2 text-right w-20">Qty</th>
-                        <th className="px-3 py-2 text-right w-28">Est Rate (INR)</th>
-                        <th className="px-3 py-2 text-right w-32">Total</th>
-                        <th className="px-3 py-2 w-10"></th>
+                        <th className="px-3.5 py-2.5">Item Description</th>
+                        <th className="px-3 py-2.5 text-right w-24">Qty</th>
+                        <th className="px-3 py-2.5 text-right w-32">Est Rate (INR)</th>
+                        <th className="px-3 py-2.5 text-right w-36 font-bold text-foreground">Line Total</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-border">
+                    <tbody className="divide-y divide-border/80">
                       {prLines.map((line, idx) => (
                         <tr key={idx} className="hover:bg-muted/30">
-                          <td className="px-3 py-2">
-                            <input
-                              type="text"
-                              value={line.item_description}
-                              onChange={(e) => handlePrLineChange(idx, 'item_description', e.target.value)}
-                              className="w-full rounded border border-border bg-background px-1.5 py-1 text-xs outline-none focus:border-primary font-semibold"
-                              placeholder="Item description"
-                              required
-                            />
+                          <td className="px-3.5 py-2.5 font-bold text-foreground">
+                            {line.item_description}
                           </td>
-                          <td className="px-3 py-2 text-right">
-                            <input
-                              type="number"
-                              value={line.quantity}
-                              min="1"
-                              onChange={(e) => handlePrLineChange(idx, 'quantity', e.target.value)}
-                              className="w-full text-right rounded border border-border bg-background px-1.5 py-1 text-xs outline-none focus:border-primary font-bold"
-                              required
-                            />
+                          <td className="px-3 py-2.5 text-right font-bold text-primary">
+                            {line.quantity}
                           </td>
-                          <td className="px-3 py-2 text-right">
-                            <input
-                              type="number"
-                              value={line.estimated_rate}
-                              min="0"
-                              step="0.01"
-                              onChange={(e) => handlePrLineChange(idx, 'estimated_rate', e.target.value)}
-                              className="w-full text-right rounded border border-border bg-background px-1.5 py-1 text-xs outline-none focus:border-primary font-bold"
-                              required
-                            />
+                          <td className="px-3 py-2.5 text-right font-semibold text-muted-foreground">
+                            ₹{line.estimated_rate.toLocaleString('en-IN')}
                           </td>
-                          <td className="px-3 py-2 text-right font-bold text-foreground">
+                          <td className="px-3 py-2.5 text-right font-bold text-foreground">
                             {formatCurrency(line.quantity * line.estimated_rate)}
-                          </td>
-                          <td className="px-3 py-2 text-center">
-                            <button type="button" onClick={() => handleRemovePrLine(idx)} className="text-rose-500 hover:text-rose-600 disabled:opacity-50" disabled={prLines.length === 1}>
-                              <X className="h-4 w-4" />
-                            </button>
                           </td>
                         </tr>
                       ))}
@@ -1044,21 +1070,27 @@ export default function ProcurementPage() {
                 </div>
               </div>
 
-              <div className="flex items-center justify-between border-t border-border pt-4">
-                <div className="flex items-center gap-4">
-                  <div className="flex items-center gap-2">
-                    <input type="checkbox" id="financeReq" checked={prFinanceRequired} onChange={e => setPrFinanceRequired(e.target.checked)} className="rounded border-border text-primary" />
-                    <label htmlFor="financeReq" className="text-xs font-semibold select-none cursor-pointer">Requires Finance Review</label>
-                  </div>
-                  <div className="text-xs text-muted-foreground font-medium">
-                    Total Est. Cost: <span className="font-bold text-primary">{formatCurrency(prLines.reduce((sum, l) => sum + l.quantity * l.estimated_rate, 0))}</span>
-                  </div>
+              {/* Cost Summary & Simple Actions Footer */}
+              <div className="flex items-center justify-between border-t border-border pt-4 text-xs">
+                <div className="font-medium text-muted-foreground">
+                  Total Est. PR Cost: <span className="font-bold text-primary text-sm ml-1">{formatCurrency(prLines.reduce((sum, l) => sum + l.quantity * l.estimated_rate, 0))}</span>
                 </div>
 
                 <div className="flex gap-2 items-center">
-                  <input type="file" multiple onChange={(e) => setPrAttachments(Array.from(e.target.files || []))} className="text-sm file:mr-4 file:py-1 file:px-3 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-primary/10 file:text-primary hover:file:bg-primary/20" />
-                  <button type="button" onClick={() => setPrModalOpen(false)} className="rounded-md border border-border px-4 py-2 text-sm font-bold hover:bg-muted">Cancel</button>
-                  <button type="submit" className="rounded-md bg-primary px-4 py-2 text-sm font-bold text-primary-foreground hover:bg-primary/95">Confirm & Generate PR</button>
+                  <button
+                    type="button"
+                    onClick={() => setPrModalOpen(false)}
+                    className="rounded-lg border border-border bg-background px-4 py-2 text-xs font-bold text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                  >
+                    Cancel
+                  </button>
+
+                  <button
+                    type="submit"
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-xs font-bold text-primary-foreground hover:bg-primary/90 shadow-sm transition-all"
+                  >
+                    <CheckCircle2 className="h-4 w-4" /> Approve & Generate PR
+                  </button>
                 </div>
               </div>
             </form>

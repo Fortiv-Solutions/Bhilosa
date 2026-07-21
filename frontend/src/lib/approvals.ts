@@ -1,6 +1,9 @@
 import { supabase } from '@/utils/supabase-client';
+import { isLiveSupabase } from '@/lib/erp/supabase-modules';
 
 export async function getPendingApprovals(projectId?: string) {
+  if (!isLiveSupabase()) return [];
+
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error("Not logged in");
 

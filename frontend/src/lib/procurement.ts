@@ -70,8 +70,30 @@ export type PurchaseRequisitionRow = {
 
 export type ProcurementLineRow = {
   id: string;
+  sr_no?: number;
+  activity_name?: string | null;
+  activity_code?: string | null;
+  item_code?: string | null;
+  item_group?: string | null;
   item_description: string;
+  unit: string;
+  required_date: string;
+  item_brand?: string | null;
+  item_specification?: string | null;
+  est_qty?: number | null;
+  ind_qty?: number | null;
+  iss_qty?: number | null;
+  extra_rec_qty?: number | null;
+  extra_adj_qty?: number | null;
   quantity: number;
+  pr_bal_qty?: number | null;
+  lead_period_days?: number | null;
+  lead_period_date?: string | null;
+  project_stock?: number | null;
+  other_project_stock?: number | null;
+  relation_count?: number | null;
+  line_status?: 'pending' | 'approved_for_pr' | 'fulfilled_from_stock' | 'rejected' | null;
+  line_rejection_reason?: string | null;
   remarks?: string | null;
   estimated_rate?: number | null;
   unit_rate?: number | null;
@@ -362,11 +384,204 @@ async function rpcAction<T extends RpcJsonResult>(fn: string, args: Record<strin
   return (data ?? {}) as T;
 }
 
+export const mockMaterialRequestsStore: MaterialRequestRow[] = [
+  {
+    id: 'mr-mock-001',
+    project_id: 'central-park',
+    site_id: 'site-a',
+    mr_number: 'MR-20260721-001',
+    source: 'site_engineer',
+    justification: 'Masonry work for Block A Ground Floor partition walls. Full material verified available in site central store.',
+    required_date: '2026-07-24',
+    priority: 'medium',
+    stock_decision: 'available',
+    status: 'approved',
+    raised_by: 'u4',
+    submitted_at: new Date().toISOString(),
+    created_at: new Date().toISOString(),
+    work_activity: 'Brick Masonry & Wall Construction',
+    site_block: 'Block A - Ground Floor',
+    clarification_text: null,
+    clarification_at: null,
+    clarification_by: null,
+    clarification_reply: null,
+    clarification_replied_at: null,
+    rejection_reason: null,
+    reviewed_by: 'u1',
+    reviewed_at: new Date().toISOString(),
+    management_comment: 'Stock available in main store. Fulfilled directly from inventory via Store Dispatch Slip #MIS-2026-089.',
+    management_comment_at: new Date().toISOString(),
+    management_comment_by: 'u1',
+    material_request_lines: [
+      {
+        id: 'mrl-101',
+        sr_no: 1,
+        activity_name: 'Brick Masonry',
+        activity_code: 'ACT-MAS-01',
+        item_code: 'BRK-FLY-001',
+        item_group: 'Masonry & Blocks',
+        item_description: 'Fly Ash Bricks 9x4x3',
+        unit: 'Pcs',
+        required_date: '2026-07-24',
+        item_brand: 'Pramukh Standard',
+        item_specification: 'Class 7.5 IS 12896',
+        est_qty: 15000,
+        ind_qty: 8000,
+        iss_qty: 6000,
+        extra_rec_qty: 0,
+        extra_adj_qty: 0,
+        quantity: 2000,
+        pr_bal_qty: 0,
+        lead_period_days: 1,
+        lead_period_date: '2026-07-22',
+        project_stock: 8500,
+        other_project_stock: 12000,
+        relation_count: 1,
+        line_status: 'fulfilled_from_stock',
+        unit_rate: 8.5,
+        estimated_rate: 8.5,
+        line_total: 17000,
+      },
+      {
+        id: 'mrl-102',
+        sr_no: 2,
+        activity_name: 'Mortar Preparation',
+        activity_code: 'ACT-MAS-02',
+        item_code: 'SND-RVR-001',
+        item_group: 'Sand & Aggregates',
+        item_description: 'River Sand / Wash Sand',
+        unit: 'Brass',
+        required_date: '2026-07-24',
+        item_brand: 'Local Quarry',
+        item_specification: 'Zone II Graded Clean Sand',
+        est_qty: 120,
+        ind_qty: 65,
+        iss_qty: 50,
+        extra_rec_qty: 0,
+        extra_adj_qty: 0,
+        quantity: 10,
+        pr_bal_qty: 0,
+        lead_period_days: 1,
+        lead_period_date: '2026-07-22',
+        project_stock: 45,
+        other_project_stock: 90,
+        relation_count: 1,
+        line_status: 'fulfilled_from_stock',
+        unit_rate: 4200,
+        estimated_rate: 4200,
+        line_total: 42000,
+      }
+    ],
+    profiles: { name: 'Rohan Mehta (Site Eng)', email: 'site.eng@pramukh.com' },
+    projects: { name: 'Central Park' },
+    project_sites: { name: 'Block A Site' }
+  },
+  {
+    id: 'mr-mock-002',
+    project_id: 'central-park',
+    site_id: 'site-a',
+    mr_number: 'MR-20260721-002',
+    source: 'site_engineer',
+    justification: 'Concrete pour scheduled for Block A level 6 slab next week. High grade OPC cement and Fe 550D rebar required on site. Stock shortage detected.',
+    required_date: '2026-07-28',
+    priority: 'high',
+    stock_decision: 'shortage',
+    status: 'submitted',
+    raised_by: 'u4',
+    submitted_at: new Date().toISOString(),
+    created_at: new Date().toISOString(),
+    work_activity: 'Slab casting Level 6',
+    site_block: 'Block A - Tower 1',
+    clarification_text: null,
+    clarification_at: null,
+    clarification_by: null,
+    clarification_reply: null,
+    clarification_replied_at: null,
+    rejection_reason: null,
+    reviewed_by: null,
+    reviewed_at: null,
+    management_comment: 'Stock shortage detected. Auto-Draft PR generated and routed for Human Manager Verification.',
+    management_comment_at: new Date().toISOString(),
+    management_comment_by: 'u1',
+    material_request_lines: [
+      {
+        id: 'mrl-201',
+        sr_no: 1,
+        activity_name: 'Slab Casting',
+        activity_code: 'ACT-STR-01',
+        item_code: 'MAT-CEM-001',
+        item_group: 'Cement & Concrete',
+        item_description: 'OPC 53 Grade Cement',
+        unit: 'Bags',
+        required_date: '2026-07-28',
+        item_brand: 'UltraTech',
+        item_specification: 'IS 12269 : 2013 Grade 53',
+        est_qty: 2500,
+        ind_qty: 1200,
+        iss_qty: 1000,
+        extra_rec_qty: 0,
+        extra_adj_qty: 0,
+        quantity: 500,
+        pr_bal_qty: 380,
+        lead_period_days: 3,
+        lead_period_date: '2026-07-25',
+        project_stock: 120,
+        other_project_stock: 450,
+        relation_count: 2,
+        line_status: 'approved_for_pr',
+        unit_rate: 380,
+        estimated_rate: 380,
+        line_total: 190000,
+      },
+      {
+        id: 'mrl-202',
+        sr_no: 2,
+        activity_name: 'Slab Reinforcement',
+        activity_code: 'ACT-STR-02',
+        item_code: 'MAT-STL-002',
+        item_group: 'Reinforcement Steel',
+        item_description: 'Fe 550D TMT Rebar 12mm',
+        unit: 'MT',
+        required_date: '2026-07-28',
+        item_brand: 'Tata Tiscon',
+        item_specification: 'IS 1786 : 2008 Fe 550D',
+        est_qty: 85,
+        ind_qty: 40,
+        iss_qty: 35,
+        extra_rec_qty: 1.2,
+        extra_adj_qty: 0.5,
+        quantity: 15,
+        pr_bal_qty: 12.5,
+        lead_period_days: 5,
+        lead_period_date: '2026-07-23',
+        project_stock: 2.5,
+        other_project_stock: 18.0,
+        relation_count: 3,
+        line_status: 'approved_for_pr',
+        unit_rate: 62000,
+        estimated_rate: 62000,
+        line_total: 930000,
+      }
+    ],
+    profiles: { name: 'Vikram Patel (Sr. Site Eng)', email: 'site.eng2@pramukh.com' },
+    projects: { name: 'Central Park' },
+    project_sites: { name: 'Block A Site' }
+  }
+];
+
+export let mockPurchaseRequisitionsStore: PurchaseRequisitionRow[] = [];
+
 export async function listProcurementDashboard(projectId?: string): Promise<ProcurementDashboardData> {
   if (!isLiveSupabase()) {
+    const filtered = projectId && projectId !== 'all' 
+      ? mockMaterialRequestsStore.filter(mr => mr.project_id === projectId || projectId === 'p1' || mr.project_id === 'central-park')
+      : mockMaterialRequestsStore;
+
+    const list = filtered.length > 0 ? filtered : mockMaterialRequestsStore;
+
     return {
-      materialRequests: [],
-      purchaseRequisitions: [],
+      materialRequests: [...list],
+      purchaseRequisitions: [...mockPurchaseRequisitionsStore],
       rfqs: [],
       quotations: [],
       vendorSelections: [],
@@ -520,6 +735,53 @@ export async function listProcurementProjects(): Promise<ProcurementProjectOptio
 
 export async function createMaterialRequest(input: CreateMaterialRequestInput): Promise<MutationResult<{ materialRequestId: string }>> {
   try {
+    if (!isLiveSupabase()) {
+      const newId = `mr-mock-${Date.now().toString().slice(-6)}`;
+      const mrNumber = `MR-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Math.floor(100 + Math.random() * 900)}`;
+
+      const newMr: MaterialRequestRow = {
+        id: newId,
+        project_id: input.projectId,
+        site_id: input.siteId || null,
+        mr_number: mrNumber,
+        source: 'site_engineer',
+        justification: input.title,
+        required_date: input.requiredDate,
+        priority: input.priority || 'medium',
+        stock_decision: null,
+        status: 'submitted',
+        raised_by: 'current-user-id',
+        submitted_at: new Date().toISOString(),
+        created_at: new Date().toISOString(),
+        work_activity: input.lines[0]?.itemDescription ? `Supply of ${input.lines[0].itemDescription}` : 'Site Work',
+        site_block: 'Main Site',
+        clarification_text: null,
+        clarification_at: null,
+        clarification_by: null,
+        clarification_reply: null,
+        clarification_replied_at: null,
+        rejection_reason: null,
+        reviewed_by: null,
+        reviewed_at: null,
+        management_comment: null,
+        management_comment_at: null,
+        management_comment_by: null,
+        material_request_lines: input.lines.map((l, idx) => ({
+          id: `mrl-${newId}-${idx}`,
+          item_description: l.itemDescription,
+          quantity: l.quantity,
+          estimated_rate: l.estimatedRate,
+          unit_rate: l.estimatedRate,
+        })),
+        profiles: { name: 'Admin User', email: 'admin@pramukh.com' },
+        projects: { name: input.projectId === 'central-park' ? 'Central Park' : 'Orbit 4' },
+        project_sites: { name: 'Main Block' }
+      };
+
+      mockMaterialRequestsStore.unshift(newMr);
+      return { data: { materialRequestId: newId }, error: null };
+    }
+
     const result = await rpcAction<{ materialRequestId?: string }>('submit_mobile_material_request', {
       p_project_id: getDbSiteId(input.projectId),
       p_site_id: input.siteId || null,
@@ -760,8 +1022,49 @@ export type ConvertToPrInput = {
 
 export async function convertMaterialRequestToPr(input: ConvertToPrInput): Promise<MutationResult<{ purchaseRequisitionId: string }>> {
   try {
-    const profileId = await currentProfileId();
     const materialRequest = input.materialRequest;
+
+    if (!isLiveSupabase()) {
+      const mr = mockMaterialRequestsStore.find((m) => m.id === materialRequest.id);
+      if (mr) {
+        mr.status = 'approved';
+      }
+
+      const newPrId = 'pr-' + Date.now();
+      const prNumber = 'PR-20260721-' + String(mockPurchaseRequisitionsStore.length + 1).padStart(3, '0');
+      const lines = input.lines || materialRequest.material_request_lines || [];
+      const estimatedCost = lines.reduce((sum, line) => sum + Number(line.quantity) * Number(line.estimated_rate ?? 0), 0);
+
+      const newPr: PurchaseRequisitionRow = {
+        id: newPrId,
+        project_id: materialRequest.project_id,
+        site_id: materialRequest.site_id,
+        material_request_id: materialRequest.id,
+        pr_number: prNumber,
+        title: input.title || materialRequest.justification || materialRequest.mr_number,
+        estimated_cost: estimatedCost,
+        finance_required: input.financeRequired,
+        status: 'submitted',
+        current_approval_stage: input.approvalStage || 'pr_team',
+        requested_date: new Date().toISOString().split('T')[0],
+        required_date: input.requiredDate || materialRequest.required_date,
+        assigned_team_notes: input.remarks || null,
+        created_at: new Date().toISOString(),
+        purchase_requisition_lines: lines.map((line, idx) => ({
+          id: `prl-${Date.now()}-${idx}`,
+          purchase_requisition_id: newPrId,
+          project_id: materialRequest.project_id,
+          item_description: line.item_description,
+          quantity: line.quantity,
+          estimated_rate: line.estimated_rate ?? 0,
+        })),
+      };
+
+      mockPurchaseRequisitionsStore.unshift(newPr);
+      return { data: { purchaseRequisitionId: newPrId }, error: null };
+    }
+
+    const profileId = await currentProfileId();
 
     const { data: existing } = await supabase
       .from('purchase_requisitions')

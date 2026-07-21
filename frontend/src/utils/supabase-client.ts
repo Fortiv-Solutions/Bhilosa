@@ -1,16 +1,16 @@
 import { createClient } from '@supabase/supabase-js';
 
 const isServer = typeof window === 'undefined';
-const supabaseUrl = isServer
-  ? (process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://your-project.supabase.co')
-  : (window.location.origin + '/supabase-api');
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...';
+const rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+const supabaseUrl = rawUrl ? rawUrl : (isServer ? 'https://your-project.supabase.co' : window.location.origin + '/supabase-api');
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...';
 
 export const isSupabaseConfigured = Boolean(
   supabaseUrl &&
     supabaseAnonKey &&
     !supabaseUrl.includes('your-project') &&
-    supabaseAnonKey !== 'your-publishable-key',
+    supabaseAnonKey !== 'your-publishable-key' &&
+    !supabaseAnonKey.includes('...'),
 );
 
 export const supabase = createClient(

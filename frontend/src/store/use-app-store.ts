@@ -23,13 +23,7 @@ import type {
   DelayRecord,
   CorrectiveTask,
 } from '@/utils/mock-data';
-import {
-  initialMockVendors,
-  initialMockVendorQuotations,
-  initialMockVendorBills,
-  initialMockVendorPayments,
-  initialMockVendorPerformances
-} from '@/utils/mock-data';
+
 import type { Role } from '@/lib/roles';
 
 export type AIMessage = {
@@ -163,38 +157,25 @@ interface AppState {
 export const useAppStore = create<AppState>((set) => ({
   activeRole: 'UPPER_MANAGEMENT',
   currentUser: {
-    id: 'mock-director-id',
-    name: 'Vikram Patel',
-    email: 'director@pramukh.com',
+    id: '',
+    name: 'Admin User',
+    email: 'admin@pramukh.com',
     role: 'UPPER_MANAGEMENT',
     avatar: '',
   },
   isLoggedIn: true,
   projects: [],
   notifications: [],
-  aiConversations: [
-    {
-      id: 'portfolio-summary',
-      title: 'Portfolio progress summary',
-      time: 'Today',
-      messages: [
-        {
-          id: 'welcome-summary',
-          role: 'assistant',
-          content: 'I can help you review execution progress, compare budget exposure, inspect inventory risks, and prepare project updates across the Pramukh portfolio.',
-        },
-      ],
-    },
-  ],
-  activeProjectId: 'one-tapi',
+  aiConversations: [],
+  activeProjectId: '',
   theme: 'light',
   sidebarOpen: true,
   supabaseInitialized: false,
-  vendors: initialMockVendors,
-  vendorBills: initialMockVendorBills,
-  vendorQuotations: initialMockVendorQuotations,
-  vendorPayments: initialMockVendorPayments,
-  vendorPerformances: initialMockVendorPerformances,
+  vendors: [],
+  vendorBills: [],
+  vendorQuotations: [],
+  vendorPayments: [],
+  vendorPerformances: [],
 
   checkLogin: async () => {
     try {
@@ -553,59 +534,73 @@ export const useAppStore = create<AppState>((set) => ({
 
       if (error) throw error;
 
-      const projects = (data ?? []).map((project: any, index: number): ProjectSite => {
-        const status = String(project.status || 'active').toLowerCase();
-        const progress = Number(project.progress_percentage ?? project.progress ?? 0);
-        return {
-          id: getFrontendProjectId(project.id),
-          name: project.name || project.code || `Project ${index + 1}`,
-          clientName: project.client_name || 'Pramukh Group',
-          location: project.location || 'Location not set',
-          projectValue: Number(project.project_value || project.budget_amount || 0),
-          startDate: project.start_date || '',
-          endDate: project.target_end_date || '',
-          progress,
-          currentPhase: (project.current_phase || 'Execution') as ProjectSite['currentPhase'],
-          status: status === 'completed'
-            ? 'Completed'
-            : status === 'delayed'
-              ? 'Delayed'
-              : status === 'on_hold'
-                ? 'On Hold'
-                : 'Active',
-          budget: Number(project.budget_amount || 0),
-          actualSpend: Number(project.actual_spend_amount || 0),
-          dailyActivities: [],
-          materials: [],
-          boqItems: [],
-          procurements: [],
-          labourRecords: [],
-          equipments: [],
-          workforceLogs: [],
-          equipmentLogs: [],
-          safetyIncidents: [],
-          tasks: [],
-          documents: [],
-          chats: [],
-          qcItems: [],
-          invoices: [],
-          teamMembers: [],
-          image: '/images/projects/central-park.png',
-          galleryImages: [],
-          overview: project.description || '',
-          reraNo: '',
-          projectUrl: '',
-          propertyType: 'Construction Project',
-        };
-      });
+      if (data && data.length > 0) {
+        const dbProjects = data.map((project: any, index: number): ProjectSite => {
+          const frontendId = getFrontendProjectId(project.id);
+          const matchedMock = mockProjects.find((mp) => mp.id === frontendId || mp.id === project.id);
+          const status = String(project.status || 'active').toLowerCase();
+          const progress = Number(project.progress_percentage ?? project.progress ?? matchedMock?.progress ?? 0);
+          return {
+            ...(matchedMock ?? {}),
+            id: frontendId,
+            name: project.name || project.code || matchedMock?.name || `Project ${index + 1}`,
+            clientName: project.client_name || matchedMock?.clientName || 'Pramukh Group',
+            location: project.location || matchedMock?.location || 'Location not set',
+            projectValue: Number(project.project_value || project.budget_amount || matchedMock?.projectValue || 0),
+            startDate: project.start_date || matchedMock?.startDate || '',
+            endDate: project.target_end_date || matchedMock?.endDate || '',
+            progress,
+            currentPhase: (project.current_phase || matchedMock?.currentPhase || 'Execution') as ProjectSite['currentPhase'],
+            status: status === 'completed'
+              ? 'Completed'
+              : status === 'delayed'
+                ? 'Delayed'
+                : status === 'on_hold'
+                  ? 'On Hold'
+                  : 'Active',
+            budget: Number(project.budget_amount || matchedMock?.budget || 0),
+            actualSpend: Number(project.actual_spend_amount || matchedMock?.actualSpend || 0),
+            dailyActivities: matchedMock?.dailyActivities ?? [],
+            materials: matchedMock?.materials ?? [],
+            boqItems: matchedMock?.boqItems ?? [],
+            procurements: matchedMock?.procurements ?? [],
+            labourRecords: matchedMock?.labourRecords ?? [],
+            equipments: matchedMock?.equipments ?? [],
+            workforceLogs: matchedMock?.workforceLogs ?? [],
+            equipmentLogs: matchedMock?.equipmentLogs ?? [],
+            safetyIncidents: matchedMock?.safetyIncidents ?? [],
+            tasks: matchedMock?.tasks ?? [],
+            documents: matchedMock?.documents ?? [],
+            chats: matchedMock?.chats ?? [],
+            qcItems: matchedMock?.qcItems ?? [],
+            invoices: matchedMock?.invoices ?? [],
+            teamMembers: matchedMock?.teamMembers ?? [],
+            image: matchedMock?.image || '/images/projects/central-park.png',
+            galleryImages: matchedMock?.galleryImages ?? [],
+            overview: project.description || matchedMock?.overview || '',
+            reraNo: matchedMock?.reraNo || '',
+            projectUrl: matchedMock?.projectUrl || '',
+            propertyType: matchedMock?.propertyType || 'Construction Project',
+            moduleData: matchedMock?.moduleData,
+          };
+        });
 
-      set((state) => ({
-        projects,
-        activeProjectId: projects[0]?.id ?? state.activeProjectId,
-      }));
+        set((state) => ({
+          projects: dbProjects,
+          activeProjectId: dbProjects[0]?.id ?? state.activeProjectId,
+        }));
+      } else {
+        // Fallback to mockProjects if DB table projects is empty
+        set((state) => ({
+          projects: mockProjects,
+          activeProjectId: mockProjects[0]?.id ?? state.activeProjectId,
+        }));
+      }
     } catch (err) {
       console.error('Failed to fetch projects from Supabase:', err);
-      set({ projects: [] });
+      set((state) => ({
+        projects: state.projects.length > 0 ? state.projects : mockProjects,
+      }));
     }
   },
 

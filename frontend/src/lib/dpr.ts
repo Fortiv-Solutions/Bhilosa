@@ -1,6 +1,8 @@
 import { supabase } from '@/utils/supabase-client';
+import { isLiveSupabase } from '@/lib/erp/supabase-modules';
 
 export async function getDPRs(projectId?: string) {
+  if (!isLiveSupabase()) return [];
   let query = supabase.from("daily_progress_reports").select("*, dpr_activity_lines(*), projects(name)").order("report_date", { ascending: false });
   if (projectId) {
     query = query.eq("project_id", projectId);
@@ -11,6 +13,7 @@ export async function getDPRs(projectId?: string) {
 }
 
 export async function approveDPR(dprId: string, approvedBy: string) {
+  if (!isLiveSupabase()) return;
   const { error } = await supabase
     .from("daily_progress_reports")
     .update({ 
@@ -23,6 +26,7 @@ export async function approveDPR(dprId: string, approvedBy: string) {
 }
 
 export async function rejectDPR(dprId: string, rejectedBy: string, remarks: string) {
+  if (!isLiveSupabase()) return;
   const { error } = await supabase
     .from("daily_progress_reports")
     .update({ 

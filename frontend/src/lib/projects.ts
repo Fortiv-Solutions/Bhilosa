@@ -1,7 +1,9 @@
 import { supabase } from '@/utils/supabase-client';
+import { isLiveSupabase } from '@/lib/erp/supabase-modules';
 import type { Role } from './rbac';
 
 export async function getProjectsForRole(userId: string, role: Role) {
+  if (!isLiveSupabase()) return [];
   if (role === 'UPPER_MANAGEMENT' || role === 'PR_TEAM') {
     // These roles generally need full visibility to perform company-wide tracking
     const { data, error } = await supabase
