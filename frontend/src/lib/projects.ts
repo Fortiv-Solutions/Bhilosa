@@ -14,10 +14,9 @@ export async function getProjectsForRole(userId: string, role: Role) {
     // Other roles see assigned projects
     const { data, error } = await supabase
       .from('project_members')
-      .select('project_id, project_role, projects!inner(*)')
-      .eq('user_id', userId)
-      .eq('is_active', true);
+      .select('project_id, projects!inner(*)')
+      .eq('user_id', userId);
     if (error) throw error;
-    return data.map((m: any) => ({ ...m.projects, current_user_role: m.project_role }));
+    return data.map((m: any) => ({ ...m.projects, current_user_role: 'member' }));
   }
 }

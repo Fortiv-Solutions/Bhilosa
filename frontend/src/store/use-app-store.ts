@@ -547,8 +547,7 @@ export const useAppStore = create<AppState>((set) => ({
     try {
       const { data, error } = await supabase
         .from('projects')
-        .select('id, code, name, client_name, location, description, project_value, budget_amount, actual_spend_amount, start_date, target_end_date, current_phase, status')
-        .is('deleted_at', null)
+        .select('id, code, name, status')
         .order('name');
 
       if (error) throw error;
@@ -709,8 +708,7 @@ export const useAppStore = create<AppState>((set) => ({
     try {
       const { data, error } = await supabase
         .from('project_members')
-        .select('project_id, user_id, project_role, profiles(id, name, email, role)')
-        .eq('is_active', true);
+        .select('project_id, user_id, profiles(id, name, email, role)');
 
       if (error) throw error;
 
