@@ -1,10 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 
-const isServer = typeof window === 'undefined';
-const supabaseUrl = isServer
-  ? (process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://your-project.supabase.co')
-  : (window.location.origin + '/supabase-api');
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...';
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://uanazwednpluwllhfzlh.supabase.co';
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVhbmF6d2VkbnBsdXdsbGhmemxoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ2MjY0NDMsImV4cCI6MjEwMDIwMjQ0M30.eEbmPE6QQds7-WmS9YOKMb1lhlrG5PZy2ySUVY9bjZs';
 
 export const isSupabaseConfigured = Boolean(
   supabaseUrl &&
@@ -14,8 +11,8 @@ export const isSupabaseConfigured = Boolean(
 );
 
 export const supabase = createClient(
-  isSupabaseConfigured ? supabaseUrl : 'https://invalid.supabase.co',
-  isSupabaseConfigured ? supabaseAnonKey : 'invalid-anon-key',
+  isSupabaseConfigured ? supabaseUrl : 'https://uanazwednpluwllhfzlh.supabase.co',
+  isSupabaseConfigured ? supabaseAnonKey : 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVhbmF6d2VkbnBsdXdsbGhmemxoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ2MjY0NDMsImV4cCI6MjEwMDIwMjQ0M30.eEbmPE6QQds7-WmS9YOKMb1lhlrG5PZy2ySUVY9bjZs',
 );
 
 // Map frontend project IDs to Supabase site UUIDs
@@ -23,7 +20,7 @@ const projectToSiteMap: Record<string, string> = {
   'one-tapi': 'a1b2c3d4-0000-0000-0000-000000000001',
   'aranya-3': 'a1b2c3d4-0000-0000-0000-000000000002',
   'satva': 'a1b2c3d4-0000-0000-0000-000000000003',
-  'central-park': 'f6704467-df8c-4f51-a49b-ddfdc40c39af',
+  'central-park': 'af6fca4d-3498-48c0-b87d-bb234c23728d',
   'orbit-4': 'e8a7c213-df8c-4f51-a49b-ddfdc40c39af',
 };
 

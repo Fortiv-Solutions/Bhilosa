@@ -21,6 +21,7 @@ import {
   Send,
   Printer,
   Plus,
+  Eye,
   Clock,
   UserCheck,
   Paperclip,
@@ -57,7 +58,7 @@ import { ImageSlider } from '@/components/ui/image-slider';
 import { InboxModule } from '@/components/projects/inbox-module';
 import { ProjectMembers } from '@/components/projects/project-members';
 import { TaskModule } from '@/components/projects/task-module';
-import { supabase, getDbSiteId } from '@/utils/supabase-client';
+import { supabase, getDbSiteId, isSupabaseConfigured } from '@/utils/supabase-client';
 import { attachmentUrl } from '@/lib/inbox';
 import { isLiveSupabase } from '@/lib/erp/supabase-modules';
 import { getDPRs, approveDPR, rejectDPR } from '@/lib/dpr';
@@ -101,7 +102,22 @@ type ProjectTab =
   | 'user-management'
   | 'vendor-management'
   | 'document-control'
-  | 'equipment-tracking';
+const DEFAULT_CONSTRUCTION_PHOTO = "https://images.unsplash.com/photo-1541888946425-d0fbb186a5b7?auto=format&fit=crop&w=800&q=80";
+
+function resolvePhotoUrl(photo: string): string {
+  if (!photo || typeof photo !== 'string') return DEFAULT_CONSTRUCTION_PHOTO;
+  const trimmed = photo.trim();
+  if (
+    trimmed.startsWith('data:image') ||
+    trimmed.startsWith('data:application') ||
+    trimmed.startsWith('blob:') ||
+    trimmed.startsWith('http://') ||
+    trimmed.startsWith('https://')
+  ) {
+    return trimmed;
+  }
+  return DEFAULT_CONSTRUCTION_PHOTO;
+}
 
 export default function ProjectDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -229,7 +245,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
 
     const fetchGalleryMedia = async () => {
       setGalleryLoading(true);
-      const isSimulation = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project');
+      const isSimulation = !isSupabaseConfigured;
       
       if (isSimulation) {
         setGalleryMedia([
@@ -366,7 +382,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
 
     const fetchChecklists = async () => {
       setChecklistLoading(true);
-      const isSimulation = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project');
+      const isSimulation = !isSupabaseConfigured;
 
       if (isSimulation) {
         // Mock checklists & items
@@ -439,7 +455,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
     fetchChecklists();
 
     // Set up Realtime listener on checklists and checklist_items tables
-    const isSimulation = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project');
+    const isSimulation = !isSupabaseConfigured;
     if (!isSimulation) {
       const channelName = `site-checklists-${dbSiteId}-${Date.now()}`;
       checklistsChannel = supabase
@@ -562,7 +578,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
 
   // Supabase sync helpers for Quality Control module
   const syncQcRequestToSupabase = async (req: any) => {
-    const isSimulation = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project');
+    const isSimulation = !isSupabaseConfigured;
     if (isSimulation) return;
 
     try {
@@ -596,7 +612,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   };
 
   const syncCheckpointsToSupabase = async (reqId: string, checkpoints: any[]) => {
-    const isSimulation = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project');
+    const isSimulation = !isSupabaseConfigured;
     if (isSimulation) return;
 
     try {
@@ -632,7 +648,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   };
 
   const createReworkTaskInSupabase = async (rw: any) => {
-    const isSimulation = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project');
+    const isSimulation = !isSupabaseConfigured;
     if (isSimulation) return;
 
     try {
@@ -663,7 +679,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   };
 
   const updateReworkTaskInSupabase = async (rw: any) => {
-    const isSimulation = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project');
+    const isSimulation = !isSupabaseConfigured;
     if (isSimulation) return;
 
     try {
@@ -688,7 +704,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   };
 
   const syncWorkCompletionStatus = async (wcId: string, status: string) => {
-    const isSimulation = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project');
+    const isSimulation = !isSupabaseConfigured;
     if (isSimulation) return;
 
     try {
@@ -931,7 +947,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   // Sync reworkItems from project.tasks in live mode
   useEffect(() => {
     if (!project) return;
-    const isSimulation = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project');
+    const isSimulation = !isSupabaseConfigured;
     if (isSimulation) return;
 
     const parsedReworks = (project.tasks || [])
@@ -974,7 +990,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
     if (!project) return;
     
     let isMounted = true;
-    const isSimulation = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project');
+    const isSimulation = !isSupabaseConfigured;
     if (isSimulation) return;
 
     const dbSiteId = getDbSiteId(project.id);
@@ -2303,7 +2319,7 @@ Rules:
     setWcPhotoUrlInput('');
 
     // Database Sync
-    const isSimulation = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project');
+    const isSimulation = !isSupabaseConfigured;
     if (!isSimulation) {
       const dbSiteId = getDbSiteId(project!.id);
       
@@ -2425,7 +2441,7 @@ Rules:
   };
 
   const syncTemplateItemsToSupabase = async (templateId: string, checkpoints: string[]) => {
-    const isSimulation = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project');
+    const isSimulation = !isSupabaseConfigured;
     if (isSimulation) return;
     try {
       await supabase
@@ -2608,7 +2624,7 @@ Rules:
     setNewTemplateTitle('');
     setNewTemplatePoints('');
 
-    const isSimulation = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project');
+    const isSimulation = !isSupabaseConfigured;
     if (!isSimulation) {
       try {
         await supabase
@@ -3233,7 +3249,7 @@ Rules:
     if (!project) return;
     const checklistId = crypto.randomUUID();
     const dbSiteId = getDbSiteId(project.id);
-    const isSimulation = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project');
+    const isSimulation = !isSupabaseConfigured;
 
     const newChecklist = {
       id: checklistId,
@@ -3323,7 +3339,7 @@ Rules:
 
     setDbChecklistItems(prev => prev.map(i => i.id === itemId ? { ...i, text: updatedText, done: nextDone } : i));
 
-    const isSimulation = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project');
+    const isSimulation = !isSupabaseConfigured;
     if (!isSimulation) {
       try {
         await supabase
@@ -3352,7 +3368,7 @@ Rules:
 
     setDbChecklistItems(prev => prev.map(i => i.id === itemId ? { ...i, text: updatedText } : i));
 
-    const isSimulation = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project');
+    const isSimulation = !isSupabaseConfigured;
     if (!isSimulation) {
       try {
         await supabase
@@ -3373,7 +3389,7 @@ Rules:
     setDbChecklistItems(prev => prev.filter(i => i.checklistId !== checklistId));
     if (expandedChecklistId === checklistId) setExpandedChecklistId(null);
 
-    const isSimulation = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project');
+    const isSimulation = !isSupabaseConfigured;
     if (!isSimulation) {
       try {
         await supabase
@@ -3389,7 +3405,7 @@ Rules:
   // Reject / Delete PR
   const handleDashboardDeletePR = async (materialId: string) => {
     if (!confirm('Are you sure you want to reject and delete this purchase request?')) return;
-    const isSimulation = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project');
+    const isSimulation = !isSupabaseConfigured;
 
     if (isSimulation) {
       useAppStore.setState(state => ({
@@ -3424,7 +3440,7 @@ Rules:
       }
     } catch (e) {}
 
-    const isSimulation = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project');
+    const isSimulation = !isSupabaseConfigured;
 
     if (nextStage === 'Delivered') {
       // Transition to in-stock
@@ -3562,121 +3578,71 @@ Rules:
 
   return (
     <div className="flex w-full h-screen overflow-hidden bg-gray-50 dark:bg-black/95">
-      {/* Left Sidebar */}
-      <aside className="hidden md:flex flex-col w-64 border-r border-gray-200/50 dark:border-gray-800/50 bg-white dark:bg-gray-900 h-full shrink-0 z-40 pb-2 justify-between select-none">
-        <div className="flex flex-col overflow-y-auto scrollbar-none flex-1">
-          {/* Top: Exit Button & Brand Logo */}
-          <div className="flex items-center gap-3 h-14 px-5 flex-shrink-0">
-            <Link href="/projects" className="w-9 h-9 flex items-center justify-center rounded-full bg-gray-50 dark:bg-gray-850 border border-gray-200/50 dark:border-gray-800/50 hover:bg-gray-100 dark:hover:bg-gray-800 hover:border-gray-300 dark:hover:border-gray-700 transition-all text-gray-600 dark:text-gray-300 shadow-xs" title="Back to Projects">
-              <ArrowLeft className="w-4 h-4" />
-            </Link>
-            <div className="flex items-center gap-2 min-w-0">
-              <svg className="w-6 h-6 text-[#b68d40] drop-shadow-md flex-shrink-0" viewBox="30 1 36 29" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path className="fill-[#b68d40]" d="M52.13,17.62v2.6s7.81,1.18,9,9.31h4.34a4.39,4.39,0,0,1-1.9-2.21C63,25.74,60.25,18.65,52.13,17.62ZM34.47,3.9H44.72V14.23C37.23,14.15,34.62,13.2,34.47,3.9ZM30,1.38A5.14,5.14,0,0,1,32,5.24v.63c.71,9.31,4.65,10.57,12.7,10.65V27.16h-.08s-.4,2.21-1.58,2.37h4.18V1.38H30ZM43.53,17.62v2.6s-7.8,1.18-8.91,9.31H30.29a4.07,4.07,0,0,0,1.81-2.21C32.65,25.74,35.49,18.65,43.53,17.62ZM51,14.23V3.9H61.28C61,13.2,58.44,14.15,51,14.23ZM63.8,1.38H48.5V29.53h4.1C51.5,29.37,51,27.16,51,27.16h0V16.52c8-0.08,12-1.34,12.61-10.65a1.71,1.71,0,0,0,.08-.63,4.93,4.93,0,0,1,2-3.86Z"/>
-              </svg>
-              <span className="font-heading font-black text-sm text-gray-900 dark:text-white truncate" title={project!.name}>{project!.name}</span>
-            </div>
-          </div>
-
-          {/* Navigation Menu */}
-          <nav className="flex flex-col">
-
-            {/* Overview */}
-            <button
-              onClick={() => setActiveTab('project-management')}
-              className={`flex items-center gap-3 w-full pl-[17px] pr-4 py-1.5 text-[13px] font-semibold transition-all duration-150 border-l-[3px] rounded-none ${
-                activeTab === 'project-management'
-                  ? 'bg-[#b68d40]/10 text-[#b68d40] border-[#b68d40]'
-                  : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 border-transparent'
-              }`}
-            >
-              <Building2 className="w-4 h-4 flex-shrink-0" />
-              <span>Overview</span>
-            </button>
-
-            {/* Inbox */}
-            <button
-              onClick={() => setActiveTab('inbox')}
-              className={`flex items-center gap-3 w-full pl-[17px] pr-4 py-1.5 text-[13px] font-semibold transition-all duration-150 border-l-[3px] rounded-none ${
-                activeTab === 'inbox'
-                  ? 'bg-[#b68d40]/10 text-[#b68d40] border-[#b68d40]'
-                  : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 border-transparent'
-              }`}
-            >
-              <MessageSquare className="w-4 h-4 flex-shrink-0" />
-              <span>Inbox</span>
-            </button>
-
-            {/* OPERATIONS */}
-            <p className="pl-5 pr-4 pt-2 pb-0.5 text-[10px] font-extrabold uppercase tracking-widest text-gray-400 dark:text-gray-600 m-0">Operations</p>
-            {projectModules.filter(m => ['site-operations', 'quality-control', 'tasks', 'equipment-tracking'].includes(m.id)).map(module => {
-              const Icon = module.icon;
-              const isActive = activeTab === module.id;
-              return (
-                <button
-                  key={module.id}
-                  onClick={() => setActiveTab(module.id)}
-                  className={`flex items-center gap-3 w-full pl-[17px] pr-4 py-1.5 text-[13px] font-semibold transition-all duration-150 border-l-[3px] rounded-none ${
-                    isActive ? 'bg-[#b68d40]/10 text-[#b68d40] border-[#b68d40]' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 border-transparent'
-                  }`}
-                >
-                  <Icon className="w-4 h-4 flex-shrink-0" />
-                  <span>{module.label}</span>
-                </button>
-              );
-            })}
-
-            {/* SUPPLY CHAIN */}
-            <p className="pl-5 pr-4 pt-2 pb-0.5 text-[10px] font-extrabold uppercase tracking-widest text-gray-400 dark:text-gray-600 m-0">Supply Chain</p>
-            {projectModules.filter(m => ['procurement', 'inventory', 'vendor-management'].includes(m.id)).map(module => {
-              const Icon = module.icon;
-              const isActive = activeTab === module.id;
-              return (
-                <button
-                  key={module.id}
-                  onClick={() => setActiveTab(module.id)}
-                  className={`flex items-center gap-3 w-full pl-[17px] pr-4 py-1.5 text-[13px] font-semibold transition-all duration-150 border-l-[3px] rounded-none ${
-                    isActive ? 'bg-[#b68d40]/10 text-[#b68d40] border-[#b68d40]' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 border-transparent'
-                  }`}
-                >
-                  <Icon className="w-4 h-4 flex-shrink-0" />
-                  <span>{module.label}</span>
-                </button>
-              );
-            })}
-
-            {/* Documents (standalone) */}
-            <button
-              onClick={() => setActiveTab('document-control')}
-              className={`flex items-center gap-3 w-full pl-[17px] pr-4 py-1.5 text-[13px] font-semibold mt-3 transition-all duration-150 border-l-[3px] rounded-none ${
-                activeTab === 'document-control' ? 'bg-[#b68d40]/10 text-[#b68d40] border-[#b68d40]' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 border-transparent'
-              }`}
-            >
-              <FileText className="w-4 h-4 flex-shrink-0" />
-              <span>Documents</span>
-            </button>
-
-            {/* FINANCIALS */}
-            <p className="pl-5 pr-4 pt-2 pb-0.5 text-[10px] font-extrabold uppercase tracking-widest text-gray-400 dark:text-gray-600 m-0">Financials</p>
-            {projectModules.filter(m => ['budget', 'billing', 'analytics'].includes(m.id)).map(module => {
-              const Icon = module.icon;
-              const isActive = activeTab === module.id;
-              return (
-                <button
-                  key={module.id}
-                  onClick={() => setActiveTab(module.id)}
-                  className={`flex items-center gap-3 w-full pl-[17px] pr-4 py-1.5 text-[13px] font-semibold transition-all duration-150 border-l-[3px] rounded-none ${
-                    isActive ? 'bg-[#b68d40]/10 text-[#b68d40] border-[#b68d40]' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 border-transparent'
-                  }`}
-                >
-                  <Icon className="w-4 h-4 flex-shrink-0" />
-                  <span>{module.label}</span>
-                </button>
-              );
-            })}
-
-          </nav>
+      {/* Left Sidebar - narrow icon style matching reference */}
+      <aside className="hidden md:flex flex-col w-[78px] border-r border-gray-200/50 dark:border-gray-800/50 bg-white dark:bg-gray-900 h-full shrink-0 z-40 justify-between select-none overflow-y-auto scrollbar-none">
+        {/* Top Logo */}
+        <div className="flex items-center justify-center h-16 flex-shrink-0 border-b border-gray-100 dark:border-gray-800/60">
+          <Link href="/projects" title="Back to Projects" className="flex items-center justify-center w-10 h-10 rounded-xl hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors group">
+            <svg className="w-7 h-7 text-[#b68d40] drop-shadow-sm" viewBox="30 1 36 29" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path className="fill-[#b68d40]" d="M52.13,17.62v2.6s7.81,1.18,9,9.31h4.34a4.39,4.39,0,0,1-1.9-2.21C63,25.74,60.25,18.65,52.13,17.62ZM34.47,3.9H44.72V14.23C37.23,14.15,34.62,13.2,34.47,3.9ZM30,1.38A5.14,5.14,0,0,1,32,5.24v.63c.71,9.31,4.65,10.57,12.7,10.65V27.16h-.08s-.4,2.21-1.58,2.37h4.18V1.38H30ZM43.53,17.62v2.6s-7.8,1.18-8.91,9.31H30.29a4.07,4.07,0,0,0,1.81-2.21C32.65,25.74,35.49,18.65,43.53,17.62ZM51,14.23V3.9H61.28C61,13.2,58.44,14.15,51,14.23ZM63.8,1.38H48.5V29.53h4.1C51.5,29.37,51,27.16,51,27.16h0V16.52c8-0.08,12-1.34,12.61-10.65a1.71,1.71,0,0,0,.08-.63,4.93,4.93,0,0,1,2-3.86Z"/>
+            </svg>
+          </Link>
         </div>
+
+        {/* Nav Items */}
+        <nav className="flex flex-col items-center flex-1 py-3 gap-1">
+          {[
+            { id: 'project-management', label: 'Overview',       Icon: Building2       },
+            { id: 'inbox',              label: 'Inbox',           Icon: MessageSquare   },
+            { id: 'quality-control',    label: 'Quality',         Icon: ShieldCheck     },
+            { id: 'site-operations',    label: 'Site Ops',        Icon: Wrench          },
+            { id: 'tasks',              label: 'Tasks',           Icon: ListTodo        },
+            { id: 'equipment-tracking', label: 'Fleet',           Icon: Truck           },
+            { id: 'procurement',        label: 'Procurement',     Icon: ShoppingCart    },
+            { id: 'inventory',          label: 'Inventory',       Icon: PackageOpen     },
+            { id: 'vendor-management',  label: 'Vendors',         Icon: Award           },
+            { id: 'document-control',   label: 'Documents',       Icon: FileText        },
+            { id: 'budget',             label: 'Budget',          Icon: Coins           },
+            { id: 'billing',            label: 'Billing',         Icon: FileSpreadsheet },
+            { id: 'analytics',          label: 'Analytics',       Icon: BarChart3       },
+          ].map(({ id, label, Icon }) => {
+            const isActive = activeTab === id;
+            return (
+              <button
+                key={id}
+                onClick={() => setActiveTab(id as ProjectTab)}
+                className={`relative flex flex-col items-center justify-center w-full py-2 gap-1 transition-all duration-150 border-l-[3px] ${
+                  isActive
+                    ? 'border-[#b68d40] text-[#b68d40] bg-amber-50/70 dark:bg-amber-900/15'
+                    : 'border-transparent text-gray-500 dark:text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800/60'
+                }`}
+                title={label}
+              >
+                <Icon className="w-5 h-5 flex-shrink-0" strokeWidth={isActive ? 2.2 : 1.8} />
+                <span className={`text-[9px] font-bold uppercase tracking-wide leading-none ${isActive ? 'text-[#b68d40]' : 'text-gray-400 dark:text-gray-500'}`}>
+                  {label}
+                </span>
+              </button>
+            );
+          })}
+        </nav>
+
+        {/* Bottom: Issues badge */}
+        {unreadNotificationCount > 0 && (
+          <div className="flex flex-col items-center pb-4">
+            <button
+              onClick={() => setIsNotificationOpen(true)}
+              className="relative flex flex-col items-center justify-center w-full py-2 gap-1 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/20 transition-colors"
+              title={`${unreadNotificationCount} Issues`}
+            >
+              <div className="relative">
+                <Bell className="w-5 h-5" />
+                <span className="absolute -top-1 -right-1.5 min-w-[14px] h-3.5 bg-rose-500 text-white text-[8px] font-black rounded-full flex items-center justify-center px-0.5">{unreadNotificationCount}</span>
+              </div>
+              <span className="text-[9px] font-bold uppercase tracking-wide leading-none text-rose-400">Issues</span>
+            </button>
+          </div>
+        )}
       </aside>
 
       {/* Main Content Area */}
@@ -7313,7 +7279,8 @@ Rules:
                                   <th className="pb-3 pr-2">Rework Status</th>
                                   <th className="pb-3 pr-2">Remarks / Defect</th>
                                   <th className="pb-3 pr-2 text-right">Work Done Qty</th>
-                                  <th className="pb-3 text-right">Billing Status</th>
+                                  <th className="pb-3 pr-2 text-right">Billing Status</th>
+                                  <th className="pb-3 text-right">Inspect</th>
                                 </tr>
                               </thead>
                               <tbody>
@@ -7333,7 +7300,16 @@ Rules:
                                   const passedCheckpoints = req.checklist.checkpoints.filter((c: any) => c.result === 'Pass').length;
                                   
                                   return (
-                                    <tr key={req.id} className="border-b border-border/30 hover:bg-muted/10 transition-colors">
+                                    <tr
+                                      key={req.id}
+                                      onClick={() => {
+                                        setInspectingReqId(req.id);
+                                        setAttachedPhotos(req.photos || []);
+                                        setQcSubTab('completion');
+                                      }}
+                                      className="border-b border-border/30 hover:bg-[#b68d40]/10 transition-all cursor-pointer group"
+                                      title="Click to view full inspection details"
+                                    >
                                       {/* Date & Time */}
                                       <td className="py-3 pr-2 text-muted-foreground whitespace-nowrap">
                                         <span className="font-bold block text-foreground">{req.submittedDate}</span>
@@ -7473,7 +7449,7 @@ Rules:
                                       </td>
 
                                       {/* Billing Status */}
-                                      <td className="py-3 text-right font-bold whitespace-nowrap">
+                                      <td className="py-3 pr-2 text-right font-bold whitespace-nowrap">
                                         {req.status === 'Approved' && !hasRework ? (
                                           <span className="px-2 py-0.5 bg-emerald-500/10 text-emerald-600 rounded text-[9px] border border-emerald-500/20">
                                             BILLING CLEAR
@@ -7483,6 +7459,23 @@ Rules:
                                             BILLING BLOCKED
                                           </span>
                                         )}
+                                      </td>
+
+                                      {/* Inspect Action Button */}
+                                      <td className="py-3 text-right whitespace-nowrap">
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setInspectingReqId(req.id);
+                                            setAttachedPhotos(req.photos || []);
+                                            setQcSubTab('completion');
+                                          }}
+                                          className="px-3 py-1.5 bg-[#b68d40] hover:bg-[#967332] active:scale-95 text-white transition-all text-[10px] font-bold rounded-lg cursor-pointer shadow-2xs inline-flex items-center gap-1.5"
+                                        >
+                                          <Eye className="w-3.5 h-3.5" />
+                                          Inspect
+                                        </button>
                                       </td>
                                     </tr>
                                   );
@@ -7536,9 +7529,12 @@ Rules:
                                   setAttachedPhotos([]);
                                   setReworkTargetDate('');
                                   setReworkDesc('');
+                                  if (req.status !== 'Pending') {
+                                    setQcSubTab('dashboard');
+                                  }
                                 }}
                                 className="p-2 hover:bg-muted rounded-full transition-colors text-muted-foreground hover:text-foreground cursor-pointer shrink-0 mt-0.5"
-                                title="Back to Active list"
+                                title="Back to list"
                               >
                                 <ArrowLeft className="w-5 h-5" />
                               </button>
@@ -7634,12 +7630,30 @@ Rules:
                               {attachedPhotos.length > 0 && (
                                 <div className="flex flex-wrap gap-2 mt-2">
                                   {attachedPhotos.map((photo, pIdx) => (
-                                    <div key={pIdx} className="relative w-20 h-20 rounded-lg overflow-hidden border border-border shadow-xs shrink-0 bg-gray-100">
-                                      <img src={photo} className="w-full h-full object-cover" alt="site work proof" />
+                                    <div key={pIdx} className="relative w-20 h-20 rounded-lg overflow-hidden border border-border shadow-xs shrink-0 bg-muted/30 group">
+                                      <img
+                                        src={resolvePhotoUrl(photo)}
+                                        className="w-full h-full object-cover cursor-pointer hover:scale-105 transition-transform duration-200"
+                                        alt="site work proof"
+                                        onClick={() => setActiveLightboxMedia({
+                                          id: `attached_${pIdx}_${Date.now()}`,
+                                          url: resolvePhotoUrl(photo),
+                                          type: 'image',
+                                          name: `Inspection Photo Proof #${pIdx + 1}`,
+                                          createdAt: new Date().toISOString(),
+                                          caption: 'Work Proof Attachment'
+                                        })}
+                                        onError={(e) => {
+                                          (e.target as HTMLImageElement).src = DEFAULT_CONSTRUCTION_PHOTO;
+                                        }}
+                                      />
                                       <button
                                         type="button"
-                                        onClick={() => setAttachedPhotos(prev => prev.filter((_, i) => i !== pIdx))}
-                                        className="absolute top-1 right-1 bg-red-500 text-white rounded-full w-4 h-4 flex items-center justify-center text-[10px] hover:bg-red-650 transition-colors"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setAttachedPhotos(prev => prev.filter((_, i) => i !== pIdx));
+                                        }}
+                                        className="absolute top-1 right-1 bg-red-500 text-white rounded-full w-4 h-4 flex items-center justify-center text-[10px] hover:bg-red-650 transition-colors shadow-xs cursor-pointer z-10"
                                       >
                                         ×
                                       </button>
@@ -7712,39 +7726,72 @@ Rules:
                             </p>
                           </div>
                           <span className="bg-[#b68d40]/10 text-[#b68d40] px-2.5 py-1 rounded-full text-[10px] font-bold border border-[#b68d40]/25">
-                            {qcRequests.filter(r => r.status === 'Submitted' || r.status === 'Pending QC Inspection').length} Active Requests
+                            {qcRequests.filter(r => r.status === 'Submitted' || r.status === 'Pending QC Inspection' || r.status === 'Failed' || r.status === 'Fail').length} Active Requests & Snags
                           </span>
                         </div>
 
                         <div className="space-y-4">
-                          {qcRequests.filter(r => r.status === 'Submitted' || r.status === 'Pending QC Inspection').length === 0 ? (
+                          {qcRequests.filter(r => r.status === 'Submitted' || r.status === 'Pending QC Inspection' || r.status === 'Failed' || r.status === 'Fail').length === 0 ? (
                             <div className="text-center py-12 border border-dashed border-border rounded-2xl bg-muted/5">
                               <ClipboardList className="w-10 h-10 text-muted-foreground/30 mx-auto mb-2" />
-                              <p className="text-xs font-bold text-foreground">No pending requests found</p>
-                              <p className="text-[10px] text-muted-foreground mt-0.5">All active submissions have been processed.</p>
+                              <p className="text-xs font-bold text-foreground">No pending requests or open snags found</p>
+                              <p className="text-[10px] text-muted-foreground mt-0.5">All active submissions and reported defects have been processed.</p>
                             </div>
                           ) : (
-                            qcRequests.filter(r => r.status === 'Submitted' || r.status === 'Pending QC Inspection').map(req => {
+                            qcRequests.filter(r => r.status === 'Submitted' || r.status === 'Pending QC Inspection' || r.status === 'Failed' || r.status === 'Fail').map(req => {
+                              const isSnagOrFailed = req.status === 'Failed' || req.status === 'Fail';
                               const pointsChecked = req.checklist.checkpoints.filter((c: any) => c.result !== 'Pending').length;
                               const totalPoints = req.checklist.checkpoints.length;
                               const inspector = req.assignedEngineer && req.assignedEngineer !== '-- Unassigned --' ? req.assignedEngineer : (currentUser.name || 'QC Inspector');
 
                               return (
-                                <div key={req.id} className="p-4.5 bg-muted/15 border border-border/60 rounded-2xl space-y-3 hover:bg-muted/5 transition-all duration-300">
+                                <div
+                                  key={req.id}
+                                  className={`p-4.5 border rounded-2xl space-y-3 transition-all duration-300 ${
+                                    isSnagOrFailed
+                                      ? 'bg-red-500/5 dark:bg-red-500/10 border-red-500/30'
+                                      : 'bg-muted/15 border-border/60 hover:bg-muted/5'
+                                  }`}
+                                >
                                   <div className="flex flex-wrap items-center justify-between gap-3">
-                                    <span className="text-[10px] font-black px-1.5 py-0.5 rounded bg-[#b68d40]/10 text-[#b68d40] border border-[#b68d40]/20 uppercase tracking-wider">
-                                      {req.category || 'General'}
-                                    </span>
+                                    <div className="flex items-center gap-2">
+                                      <span className={`text-[10px] font-black px-1.5 py-0.5 rounded uppercase tracking-wider ${
+                                        isSnagOrFailed
+                                          ? 'bg-red-500/20 text-red-600 border border-red-500/30'
+                                          : 'bg-[#b68d40]/10 text-[#b68d40] border border-[#b68d40]/20'
+                                      }`}>
+                                        {isSnagOrFailed ? '⚠️ REPORTED SNAG / DEFECT' : (req.category || 'General')}
+                                      </span>
+                                      {req.priority && (
+                                        <span className={`text-[9px] font-black px-1.5 py-0.5 rounded uppercase tracking-wider ${
+                                          req.priority === 'CRITICAL' ? 'bg-red-500/20 text-red-700' :
+                                          req.priority === 'HIGH' ? 'bg-amber-500/20 text-amber-700' :
+                                          'bg-blue-500/20 text-blue-700'
+                                        }`}>
+                                          {req.priority} PRIORITY
+                                        </span>
+                                      )}
+                                    </div>
                                     <span className="text-[10px] text-muted-foreground font-semibold">
                                       {req.submittedDate}
                                     </span>
                                   </div>
 
-                                  <h5 className="font-extrabold text-foreground text-sm mt-1">{req.activityName}</h5>
+                                  <div>
+                                    <h5 className="font-extrabold text-foreground text-sm mt-1">{req.activityName}</h5>
+                                    <p className="text-xs text-muted-foreground mt-0.5 font-medium">
+                                      Location: <span className="font-bold text-foreground">{req.location || 'Site'}</span> • Contractor: <span className="font-bold text-foreground">{req.contractorName || 'Contractor'}</span>
+                                    </p>
+                                    {req.remarks && (
+                                      <p className="text-xs text-red-900 dark:text-red-300 mt-2 p-2.5 bg-red-500/10 rounded-xl border border-red-500/20 font-medium">
+                                        {req.remarks}
+                                      </p>
+                                    )}
+                                  </div>
                                   
                                   <div className="flex flex-wrap justify-between items-center gap-2 pt-2 border-t border-border/40">
                                     <p className="text-xs text-muted-foreground font-medium">
-                                      Items checked: {pointsChecked} / {totalPoints}, with QC inspector: {inspector}
+                                      {isSnagOrFailed ? `Reported Defect • Inspector: ${inspector}` : `Items checked: ${pointsChecked} / ${totalPoints}, Inspector: ${inspector}`}
                                     </p>
                                     <button
                                       type="button"
@@ -7752,9 +7799,13 @@ Rules:
                                         setInspectingReqId(req.id);
                                         setAttachedPhotos(req.photos || []);
                                       }}
-                                      className="px-4 py-2 bg-[#b68d40] hover:bg-[#967332] text-white transition-all text-xs font-bold rounded-lg cursor-pointer shadow-2xs"
+                                      className={`px-4 py-2 text-white transition-all text-xs font-bold rounded-lg cursor-pointer shadow-2xs ${
+                                        isSnagOrFailed
+                                          ? 'bg-red-600 hover:bg-red-700'
+                                          : 'bg-[#b68d40] hover:bg-[#967332]'
+                                      }`}
                                     >
-                                      Inspect Check
+                                      {isSnagOrFailed ? 'View & Rectify Defect' : 'Inspect Check'}
                                     </button>
                                   </div>
                                 </div>
@@ -7783,36 +7834,54 @@ Rules:
                     </div>
 
                     {/* Create Custom Template form */}
-                    <form onSubmit={handleCreateNewTemplate} className="p-3.5 bg-muted/10 border border-border/40 rounded-xl space-y-2.5">
-                      <div className="flex flex-col sm:flex-row gap-3 items-end">
-                        <div className="flex-1 w-full space-y-1">
-                          <label className="text-[9px] font-bold text-muted-foreground uppercase">Template Name</label>
+                    <form onSubmit={handleCreateNewTemplate} className="p-4 bg-muted/10 border border-border/50 rounded-2xl space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <h5 className="text-xs font-black uppercase tracking-wider text-foreground flex items-center gap-1.5">
+                          ✨ Create Custom Inspection Template
+                        </h5>
+                        <span className="text-[10px] text-muted-foreground font-semibold">
+                          Add reusable quality checklists
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-end">
+                        <div className="sm:col-span-4 space-y-1.5">
+                          <label className="text-[10px] font-extrabold text-muted-foreground uppercase tracking-wider block">
+                            Template Name *
+                          </label>
                           <input
                             type="text"
                             value={newTemplateTitle}
                             onChange={e => setNewTemplateTitle(e.target.value)}
                             placeholder="e.g. Concrete Slump Check"
-                            className="w-full text-xs p-2 rounded-lg border border-border bg-background text-foreground outline-none focus:border-[#b68d40] font-semibold"
+                            className="w-full h-10 text-xs px-3 py-2 rounded-xl border border-border bg-background text-foreground outline-none focus:border-[#b68d40] focus:ring-1 focus:ring-[#b68d40] font-semibold transition-all shadow-2xs"
                             required
                           />
                         </div>
-                        <div className="flex-1 w-full space-y-1">
-                          <label className="text-[9px] font-bold text-muted-foreground uppercase">Checkpoints (One point per line)</label>
-                          <textarea
+
+                        <div className="sm:col-span-6 space-y-1.5">
+                          <label className="text-[10px] font-extrabold text-muted-foreground uppercase tracking-wider block">
+                            Checkpoints <span className="normal-case font-normal text-muted-foreground/80">(One point per line or comma) *</span>
+                          </label>
+                          <input
+                            type="text"
                             value={newTemplatePoints}
                             onChange={e => setNewTemplatePoints(e.target.value)}
-                            placeholder="e.g.&#10;Brickwork line, level and plumb&#10;Mortar mix ratio check"
-                            rows={1}
-                            className="w-full text-xs p-2 rounded-lg border border-border bg-background text-foreground outline-none focus:border-[#b68d40] font-semibold"
+                            placeholder="e.g. Slump test value, Mortar ratio, Plumb level check"
+                            className="w-full h-10 text-xs px-3 py-2 rounded-xl border border-border bg-background text-foreground outline-none focus:border-[#b68d40] focus:ring-1 focus:ring-[#b68d40] font-semibold transition-all shadow-2xs"
                             required
                           />
                         </div>
-                        <button
-                          type="submit"
-                          className="px-4 py-2 bg-[#b68d40] hover:bg-[#967332] text-white transition-colors text-xs font-bold rounded-lg cursor-pointer h-[34px] shrink-0"
-                        >
-                          Create
-                        </button>
+
+                        <div className="sm:col-span-2">
+                          <button
+                            type="submit"
+                            className="w-full h-10 bg-[#b68d40] hover:bg-[#967332] active:scale-[0.98] text-white transition-all text-xs font-bold rounded-xl cursor-pointer shadow-sm flex items-center justify-center gap-1.5"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                            Create
+                          </button>
+                        </div>
                       </div>
                     </form>
 
@@ -7999,18 +8068,33 @@ Rules:
                                   </div>
 
                                   {/* Attached Photos */}
-                                  {req.photos && req.photos.length > 0 && (
-                                    <div className="space-y-1.5 pt-2 border-t border-border/20">
-                                      <p className="text-[10px] text-muted-foreground uppercase font-bold">Inspection Photo Proof:</p>
-                                      <div className="flex flex-wrap gap-2">
-                                        {req.photos.map((p: string, pIdx: number) => (
-                                          <div key={pIdx} className="relative w-16 h-16 rounded-lg overflow-hidden border border-border shadow-xs shrink-0">
-                                            <img src={p} className="w-full h-full object-cover" alt="proof" />
+                                      {req.photos && req.photos.length > 0 && (
+                                        <div className="space-y-1.5 pt-2 border-t border-border/20">
+                                          <p className="text-[10px] text-muted-foreground uppercase font-bold">Inspection Photo Proof:</p>
+                                          <div className="flex flex-wrap gap-2">
+                                            {req.photos.map((p: string, pIdx: number) => (
+                                              <div key={pIdx} className="relative w-16 h-16 rounded-lg overflow-hidden border border-border shadow-xs shrink-0 bg-muted/30">
+                                                <img
+                                                  src={resolvePhotoUrl(p)}
+                                                  className="w-full h-full object-cover cursor-pointer hover:scale-105 transition-transform duration-200"
+                                                  alt="proof"
+                                                  onClick={() => setActiveLightboxMedia({
+                                                    id: `proof_${pIdx}_${Date.now()}`,
+                                                    url: resolvePhotoUrl(p),
+                                                    type: 'image',
+                                                    name: `QC Inspection Photo Proof #${pIdx + 1}`,
+                                                    createdAt: new Date().toISOString(),
+                                                    caption: req.activityName || 'Quality Control Evidence'
+                                                  })}
+                                                  onError={(e) => {
+                                                    (e.target as HTMLImageElement).src = DEFAULT_CONSTRUCTION_PHOTO;
+                                                  }}
+                                                />
+                                              </div>
+                                            ))}
                                           </div>
-                                        ))}
-                                      </div>
-                                    </div>
-                                  )}
+                                        </div>
+                                      )}
                                 </div>
                               )}
                             </div>
