@@ -49,6 +49,7 @@ import {
   submitGrn,
   postGrnToInventory,
   updateDeliveryTrackingStatus,
+  updateFullPurchaseOrder,
   approvePurchaseOrder,
   rejectPurchaseOrder,
   sendPurchaseOrderToVendor,
@@ -668,21 +669,30 @@ export default function ProcurementPage() {
 
     setSelectedPrForPo(pr);
 
-    const defaultVendorId = quotation?.vendor_id || selection?.selected_vendor_id || data.vendors[0]?.id || '';
-    const activeQuotation: QuotationRow = quotation || {
-      id: `quote-direct-${Date.now()}`,
-      rfq_id: '',
-      vendor_id: defaultVendorId,
-      quotation_number: 'DIRECT-PO',
-      quotation_date: new Date().toISOString().split('T')[0],
-      subtotal_amount: Number(pr.subtotal_amount || pr.total_amount || 0),
-      tax_amount: 0,
-      total_amount: Number(pr.subtotal_amount || pr.total_amount || 0),
-      lead_time_days: 7,
-      payment_terms: '30 days from accepted GRN',
-      status: 'submitted',
-      created_at: new Date().toISOString(),
-    };
+    // Resolve to a REAL vendor id. RFQ Direct-PO passes a synthetic quotation whose
+    // vendor_id is a placeholder ('v-1' / a mock-supplier id) that is not a real
+    // vendors.id — inserting it would fail the purchase_orders.vendor_id FK. Trust the
+    // requested vendor only if it exists in the loaded vendors; otherwise fall back.
+    const requestedVendorId = quotation?.vendor_id || selection?.selected_vendor_id;
+    const isRealVendor = !!requestedVendorId && data.vendors.some((v) => v.id === requestedVendorId);
+    const defaultVendorId = (isRealVendor ? requestedVendorId : data.vendors[0]?.id) || '';
+
+    const activeQuotation: QuotationRow = quotation
+      ? { ...quotation, vendor_id: defaultVendorId }
+      : {
+          id: `quote-direct-${Date.now()}`,
+          rfq_id: '',
+          vendor_id: defaultVendorId,
+          quotation_number: 'DIRECT-PO',
+          quotation_date: new Date().toISOString().split('T')[0],
+          subtotal_amount: Number(pr.subtotal_amount || pr.total_amount || 0),
+          tax_amount: 0,
+          total_amount: Number(pr.subtotal_amount || pr.total_amount || 0),
+          lead_time_days: 7,
+          payment_terms: '30 days from accepted GRN',
+          status: 'submitted',
+          created_at: new Date().toISOString(),
+        };
 
     setSelectedQuotationForPo(activeQuotation);
     setSelectedVendorSelectionIdForPo(selection?.id || null);
@@ -736,10 +746,18 @@ export default function ProcurementPage() {
   async function handleGeneratePoSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!selectedPrForPo || !selectedQuotationForPo) return;
-    
+
+    // vendor_id is NOT NULL + FK to vendors — a missing/placeholder id would fail at the DB.
+    // Fail fast with a clear message instead of surfacing a raw uuid/FK error.
+    const resolvedVendorId = selectedQuotationForPo.vendor_id || data.vendors[0]?.id || '';
+    if (!resolvedVendorId || !data.vendors.some((v) => v.id === resolvedVendorId)) {
+      setError('Cannot generate PO: no valid vendor is available. Add or select a real vendor first.');
+      return;
+    }
+
     const payload: GeneratePurchaseOrderInput = {
       purchaseRequisitionId: selectedPrForPo.id,
-      vendorId: selectedQuotationForPo.vendor_id || data.vendors[0]?.id || '',
+      vendorId: resolvedVendorId,
       vendorSelectionId: selectedVendorSelectionIdForPo || undefined,
       deliveryLocation: poDeliveryLocation,
       deliveryDate: poDeliveryDate,
@@ -747,7 +765,7 @@ export default function ProcurementPage() {
       termsAndConditions: poTermsAndConditions,
       lines: poLines,
     };
-    
+
     await runAction('Direct Purchase order generated cleanly.', () => generatePurchaseOrder(payload));
     setPoModalOpen(false);
   }
@@ -976,6 +994,7 @@ export default function ProcurementPage() {
           <POWorkspace
             purchaseOrders={data.purchaseOrders}
             activeRole={activeRole as 'UPPER_MANAGEMENT' | 'PROJECT_MANAGER' | 'PR_TEAM'}
+            onSavePo={(poData) => runAction('Purchase Order details and status updated.', () => updateFullPurchaseOrder(poData))}
             onApprove={(po) => runAction(`Purchase Order ${po.po_number} approved and sent to vendor.`, async () => {
               const approved = await approvePurchaseOrder(po);
               if (approved.error) return approved;

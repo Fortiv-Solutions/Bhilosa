@@ -1600,12 +1600,14 @@ export async function generatePurchaseOrder(input: GeneratePurchaseOrderInput): 
       }
     }
 
+    const effectiveVendorId = input.vendorId || 'c1000000-0000-0000-0000-000000000001';
+
     const { data, error } = await supabase
       .from('purchase_orders')
       .insert({
         project_id: pr.project_id,
         site_id: pr.site_id,
-        vendor_id: input.vendorId,
+        vendor_id: effectiveVendorId,
         purchase_requisition_id: input.purchaseRequisitionId,
         vendor_selection_id: input.vendorSelectionId || null,
         budget_allocation_id: budgetAllocationId,
@@ -1645,6 +1647,61 @@ export async function generatePurchaseOrder(input: GeneratePurchaseOrderInput): 
 
     await supabase.from('purchase_requisitions').update({ status: 'po_issued', updated_by: profileId }).eq('id', input.purchaseRequisitionId);
     return { data: { purchaseOrderId }, error: null };
+  } catch (error) {
+    return { data: null, error: asError(error) };
+  }
+}
+
+export async function updateFullPurchaseOrder(formData: {
+  po_number: string;
+  status: string;
+  po_date?: string;
+  due_date?: string;
+  delivery_address?: string;
+  project_address?: string;
+  credit_period_days?: number;
+  note_on_po?: string;
+  remarks?: string;
+}): Promise<MutationResult> {
+  try {
+    const profileId = await currentProfileId();
+
+    const rawSt = String(formData.status || 'draft').toLowerCase();
+    let mappedStatus = 'draft';
+    if (rawSt.includes('verification') || rawSt.includes('audit') || rawSt.includes('pending')) {
+      mappedStatus = 'pending_approval';
+    } else if (rawSt.includes('issued') || rawSt.includes('sent') || rawSt.includes('approved')) {
+      mappedStatus = 'approved';
+    } else if (rawSt.includes('fulfilled') || rawSt.includes('completed')) {
+      mappedStatus = 'completed';
+    } else {
+      mappedStatus = 'draft';
+    }
+
+    const { data: existingPo } = await supabase
+      .from('purchase_orders')
+      .select('id')
+      .eq('po_number', formData.po_number)
+      .maybeSingle();
+
+    if (existingPo) {
+      const { error } = await supabase
+        .from('purchase_orders')
+        .update({
+          status: mappedStatus,
+          delivery_date: formData.due_date || formData.po_date || new Date().toISOString().split('T')[0],
+          delivery_location: formData.delivery_address || formData.project_address || null,
+          payment_terms: `${formData.credit_period_days || 30} days credit`,
+          terms_and_conditions: formData.note_on_po || formData.remarks || null,
+          updated_by: profileId,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', existingPo.id);
+
+      if (error) throw new Error(error.message);
+    }
+
+    return { data: null, error: null };
   } catch (error) {
     return { data: null, error: asError(error) };
   }
