@@ -1,4 +1,5 @@
 'use client';
+// Refreshed PO form & 5-tab system
 
 import { FormEvent, useCallback, useEffect, useState } from 'react';
 import {
@@ -23,6 +24,7 @@ import {
   Plus,
 } from 'lucide-react';
 import { isLiveSupabase } from '@/lib/erp/supabase-modules';
+import { supabase } from '@/utils/supabase-client';
 import {
   approveVendorSelection,
   assignPrToCurrentUser,
@@ -66,12 +68,16 @@ import {
 } from '@/lib/procurement';
 import { formatCurrency, statusLabel, StatusBadge, EmptyState, Panel } from '@/components/procurement/shared';
 import { PurchaseRequisitionWorkspace } from '@/components/procurement/purchase-requisition/purchase-requisition-workspace';
+import { RFQWorkspace } from '@/components/procurement/rfq/rfq-workspace';
 import { RfqWorkbench } from '@/components/procurement/rfq-workbench';
 import MaterialRequestWorkQueue from '@/components/procurement/material-request-work-queue';
 import { PurchaseOrderWorkbench } from '@/components/procurement/purchase-order-workbench';
 import { DeliveryTrackingWorkbench } from '@/components/procurement/delivery-tracking-workbench';
 import { GrnWorkbench } from '@/components/procurement/grn-workbench';
 import { InventoryWorkbench } from '@/components/procurement/inventory-workbench';
+import { POWorkspace } from '@/components/procurement/po/po-workspace';
+import { GrnWorkspace } from '@/components/procurement/grn/grn-workspace';
+import { BillsWorkspace } from '@/components/procurement/bills/bills-workspace';
 import { useAppStore } from '@/store/use-app-store';
 
 type TabId = 'requests' | 'requisitions' | 'rfq' | 'orders' | 'grn' | 'billing';
@@ -255,7 +261,7 @@ export default function ProcurementPage() {
   // Real-time Supabase Subscription for instant Sync with Mobile App & Submissions
   useEffect(() => {
     if (!liveMode) return;
-    const client = getSupabaseClient();
+    const client = supabase;
     if (!client) return;
 
     const channel = client
@@ -269,6 +275,24 @@ export default function ProcurementPage() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'purchase_requisitions' }, (payload) => {
         if (payload.eventType === 'INSERT') {
           setMessage(`⚡ Auto-Draft Purchase Requisition #${(payload.new as { pr_number?: string }).pr_number || ''} created.`);
+        }
+        void refresh();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'purchase_orders' }, (payload) => {
+        if (payload.eventType === 'INSERT') {
+          setMessage(`📦 Purchase Order #${(payload.new as { po_number?: string }).po_number || ''} created.`);
+        }
+        void refresh();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'goods_receipt_notes' }, (payload) => {
+        if (payload.eventType === 'INSERT') {
+          setMessage(`🚚 New GRN #${(payload.new as { grn_number?: string }).grn_number || ''} submitted from site.`);
+        }
+        void refresh();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'vendor_bills' }, (payload) => {
+        if (payload.eventType === 'INSERT') {
+          setMessage(`🧾 Vendor Bill #${(payload.new as { bill_number?: string }).bill_number || ''} generated.`);
         }
         void refresh();
       })
@@ -391,7 +415,7 @@ export default function ProcurementPage() {
     updatePrLinesAndRecalculate(updated);
   };
 
-  function openPrModal(mr: MaterialRequestRow, approvedLines?: ProcurementLineRow[]) {
+  async function openPrModal(mr: MaterialRequestRow, approvedLines?: ProcurementLineRow[]) {
     const allLines = mr.material_request_lines || [];
     const targetLines = approvedLines && approvedLines.length > 0 
       ? approvedLines 
@@ -399,21 +423,54 @@ export default function ProcurementPage() {
         ? allLines.filter((l) => l.line_status === 'approved_for_pr')
         : allLines;
 
-    const initialLines = targetLines.map(line => ({
-      item_description: line.item_description,
-      quantity: Number(line.quantity || 0),
-      estimated_rate: Number(line.estimated_rate || 0),
+    const initialLines = targetLines.map((line, idx) => ({
+      source_mr_id: mr.id,
+      source_mr_number: mr.mr_number,
+      mr_line_number: idx + 1,
+      material_request_line_id: line.id || null,
+      resource_type: 'material',
       item_id: line.item_id || null,
+      item_code: line.item_code || `MAT-${String(idx + 1).padStart(3, '0')}`,
+      item_group: line.item_group || 'General Construction',
+      item_description: line.item_description,
+      specification: line.specification || line.item_specification || '',
+      unit: line.unit || 'nos',
+      quantity: Number(line.quantity || 0),
+      ind_qty: Number(line.quantity || 0),
+      est_qty: Number(line.quantity || 0),
+      approved_mr_qty: Number(line.quantity || 0),
+      estimated_rate: Number(line.estimated_rate || 0),
+      line_total: Number(line.quantity || 0) * Number(line.estimated_rate || 0),
+      required_date: line.required_date || mr.required_date,
+      preferred_brand: line.preferred_brand || line.item_brand || '',
+      suggested_vendor: line.suggested_vendor || '',
+      delivery_location: line.delivery_location || mr.projects?.name || 'Site Store',
+      priority: mr.priority,
+      stock_audit: (line.project_stock ?? 0) > 0 ? 'Stock Available' : 'Stock Shortage',
+      project_and_block: mr.projects?.name ?? mr.project_id,
+      work_activity: mr.work_activity ?? 'General Site Activity',
+      activity_code: mr.activity_code ?? 'ACT-001',
+      raised_by: mr.profiles?.name ?? mr.raised_by ?? 'Site Engineer',
+      submitted_at: mr.submitted_at ?? mr.created_at,
     }));
-    setPrLines(initialLines);
+    
     const estimatedCost = initialLines.reduce((sum, line) => sum + line.quantity * line.estimated_rate, 0);
-    setSelectedMrForPr(mr);
-    setPrTitle(mr.justification || mr.mr_number);
-    setPrRequiredDate(mr.required_date);
-    setPrFinanceRequired(estimatedCost >= 500000);
-    setPrApprovalStage(estimatedCost >= 500000 ? 'upper_management' : 'pr_team');
-    setPrRemarks('');
-    setPrModalOpen(true);
+    const financeReq = estimatedCost >= 500000;
+    const stage = financeReq ? 'upper_management' : 'pr_team';
+    const title = mr.justification || mr.mr_number;
+
+    await runAction(`⚡ Draft PR created in PR section & ${mr.mr_number} converted to PR!`, () => convertMaterialRequestToPr({
+      materialRequest: mr,
+      title,
+      requiredDate: mr.required_date,
+      financeRequired: financeReq,
+      approvalStage: stage,
+      remarks: 'Auto-draft generated from Approved MR in real-time.',
+      lines: initialLines,
+    }));
+
+    setSelectedMrForPr(null);
+    setActiveTab('requests');
   }
 
   async function handleGeneratePrSubmit(e: React.FormEvent) {
@@ -604,27 +661,40 @@ export default function ProcurementPage() {
     setRecommendModalOpen(false);
   }
 
-  function openPoModal(pr: PurchaseRequisitionRow, quotation: QuotationRow, vendorSelectionId?: string | null) {
+  function openPoModal(pr: PurchaseRequisitionRow, quotation?: QuotationRow | null, vendorSelectionId?: string | null) {
     const selection = vendorSelectionId
       ? data.vendorSelections.find((candidate) => candidate.id === vendorSelectionId)
       : getSelectionForPr(pr.id);
-    if (!selection || selection.status !== 'approved') {
-      setError('PO can be generated only after upper management approves vendor finalization.');
-      return;
-    }
+
     setSelectedPrForPo(pr);
-    setSelectedQuotationForPo(quotation);
-    setSelectedVendorSelectionIdForPo(selection.id);
+
+    const defaultVendorId = quotation?.vendor_id || selection?.selected_vendor_id || data.vendors[0]?.id || '';
+    const activeQuotation: QuotationRow = quotation || {
+      id: `quote-direct-${Date.now()}`,
+      rfq_id: '',
+      vendor_id: defaultVendorId,
+      quotation_number: 'DIRECT-PO',
+      quotation_date: new Date().toISOString().split('T')[0],
+      total_amount: Number(pr.subtotal_amount || pr.total_amount || 0),
+      lead_time_days: 7,
+      payment_terms: '30 days from accepted GRN',
+      status: 'submitted',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    setSelectedQuotationForPo(activeQuotation);
+    setSelectedVendorSelectionIdForPo(selection?.id || null);
     setPoDeliveryLocation('Project site store');
     setPoDeliveryDate(pr.required_date || new Date().toISOString().split('T')[0]);
-    setPoPaymentTerms(quotation.payment_terms || '30 days from accepted GRN');
+    setPoPaymentTerms(activeQuotation.payment_terms || '30 days from accepted GRN');
     
     const lines = pr.purchase_requisition_lines || [];
     const totalQty = lines.reduce((sum, line) => sum + Number(line.quantity), 0);
-    const perLineRate = totalQty > 0 ? quotation.total_amount / totalQty : 0;
+    const perLineRate = totalQty > 0 ? (activeQuotation.total_amount / totalQty) : 0;
     
     const initialLines = lines.map((line) => {
-      const quoteLine = quotation.quotation_lines?.find(
+      const quoteLine = activeQuotation.quotation_lines?.find(
         (ql) => ql.item_description.toLowerCase() === line.item_description.toLowerCase()
       );
       const rate = quoteLine?.unit_rate ?? line.estimated_rate ?? perLineRate;
@@ -664,12 +734,12 @@ export default function ProcurementPage() {
 
   async function handleGeneratePoSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!selectedPrForPo || !selectedQuotationForPo || !selectedVendorSelectionIdForPo) return;
+    if (!selectedPrForPo || !selectedQuotationForPo) return;
     
     const payload: GeneratePurchaseOrderInput = {
       purchaseRequisitionId: selectedPrForPo.id,
-      vendorId: selectedQuotationForPo.vendor_id,
-      vendorSelectionId: selectedVendorSelectionIdForPo,
+      vendorId: selectedQuotationForPo.vendor_id || data.vendors[0]?.id || '',
+      vendorSelectionId: selectedVendorSelectionIdForPo || undefined,
       deliveryLocation: poDeliveryLocation,
       deliveryDate: poDeliveryDate,
       paymentTerms: poPaymentTerms,
@@ -677,22 +747,16 @@ export default function ProcurementPage() {
       lines: poLines,
     };
     
-    await runAction('Purchase order generated with details.', () => generatePurchaseOrder(payload));
+    await runAction('Direct Purchase order generated cleanly.', () => generatePurchaseOrder(payload));
     setPoModalOpen(false);
   }
 
   function handleGeneratePoFromPr(pr: PurchaseRequisitionRow) {
     const selection = data.vendorSelections.find(vs => vs.purchase_requisition_id === pr.id);
-    if (!selection || selection.status !== 'approved') {
-      setError('No management-approved vendor selection found for this purchase requisition.');
-      return;
-    }
-    const quotation = selection.vendor_quotations || data.quotations.find(q => q.id === selection.selected_quotation_id);
-    if (!quotation) {
-      setError('Quotation details not found for the finalized vendor selection.');
-      return;
-    }
-    openPoModal(pr, quotation, selection.id);
+    const quotation = selection
+      ? (selection.vendor_quotations || data.quotations.find(q => q.id === selection.selected_quotation_id))
+      : null;
+    openPoModal(pr, quotation, selection?.id || null);
   }
 
   async function handleCreateMaterialRequest(event: FormEvent) {
@@ -887,83 +951,79 @@ export default function ProcurementPage() {
 
       {activeTab === 'rfq' && (
         <Panel title="RFQ, Quotations, and Vendor Finalization" icon={UsersRound}>
-          <RfqWorkbench
-            rfqs={data.rfqs}
+          <RFQWorkspace
             prs={data.purchaseRequisitions}
+            rfqs={data.rfqs}
             quotations={data.quotations}
             selections={data.vendorSelections}
             purchaseOrders={data.purchaseOrders}
+            projectOptions={projectOptions}
+            activeRole={activeRole}
             selectedRfqId={selectedRfqId}
             onSelectRfq={setSelectedRfqId}
+            onCreateRfq={openRfqModal}
             onRecordQuote={openQuotationModal}
             onRecommend={openRecommendationModal}
             onApproveSelection={(selection) => runAction('Vendor finalization approved by management.', () => approveVendorSelection({ selectionId: selection.id }))}
             onGeneratePo={(pr, quotation, selection) => openPoModal(pr, quotation, selection.id)}
-            canApprove={activeRole === 'UPPER_MANAGEMENT'}
           />
         </Panel>
       )}
 
       {activeTab === 'orders' && (
-        <Panel title="Purchase Orders" icon={ShoppingCart}>
-          <PurchaseOrderWorkbench
+        <Panel title="Purchase Order Management" icon={ShoppingCart}>
+          <POWorkspace
             purchaseOrders={data.purchaseOrders}
-            prs={data.purchaseRequisitions}
-            selections={data.vendorSelections}
-            selectedPoId={selectedPoId}
-            onSelectPo={setSelectedPoId}
-            onApprovePo={(po) => runAction('PO approved.', () => approvePurchaseOrder(po))}
-            onRejectPo={(po, reason) => runAction('PO rejected.', () => rejectPurchaseOrder(po, reason))}
-            onSendPo={(po) => runAction('PO sent to vendor.', () => sendPurchaseOrderToVendor(po))}
-            onAcknowledgePo={(po) => runAction('PO acknowledged.', () => acknowledgePurchaseOrder(po))}
-            onPdf={(po) => void handlePoPdf(po)}
-            onOpenPdf={(po) => void handleOpenPoPdf(po)}
-            onTrackDelivery={(po) => runAction('Started delivery tracking.', () => trackDelivery(po))}
-            canApprove={activeRole === 'UPPER_MANAGEMENT'}
+            activeRole={activeRole as 'UPPER_MANAGEMENT' | 'PROJECT_MANAGER' | 'PR_TEAM'}
+            onApprove={(po) => runAction(`Purchase Order ${po.po_number} approved and sent to vendor.`, async () => {
+              const approved = await approvePurchaseOrder(po);
+              if (approved.error) return approved;
+              return sendPurchaseOrderToVendor(po);
+            })}
+            onPrintPo={(po) => { void (po.pdf_storage_path ? handleOpenPoPdf(po) : handlePoPdf(po)); }}
+            onRefresh={refresh}
           />
         </Panel>
       )}
 
       {activeTab === 'grn' && (
-        <Panel title="Delivery Tracking" icon={Truck}>
-          <DeliveryTrackingWorkbench
-            purchaseOrders={data.purchaseOrders}
-            deliveryTrackings={data.deliveryTrackings}
-            selectedPoId={selectedDeliveryPoId}
-            onSelectPo={setSelectedDeliveryPoId}
-            onUpdateStatus={(id, status, reason, vehicle) => runAction('Delivery status updated.', () => updateDeliveryTrackingStatus({ id, status, reason, vehicleNumber: vehicle }))}
+        <Panel title="Goods Receipt Notes & Site Gate Arrivals" icon={Truck}>
+          <GrnWorkspace
+            grns={data.grns}
+            activeRole={activeRole as 'UPPER_MANAGEMENT' | 'PROJECT_MANAGER' | 'PR_TEAM'}
+            onApproveGrn={(grnId) => {
+              const grn = data.grns.find((g) => g.id === grnId);
+              if (!grn) return;
+              void (async () => {
+                setError(null);
+                setMessage(null);
+                // Step 1 (required): post the GRN to inventory — direct status update, always available.
+                const posted = await postGrnToInventory({ grnId });
+                if (posted.error) { setError(posted.error.message); return; }
+                // Step 2 (best-effort): auto-generate the vendor bill. This uses the
+                // submit_vendor_bill_from_grn pipeline RPC + vendor_bills table which are
+                // provisioned by the reconciliation migration; until then, degrade gracefully.
+                const bill = await createVendorBillFromGrn(grn);
+                setMessage(
+                  bill.error
+                    ? `GRN ${grn.grn_number} approved and posted to inventory. (Vendor bill auto-generation is pending the pipeline RPC/migration.)`
+                    : `GRN ${grn.grn_number} approved — inventory updated and vendor bill generated.`,
+                );
+                await refresh();
+              })();
+            }}
+            onRefresh={refresh}
           />
         </Panel>
       )}
 
       {activeTab === 'billing' && (
-        <Panel title="Goods Receipt Notes" icon={PackageCheck}>
-          <GrnWorkbench
-            purchaseOrders={data.purchaseOrders}
-            grns={data.grns}
-            selectedPoId={selectedGrnPoId}
-            onSelectPo={setSelectedGrnPoId}
-            onPostGrn={(grnId) => runAction('GRN posted to inventory.', () => postGrnToInventory({ grnId }))}
-            onCreateGrn={(po) => {
-              setSelectedPoForGrn(po);
-              setGrnLines(po.purchase_order_lines?.map(l => ({
-                item_id: l.item_id || '',
-                ordered_qty: l.quantity,
-                received_qty: l.quantity,
-                accepted_qty: l.quantity,
-                rejected_qty: 0,
-                unit_rate: l.unit_rate || 0,
-                remarks: ''
-              })) || []);
-              setGrnModalOpen(true);
-            }}
+        <Panel title="Vendor Bills & 3-Way Matching" icon={ReceiptIndianRupee}>
+          <BillsWorkspace
+            bills={data.vendorBills}
+            activeRole={activeRole as 'UPPER_MANAGEMENT' | 'PROJECT_MANAGER' | 'PR_TEAM'}
+            onRefresh={refresh}
           />
-        </Panel>
-      )}
-
-      {activeTab === 'inventory' && (
-        <Panel title="Inventory Impact" icon={Warehouse}>
-          <InventoryWorkbench snapshots={data.inventorySnapshots} />
         </Panel>
       )}
 

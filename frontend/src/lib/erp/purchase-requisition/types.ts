@@ -35,7 +35,8 @@ export type PrWorkflowStatus =
   | 'on_hold'
   | 'rfq_sent'
   | 'vendor_selected'
-  | 'po_issued';
+  | 'po_issued'
+  | 'auto_draft_pr';
 
 export type PrType = 'material' | 'service' | 'labour_contract' | 'equipment_hire' | 'mixed';
 export type PrPriority = 'normal' | 'urgent' | 'critical';
@@ -209,6 +210,9 @@ export interface PrFormState {
   internal_notes: string;
   terms_and_conditions: string;
   department: string;
+  // end of form fields
+  unlocked_project?: number;
+  prepared_by?: string;
   // Cost summary adjustments
   discount_amount: number;
   freight_amount: number;

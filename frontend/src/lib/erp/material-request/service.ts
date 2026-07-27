@@ -48,63 +48,54 @@ const ZERO_STATS: MrStats = {
 };
 
 export async function listMaterialRequestsPaged(params: MrPagedParams): Promise<MrPagedResult> {
-  if (!isLiveSupabase()) {
-    let list = [...mockMaterialRequestsStore];
+  try {
+    const { data, error } = await supabase.rpc('search_material_requests', {
+      p_project_id: params.projectId || null,
+      p_status: params.status || null,
+      p_priority: params.priority || null,
+      p_assigned_reviewer: params.reviewerId || null,
+      p_my_requests: !!params.myRequests,
+      p_pending_my_approval: !!params.pendingMyApproval,
+      p_search: params.search?.trim() || null,
+      p_date_from: params.dateFrom || null,
+      p_date_to: params.dateTo || null,
+      p_sort: params.sort || 'newest',
+      p_limit: params.pageSize,
+      p_offset: (params.page - 1) * params.pageSize,
+    });
 
-    if (params.search && params.search.trim()) {
-      const q = params.search.toLowerCase();
-      list = list.filter(mr => 
-        mr.mr_number.toLowerCase().includes(q) ||
-        (mr.work_activity && mr.work_activity.toLowerCase().includes(q)) ||
-        (mr.profiles?.name && mr.profiles.name.toLowerCase().includes(q)) ||
-        mr.material_request_lines.some(l => l.item_description.toLowerCase().includes(q))
-      );
+    if (!error && data) {
+      const payload = data as { total: number; rows: MaterialRequestRow[] };
+      return { rows: payload.rows ?? [], total: Number(payload.total ?? 0) };
     }
-
-    if (params.status && params.status !== 'all') {
-      list = list.filter(mr => mr.status === params.status);
-    }
-
-    if (params.priority && params.priority !== 'all') {
-      list = list.filter(mr => mr.priority === params.priority);
-    }
-
-    return { rows: list, total: list.length };
+  } catch {
+    /* fallback to direct table select */
   }
 
-  const { data, error } = await supabase.rpc('search_material_requests', {
-    p_project_id: params.projectId || null,
-    p_status: params.status || null,
-    p_priority: params.priority || null,
-    p_assigned_reviewer: params.reviewerId || null,
-    p_my_requests: !!params.myRequests,
-    p_pending_my_approval: !!params.pendingMyApproval,
-    p_search: params.search?.trim() || null,
-    p_date_from: params.dateFrom || null,
-    p_date_to: params.dateTo || null,
-    p_sort: params.sort || 'newest',
-    p_limit: params.pageSize,
-    p_offset: (params.page - 1) * params.pageSize,
-  });
+  let query = supabase
+    .from('material_requests')
+    .select('*, material_request_lines(*), profiles!material_requests_raised_by_fkey(name, email), projects(name), project_sites(name)', { count: 'exact' })
+    .is('deleted_at', null)
+    .order('created_at', { ascending: false });
 
-  if (error) throw new Error(error.message);
-  const payload = (data ?? { total: 0, rows: [] }) as { total: number; rows: MaterialRequestRow[] };
-  return { rows: payload.rows ?? [], total: Number(payload.total ?? 0) };
+  if (params.projectId && params.projectId !== 'all') {
+    query = query.eq('project_id', params.projectId);
+  }
+  if (params.status && params.status !== 'all') {
+    query = query.eq('status', params.status);
+  }
+  if (params.priority && params.priority !== 'all') {
+    query = query.eq('priority', params.priority);
+  }
+
+  const { data, count, error } = await query.range((params.page - 1) * params.pageSize, params.page * params.pageSize - 1);
+  if (error) return { rows: [], total: 0 };
+  return { rows: (data ?? []) as MaterialRequestRow[], total: count ?? (data?.length || 0) };
 }
 
 export async function getMaterialRequestStats(projectId?: string | null): Promise<MrStats> {
   if (!isLiveSupabase()) {
-    const list = mockMaterialRequestsStore;
-    return {
-      total: list.length,
-      pending: list.filter(m => m.status === 'submitted' || m.status === 'in_review').length,
-      critical: list.filter(m => m.priority === 'critical' || m.priority === 'high').length,
-      overdue: 0,
-      underReview: list.filter(m => m.status === 'in_review').length,
-      clarification: list.filter(m => m.status === 'draft').length,
-      fulfilled: list.filter(m => m.status === 'closed' || m.stock_decision === 'available').length,
-      converted: list.filter(m => m.status === 'approved').length,
-    };
+    return ZERO_STATS;
   }
 
   const { data, error } = await supabase.rpc('material_request_stats', { p_project_id: projectId || null });

@@ -205,7 +205,6 @@ export function PrForm(props: PrFormProps) {
 
             <div className="flex items-center gap-3">
               <PrStatusBadge status={form.status} />
-              <BudgetStatusBadge status={budget.status} />
             </div>
           </div>
 
@@ -253,48 +252,7 @@ export function PrForm(props: PrFormProps) {
             )}
           </div>
 
-          {/* AI Procurement & Sourcing Intelligence Banner */}
-          <div className="rounded-xl border border-blue-500/30 bg-gradient-to-r from-blue-950/10 via-indigo-950/10 to-purple-950/10 p-4 text-xs space-y-3 shadow-2xs">
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-blue-500/20 pb-2">
-              <div className="flex items-center gap-2">
-                <div className="flex h-6 w-6 items-center justify-center rounded-lg bg-blue-500/20 text-blue-500">
-                  <Sparkles className="h-3.5 w-3.5" />
-                </div>
-                <span className="font-heading font-bold text-foreground text-xs uppercase tracking-wider">
-                  AI Procurement Intelligence &amp; Risk Audit
-                </span>
-              </div>
-              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2.5 py-0.5 text-[10px] font-extrabold text-emerald-600 dark:text-emerald-400">
-                <CheckCircle2 className="h-3 w-3" /> Risk Score: LOW (98% Verification Score)
-              </span>
-            </div>
 
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-              <div className="rounded-lg border border-border/60 bg-background/70 p-2.5 space-y-1">
-                <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1">
-                  <ShieldCheck className="h-3 w-3 text-emerald-500" /> Budget Verification
-                </p>
-                <p className="font-semibold text-foreground">₹{summary.totalEstimatedCost.toLocaleString('en-IN')} Requested</p>
-                <p className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">Within Activity Budget allowance (₹4.5L max)</p>
-              </div>
-
-              <div className="rounded-lg border border-border/60 bg-background/70 p-2.5 space-y-1">
-                <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1">
-                  <Clock className="h-3 w-3 text-blue-500" /> Lead Time Analysis
-                </p>
-                <p className="font-semibold text-foreground">Required in {form.required_date ? '7 Days' : '14 Days'}</p>
-                <p className="text-[11px] text-blue-600 dark:text-blue-400 font-medium">Avg Vendor Lead Time: 3-4 days (On Schedule)</p>
-              </div>
-
-              <div className="rounded-lg border border-border/60 bg-background/70 p-2.5 space-y-1">
-                <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1">
-                  <Bot className="h-3 w-3 text-purple-500" /> AI Sourcing Engine
-                </p>
-                <p className="font-semibold text-foreground">Top Vendor Recommendation</p>
-                <p className="text-[11px] text-purple-600 dark:text-purple-400 font-medium">UltraTech &amp; Tata Tiscon (4.9★ • Best Rates)</p>
-              </div>
-            </div>
-          </div>
 
           {/* Section 1: PR Identification & Details */}
           <div className="space-y-3">
@@ -305,13 +263,9 @@ export function PrForm(props: PrFormProps) {
             <div className="grid grid-cols-1 gap-x-4 gap-y-3 md:grid-cols-2 lg:grid-cols-4">
               <Field label="Purchase Requisition (PR) No."><div className={READONLY}>{form.pr_number || 'Auto'}</div></Field>
               <Field label="P.R. Date" required><input type="date" value={form.pr_date} onChange={(e) => update({ pr_date: e.target.value })} className={FIELD} /></Field>
-              <Field label="PR Release Date"><input type="date" value={form.pr_release_date ?? ''} onChange={(e) => update({ pr_release_date: e.target.value || null })} className={FIELD} /></Field>
-              <Field label="Status"><div className={READONLY}>{form.status === 'draft' ? 'Draft' : form.status}</div></Field>
-              
-              <Field label="Prepared By"><input value={form.department || 'Rohan Mehta (Site Eng)'} onChange={(e) => update({ department: e.target.value })} placeholder="Prepared by name" className={FIELD} /></Field>
               <Field label="Name of Company" required><input value={form.company_name} onChange={(e) => update({ company_name: e.target.value })} placeholder="From selected MR" className={FIELD} /></Field>
               <Field label="Project Name" required>
-                <select value={form.project_id} onChange={(e) => update({ project_id: e.target.value })} className={FIELD} disabled={sourceChips.length > 0}>
+                <select value={form.project_id} onChange={(e) => update({ project_id: e.target.value })} className={FIELD}>
                   <option value="">Select project…</option>
                   {projectOptions.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
@@ -419,6 +373,57 @@ export function PrForm(props: PrFormProps) {
             </div>
           </div>
 
+          {/* Section 4: Release & Verification Parameters */}
+          <div className="space-y-3 pt-4 border-t border-border/60">
+            <div className="font-heading text-xs font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
+              <Bot className="h-3.5 w-3.5 text-primary" /> Release &amp; Verification Parameters
+            </div>
+
+            <div className="grid grid-cols-1 gap-x-4 gap-y-3 md:grid-cols-2 lg:grid-cols-4">
+              <Field label="Unlocked Project">
+                <input
+                  type="number"
+                  step="0.01"
+                  value={form.unlocked_project ?? 1.00}
+                  onChange={(e) => update({ unlocked_project: Number(e.target.value) })}
+                  className={FIELD}
+                />
+              </Field>
+
+              <Field label="Prepared By">
+                <input
+                  type="text"
+                  value={form.prepared_by ?? form.department ?? 'Rohan Mehta (Site Eng)'}
+                  onChange={(e) => update({ prepared_by: e.target.value, department: e.target.value })}
+                  placeholder="Prepared by name"
+                  className={FIELD}
+                />
+              </Field>
+
+              <Field label="PR Release Date">
+                <input
+                  type="text"
+                  value={form.pr_release_date ?? '20/07/2026 16:29'}
+                  onChange={(e) => update({ pr_release_date: e.target.value })}
+                  placeholder="20/07/2026 16:29"
+                  className={FIELD}
+                />
+              </Field>
+
+              <Field label="Status">
+                <select
+                  value={form.status}
+                  onChange={(e) => update({ status: e.target.value as any })}
+                  className={FIELD}
+                >
+                  <option value="auto_draft_pr">auto draft from PR</option>
+                  <option value="under_verification">Pending For verification</option>
+                  <option value="approved">Approved</option>
+                </select>
+              </Field>
+            </div>
+          </div>
+
         </div>
       </fieldset>
 
@@ -453,9 +458,9 @@ export function PrForm(props: PrFormProps) {
                     props.onSendForVerification?.();
                   }
                 }}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700 shadow-sm transition-colors"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-600 bg-emerald-50 px-3.5 py-2 text-xs font-bold text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-950/40 dark:text-emerald-300 transition-colors"
               >
-                <CheckCircle2 className="h-4 w-4" /> Send for Verification
+                <CheckCircle2 className="h-4 w-4" /> Create PR / Send for Quotation
               </button>
             )}
           </div>

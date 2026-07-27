@@ -198,7 +198,10 @@ export default function MaterialRequestWorkQueue({
               activeRole={activeRole}
               onClose={() => setSelectedMrId(null)}
               onAction={runAction}
-              onConvertToPr={onConvertToPr}
+              onConvertToPr={(mr, lines) => {
+                onConvertToPr(mr, lines);
+                setSelectedMrId(null);
+              }}
             />
           )}
         </div>

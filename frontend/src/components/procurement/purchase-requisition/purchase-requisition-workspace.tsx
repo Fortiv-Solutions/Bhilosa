@@ -26,6 +26,10 @@ import { PrForm, type SourceMrChip } from './pr-form';
 import { PrConfirmModal, type PrConfirmConfig } from './pr-confirm-modal';
 import { AssignApprovalModal, type AssignApprovalPayload } from './assign-approval-modal';
 import { PrHistoryDrawer } from './pr-history-drawer';
+import { PRStatsBar } from './pr-stats-bar';
+import { PRRequestsFilterBar, DEFAULT_PR_FILTERS, type PrFiltersState } from './pr-requests-filter-bar';
+import { PRTableView } from './pr-table-view';
+import { Pagination } from '../pagination';
 
 interface PendingFile { file: File; category: string; }
 
@@ -68,7 +72,8 @@ function blankForm(projectId: string): PrFormState {
     contractor_applicable: false, contractor_name: '', vendor_code: '', contract_reference: '',
     scope_of_service: '', contact_person: '', contact_number: '',
     delivery_address: '', site_contact_person: '', site_contact_number: '', delivery_instructions: '',
-    general_remarks: '', internal_notes: '', terms_and_conditions: '', department: '',
+    general_remarks: '', internal_notes: '', terms_and_conditions: '', department: 'Rohan Mehta (Site Eng)',
+    unlocked_project: 1.00, prepared_by: 'Rohan Mehta (Site Eng)',
     discount_amount: 0, freight_amount: 0, other_charges: 0, contingency_amount: 0,
     lines: [],
   };
@@ -129,11 +134,84 @@ function mrRowToLines(row: ApprovedMrRow): PrFormLine[] {
     }));
 }
 
+function prRowToFormState(row: PurchaseRequisitionRow): PrFormState {
+  return {
+    id: row.id,
+    pr_number: row.pr_number || null,
+    status: (row.status as PrFormState['status']) || 'draft',
+    pr_date: String(row.created_at || row.requested_date || new Date().toISOString()).slice(0, 10),
+    company_name: row.company_name || 'Pramukh Group Infrastructure Ltd.',
+    project_id: row.project_id || 'central-park',
+    site_id: row.site_id || null,
+    pr_type: (row.pr_type as PrFormState['pr_type']) || 'material',
+    priority: (row.priority as PrFormState['priority']) || 'normal',
+    required_date: String(row.required_date || '').slice(0, 10),
+    pr_release_date: row.pr_release_date ? String(row.pr_release_date).slice(0, 10) : null,
+    budget_applicable: row.budget_applicable !== false,
+    budget_head_id: row.budget_head_id || null,
+    cost_code_id: row.cost_code_id || null,
+    cost_centre: row.cost_centre || '',
+    activity_name: row.activity_name || '',
+    activity_code: row.activity_code || '',
+    wbs_code: row.wbs_code || '',
+    over_budget_justification: row.over_budget_justification || '',
+    contractor_applicable: Boolean(row.contractor_name),
+    contractor_name: row.contractor_name || '',
+    vendor_code: row.vendor_code || '',
+    contract_reference: row.contract_reference || '',
+    scope_of_service: row.scope_of_service || '',
+    contact_person: row.contact_person || '',
+    contact_number: row.contact_number || '',
+    delivery_address: row.delivery_address || '',
+    site_contact_person: row.site_contact_person || '',
+    site_contact_number: row.site_contact_number || '',
+    delivery_instructions: row.delivery_instructions || '',
+    general_remarks: row.general_remarks || '',
+    internal_notes: row.internal_notes || '',
+    terms_and_conditions: row.terms_and_conditions || '',
+    department: row.department || '',
+    unlocked_project: (row as any).unlocked_project != null ? Number((row as any).unlocked_project) : 1.00,
+    prepared_by: (row as any).prepared_by || row.department || 'Rohan Mehta (Site Eng)',
+    discount_amount: Number(row.discount_amount || 0),
+    freight_amount: Number(row.freight_amount || 0),
+    other_charges: Number(row.other_charges || 0),
+    contingency_amount: Number(row.contingency_amount || 0),
+    lines: (row.purchase_requisition_lines || []).map((l, idx) => ({
+      key: `line-${l.id || idx}`,
+      source_mr_id: l.source_mr_id || null,
+      source_mr_number: l.source_mr_number || null,
+      mr_line_number: l.mr_line_number || null,
+      material_request_line_id: l.material_request_line_id || null,
+      resource_type: l.resource_type || 'material',
+      item_id: l.item_id || null,
+      item_code: l.item_code || '',
+      item_group: l.item_group || null,
+      item_description: l.item_description || '',
+      specification: l.specification || null,
+      approved_mr_qty: l.approved_mr_qty || null,
+      prev_pr_qty: Number(l.prev_pr_qty || 0),
+      remaining_mr_qty: l.remaining_mr_qty || null,
+      pr_quantity: Number(l.quantity || 0),
+      unit: l.unit || 'nos',
+      estimated_rate: Number(l.estimated_rate || 0),
+      tax_rate: Number(l.tax_rate || 18),
+      required_date: l.required_date || null,
+      preferred_brand: l.preferred_brand || null,
+      suggested_vendor: l.suggested_vendor || null,
+      delivery_location: l.delivery_location || null,
+      remarks: l.remarks || null,
+      is_non_mr_item: Boolean(l.is_non_mr_item),
+      non_mr_justification: l.non_mr_justification || null,
+      is_modified: Boolean(l.is_modified),
+    })),
+  };
+}
+
 export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspaceProps) {
   const { projectOptions, onRefresh, onMessage, onError } = props;
 
-  // FORM MODE DEFAULT ON LANDING
-  const [mode, setMode] = useState<'list' | 'form'>('form');
+  // LIST MODE DEFAULT ON LANDING PAGE
+  const [mode, setMode] = useState<'list' | 'form'>('list');
   const [form, setForm] = useState<PrFormState | null>(() => blankForm(projectOptions[0]?.id ?? ''));
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [approvedMrs, setApprovedMrs] = useState<ApprovedMrRow[]>([]);
@@ -149,6 +227,75 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
   const [assignOpen, setAssignOpen] = useState(false);
   const [workflowBusy, setWorkflowBusy] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  // List view filters & pagination
+  const [prFilters, setPrFilters] = useState<PrFiltersState>(DEFAULT_PR_FILTERS);
+  const [page, setPage] = useState(1);
+  const PAGE_SIZE = 15;
+
+  const filteredRows = useMemo(() => {
+    let result = [...props.rows];
+
+    // Quick Tabs
+    const todayStr = new Date().toISOString().slice(0, 10);
+    if (prFilters.tab === 'today') {
+      result = result.filter((r) => (r.created_at || r.requested_date || '').slice(0, 10) === todayStr);
+    } else if (prFilters.tab === 'pending') {
+      result = result.filter((r) => r.status === 'draft' || r.status === 'under_verification' || r.status === 'pending_approval');
+    } else if (prFilters.tab === 'auto_drafts') {
+      result = result.filter((r) => r.status === 'draft' || r.purchase_requisition_lines?.some((l) => l.source_mr_number));
+    } else if (prFilters.tab === 'approved') {
+      result = result.filter((r) => r.status === 'approved');
+    }
+
+    // Search query
+    if (prFilters.search.trim()) {
+      const q = prFilters.search.toLowerCase();
+      result = result.filter(
+        (r) =>
+          (r.pr_number || '').toLowerCase().includes(q) ||
+          (r.company_name || '').toLowerCase().includes(q) ||
+          (r.activity_name || '').toLowerCase().includes(q) ||
+          (r.department || '').toLowerCase().includes(q) ||
+          (r.general_remarks || '').toLowerCase().includes(q) ||
+          r.purchase_requisition_lines?.some(
+            (l) => (l.item_description || '').toLowerCase().includes(q) || (l.source_mr_number || '').toLowerCase().includes(q)
+          )
+      );
+    }
+
+    // Project filter
+    if (prFilters.projectId !== 'all') {
+      result = result.filter((r) => r.project_id === prFilters.projectId);
+    }
+
+    // Status filter
+    if (prFilters.status !== 'all') {
+      result = result.filter((r) => r.status === prFilters.status);
+    }
+
+    // Priority filter
+    if (prFilters.priority !== 'all') {
+      result = result.filter((r) => r.priority === prFilters.priority);
+    }
+
+    // Sort
+    if (prFilters.sortBy === 'newest') {
+      result.sort((a, b) => new Date(b.created_at || b.requested_date || 0).getTime() - new Date(a.created_at || a.requested_date || 0).getTime());
+    } else if (prFilters.sortBy === 'oldest') {
+      result.sort((a, b) => new Date(a.created_at || a.requested_date || 0).getTime() - new Date(b.created_at || b.requested_date || 0).getTime());
+    } else if (prFilters.sortBy === 'amount_desc') {
+      result.sort((a, b) => Number(b.total_amount || b.subtotal_amount || 0) - Number(a.total_amount || a.subtotal_amount || 0));
+    }
+
+    return result;
+  }, [props.rows, prFilters]);
+
+  const pagedRows = useMemo(() => {
+    const start = (page - 1) * PAGE_SIZE;
+    return filteredRows.slice(start, start + PAGE_SIZE);
+  }, [filteredRows, page]);
+
+  const totalPages = Math.ceil(filteredRows.length / PAGE_SIZE) || 1;
 
   const loadApprovedMrs = useCallback(async () => {
     setLoadingApproved(true);
@@ -188,14 +335,35 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
   }, [projectOptions, loadApprovedMrs]);
 
   const editPr = useCallback(async (prId: string) => {
-    const res = await getPurchaseRequisitionForm(prId);
-    if (res.error || !res.data) { onError(res.error?.message ?? 'Unable to load PR.'); return; }
-    setForm(res.data);
-    setPendingFiles([]);
-    setLastSavedAt(null);
-    setMode('form');
-    void loadApprovedMrs();
-  }, [onError, loadApprovedMrs]);
+    // 1. Check local loaded rows / mock store first
+    const localRow = props.rows.find((r) => r.id === prId);
+    if (localRow) {
+      setForm(prRowToFormState(localRow));
+      setPendingFiles([]);
+      setLastSavedAt(null);
+      setMode('form');
+      void loadApprovedMrs();
+      return;
+    }
+
+    // 2. Fallback to API/DB fetch if not found locally
+    try {
+      const res = await getPurchaseRequisitionForm(prId);
+      if (res.data) {
+        setForm(res.data);
+        setPendingFiles([]);
+        setLastSavedAt(null);
+        setMode('form');
+        void loadApprovedMrs();
+        return;
+      }
+      if (res.error) {
+        onError(res.error.message);
+      }
+    } catch (e) {
+      onError(e instanceof Error ? e.message : 'Unable to load PR.');
+    }
+  }, [props.rows, onError, loadApprovedMrs]);
 
   const update = useCallback((patch: Partial<PrFormState>) => setForm((f) => (f ? { ...f, ...patch } : f)), []);
 
@@ -294,13 +462,13 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
       const res = await savePurchaseRequisition(form, { submit });
       if (res.error || !res.data) { onError(res.error?.message ?? 'Save failed.'); return; }
       setLastSavedAt(new Date().toLocaleTimeString());
-      onMessage(submit ? `PR ${res.data.prNumber} sent for verification!` : `PR ${res.data.prNumber} saved as draft.`);
+      const updatedStatus = res.data.status || (submit ? 'under_verification' : 'draft');
+      setForm((f) => (f ? { ...f, id: res.data!.purchaseRequisitionId, pr_number: res.data!.prNumber, status: updatedStatus as any } : f));
+      onMessage(submit ? `PR ${res.data.prNumber} sent for verification — RFQ auto-drafted!` : `PR ${res.data.prNumber} status updated to Draft.`);
       await onRefresh();
       if (submit) {
         setMode('list');
         setForm(null);
-      } else if (!form.id) {
-        setForm((f) => (f ? { ...f, id: res.data!.purchaseRequisitionId, pr_number: res.data!.prNumber } : f));
       }
     } finally {
       setSaving(false);
@@ -317,8 +485,7 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
         try {
           const patch = opts?.patch ? opts.patch(reason) : undefined;
           const assignedTo = form.status === 'pending_approval' && newStatus === 'approved' ? null : undefined;
-          const res = await transitionPurchaseRequisition({
-            prId,
+          const res = await transitionPurchaseRequisition(prId, {
             action: config.title,
             newStatus: newStatus as any,
             comment: reason,
@@ -346,13 +513,19 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
     setWorkflowBusy(true);
     try {
       const targetStatus = form.status === 'under_verification' ? 'pending_approval' : null;
-      const res = await transitionPurchaseRequisition({
-        prId: form.id,
+      const res = await transitionPurchaseRequisition(form.id, {
         action: 'Assign PR for approval',
         newStatus: targetStatus,
         comment: payload.instruction,
-        assignment: { assignedTo: payload.assignedTo, role: payload.role, instruction: payload.instruction },
-        notify: payload.notifyUser,
+        assignment: {
+          assignedTo: payload.approverId,
+          role: payload.approverRole,
+          level: payload.level,
+          dueDate: payload.dueDate,
+          priority: payload.priority,
+          instruction: payload.instruction,
+        },
+        notify: payload.notify,
       });
       if (res.error) { onError(res.error.message); return; }
       onMessage('PR assigned successfully!');
@@ -380,8 +553,9 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
     }
   }, [form, onError, onMessage, onRefresh]);
 
-  const canManage = props.activeRole === 'UPPER_MANAGEMENT' || props.activeRole === 'PROJECT_MANAGER' || props.activeRole === 'PR_TEAM' || props.activeRole === 'ADMIN';
-  const canApprove = props.activeRole === 'UPPER_MANAGEMENT' || props.activeRole === 'PROJECT_MANAGER' || props.activeRole === 'PROJECT_DIRECTOR' || props.activeRole === 'ADMIN';
+  // Roles like ADMIN / PROJECT_DIRECTOR are normalised to UPPER_MANAGEMENT upstream (see lib/roles.ts).
+  const canManage = props.activeRole === 'UPPER_MANAGEMENT' || props.activeRole === 'PROJECT_MANAGER' || props.activeRole === 'PR_TEAM';
+  const canApprove = props.activeRole === 'UPPER_MANAGEMENT' || props.activeRole === 'PROJECT_MANAGER';
 
   const reviewComputed = useMemo(() => {
     if (!form) return { requireComment: false };
@@ -443,12 +617,15 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
   // ---- FORM MODE (DEFAULT ON LANDING) ----
   if (mode === 'form' && form) {
     const editable = isPrEditable(form.status);
+    const isAutoDraft = ['auto_draft', 'auto_draft_pr', 'auto draft from PR', 'draft', 'returned_to_draft'].includes(form.status);
     const editActions = (
       <>
         {form.id && ['draft', 'returned_to_draft'].includes(form.status) && (
           <button onClick={handleDeleteDraft} className={DANGER}><Trash2 className="h-4 w-4" /> Delete Draft</button>
         )}
-        <button onClick={() => void persist(false)} disabled={saving} className={OUTLINE}><Save className="h-4 w-4" /> {saving ? 'Saving…' : 'Save Draft'}</button>
+        <button onClick={() => void persist(false)} disabled={saving} className={PRIMARY}>
+          <Save className="h-4 w-4" /> {saving ? 'Saving…' : 'Save as Draft'}
+        </button>
       </>
     );
     return (
@@ -536,44 +713,59 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
   // ---- LIST MODE ----
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border bg-card p-2 shadow-sm">
+      {/* Alerts & Reminders Stats Bar */}
+      <PRStatsBar
+        rows={props.rows}
+        onSelectTab={(tab) => { setPrFilters((prev) => ({ ...prev, tab })); setPage(1); }}
+        onSelectPriority={(priority) => { setPrFilters((prev) => ({ ...prev, priority })); setPage(1); }}
+      />
+
+      {/* Top Header & Actions Bar */}
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border bg-card p-2.5 shadow-sm">
         <div className="flex items-center gap-2 px-1 text-xs text-muted-foreground">
           <ListChecks className="h-4 w-4 text-primary" />
-          <span className="font-semibold text-foreground">{props.rows.length}</span> purchase requisition(s)
+          <span className="font-bold text-foreground font-heading">{filteredRows.length}</span> purchase requisition(s) displayed
+          {filteredRows.length !== props.rows.length && (
+            <span>(Filtered from {props.rows.length} total)</span>
+          )}
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={startNewPr} className="inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-bold text-primary-foreground hover:bg-primary/90">
-            <Plus className="h-3.5 w-3.5" /> + New PR Form
+          <button
+            onClick={startNewPr}
+            className="inline-flex h-8.5 items-center gap-1.5 rounded-lg bg-primary px-3.5 text-xs font-bold text-primary-foreground hover:bg-primary/90 transition-all shadow-sm"
+          >
+            <Plus className="h-4 w-4" /> Open New PR Form
           </button>
         </div>
       </div>
 
-      {props.rows.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-border bg-card py-16 text-center">
-          <Layers className="mx-auto h-10 w-10 text-muted-foreground/40" />
-          <p className="mt-3 text-sm font-semibold text-muted-foreground">No purchase requisitions yet</p>
-          <p className="mt-1 mb-4 text-xs text-muted-foreground/70 font-medium">Use the PR form to import from an approved Material Requisition.</p>
-          <button onClick={startNewPr} className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 text-xs font-bold text-primary-foreground hover:bg-primary/90">
-            <Plus className="h-3.5 w-3.5" /> Open PR Form
-          </button>
-        </div>
-      ) : (
-        <PurchaseRequisitionWorkbench
-          rows={props.rows}
-          attachments={props.attachments}
-          materialRequests={props.materialRequests}
-          rfqs={props.rfqs}
-          quotations={props.quotations}
-          selections={props.selections}
-          selectedPrId={props.selectedPrId}
-          onSelectPr={props.onSelectPr}
-          onAssign={props.onAssign}
-          onApprove={props.onApprove}
-          onRfq={props.onRfq}
-          onPdf={props.onPdf}
-          onOpenPdf={props.onOpenPdf}
-          onGeneratePo={props.onGeneratePo}
-          onEdit={editPr}
+      {/* Search, Filter & Quick Tabs Bar */}
+      <PRRequestsFilterBar
+        filters={prFilters}
+        onChangeFilters={(patch) => {
+          setPrFilters((prev) => ({ ...prev, ...patch }));
+          setPage(1);
+        }}
+        projectOptions={props.projectOptions}
+        totalCount={props.rows.length}
+        filteredCount={filteredRows.length}
+      />
+
+      {/* High-Density Scalable Table View */}
+      <PRTableView
+        rows={pagedRows}
+        onEdit={editPr}
+        onOpenPdf={props.onOpenPdf}
+        onApprove={props.onApprove}
+      />
+
+      {/* Pagination Controls for 100+ requests/month */}
+      {totalPages > 1 && (
+        <Pagination
+          page={page}
+          pageSize={PAGE_SIZE}
+          total={filteredRows.length}
+          onPageChange={setPage}
         />
       )}
     </div>

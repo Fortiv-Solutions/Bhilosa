@@ -64,3 +64,6 @@ __pycache__/
 # Media and screen recordings
 *.mp4
 /frames/
+
+# Reference report templates (kept local, not committed)
+Procurement_Report_Formate/

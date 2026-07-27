@@ -132,15 +132,7 @@ export function MRFilterBar({
           </button>
         )}
 
-        {/* Primary Action Buttons */}
-        <div className="flex items-center gap-1.5 ml-auto">
-          <button
-            onClick={onOpenCreateModal}
-            className="inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-bold text-primary-foreground hover:bg-primary/90 transition-all shadow-xs"
-          >
-            <Plus className="h-3.5 w-3.5" /> Raise Request
-          </button>
-        </div>
+
 
       </div>
     </div>

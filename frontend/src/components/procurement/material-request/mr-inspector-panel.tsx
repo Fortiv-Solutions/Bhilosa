@@ -113,7 +113,7 @@ export function MRInspectorPanel({
   const isManagement = activeRole === 'UPPER_MANAGEMENT';
   const overdue = isOverdue(mr.required_date) && mr.status !== 'closed' && mr.status !== 'rejected' && mr.status !== 'cancelled';
   const canAct = mr.status !== 'closed' && mr.status !== 'rejected' && mr.status !== 'cancelled';
-  const canConvert = canAct && mr.status !== 'approved';
+  const canConvert = canAct;
   const lines = mr.material_request_lines ?? [];
 
   const updateLineStatus = (lineId: string, status: 'approved_for_pr' | 'fulfilled_from_stock' | 'rejected') => {
@@ -121,6 +121,18 @@ export function MRInspectorPanel({
       ...prev,
       [lineId]: prev[lineId] === status ? 'pending' : status,
     }));
+  };
+
+  const selectAllForPr = () => {
+    const updated: Record<string, 'approved_for_pr' | 'fulfilled_from_stock' | 'rejected' | 'pending'> = {};
+    lines.forEach((l) => { updated[l.id] = 'approved_for_pr'; });
+    setLineStatuses(updated);
+  };
+
+  const selectAllForStock = () => {
+    const updated: Record<string, 'approved_for_pr' | 'fulfilled_from_stock' | 'rejected' | 'pending'> = {};
+    lines.forEach((l) => { updated[l.id] = 'fulfilled_from_stock'; });
+    setLineStatuses(updated);
   };
 
   const approvedLineCount = Object.values(lineStatuses).filter((s) => s === 'approved_for_pr').length;
@@ -133,116 +145,94 @@ export function MRInspectorPanel({
     setActionLoading(false);
   }
 
+  const statusConfig = STATUS_CONFIG[mr.status] ?? { label: mr.status, className: 'bg-gray-100 text-gray-800' };
+  const priorityConfig = PRIORITY_CONFIG[mr.priority] ?? { label: 'Medium', className: 'bg-amber-100 text-amber-800' };
+  const PriorityIcon = priorityConfig.icon;
+
   return (
     <>
-      {/* Semi-transparent backdrop — Click outside to close */}
       <div
         onClick={onClose}
         className="fixed inset-0 z-40 bg-black/40 backdrop-blur-xs transition-opacity animate-in fade-in duration-200"
         aria-hidden="true"
       />
 
-      {/* ENTERPRISE RIGHT SLIDE-OVER DRAWER (Fixed Right 0, 720px width) */}
       <div
         className="fixed inset-y-0 right-0 z-50 flex w-full max-w-2xl flex-col bg-card border-l border-border shadow-2xl animate-in slide-in-from-right duration-300 overflow-hidden"
         role="dialog"
         aria-modal="true"
       >
         {/* DRAWER HEADER */}
-        <div className="flex items-center justify-between border-b border-border bg-muted/60 px-5 py-4">
+        <div className="flex items-center justify-between border-b border-border bg-muted/40 px-5 py-4">
           <div className="flex items-center gap-3">
-            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary font-bold">
-              <FileText className="h-5 w-5" />
-            </span>
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary font-bold shadow-2xs">
+              <ShoppingCart className="h-5 w-5" />
+            </div>
             <div>
               <div className="flex items-center gap-2">
-                <h3 className="font-heading text-lg font-bold text-foreground">{mr.mr_number}</h3>
-                <span className={`inline-flex rounded-md border px-2.5 py-0.5 text-xs font-bold uppercase ${STATUS_CONFIG[mr.status]?.className}`}>
-                  {STATUS_CONFIG[mr.status]?.label ?? mr.status}
-                </span>
-                <span className={`inline-flex items-center gap-1 rounded-md border px-2.5 py-0.5 text-xs font-bold uppercase ${PRIORITY_CONFIG[mr.priority]?.className}`}>
-                  {PRIORITY_CONFIG[mr.priority]?.label}
+                <h3 className="font-heading text-base font-bold text-foreground tracking-tight">{mr.mr_number}</h3>
+                <span className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[10px] font-bold ${statusConfig.className}`}>
+                  {statusConfig.label}
                 </span>
               </div>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                Submitted by <strong className="text-foreground">{mr.profiles?.name ?? 'Site Team'}</strong> • {formatAge(mr.created_at)}
+              <p className="text-xs text-muted-foreground font-medium">
+                Raised by {mr.profiles?.name ?? mr.raised_by ?? 'Site Engineer'} • {formatAge(mr.created_at)}
               </p>
             </div>
           </div>
-
           <button
             onClick={onClose}
-            className="rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-            title="Close Drawer (Esc)"
+            className="rounded-lg border border-border p-2 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           >
-            <X className="h-5 w-5" />
+            <X className="h-4 w-4" />
           </button>
         </div>
 
-        {/* DRAWER SCROLLABLE BODY */}
-        <div className="flex-1 overflow-y-auto p-5 space-y-5 text-xs">
+        {/* DRAWER BODY: SCROLLABLE MAIN CONTENT */}
+        <div className="flex-1 overflow-y-auto p-5 space-y-5">
           
-          {/* Status Badges Row */}
-          <div className="flex flex-wrap items-center gap-2">
-            {mr.stock_decision === 'available' ? (
-              <span className="inline-flex rounded-md bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 border border-emerald-200 px-2.5 py-1 text-xs font-bold uppercase">
-                Stock Available
+          {/* Overdue Warning */}
+          {overdue && (
+            <div className="flex items-center gap-2.5 rounded-xl border border-red-200 bg-red-50 dark:bg-red-950/30 p-3 text-xs text-red-800 dark:text-red-300 font-medium">
+              <AlertTriangle className="h-4 w-4 text-red-600 shrink-0" />
+              <span>
+                <strong>Overdue Warning:</strong> Required date was {formatDate(mr.required_date)}. Please expedite verification.
               </span>
-            ) : (
-              <span className="inline-flex rounded-md bg-amber-100 text-amber-800 dark:bg-amber-950/40 border border-amber-200 px-2.5 py-1 text-xs font-bold uppercase">
-                Stock Shortage
+            </div>
+          )}
+
+          {/* Quick Info Cards Grid */}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div className="rounded-xl border border-border bg-background p-3 space-y-1">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1">
+                <Building2 className="h-3 w-3" /> Project
               </span>
-            )}
-
-            {overdue && (
-              <span className="inline-flex items-center gap-1 rounded-md bg-red-100 text-red-700 dark:bg-red-950/40 border border-red-200 px-2.5 py-1 text-xs font-bold">
-                <AlertTriangle className="h-3 w-3" /> Overdue
-              </span>
-            )}
-
-            {linkedPr && (
-              <span className="inline-flex items-center gap-1 rounded-md bg-sky-100 text-sky-800 dark:bg-sky-950/40 border border-sky-200 px-2.5 py-1 text-xs font-bold">
-                <ShoppingCart className="h-3 w-3" /> {linkedPr.pr_number}
-              </span>
-            )}
-          </div>
-
-          {/* Requester & Site Context Box */}
-          <div className="rounded-xl border border-border bg-background p-4 space-y-3">
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <span className="text-[10px] font-bold uppercase text-muted-foreground block">Raised By</span>
-                <span className="font-bold text-foreground flex items-center gap-1.5 mt-0.5 text-sm">
-                  <User className="h-4 w-4 text-primary" />
-                  {mr.profiles?.name ?? 'Site Engineer'}
-                </span>
-                <span className="text-[11px] text-muted-foreground block">{mr.profiles?.email ?? ''}</span>
-              </div>
-
-              <div>
-                <span className="text-[10px] font-bold uppercase text-muted-foreground block">Required On Site</span>
-                <span className={`font-bold flex items-center gap-1 mt-0.5 text-sm ${overdue ? 'text-red-500' : 'text-foreground'}`}>
-                  <Calendar className="h-4 w-4" />
-                  {formatDate(mr.required_date)}
-                </span>
-                <span className="text-[10px] text-muted-foreground block">{overdue ? '⚠️ Overdue' : 'On Schedule'}</span>
-              </div>
+              <p className="font-bold text-xs text-foreground truncate">{mr.projects?.name ?? mr.project_id}</p>
             </div>
 
-            <div className="border-t border-border/80 pt-2.5 grid grid-cols-2 gap-3">
-              <div>
-                <span className="text-[10px] font-bold uppercase text-muted-foreground block">Project Location</span>
-                <span className="font-semibold text-foreground flex items-center gap-1 mt-0.5">
-                  <Building2 className="h-3.5 w-3.5 text-primary" />
-                  {mr.projects?.name ?? '—'}
-                </span>
-                <span className="text-[10px] text-muted-foreground block">{mr.site_block ?? mr.project_sites?.name ?? 'Main Site'}</span>
-              </div>
+            <div className="rounded-xl border border-border bg-background p-3 space-y-1">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1">
+                <Calendar className="h-3 w-3" /> Required By
+              </span>
+              <p className={`font-bold text-xs ${overdue ? 'text-red-600 dark:text-red-400' : 'text-foreground'}`}>
+                {formatDate(mr.required_date)}
+              </p>
+            </div>
 
-              <div>
-                <span className="text-[10px] font-bold uppercase text-muted-foreground block">Work Activity</span>
-                <span className="font-semibold text-foreground mt-0.5 block">{mr.work_activity ?? '—'}</span>
-              </div>
+            <div className="rounded-xl border border-border bg-background p-3 space-y-1">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1">
+                Priority
+              </span>
+              <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-bold ${priorityConfig.className}`}>
+                <PriorityIcon className="h-3 w-3" /> {priorityConfig.label}
+              </span>
+            </div>
+
+            <div className="rounded-xl border border-border bg-background p-3 space-y-1">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1">
+                Work Activity
+              </span>
+              <p className="font-bold text-xs text-foreground truncate">{mr.work_activity ?? 'General Site Construction'}</p>
             </div>
           </div>
 
@@ -276,13 +266,24 @@ export function MRInspectorPanel({
                 <h4 className="font-heading text-xs font-bold text-foreground flex items-center gap-1.5">
                   <Boxes className="h-4 w-4 text-primary" /> Line Item Decision Options ({lines.length} Items)
                 </h4>
-                <p className="text-[10px] text-muted-foreground">Approve or reject individual products based on material availability.</p>
+                <p className="text-[10px] text-muted-foreground">Select item decision or choose bulk action below.</p>
               </div>
 
-              <div className="flex items-center gap-1.5 text-[11px]">
-                <span className="rounded bg-emerald-100 text-emerald-800 px-2 py-0.5 font-bold">✓ {approvedLineCount}</span>
-                <span className="rounded bg-blue-100 text-blue-800 px-2 py-0.5 font-bold">📦 {fulfilledLineCount}</span>
-                <span className="rounded bg-red-100 text-red-800 px-2 py-0.5 font-bold">✕ {rejectedLineCount}</span>
+              <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                <button
+                  type="button"
+                  onClick={selectAllForPr}
+                  className="rounded bg-emerald-600 text-white px-2.5 py-1 text-[10px] font-bold hover:bg-emerald-700 transition-colors shadow-2xs"
+                >
+                  ✓ Select All ({lines.length}) for PR
+                </button>
+                <button
+                  type="button"
+                  onClick={selectAllForStock}
+                  className="rounded bg-blue-600 text-white px-2.5 py-1 text-[10px] font-bold hover:bg-blue-700 transition-colors shadow-2xs"
+                >
+                  📦 Select All ({lines.length}) for Stock
+                </button>
               </div>
             </div>
 
@@ -358,11 +359,9 @@ export function MRInspectorPanel({
                                   ? 'bg-emerald-600 text-white shadow-xs'
                                   : 'border border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100'
                               }`}
-                              title="Approve item for Purchase Requisition"
                             >
                               Approve PR
                             </button>
-
                             <button
                               onClick={() => updateLineStatus(l.id, 'fulfilled_from_stock')}
                               className={`px-2 py-1 rounded font-bold text-[10px] transition-all ${
@@ -370,11 +369,9 @@ export function MRInspectorPanel({
                                   ? 'bg-blue-600 text-white shadow-xs'
                                   : 'border border-blue-300 bg-blue-50 text-blue-800 hover:bg-blue-100'
                               }`}
-                              title="Fulfill item from local stock"
                             >
-                              Stock Issue
+                              Issue Stock
                             </button>
-
                             <button
                               onClick={() => updateLineStatus(l.id, 'rejected')}
                               className={`px-2 py-1 rounded font-bold text-[10px] transition-all ${
@@ -382,13 +379,11 @@ export function MRInspectorPanel({
                                   ? 'bg-red-600 text-white shadow-xs'
                                   : 'border border-red-300 bg-red-50 text-red-800 hover:bg-red-100'
                               }`}
-                              title="Reject item due to availability"
                             >
                               Reject
                             </button>
                           </div>
                         </td>
-
                       </tr>
                     );
                   })}
@@ -397,10 +392,10 @@ export function MRInspectorPanel({
             </div>
           </div>
 
-          {/* FORMS */}
+          {/* Action Modals / Embedded forms */}
           {activeForm === 'clarify' && (
             <div className="rounded-xl border border-amber-200 bg-amber-50 dark:bg-amber-950/30 p-3 space-y-2">
-              <label className="font-bold text-amber-800 dark:text-amber-400 block">Ask Clarification from Site Engineer</label>
+              <label className="font-bold text-amber-800 dark:text-amber-400 block">Clarification Details</label>
               <textarea
                 value={clarificationInput}
                 onChange={(e) => setClarificationInput(e.target.value)}
@@ -492,15 +487,18 @@ export function MRInspectorPanel({
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex flex-wrap items-center gap-2">
                 
-                {approvedLineCount > 0 && canConvert && !linkedPr && (
+                {canConvert && (
                   <button
                     onClick={() => {
                       const approvedLines = lines.filter((l) => lineStatuses[l.id] === 'approved_for_pr');
                       onConvertToPr(mr, approvedLines.length > 0 ? approvedLines : lines);
                     }}
-                    className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-xs font-bold text-primary-foreground hover:bg-primary/90 shadow-md transition-all"
+                    className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700 shadow-md transition-all"
                   >
-                    <ShoppingCart className="h-4 w-4" /> Convert {approvedLineCount} Approved Item{approvedLineCount > 1 ? 's' : ''} to PR
+                    <ShoppingCart className="h-4 w-4" />
+                    {approvedLineCount > 0
+                      ? `Approve & Create Draft PR (${approvedLineCount} Item${approvedLineCount > 1 ? 's' : ''})`
+                      : `Approve All (${lines.length} Items) & Create Draft PR`}
                   </button>
                 )}
 

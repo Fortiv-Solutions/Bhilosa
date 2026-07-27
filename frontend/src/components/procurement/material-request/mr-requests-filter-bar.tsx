@@ -104,9 +104,6 @@ export function MRRequestsFilterBar({
           <button onClick={onRefresh} disabled={loading} title="Refresh" className="inline-flex h-8 items-center gap-1 rounded-md border border-border bg-background px-2.5 text-xs font-bold hover:bg-muted disabled:opacity-50">
             <RefreshCcw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
           </button>
-          <button onClick={onOpenCreate} className="inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-bold text-primary-foreground hover:bg-primary/90">
-            <Plus className="h-3.5 w-3.5" /> Raise Request
-          </button>
         </div>
       </div>
 

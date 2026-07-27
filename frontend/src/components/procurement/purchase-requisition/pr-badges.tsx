@@ -15,10 +15,11 @@ interface StatusMeta {
 
 const STATUS_META: Record<string, StatusMeta> = {
   draft: { label: 'Draft', cls: 'bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-800/50 dark:text-slate-300 dark:border-slate-700' },
-  under_verification: { label: 'Under Verification', cls: 'bg-blue-100 text-blue-700 border-blue-200 dark:bg-blue-950/40 dark:text-blue-300 dark:border-blue-800' },
+  under_verification: { label: 'Pending For verification', cls: 'bg-blue-100 text-blue-700 border-blue-200 dark:bg-blue-950/40 dark:text-blue-300 dark:border-blue-800' },
   awaiting_assignment: { label: 'Awaiting Assignment', cls: 'bg-indigo-100 text-indigo-700 border-indigo-200 dark:bg-indigo-950/40 dark:text-indigo-300 dark:border-indigo-800' },
   pending_approval: { label: 'Pending Approval', cls: 'bg-amber-100 text-amber-800 border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800' },
   approved: { label: 'Approved', cls: 'bg-emerald-100 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800' },
+  auto_draft_pr: { label: 'Auto-Draft', cls: 'bg-purple-100 text-purple-700 border-purple-200 dark:bg-purple-950/40 dark:text-purple-300 dark:border-purple-800' },
   pending_procurement: { label: 'Pending Procurement', cls: 'bg-teal-100 text-teal-700 border-teal-200 dark:bg-teal-950/40 dark:text-teal-300 dark:border-teal-800' },
   closed: { label: 'Closed', cls: 'bg-green-100 text-green-700 border-green-200 dark:bg-green-950/40 dark:text-green-300 dark:border-green-800' },
   returned_to_draft: { label: 'Returned to Draft', cls: 'bg-orange-100 text-orange-700 border-orange-200 dark:bg-orange-950/40 dark:text-orange-300 dark:border-orange-800' },
@@ -58,6 +59,8 @@ export function PriorityBadge({ priority }: { priority?: PrPriority | string | n
   const meta = PRIORITY_META[String(priority || 'normal')] ?? PRIORITY_META.normal;
   return <span className={`${BADGE_BASE} ${meta.cls}`}>{meta.label}</span>;
 }
+
+export { PriorityBadge as PrPriorityBadge };
 
 const BUDGET_META: Record<string, StatusMeta> = {
   within_budget: { label: 'Within Budget', cls: 'bg-emerald-100 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800' },

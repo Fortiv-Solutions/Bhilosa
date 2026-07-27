@@ -518,7 +518,40 @@ type ProjectModuleData = Pick<
 
 export const users: User[] = [];
 
-export const mockProjects: ProjectSite[] = [];
+export const mockProjects: ProjectSite[] = [
+  {
+    id: 'central-park',
+    name: 'Central Park',
+    clientName: 'Pramukh Group',
+    location: 'Ring Road, Surat',
+    projectValue: 450000000,
+    startDate: '2024-01-15',
+    endDate: '2026-12-31',
+    progress: 68,
+    currentPhase: 'Execution',
+    status: 'Active',
+    budget: 450000000,
+    actualSpend: 28400000,
+    propertyType: 'Residential & Commercial',
+    overview: 'Luxury Residential & Commercial Towers on Ring Road, Surat.',
+    image: '/images/projects/central-park.png',
+    dailyActivities: [],
+    materials: [],
+    boqItems: [],
+    procurements: [],
+    workforceLogs: [],
+    equipmentLogs: [],
+    safetyIncidents: [],
+    tasks: [],
+    documents: [],
+    chats: [],
+    qcItems: [],
+    invoices: [],
+    teamMembers: [],
+    labourRecords: [],
+    equipments: [],
+  },
+];
 
 export const aiAnalyticsInsights: {
   id: string;

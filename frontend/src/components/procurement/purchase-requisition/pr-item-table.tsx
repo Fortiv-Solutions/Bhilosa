@@ -170,19 +170,21 @@ export function PrItemTable({
 
                   {/* 8. Item Code */}
                   <td className={`${TD} font-mono text-foreground font-medium`}>
-                    {line.is_non_mr_item && !readOnly ? (
+                    {!readOnly ? (
                       <input value={line.item_code ?? ''} onChange={(e) => onChangeLine(line.key, { item_code: e.target.value })} className={`${INPUT} w-24`} />
                     ) : (line.item_code || 'MAT-CEM-001')}
                   </td>
 
                   {/* 9. Item Group */}
                   <td className={TD}>
-                    {line.item_group || 'Cement & Concrete'}
+                    {!readOnly ? (
+                      <input value={line.item_group ?? ''} onChange={(e) => onChangeLine(line.key, { item_group: e.target.value })} className={`${INPUT} w-28`} />
+                    ) : (line.item_group || 'Cement & Concrete')}
                   </td>
 
                   {/* 10. Item Description */}
                   <td className={TD}>
-                    {line.is_non_mr_item && !readOnly ? (
+                    {!readOnly ? (
                       <input value={line.item_description} onChange={(e) => onChangeLine(line.key, { item_description: e.target.value })} placeholder="Item description" className={`${INPUT} min-w-[180px]`} />
                     ) : (
                       <span className="font-semibold text-foreground">{line.item_description}</span>
@@ -191,8 +193,8 @@ export function PrItemTable({
 
                   {/* 11. Units (Mandatory) */}
                   <td className={`${TD} font-medium`}>
-                    {line.is_non_mr_item && !readOnly ? (
-                      <input value={line.unit} onChange={(e) => onChangeLine(line.key, { unit: e.target.value })} className={`${INPUT} w-14`} />
+                    {!readOnly ? (
+                      <input value={line.unit} onChange={(e) => onChangeLine(line.key, { unit: e.target.value })} className={`${INPUT} w-16`} />
                     ) : (line.unit || 'Bags')}
                   </td>
 

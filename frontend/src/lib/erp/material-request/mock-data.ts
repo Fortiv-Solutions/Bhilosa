@@ -33,8 +33,8 @@ export const INITIAL_MOCK_MATERIAL_REQUESTS: MaterialRequestRow[] = [
     management_comment_at: new Date(Date.now() - 3600000 * 2).toISOString(),
     management_comment_by: 'u1',
     material_request_lines: [
-      { id: 'mrl-1', item_description: 'OPC 53 Grade Cement', quantity: 500, unit_rate: 380, estimated_rate: 380, line_total: 190000 },
-      { id: 'mrl-2', item_description: 'Fe 550D TMT Reinforcement Steel 12mm', quantity: 15, unit_rate: 62000, estimated_rate: 62000, line_total: 930000 }
+      { id: 'mrl-1', item_description: 'OPC 53 Grade Cement', quantity: 500, unit: 'Bags', required_date: '2026-07-25', unit_rate: 380, estimated_rate: 380, line_total: 190000 },
+      { id: 'mrl-2', item_description: 'Fe 550D TMT Reinforcement Steel 12mm', quantity: 15, unit: 'MT', required_date: '2026-07-25', unit_rate: 62000, estimated_rate: 62000, line_total: 930000 }
     ],
     profiles: { name: 'Rohan Mehta (Site Eng)', email: 'site.eng@pramukh.com' },
     projects: { name: 'Central Park' },
@@ -68,8 +68,8 @@ export const INITIAL_MOCK_MATERIAL_REQUESTS: MaterialRequestRow[] = [
     management_comment_at: null,
     management_comment_by: null,
     material_request_lines: [
-      { id: 'mrl-3', item_description: 'Washed River Sand (Plaster Grade)', quantity: 40, unit_rate: 1800, estimated_rate: 1800, line_total: 72000 },
-      { id: 'mrl-4', item_description: 'UltraTech PPC Cement', quantity: 300, unit_rate: 360, estimated_rate: 360, line_total: 108000 }
+      { id: 'mrl-3', item_description: 'Washed River Sand (Plaster Grade)', quantity: 40, unit: 'Brass', required_date: '2026-07-24', unit_rate: 1800, estimated_rate: 1800, line_total: 72000 },
+      { id: 'mrl-4', item_description: 'UltraTech PPC Cement', quantity: 300, unit: 'Bags', required_date: '2026-07-24', unit_rate: 360, estimated_rate: 360, line_total: 108000 }
     ],
     profiles: { name: 'Mayur Vyas (CM)', email: 'mayur.vyas@pramukh.com' },
     projects: { name: 'Orbit 4' },

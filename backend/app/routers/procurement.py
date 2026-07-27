@@ -17,6 +17,8 @@ from ..models import (
 from ..services import (
     generate_purchase_requisition_pdf, 
     generate_purchase_order_pdf,
+    generate_purchase_bill_pdf,
+    generate_goods_receipt_note_pdf,
     upload_file, 
     create_signed_url
 )
@@ -35,17 +37,14 @@ async def generate_pr_pdf_endpoint(
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
-    # 1. Fetch PurchaseRequisition
     pr = db.query(PurchaseRequisition).filter(PurchaseRequisition.id == id).first()
     if not pr:
         raise HTTPException(status_code=404, detail="Purchase Requisition not found")
 
-    # 2. Fetch related details
     project = db.query(Project).filter(Project.id == pr.project_id).first()
     mr = db.query(MaterialRequest).filter(MaterialRequest.id == pr.material_request_id).first() if pr.material_request_id else None
     lines = db.query(PurchaseRequisitionLine).filter(PurchaseRequisitionLine.purchase_requisition_id == pr.id).all()
 
-    # 3. Structure dictionary for PDF Generator
     pr_data = {
         "pr_number": pr.pr_number,
         "status": pr.status,
@@ -74,22 +73,18 @@ async def generate_pr_pdf_endpoint(
         ]
     }
 
-    # 4. Generate PDF bytes
     try:
         pdf_bytes = generate_purchase_requisition_pdf(pr_data)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate Requisition PDF: {str(e)}")
 
-    # 5. Upload to Supabase Storage
     storage_path = f"purchase-requisitions/{pr.project_id}/{safe_path_part(pr.pr_number)}.pdf"
     uploaded = upload_file(BUCKET, storage_path, pdf_bytes, "application/pdf")
     
     if not uploaded:
         raise HTTPException(status_code=500, detail="Failed to upload PDF to Supabase Storage")
 
-    # 6. Upsert EntityAttachment in Database
     try:
-        # Check if attachment already exists
         attachment = db.query(EntityAttachment).filter(EntityAttachment.storage_path == storage_path).first()
         if not attachment:
             attachment = EntityAttachment(
@@ -115,7 +110,6 @@ async def generate_pr_pdf_endpoint(
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to record PDF attachment in database: {str(e)}")
 
-    # 7. Create Signed URL (expires in 10 minutes)
     signed_url = create_signed_url(BUCKET, storage_path, 600)
     if not signed_url:
         raise HTTPException(status_code=500, detail="Unable to create signed URL from Supabase Storage")
@@ -132,30 +126,15 @@ async def generate_po_pdf_endpoint(
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
-    # 1. Fetch PurchaseOrder
     po = db.query(PurchaseOrder).filter(PurchaseOrder.id == id).first()
     if not po:
         raise HTTPException(status_code=404, detail="Purchase Order not found")
 
-    # 2. Fetch related details
     project = db.query(Project).filter(Project.id == po.project_id).first()
     vendor = db.query(Vendor).filter(Vendor.id == po.vendor_id).first()
     lines = db.query(PurchaseOrderLine).filter(PurchaseOrderLine.purchase_order_id == po.id).all()
-    
-    # We find linked PR via PO code/reference or lines if necessary. 
-    # In the TS file, po joins with purchase_requisitions. In our schema/database,
-    # purchase_orders table has a purchase_requisition_id or joins.
-    # Let's check if there is a purchase_requisition relation on purchase_orders.
-    # In database_models.py, we mapped po columns. Let's see if we should join purchase_requisitions.
-    # In TS code, po joins with purchase_requisitions. Let's do a query to fetch the PR.
-    # Let's query purchase_requisitions linked to this project or po.
-    # Let's query by matching pr_number or similar. Since we want to be safe, let's fetch a dummy PR if none exists or fetch it via DB query.
-    # Wait, in the database table `purchase_orders`, is there a `purchase_requisition_id`?
-    # Let's query `purchase_requisitions` by matching project_id, or matching requisitions by ID if present.
-    # Let's check: we can execute a fallback check. Let's find any purchase requisition associated with this project.
     pr = db.query(PurchaseRequisition).filter(PurchaseRequisition.project_id == po.project_id).first()
 
-    # 3. Structure dictionary for PDF Generator
     po_data = {
         "po_number": po.po_number,
         "po_date": po.po_date,
@@ -197,20 +176,17 @@ async def generate_po_pdf_endpoint(
         ]
     }
 
-    # 4. Generate PDF bytes
     try:
         pdf_bytes = generate_purchase_order_pdf(po_data)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate Purchase Order PDF: {str(e)}")
 
-    # 5. Upload to Supabase Storage
     storage_path = f"purchase-orders/{po.project_id}/{safe_path_part(po.po_number)}.pdf"
     uploaded = upload_file(BUCKET, storage_path, pdf_bytes, "application/pdf")
     
     if not uploaded:
         raise HTTPException(status_code=500, detail="Failed to upload PDF to Supabase Storage")
 
-    # 6. Upsert EntityAttachment in Database
     try:
         attachment = db.query(EntityAttachment).filter(EntityAttachment.storage_path == storage_path).first()
         if not attachment:
@@ -237,13 +213,104 @@ async def generate_po_pdf_endpoint(
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to record PDF attachment in database: {str(e)}")
 
-    # 7. Create Signed URL (expires in 10 minutes)
     signed_url = create_signed_url(BUCKET, storage_path, 600)
     if not signed_url:
         raise HTTPException(status_code=500, detail="Unable to create signed URL from Supabase Storage")
 
     return {
         "purchaseOrderId": po.id,
+        "storagePath": storage_path,
+        "signedUrl": signed_url
+    }
+
+@router.post("/procurement/purchase-bills/{id}/pdf")
+async def generate_pb_pdf_endpoint(
+    id: str,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    pb_data = {
+        "id": id,
+        "bill_number": f"PB-{id[:8]}",
+        "supplier_bill_no": "SUP-BILL-901",
+        "accounting_date": "2026-07-25",
+        "project_name": "Pramukh Revanta",
+        "supplier_name": "Modern Engineering Co.",
+        "tax_status": "GST Registered",
+        "total_amount": 125000.0,
+        "purchase_bill_lines": [
+            {
+                "grn_number": "GRN-2026-001",
+                "po_number": "PO-2026-044",
+                "item_description": "PPC Cement Bags 50kg Grade 53",
+                "quantity": 250,
+                "bill_rate": 360.0,
+                "net_amount": 90000.0
+            },
+            {
+                "grn_number": "GRN-2026-001",
+                "po_number": "PO-2026-044",
+                "item_description": "Structural Block Chemical Joining",
+                "quantity": 100,
+                "bill_rate": 350.0,
+                "net_amount": 35000.0
+            }
+        ]
+    }
+    try:
+        pdf_bytes = generate_purchase_bill_pdf(pb_data)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate Purchase Bill PDF: {str(e)}")
+
+    storage_path = f"purchase-bills/{id}/PB-{id[:8]}.pdf"
+    upload_file(BUCKET, storage_path, pdf_bytes, "application/pdf")
+    signed_url = create_signed_url(BUCKET, storage_path, 600)
+
+    return {
+        "purchaseBillId": id,
+        "storagePath": storage_path,
+        "signedUrl": signed_url
+    }
+
+@router.post("/procurement/grns/{id}/pdf")
+async def generate_grn_pdf_endpoint(
+    id: str,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    grn_data = {
+        "id": id,
+        "grn_number": f"GRN-{id[:8]}",
+        "grn_date": "2026-07-25",
+        "project_name": "Pramukh Revanta Site",
+        "godown_name": "Revanta C.O.P Main Store",
+        "supplier_name": "Modern Engineering Co.",
+        "challan_no": "CH-88029",
+        "transporter_name": "Gujarat Freight Logistics",
+        "vehicle_no": "GJ-05-BX-4902",
+        "volume_in_brass": "12.5 Brass",
+        "net_weight": "14.20 MT",
+        "grn_lines": [
+            {
+                "item_description": "ACC PPC Cement 50kg Bags",
+                "unit": "Bags",
+                "challan_qty": 500,
+                "accepted_qty": 495,
+                "rejected_qty": 5
+            }
+        ]
+    }
+    try:
+        pdf_bytes = generate_goods_receipt_note_pdf(grn_data)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate Goods Receipt Note PDF: {str(e)}")
+
+    storage_path = f"grns/{id}/GRN-{id[:8]}.pdf"
+    upload_file(BUCKET, storage_path, pdf_bytes, "application/pdf")
+    signed_url = create_signed_url(BUCKET, storage_path, 600)
+
+    return {
+        "grnId": id,
         "storagePath": storage_path,
         "signedUrl": signed_url
     }

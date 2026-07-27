@@ -9,8 +9,8 @@ export const isSupabaseConfigured = Boolean(
   supabaseUrl &&
     supabaseAnonKey &&
     !supabaseUrl.includes('your-project') &&
-    supabaseAnonKey !== 'your-publishable-key' &&
-    !supabaseAnonKey.includes('...'),
+    !supabaseUrl.includes('invalid') &&
+    supabaseAnonKey !== 'your-publishable-key',
 );
 
 export const supabase = createClient(
