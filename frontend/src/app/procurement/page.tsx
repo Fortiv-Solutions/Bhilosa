@@ -675,12 +675,13 @@ export default function ProcurementPage() {
       vendor_id: defaultVendorId,
       quotation_number: 'DIRECT-PO',
       quotation_date: new Date().toISOString().split('T')[0],
+      subtotal_amount: Number(pr.subtotal_amount || pr.total_amount || 0),
+      tax_amount: 0,
       total_amount: Number(pr.subtotal_amount || pr.total_amount || 0),
       lead_time_days: 7,
       payment_terms: '30 days from accepted GRN',
       status: 'submitted',
       created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
     };
 
     setSelectedQuotationForPo(activeQuotation);

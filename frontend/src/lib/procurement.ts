@@ -1533,34 +1533,33 @@ export async function generatePurchaseOrder(input: GeneratePurchaseOrderInput): 
       }
     }
 
-    const { data: existingPo, error: existingPoError } = await supabase
-      .from('purchase_orders')
-      .select('id')
-      .eq('vendor_selection_id', input.vendorSelectionId)
-      .is('deleted_at', null)
-      .limit(1)
-      .maybeSingle();
+    if (input.vendorSelectionId) {
+      const { data: existingPo, error: existingPoError } = await supabase
+        .from('purchase_orders')
+        .select('id')
+        .eq('vendor_selection_id', input.vendorSelectionId)
+        .is('deleted_at', null)
+        .limit(1)
+        .maybeSingle();
 
-    if (existingPoError) throw new Error(existingPoError.message);
-    if (existingPo) throw new Error('A purchase order already exists for this approved vendor selection.');
+      if (existingPoError) throw new Error(existingPoError.message);
+      if (existingPo) throw new Error('A purchase order already exists for this approved vendor selection.');
+    }
 
-    const selectionQuotation = Array.isArray(selected.vendor_quotations)
-      ? selected.vendor_quotations[0]
-      : selected.vendor_quotations;
     const sourceLines = input.lines && input.lines.length > 0
       ? input.lines
-      : selectionQuotation?.quotation_lines?.map((line) => ({
+      : (selectedQuotation?.quotation_lines || []).map((line: ProcurementLineRow) => ({
           item_id: line.item_id ?? null,
           item_description: line.item_description,
           quantity: Number(line.quantity || 0),
           unit_rate: Number(line.unit_rate || 0),
           tax_rate: Number(line.tax_rate || 0),
           line_total: Number(line.line_total || 0),
-        })) ?? [];
+        }));
 
-    if (sourceLines.length === 0) throw new Error('PO cannot be generated without approved quotation lines.');
+    if (sourceLines.length === 0) throw new Error('PO cannot be generated without purchase order lines.');
 
-    const normalizedLines = sourceLines.map((line) => {
+    const normalizedLines = sourceLines.map((line: { item_id?: string | null; item_description: string; quantity: number; unit_rate: number; tax_rate: number; line_total?: number }) => {
       const quantity = Number(line.quantity || 0);
       const unitRate = Number(line.unit_rate || 0);
       const taxRate = Number(line.tax_rate || 0);
@@ -1577,8 +1576,8 @@ export async function generatePurchaseOrder(input: GeneratePurchaseOrderInput): 
       };
     });
 
-    const subtotalAmount = normalizedLines.reduce((sum, line) => sum + line.line_total, 0);
-    const taxAmount = normalizedLines.reduce((sum, line) => sum + line.line_total * (line.tax_rate / 100), 0);
+    const subtotalAmount = normalizedLines.reduce((sum: number, line: { line_total: number }) => sum + line.line_total, 0);
+    const taxAmount = normalizedLines.reduce((sum: number, line: { line_total: number; tax_rate: number }) => sum + line.line_total * (line.tax_rate / 100), 0);
     const totalAmount = subtotalAmount + taxAmount;
     let budgetAllocationId = (pr as { budget_allocation_id?: string | null }).budget_allocation_id ?? null;
 
@@ -1592,12 +1591,13 @@ export async function generatePurchaseOrder(input: GeneratePurchaseOrderInput): 
         .order('updated_at', { ascending: false })
         .limit(50);
 
-      if (allocationError) throw new Error(allocationError.message);
-      const matchingAllocation = (matchingAllocations ?? []).find((allocation) => {
-        const available = Number(allocation.allocated_amount || 0) - Number(allocation.committed_amount || 0) - Number(allocation.spent_amount || 0);
-        return available >= totalAmount;
-      });
-      budgetAllocationId = matchingAllocation?.id ?? null;
+      if (!allocationError && matchingAllocations) {
+        const matchingAllocation = (matchingAllocations ?? []).find((allocation) => {
+          const available = Number(allocation.allocated_amount || 0) - Number(allocation.committed_amount || 0) - Number(allocation.spent_amount || 0);
+          return available >= totalAmount;
+        });
+        budgetAllocationId = matchingAllocation?.id ?? null;
+      }
     }
 
     const { data, error } = await supabase
@@ -1607,7 +1607,7 @@ export async function generatePurchaseOrder(input: GeneratePurchaseOrderInput): 
         site_id: pr.site_id,
         vendor_id: input.vendorId,
         purchase_requisition_id: input.purchaseRequisitionId,
-        vendor_selection_id: input.vendorSelectionId,
+        vendor_selection_id: input.vendorSelectionId || null,
         budget_allocation_id: budgetAllocationId,
         po_number: sequence('PO'),
         po_date: today(),
@@ -1618,7 +1618,7 @@ export async function generatePurchaseOrder(input: GeneratePurchaseOrderInput): 
         subtotal_amount: subtotalAmount,
         tax_amount: taxAmount,
         total_amount: totalAmount,
-        status: 'pending_approval',
+        status: 'draft',
         created_by: profileId,
         updated_by: profileId,
       })
@@ -1628,7 +1628,7 @@ export async function generatePurchaseOrder(input: GeneratePurchaseOrderInput): 
     const purchaseOrderId = (data as { id: string }).id;
 
     const { error: lineError } = await supabase.from('purchase_order_lines').insert(
-      normalizedLines.map((line) => ({
+      normalizedLines.map((line: { item_id: string | null; item_description: string; quantity: number; unit_rate: number; tax_rate: number; line_total: number }) => ({
         purchase_order_id: purchaseOrderId,
         project_id: pr.project_id,
         item_id: line.item_id,
