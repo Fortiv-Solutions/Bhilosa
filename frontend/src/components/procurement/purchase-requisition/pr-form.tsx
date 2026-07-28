@@ -7,8 +7,9 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import {
   FileText, Wallet, Truck, Paperclip, Building2, X,
-  AlertTriangle, Layers, Trash2, Search, CheckCircle2, Printer,
+  AlertTriangle, Layers, Trash2, Search, CheckCircle2,
   Sparkles, ShieldCheck, Clock, Bot,
+  Printer,
 } from 'lucide-react';
 import { formatCurrency } from '@/components/procurement/shared';
 import { computeCostSummary, computeBudgetStatus, validatePrForm, type BudgetSnapshot } from '@/lib/erp/purchase-requisition/service';
@@ -437,10 +438,6 @@ export function PrForm(props: PrFormProps) {
               <Paperclip className="h-3.5 w-3.5 text-primary" /> Attach File ({props.pendingFiles.length})
               <input type="file" multiple className="hidden" onChange={(e) => { props.onAddFiles(e.target.files, 'Supporting Doc'); e.currentTarget.value = ''; }} />
             </label>
-
-            <button onClick={() => window.print()} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-2 text-xs font-bold text-foreground hover:bg-muted transition-colors">
-              <Printer className="h-3.5 w-3.5 text-primary" /> Print
-            </button>
 
             {props.secondaryActions}
             {props.lastSavedAt && <span className="ml-1">Last saved {props.lastSavedAt}</span>}

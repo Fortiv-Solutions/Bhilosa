@@ -23,6 +23,7 @@ import {
   FileText,
   Boxes,
   Check,
+  Printer,
 } from 'lucide-react';
 import type { MaterialRequestRow, PurchaseRequisitionRow, Role } from '@/lib/erp/material-request/types';
 import type { ProcurementLineRow } from '@/lib/procurement';
@@ -42,6 +43,8 @@ interface MRInspectorPanelProps {
   onClose: () => void;
   onAction: (label: string, fn: () => Promise<{ data: unknown; error: Error | null }>) => Promise<void>;
   onConvertToPr: (mr: MaterialRequestRow, approvedLines?: ProcurementLineRow[]) => void;
+  /** Generates the report-format Material Request PDF and opens it in a new tab. */
+  onPrint?: () => void;
 }
 
 const PRIORITY_CONFIG = {
@@ -85,6 +88,7 @@ export function MRInspectorPanel({
   onClose,
   onAction,
   onConvertToPr,
+  onPrint,
 }: MRInspectorPanelProps) {
   const [lineStatuses, setLineStatuses] = useState<Record<string, 'approved_for_pr' | 'fulfilled_from_stock' | 'rejected' | 'pending'>>(() => {
     const initial: Record<string, 'approved_for_pr' | 'fulfilled_from_stock' | 'rejected' | 'pending'> = {};
@@ -180,12 +184,24 @@ export function MRInspectorPanel({
               </p>
             </div>
           </div>
-          <button
-            onClick={onClose}
-            className="rounded-lg border border-border p-2 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-          >
-            <X className="h-4 w-4" />
-          </button>
+          <div className="flex items-center gap-2">
+            {onPrint && (
+              <button
+                type="button"
+                onClick={onPrint}
+                title="Generate the Material Request report PDF"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-2 text-xs font-bold text-foreground hover:bg-muted transition-colors"
+              >
+                <Printer className="h-3.5 w-3.5 text-primary" /> Print Report
+              </button>
+            )}
+            <button
+              onClick={onClose}
+              className="rounded-lg border border-border p-2 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
         </div>
 
         {/* DRAWER BODY: SCROLLABLE MAIN CONTENT */}

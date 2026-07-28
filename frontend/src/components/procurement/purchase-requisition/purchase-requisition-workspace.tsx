@@ -608,7 +608,7 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
     if (!form?.id) return null;
     const row = props.rows.find((r) => r.id === form.id);
     return (<>
-      {row && <button onClick={() => props.onPdf(row)} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-2 font-bold hover:bg-muted"><FileDown className="h-3.5 w-3.5" /> {props.attachments.some((a) => a.entity_id === row.id) ? 'Reprint' : 'Print'}</button>}
+      {row && <button onClick={() => props.onPdf(row)} title="Generate the Purchase Requisition report PDF" className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-2 font-bold hover:bg-muted"><FileDown className="h-3.5 w-3.5" /> {props.attachments.some((a) => a.entity_id === row.id) ? 'Reprint Report' : 'Print Report'}</button>}
       {row && <button onClick={() => props.onOpenPdf(row)} disabled={!props.attachments.some((a) => a.entity_id === row.id)} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-2 font-bold hover:bg-muted disabled:opacity-40"><Eye className="h-3.5 w-3.5" /> Preview</button>}
       <button onClick={() => setHistoryOpen(true)} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-2 font-bold hover:bg-muted"><History className="h-3.5 w-3.5" /> History</button>
     </>);
@@ -755,7 +755,7 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
       <PRTableView
         rows={pagedRows}
         onEdit={editPr}
-        onOpenPdf={props.onOpenPdf}
+        onPdf={props.onPdf}
         onApprove={props.onApprove}
       />
 

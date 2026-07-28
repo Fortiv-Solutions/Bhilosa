@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL", "")
-if not DATABASE_URL:
+if not DATABASE_URL or "[PROJECT_REF]" in DATABASE_URL or "abxzyhgaityhgwbltjwu" in DATABASE_URL or "placeholder" in DATABASE_URL or "invalid" in DATABASE_URL:
     DATABASE_URL = "sqlite:///./local_dev_fallback.db"
 
 # Handle supabase postgres url pooling vs session if needed, but standard is fine

@@ -39,6 +39,10 @@ import {
   generatePurchaseOrderPdf,
   generatePurchaseOrder,
   generatePurchaseRequisitionPdf,
+  generateGoodsReceiptNotePdf,
+  generateMaterialRequestPdf,
+  generateRfqPdf,
+  generatePurchaseBillPdf,
   listProcurementDashboard,
   listProcurementProjects,
   recordQuotation,
@@ -314,6 +318,24 @@ export default function ProcurementPage() {
     }
     setMessage(label);
     await refresh();
+  }
+
+  /**
+   * Shared "Print Report" handler for the report-format document endpoints:
+   * generates the PDF server-side, stores it, then opens the signed URL.
+   */
+  function handleReportPdf(
+    label: string,
+    generate: () => Promise<{ data: { signedUrl: string } | null; error: Error | null }>,
+  ) {
+    void (async () => {
+      setError(null);
+      setMessage(null);
+      const res = await generate();
+      if (res.error) { setError(res.error.message); return; }
+      setMessage(`${label} report generated.`);
+      if (res.data?.signedUrl) window.open(res.data.signedUrl, '_blank', 'noopener,noreferrer');
+    })();
   }
 
   async function handlePoPdf(po: PurchaseOrderRow) {
@@ -935,6 +957,7 @@ export default function ProcurementPage() {
             activeRole={activeRole as 'UPPER_MANAGEMENT' | 'PR_TEAM' | 'PROJECT_MANAGER'}
             loading={loading}
             onConvertToPr={openPrModal}
+            onPrintMr={(mrId) => handleReportPdf('Material Request', () => generateMaterialRequestPdf(mrId))}
             onRefresh={refresh}
             onMessage={(msg) => setMessage(msg)}
             onError={(msg) => setError(msg)}
@@ -976,6 +999,7 @@ export default function ProcurementPage() {
             quotations={data.quotations}
             selections={data.vendorSelections}
             purchaseOrders={data.purchaseOrders}
+            vendors={data.vendors}
             projectOptions={projectOptions}
             activeRole={activeRole}
             selectedRfqId={selectedRfqId}
@@ -985,6 +1009,7 @@ export default function ProcurementPage() {
             onRecommend={openRecommendationModal}
             onApproveSelection={(selection) => runAction('Vendor finalization approved by management.', () => approveVendorSelection({ selectionId: selection.id }))}
             onGeneratePo={(pr, quotation, selection) => openPoModal(pr, quotation, selection.id)}
+            onPrintRfq={(rfqId) => handleReportPdf('RFQ', () => generateRfqPdf(rfqId))}
           />
         </Panel>
       )}
@@ -1032,6 +1057,16 @@ export default function ProcurementPage() {
                 await refresh();
               })();
             }}
+            onDownloadReport={(grnId) => {
+              void (async () => {
+                setError(null);
+                setMessage(null);
+                const res = await generateGoodsReceiptNotePdf(grnId);
+                if (res.error) { setError(res.error.message); return; }
+                setMessage('GRN report generated.');
+                if (res.data?.signedUrl) window.open(res.data.signedUrl, '_blank', 'noopener,noreferrer');
+              })();
+            }}
             onRefresh={refresh}
           />
         </Panel>
@@ -1042,6 +1077,7 @@ export default function ProcurementPage() {
           <BillsWorkspace
             bills={data.vendorBills}
             activeRole={activeRole as 'UPPER_MANAGEMENT' | 'PROJECT_MANAGER' | 'PR_TEAM'}
+            onPrintBill={(billId) => handleReportPdf('Purchase Bill', () => generatePurchaseBillPdf(billId))}
             onRefresh={refresh}
           />
         </Panel>

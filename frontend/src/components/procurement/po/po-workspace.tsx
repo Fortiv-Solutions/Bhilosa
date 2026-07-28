@@ -76,6 +76,7 @@ export function POWorkspace({ purchaseOrders = [], activeRole, onSavePo, onAppro
       {viewMode === 'form' && activePo ? (
         <PoForm
           po={activePo}
+          onPrint={onPrintPo ? () => onPrintPo(activePo) : undefined}
           onSubmit={handleFormSubmit}
           onCancel={() => {
             setViewMode('list');

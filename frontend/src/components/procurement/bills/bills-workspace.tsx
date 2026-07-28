@@ -44,10 +44,12 @@ function toDisplayBill(b: DbVendorBillRow): VendorBillRow {
 interface BillsWorkspaceProps {
   bills?: DbVendorBillRow[];
   activeRole?: Role;
+  /** Generates the report-format Purchase Bill PDF and opens it in a new tab. */
+  onPrintBill?: (billId: string) => void;
   onRefresh?: () => void | Promise<void>;
 }
 
-export function BillsWorkspace({ bills = [], onRefresh }: BillsWorkspaceProps) {
+export function BillsWorkspace({ bills = [], onPrintBill, onRefresh }: BillsWorkspaceProps) {
   const [viewMode, setViewMode] = useState<'list' | 'form'>('list');
   const [activeBill, setActiveBill] = useState<VendorBillRow | null>(null);
   const [selectedTab, setSelectedTab] = useState<string>('all');
@@ -101,6 +103,7 @@ export function BillsWorkspace({ bills = [], onRefresh }: BillsWorkspaceProps) {
       {viewMode === 'form' && activeBill ? (
         <BillsForm
           bill={activeBill}
+          onPrint={onPrintBill ? () => onPrintBill(activeBill.id) : undefined}
           onSubmit={handleFormSubmit}
           onCancel={() => {
             setViewMode('list');

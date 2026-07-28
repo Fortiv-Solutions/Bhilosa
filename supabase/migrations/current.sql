@@ -884,6 +884,9 @@ CREATE TABLE public.vendors (
   created_by uuid,
   updated_by uuid,
   deleted_at timestamp with time zone,
+  location text,
+  city text,
+  pincode text,
   CONSTRAINT vendors_pkey PRIMARY KEY (id),
   CONSTRAINT vendors_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id),
   CONSTRAINT vendors_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.profiles(id),
@@ -1353,6 +1356,10 @@ CREATE TABLE public.material_request_lines (
   specification text,
   line_status text DEFAULT 'pending'::text,
   line_rejection_reason text,
+  unit text DEFAULT 'nos'::text,
+  converted_qty numeric NOT NULL DEFAULT 0,
+  line_number integer,
+  pending_pr_qty numeric DEFAULT GREATEST((quantity - COALESCE(converted_qty, (0)::numeric)), (0)::numeric),
   CONSTRAINT material_request_lines_pkey PRIMARY KEY (id),
   CONSTRAINT material_request_lines_material_request_id_fkey FOREIGN KEY (material_request_id) REFERENCES public.material_requests(id),
   CONSTRAINT material_request_lines_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.projects(id),
@@ -1394,13 +1401,52 @@ CREATE TABLE public.purchase_requisitions (
   site_contact_number text,
   general_remarks text,
   total_amount numeric DEFAULT 0,
+  pr_release_date date,
+  budget_applicable boolean NOT NULL DEFAULT true,
+  budget_head_id uuid,
+  cost_code_id uuid,
+  cost_centre text,
+  activity_code text,
+  over_budget_justification text,
+  budget_status text,
+  contractor_applicable boolean NOT NULL DEFAULT false,
+  vendor_code text,
+  scope_of_service text,
+  contact_person text,
+  contact_number text,
+  delivery_instructions text,
+  internal_notes text,
+  terms_and_conditions text,
+  prepared_by uuid,
+  prepared_on timestamp with time zone,
+  subtotal_amount numeric NOT NULL DEFAULT 0,
+  service_subtotal numeric NOT NULL DEFAULT 0,
+  discount_amount numeric NOT NULL DEFAULT 0,
+  tax_amount numeric NOT NULL DEFAULT 0,
+  freight_amount numeric NOT NULL DEFAULT 0,
+  other_charges numeric NOT NULL DEFAULT 0,
+  contingency_amount numeric NOT NULL DEFAULT 0,
+  status_changed_at timestamp with time zone,
+  assigned_to uuid,
+  approved_by uuid,
+  approved_at timestamp with time zone,
+  cancellation_reason text,
+  revision_number integer NOT NULL DEFAULT 0,
+  revision_reason text,
+  original_pr_id uuid,
+  is_current_revision boolean NOT NULL DEFAULT true,
   CONSTRAINT purchase_requisitions_pkey PRIMARY KEY (id),
+  CONSTRAINT purchase_requisitions_prepared_by_fkey FOREIGN KEY (prepared_by) REFERENCES public.profiles(id),
+  CONSTRAINT purchase_requisitions_assigned_to_fkey FOREIGN KEY (assigned_to) REFERENCES public.profiles(id),
   CONSTRAINT purchase_requisitions_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.projects(id),
   CONSTRAINT purchase_requisitions_site_id_fkey FOREIGN KEY (site_id) REFERENCES public.project_sites(id),
   CONSTRAINT purchase_requisitions_material_request_id_fkey FOREIGN KEY (material_request_id) REFERENCES public.material_requests(id),
   CONSTRAINT purchase_requisitions_budget_allocation_id_fkey FOREIGN KEY (budget_allocation_id) REFERENCES public.budget_allocations(id),
   CONSTRAINT purchase_requisitions_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.profiles(id),
-  CONSTRAINT purchase_requisitions_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.profiles(id)
+  CONSTRAINT purchase_requisitions_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.profiles(id),
+  CONSTRAINT purchase_requisitions_approved_by_fkey FOREIGN KEY (approved_by) REFERENCES public.profiles(id),
+  CONSTRAINT pr_budget_head_fk FOREIGN KEY (budget_head_id) REFERENCES public.budget_heads(id),
+  CONSTRAINT pr_cost_code_fk FOREIGN KEY (cost_code_id) REFERENCES public.cost_codes(id)
 );
 CREATE TABLE public.purchase_requisition_lines (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -1435,6 +1481,24 @@ CREATE TABLE public.purchase_requisition_lines (
   tax_rate numeric DEFAULT 0,
   tax_amount numeric DEFAULT 0,
   line_total numeric DEFAULT 0,
+  source_mr_id uuid,
+  source_mr_number text,
+  mr_line_number integer,
+  approved_mr_qty numeric,
+  prev_pr_qty numeric NOT NULL DEFAULT 0,
+  remaining_mr_qty numeric,
+  unit text DEFAULT 'nos'::text,
+  required_date date,
+  is_non_mr_item boolean NOT NULL DEFAULT false,
+  non_mr_justification text,
+  is_modified boolean NOT NULL DEFAULT false,
+  removal_reason text,
+  priority text,
+  stock_audit text,
+  project_and_block text,
+  work_activity text,
+  raised_by text,
+  submitted_at timestamp with time zone,
   CONSTRAINT purchase_requisition_lines_pkey PRIMARY KEY (id),
   CONSTRAINT purchase_requisition_lines_purchase_requisition_id_fkey FOREIGN KEY (purchase_requisition_id) REFERENCES public.purchase_requisitions(id),
   CONSTRAINT purchase_requisition_lines_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.projects(id),
@@ -1442,7 +1506,8 @@ CREATE TABLE public.purchase_requisition_lines (
   CONSTRAINT purchase_requisition_lines_item_id_fkey FOREIGN KEY (item_id) REFERENCES public.item_master(id),
   CONSTRAINT purchase_requisition_lines_uom_id_fkey FOREIGN KEY (uom_id) REFERENCES public.unit_of_measurements(id),
   CONSTRAINT purchase_requisition_lines_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.profiles(id),
-  CONSTRAINT purchase_requisition_lines_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.profiles(id)
+  CONSTRAINT purchase_requisition_lines_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.profiles(id),
+  CONSTRAINT purchase_requisition_lines_source_mr_id_fkey FOREIGN KEY (source_mr_id) REFERENCES public.material_requests(id)
 );
 CREATE TABLE public.purchase_requisition_assignments (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -1727,6 +1792,12 @@ CREATE TABLE public.goods_receipt_notes (
   godown_name text,
   dealer_name text,
   qc_no text,
+  remarks text,
+  account_posting_amount numeric,
+  asset_amount numeric DEFAULT 0,
+  asset_item text,
+  pb_lines_created numeric,
+  unlocked_fy numeric DEFAULT 1.00,
   CONSTRAINT goods_receipt_notes_pkey PRIMARY KEY (id),
   CONSTRAINT goods_receipt_notes_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.projects(id),
   CONSTRAINT goods_receipt_notes_site_id_fkey FOREIGN KEY (site_id) REFERENCES public.project_sites(id),
@@ -1751,6 +1822,23 @@ CREATE TABLE public.goods_receipt_note_lines (
   updated_at timestamp with time zone NOT NULL DEFAULT now(),
   created_by uuid,
   updated_by uuid,
+  po_number text,
+  pr_number text,
+  item_group text,
+  item_code text,
+  item_brand text,
+  item_description text,
+  location text,
+  purchase_category text,
+  unit text,
+  approved_qty numeric,
+  po_balance_qty numeric,
+  return_qty numeric,
+  challan_qty numeric,
+  balance_allowed numeric,
+  current_balance_qty numeric,
+  test_report_no text,
+  expiry_date date,
   CONSTRAINT goods_receipt_note_lines_pkey PRIMARY KEY (id),
   CONSTRAINT goods_receipt_note_lines_grn_id_fkey FOREIGN KEY (grn_id) REFERENCES public.goods_receipt_notes(id),
   CONSTRAINT goods_receipt_note_lines_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.projects(id),
@@ -2113,3 +2201,57 @@ CREATE TABLE public.qc_inspections (
   CONSTRAINT qc_inspections_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.profiles(id),
   CONSTRAINT qc_inspections_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.profiles(id)
 );
+
+-- ============================================================================
+-- ROW LEVEL SECURITY (RLS) POLICIES FOR PROCUREMENT & SYSTEM MODULES
+-- (MR, PR, RFQ, PO, GRN, Vendors, Inventory/Stock, Budget, Attachments)
+-- ============================================================================
+
+DO $$ 
+DECLARE 
+  t text;
+  tables text[] := ARRAY[
+    'profiles', 'projects', 'project_members', 'project_sites',
+    'material_requests', 'material_request_lines',
+    'purchase_requisitions', 'purchase_requisition_lines', 'purchase_requisition_assignments',
+    'rfqs', 'rfq_vendors', 'vendor_quotations', 'quotation_lines', 'quotation_scores', 'vendor_selections',
+    'purchase_orders', 'purchase_order_lines',
+    'goods_receipt_notes', 'goods_receipt_note_lines',
+    'vendors', 'vendor_contacts', 'vendor_documents', 'vendor_categories', 'vendor_category_map', 'vendor_performance_reviews', 'contractors',
+    'materials', 'material_transactions', 'inventory_locations', 'stock_balances', 'stock_ledger', 'stock_reservations', 'stock_transfers', 'stock_transfer_lines', 'material_issue_slips', 'material_issue_lines', 'consumption_variances',
+    'cost_codes', 'budget_heads', 'budget_allocations', 'budget_ledger', 'budget_alerts',
+    'item_master', 'item_categories', 'unit_of_measurements', 'boq_items',
+    'entity_attachments', 'audit_logs', 'activity_events'
+  ];
+BEGIN
+  FOREACH t IN ARRAY tables LOOP
+    EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY;', t);
+    EXECUTE format('DROP POLICY IF EXISTS "Enable full access for %I" ON public.%I;', t, t);
+    EXECUTE format('CREATE POLICY "Enable full access for %I" ON public.%I FOR ALL TO authenticated, anon USING (true) WITH CHECK (true);', t, t);
+  END LOOP;
+END $$;
+
+-- Storage Bucket Policies (procurement-documents)
+DROP POLICY IF EXISTS "Enable read procurement documents" ON storage.objects;
+CREATE POLICY "Enable read procurement documents" ON storage.objects
+  FOR SELECT
+  TO authenticated, anon
+  USING (bucket_id = 'procurement-documents');
+
+DROP POLICY IF EXISTS "Enable upload procurement documents" ON storage.objects;
+CREATE POLICY "Enable upload procurement documents" ON storage.objects
+  FOR INSERT
+  TO authenticated, anon
+  WITH CHECK (bucket_id = 'procurement-documents');
+
+DROP POLICY IF EXISTS "Enable update procurement documents" ON storage.objects;
+CREATE POLICY "Enable update procurement documents" ON storage.objects
+  FOR UPDATE
+  TO authenticated, anon
+  USING (bucket_id = 'procurement-documents');
+
+DROP POLICY IF EXISTS "Enable delete procurement documents" ON storage.objects;
+CREATE POLICY "Enable delete procurement documents" ON storage.objects
+  FOR DELETE
+  TO authenticated, anon
+  USING (bucket_id = 'procurement-documents');

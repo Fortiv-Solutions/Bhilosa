@@ -17,6 +17,7 @@ import {
   FileCheck,
   Scale,
   Edit3,
+  Printer,
 } from 'lucide-react';
 import type { GrnRow } from './grn-stats-bar';
 
@@ -120,10 +121,12 @@ export interface FullGrnFormState {
 interface GrnFormProps {
   grn: GrnRow;
   onSubmit: (formData: FullGrnFormState) => void;
+  /** Generates the report-format Goods Received Note PDF and opens it in a new tab. */
+  onPrint?: () => void;
   onCancel: () => void;
 }
 
-export function GrnForm({ grn, onSubmit, onCancel }: GrnFormProps) {
+export function GrnForm({ grn, onSubmit, onPrint, onCancel }: GrnFormProps) {
   const todayStr = new Date().toISOString().slice(0, 10);
 
   const [form, setForm] = useState<FullGrnFormState>(() => ({
@@ -272,6 +275,16 @@ export function GrnForm({ grn, onSubmit, onCancel }: GrnFormProps) {
         </div>
 
         <div className="flex items-center gap-2">
+          {onPrint && (
+            <button
+              type="button"
+              onClick={onPrint}
+              title="Generate the Goods Received Note report PDF"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-2 text-xs font-bold text-foreground hover:bg-muted transition-colors"
+            >
+              <Printer className="h-3.5 w-3.5 text-primary" /> Print Report
+            </button>
+          )}
           <button
             type="button"
             onClick={onCancel}

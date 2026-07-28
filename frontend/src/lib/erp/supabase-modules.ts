@@ -24,14 +24,30 @@ function makeSequence(prefix: string): string {
   return `${prefix}-${ymd}-${date.getTime().toString().slice(-6)}`;
 }
 
-async function currentProfileId(): Promise<string> {
+async function currentProfileId(): Promise<string | null> {
   try {
     const { data } = await supabase.auth.getUser();
-    if (data.user?.id) return data.user.id;
-  } catch {
-    /* unauthenticated fallback */
-  }
-  return '11111111-1111-1111-1111-111111111111';
+    if (data.user?.id) {
+      const { data: userProfile } = await supabase
+        .from('profiles')
+        .select('id')
+        .eq('id', data.user.id)
+        .maybeSingle();
+      if (userProfile?.id) return userProfile.id;
+    }
+  } catch {}
+
+  try {
+    const { data: anyProfile } = await supabase
+      .from('profiles')
+      .select('id')
+      .limit(1)
+      .maybeSingle();
+
+    if (anyProfile?.id) return anyProfile.id;
+  } catch {}
+
+  return null;
 }
 
 async function maybeDefaultProjectSite(projectId: string): Promise<string | null> {

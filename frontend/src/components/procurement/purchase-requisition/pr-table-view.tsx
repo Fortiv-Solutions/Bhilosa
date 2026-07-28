@@ -15,7 +15,8 @@ import { PrStatusBadge, PrPriorityBadge } from './pr-badges';
 interface PRTableViewProps {
   rows: PurchaseRequisitionRow[];
   onEdit: (prId: string) => void;
-  onOpenPdf?: (row: PurchaseRequisitionRow) => void;
+  /** Generates + downloads the report-format PR PDF. */
+  onPdf?: (row: PurchaseRequisitionRow) => void;
   onApprove?: (row: PurchaseRequisitionRow) => void;
 }
 
@@ -29,7 +30,7 @@ function formatCurrency(val: number | null | undefined): string {
   return `₹${val.toLocaleString('en-IN')}`;
 }
 
-export function PRTableView({ rows, onEdit, onOpenPdf }: PRTableViewProps) {
+export function PRTableView({ rows, onEdit, onPdf }: PRTableViewProps) {
   if (rows.length === 0) {
     return (
       <div className="rounded-2xl border border-dashed border-border bg-card p-12 text-center shadow-xs">
@@ -189,13 +190,14 @@ export function PRTableView({ rows, onEdit, onOpenPdf }: PRTableViewProps) {
                           <span>{isAutoDraft ? 'Open PR Form' : 'Edit PR'}</span>
                         </button>
 
-                        {onOpenPdf && (
+                        {onPdf && (
                           <button
-                            onClick={() => onOpenPdf(row)}
-                            title="Preview PR Document"
-                            className="rounded-lg border border-border bg-background p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                            onClick={() => onPdf(row)}
+                            title="Download PR report PDF"
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-bold text-foreground hover:bg-muted hover:text-foreground transition-colors shadow-2xs"
                           >
                             <FileDown className="h-3.5 w-3.5" />
+                            <span>Download PDF</span>
                           </button>
                         )}
                       </div>

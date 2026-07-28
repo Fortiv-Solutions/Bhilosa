@@ -39,10 +39,12 @@ interface GrnWorkspaceProps {
   activeRole?: Role;
   /** Approve a GRN: posts to inventory and auto-generates the vendor bill. */
   onApproveGrn?: (grnId: string) => void;
+  /** Generate + open the server-side report-format GRN PDF. */
+  onDownloadReport?: (grnId: string) => void;
   onRefresh?: () => void | Promise<void>;
 }
 
-export function GrnWorkspace({ grns = [], activeRole, onApproveGrn, onRefresh }: GrnWorkspaceProps) {
+export function GrnWorkspace({ grns = [], activeRole, onApproveGrn, onDownloadReport, onRefresh }: GrnWorkspaceProps) {
   const [viewMode, setViewMode] = useState<'list' | 'form'>('list');
   const [activeGrn, setActiveGrn] = useState<GrnRow | null>(null);
   const [selectedTab, setSelectedTab] = useState<string>('all');
@@ -127,6 +129,7 @@ export function GrnWorkspace({ grns = [], activeRole, onApproveGrn, onRefresh }:
 
           <GrnForm
             grn={activeGrn}
+            onPrint={onDownloadReport ? () => onDownloadReport(activeGrn.id) : undefined}
             onSubmit={handleFormSubmit}
             onCancel={() => {
               setViewMode('list');
@@ -147,6 +150,7 @@ export function GrnWorkspace({ grns = [], activeRole, onApproveGrn, onRefresh }:
             grns={filteredGrns}
             onOpenGrnForm={handleOpenForm}
             onStatusToggle={canApprove ? handleStatusToggle : undefined}
+            onDownloadReport={onDownloadReport}
           />
         </>
       )}

@@ -1,5 +1,7 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from .routers import ai, qc, users, procurement
 
 app = FastAPI(
@@ -7,6 +9,19 @@ app = FastAPI(
     description="Python FastAPI backend serving Pramukh ERP modules",
     version="1.0.0"
 )
+
+
+# Always return JSON (never Starlette's plain-text "Internal Server Error"), so
+# clients can parse the real error instead of failing on `response.json()`.
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail, "error": exc.detail})
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    message = f"{type(exc).__name__}: {exc}"
+    return JSONResponse(status_code=500, content={"detail": message, "error": message})
 
 # CORS middleware configuration
 app.add_middleware(

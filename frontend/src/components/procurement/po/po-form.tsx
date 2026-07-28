@@ -18,6 +18,7 @@ import {
   FileSpreadsheet,
   FileText,
   HelpCircle,
+  Printer,
 } from 'lucide-react';
 import type { PurchaseOrderRow } from '@/lib/procurement';
 
@@ -203,10 +204,12 @@ export interface FullPoFormState {
 interface PoFormProps {
   po: PurchaseOrderRow;
   onSubmit: (formData: FullPoFormState) => void;
+  /** Generates the report-format Purchase Order PDF and opens it in a new tab. */
+  onPrint?: () => void;
   onCancel: () => void;
 }
 
-export function PoForm({ po, onSubmit, onCancel }: PoFormProps) {
+export function PoForm({ po, onSubmit, onPrint, onCancel }: PoFormProps) {
   const todayStr = new Date().toISOString().slice(0, 10);
 
   const [form, setForm] = useState<FullPoFormState>(() => ({
@@ -496,6 +499,16 @@ export function PoForm({ po, onSubmit, onCancel }: PoFormProps) {
         </div>
 
         <div className="flex items-center gap-2">
+          {onPrint && (
+            <button
+              type="button"
+              onClick={onPrint}
+              title="Generate the Purchase Order report PDF"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-2 text-xs font-bold text-foreground hover:bg-muted transition-colors"
+            >
+              <Printer className="h-3.5 w-3.5 text-primary" /> Print Report
+            </button>
+          )}
           <button
             type="button"
             onClick={onCancel}

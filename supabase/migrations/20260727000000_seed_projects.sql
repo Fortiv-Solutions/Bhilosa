@@ -67,3 +67,20 @@ ON CONFLICT (id) DO UPDATE SET
   code = EXCLUDED.code,
   address = EXCLUDED.address,
   is_active = EXCLUDED.is_active;
+
+-- 3. INSERT / SEED DEFAULT PROFILE FOR SYSTEM TRANSACTIONS
+INSERT INTO public.profiles (
+  id,
+  name,
+  email,
+  role
+)
+VALUES (
+  '11111111-1111-1111-1111-111111111111',
+  'Site Engineer / Procurement Manager',
+  'user@pramukh.com',
+  'project_manager'
+)
+ON CONFLICT (id) DO UPDATE SET
+  name = EXCLUDED.name,
+  email = EXCLUDED.email;

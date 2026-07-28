@@ -199,7 +199,100 @@ export type VendorRow = {
   vendor_code?: string | null;
   pan_number?: string | null;
   address?: string | null;
+  // Address attributes (migration 20260729000000)
+  location?: string | null;
+  city?: string | null;
+  pincode?: string | null;
+  is_active?: boolean;
+  created_at?: string;
 };
+
+/** Primary contact person for a vendor (canonical row in vendor_contacts). */
+export type VendorContactRow = {
+  id: string;
+  vendor_id: string;
+  name: string;
+  designation?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  is_primary?: boolean;
+};
+
+/**
+ * One row per vendor from the vendor_profile_summary view: master fields, the
+ * primary contact, and the procurement history aggregate. Computed on read, so
+ * the counters can never drift from the underlying documents.
+ */
+export type VendorProfileRow = {
+  vendor_id: string;
+  vendor_code: string | null;
+  legal_name: string;
+  display_name: string | null;
+  gst_number: string | null;
+  pan_number: string | null;
+  email: string | null;
+  phone: string | null;
+  address: string | null;
+  location: string | null;
+  city: string | null;
+  pincode: string | null;
+  compliance_status: string | null;
+  rating: number;
+  is_active: boolean;
+  created_at: string;
+  contact_person: string | null;
+  contact_designation: string | null;
+  contact_email: string | null;
+  contact_phone: string | null;
+  total_pos: number;
+  total_po_value: number;
+  last_po_date: string | null;
+  total_deliveries: number;
+  last_delivery_date: string | null;
+  total_bills: number;
+  total_billed_value: number;
+  total_rfqs_invited: number;
+  total_quotations: number;
+  linked_mr_count: number;
+};
+
+/** Vendor create/edit payload. Company name, ledger name and mobile are mandatory. */
+export type VendorInput = {
+  legal_name: string;
+  display_name: string;
+  phone: string;
+  contact_person?: string | null;
+  email?: string | null;
+  address?: string | null;
+  location?: string | null;
+  city?: string | null;
+  pincode?: string | null;
+  pan_number?: string | null;
+  gst_number?: string | null;
+  vendor_code?: string | null;
+  compliance_status?: string | null;
+  rating?: number;
+};
+
+const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]Z[0-9A-Z]$/;
+const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
+
+/** Validates a vendor payload. Returns a list of human-readable problems. */
+export function validateVendorInput(input: VendorInput): string[] {
+  const errors: string[] = [];
+  if (!input.legal_name?.trim()) errors.push('Company Name is required.');
+  if (!input.display_name?.trim()) errors.push('Vendor / Ledger Name is required.');
+  const mobile = (input.phone || '').replace(/[^0-9]/g, '');
+  if (!mobile) errors.push('Mobile Number is required.');
+  else if (mobile.length < 10) errors.push('Mobile Number must be at least 10 digits.');
+  if (input.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.email.trim())) errors.push('Email ID is not a valid address.');
+  const gst = (input.gst_number || '').trim().toUpperCase();
+  if (gst && !GSTIN_RE.test(gst)) errors.push('GSTIN must be a valid 15-character GST number.');
+  const pan = (input.pan_number || '').trim().toUpperCase();
+  if (pan && !PAN_RE.test(pan)) errors.push('PAN must be in the format ABCDE1234F.');
+  if (input.pincode && !/^[0-9]{6}$/.test(input.pincode.trim())) errors.push('Pincode must be 6 digits.');
+  return errors;
+}
 
 export type QuotationRow = {
   id: string;
@@ -435,18 +528,35 @@ function sequence(prefix: string): string {
   return `${prefix}-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Date.now().toString().slice(-5)}`;
 }
 
-async function currentProfileId(): Promise<string> {
+async function currentProfileId(): Promise<string | null> {
   try {
     const { data } = await supabase.auth.getUser();
-    if (data.user?.id) return data.user.id;
-  } catch {
-    /* unauthenticated fallback */
-  }
-  return '11111111-1111-1111-1111-111111111111';
+    if (data.user?.id) {
+      const { data: userProfile } = await supabase
+        .from('profiles')
+        .select('id')
+        .eq('id', data.user.id)
+        .maybeSingle();
+      if (userProfile?.id) return userProfile.id;
+    }
+  } catch {}
+
+  try {
+    const { data: anyProfile } = await supabase
+      .from('profiles')
+      .select('id')
+      .limit(1)
+      .maybeSingle();
+
+    if (anyProfile?.id) return anyProfile.id;
+  } catch {}
+
+  return null;
 }
 
 async function requireUpperManagementProfile(): Promise<string> {
   const profileId = await currentProfileId();
+  if (!profileId) throw new Error('Authentication required.');
   return profileId;
 }
 
@@ -1600,7 +1710,13 @@ export async function generatePurchaseOrder(input: GeneratePurchaseOrderInput): 
       }
     }
 
-    const effectiveVendorId = input.vendorId || 'c1000000-0000-0000-0000-000000000001';
+    // A PO must name a real vendor: purchase_orders.vendor_id is NOT NULL and FKs
+    // to vendors. Fail with a clear message rather than silently attaching a
+    // placeholder vendor to a real purchase order.
+    const effectiveVendorId = (input.vendorId || '').trim();
+    if (!effectiveVendorId) {
+      throw new Error('Select a vendor before generating the purchase order. Add one in the Vendor Registry if none exist.');
+    }
 
     const { data, error } = await supabase
       .from('purchase_orders')
@@ -1769,6 +1885,28 @@ export async function createVendorBillFromGrn(grn: GrnRow): Promise<MutationResu
   }
 }
 
+/**
+ * Reads a document-generation endpoint response safely. The backend can return a
+ * plain-text body (e.g. "Internal Server Error" on an unhandled 500, or an HTML
+ * proxy error), so we read as text first and only then attempt JSON — surfacing
+ * the real message instead of a cryptic "Unexpected token 'I'… is not valid JSON".
+ */
+async function readDocResponse<T>(response: Response, fallbackMsg: string): Promise<T> {
+  const raw = await response.text();
+  let parsed: (Partial<T> & { error?: string; detail?: string }) | null = null;
+  try {
+    parsed = raw ? JSON.parse(raw) : null;
+  } catch {
+    parsed = null; // non-JSON body (server error page / proxy error)
+  }
+  if (!response.ok) {
+    const detail = parsed?.error || parsed?.detail || (raw ? raw.trim().slice(0, 300) : '');
+    throw new Error(detail || `${fallbackMsg} (HTTP ${response.status})`);
+  }
+  if (!parsed) throw new Error(`${fallbackMsg}: server returned a non-JSON response.`);
+  return parsed as T;
+}
+
 export async function generatePurchaseOrderPdf(po: PurchaseOrderRow): Promise<MutationResult<PurchaseOrderPdfResult>> {
   try {
     const headers = await getSupabaseJsonHeaders();
@@ -1776,8 +1914,7 @@ export async function generatePurchaseOrderPdf(po: PurchaseOrderRow): Promise<Mu
       method: 'POST',
       headers,
     });
-    const payload = (await response.json()) as { error?: string } & Partial<PurchaseOrderPdfResult>;
-    if (!response.ok) throw new Error(payload.error || 'Unable to generate PO PDF.');
+    const payload = await readDocResponse<Partial<PurchaseOrderPdfResult>>(response, 'Unable to generate PO PDF.');
     if (!payload.purchaseOrderId || !payload.storagePath || !payload.signedUrl) {
       throw new Error('PO PDF generation response was incomplete.');
     }
@@ -1807,8 +1944,7 @@ export async function generatePurchaseRequisitionPdf(pr: PurchaseRequisitionRow)
       method: 'POST',
       headers,
     });
-    const payload = (await response.json()) as { error?: string } & Partial<PurchaseRequisitionPdfResult>;
-    if (!response.ok) throw new Error(payload.error || 'Unable to generate PR PDF.');
+    const payload = await readDocResponse<Partial<PurchaseRequisitionPdfResult>>(response, 'Unable to generate PR PDF.');
     if (!payload.purchaseRequisitionId || !payload.storagePath || !payload.signedUrl) {
       throw new Error('PR PDF generation response was incomplete.');
     }
@@ -1823,6 +1959,64 @@ export async function generatePurchaseRequisitionPdf(pr: PurchaseRequisitionRow)
   } catch (error) {
     return { data: null, error: asError(error) };
   }
+}
+
+export type GrnPdfResult = { grnId: string; storagePath: string; signedUrl: string };
+
+/** Generates the GRN "Download Report" PDF (report format) via the backend. */
+export async function generateGoodsReceiptNotePdf(grnId: string): Promise<MutationResult<GrnPdfResult>> {
+  try {
+    const headers = await getSupabaseJsonHeaders();
+    const response = await fetch(`/api/procurement/grns/${grnId}/pdf`, {
+      method: 'POST',
+      headers,
+    });
+    const payload = await readDocResponse<Partial<GrnPdfResult>>(response, 'Unable to generate GRN report PDF.');
+    if (!payload.grnId || !payload.storagePath || !payload.signedUrl) {
+      throw new Error('GRN PDF generation response was incomplete.');
+    }
+    return {
+      data: { grnId: payload.grnId, storagePath: payload.storagePath, signedUrl: payload.signedUrl },
+      error: null,
+    };
+  } catch (error) {
+    return { data: null, error: asError(error) };
+  }
+}
+
+export type DocPdfResult = { storagePath: string; signedUrl: string };
+
+/**
+ * Shared helper for the report-format document endpoints. Posts to the given
+ * path and returns the stored path + signed preview URL.
+ */
+async function requestReportPdf(path: string, label: string): Promise<MutationResult<DocPdfResult>> {
+  try {
+    const headers = await getSupabaseJsonHeaders();
+    const response = await fetch(path, { method: 'POST', headers });
+    const payload = await readDocResponse<Partial<DocPdfResult>>(response, `Unable to generate ${label} PDF.`);
+    if (!payload.storagePath || !payload.signedUrl) {
+      throw new Error(`${label} PDF generation response was incomplete.`);
+    }
+    return { data: { storagePath: payload.storagePath, signedUrl: payload.signedUrl }, error: null };
+  } catch (error) {
+    return { data: null, error: asError(error) };
+  }
+}
+
+/** Generates the Material Request report PDF (house format) via the backend. */
+export async function generateMaterialRequestPdf(mrId: string): Promise<MutationResult<DocPdfResult>> {
+  return requestReportPdf(`/api/procurement/material-requests/${mrId}/pdf`, 'Material Request');
+}
+
+/** Generates the RFQ report PDF (house format) via the backend. */
+export async function generateRfqPdf(rfqId: string): Promise<MutationResult<DocPdfResult>> {
+  return requestReportPdf(`/api/procurement/rfqs/${rfqId}/pdf`, 'RFQ');
+}
+
+/** Generates the Purchase Bill report PDF (report format) via the backend. */
+export async function generatePurchaseBillPdf(billId: string): Promise<MutationResult<DocPdfResult>> {
+  return requestReportPdf(`/api/procurement/purchase-bills/${billId}/pdf`, 'Purchase Bill');
 }
 
 export async function createProcurementDocumentUrl(storagePath: string): Promise<MutationResult<{ signedUrl: string }>> {
@@ -1898,33 +2092,88 @@ export type StockLedgerRow = {
   created_at: string;
 };
 
-export async function createVendor(input: {
-  legal_name: string;
-  display_name: string | null;
-  vendor_code: string;
-  gst_number: string | null;
-  pan_number: string | null;
-  email: string | null;
-  phone: string | null;
-  address: string | null;
-  compliance_status: string;
-  rating: number;
-}): Promise<MutationResult<{ vendorId: string }>> {
+/** Normalises a vendor payload into the `vendors` table column shape. */
+function vendorColumns(input: VendorInput): Record<string, unknown> {
+  const nn = (v?: string | null) => {
+    const t = (v ?? '').trim();
+    return t === '' ? null : t;
+  };
+  return {
+    legal_name: input.legal_name.trim(),
+    display_name: input.display_name.trim(),
+    phone: input.phone.trim(),
+    email: nn(input.email),
+    address: nn(input.address),
+    location: nn(input.location),
+    city: nn(input.city),
+    pincode: nn(input.pincode),
+    pan_number: nn(input.pan_number)?.toUpperCase() ?? null,
+    gst_number: nn(input.gst_number)?.toUpperCase() ?? null,
+  };
+}
+
+/**
+ * Upserts the vendor's primary contact person in vendor_contacts. A unique index
+ * guarantees at most one primary row per vendor, so we update in place when one
+ * already exists. Best-effort: a contact failure must not fail vendor creation.
+ */
+async function savePrimaryVendorContact(vendorId: string, contactPerson: string | null | undefined, input: VendorInput, profileId: string | null): Promise<void> {
+  const name = (contactPerson ?? '').trim();
   try {
+    const { data: existing } = await supabase
+      .from('vendor_contacts')
+      .select('id')
+      .eq('vendor_id', vendorId)
+      .eq('is_primary', true)
+      .is('deleted_at', null)
+      .maybeSingle();
+
+    if (!name) {
+      // Contact cleared — retire the existing primary row so the unique index frees up.
+      if (existing) {
+        await supabase
+          .from('vendor_contacts')
+          .update({ is_primary: false, updated_by: profileId })
+          .eq('id', (existing as { id: string }).id);
+      }
+      return;
+    }
+
+    const payload = {
+      name,
+      email: (input.email ?? '')?.trim() || null,
+      phone: input.phone?.trim() || null,
+      updated_by: profileId,
+    };
+
+    if (existing) {
+      await supabase.from('vendor_contacts').update(payload).eq('id', (existing as { id: string }).id);
+    } else {
+      await supabase.from('vendor_contacts').insert({
+        vendor_id: vendorId,
+        is_primary: true,
+        created_by: profileId,
+        ...payload,
+      });
+    }
+  } catch {
+    /* vendor_contacts is supplementary; never block the vendor write */
+  }
+}
+
+export async function createVendor(input: VendorInput): Promise<MutationResult<{ vendorId: string }>> {
+  try {
+    const problems = validateVendorInput(input);
+    if (problems.length > 0) throw new Error(problems.join(' '));
+
     const profileId = await currentProfileId();
     const { data, error } = await supabase
       .from('vendors')
       .insert({
-        legal_name: input.legal_name,
-        display_name: input.display_name,
-        vendor_code: input.vendor_code || sequence('VN'),
-        gst_number: input.gst_number,
-        pan_number: input.pan_number,
-        email: input.email,
-        phone: input.phone,
-        address: input.address,
+        ...vendorColumns(input),
+        vendor_code: (input.vendor_code || '').trim() || sequence('VN'),
         compliance_status: input.compliance_status || 'pending',
-        rating: input.rating || 0,
+        rating: input.rating ?? 0,
         is_active: true,
         created_by: profileId,
         updated_by: profileId,
@@ -1932,7 +2181,82 @@ export async function createVendor(input: {
       .select('id')
       .single();
     if (error) throw new Error(error.message);
-    return { data: { vendorId: (data as { id: string }).id }, error: null };
+
+    const vendorId = (data as { id: string }).id;
+    await savePrimaryVendorContact(vendorId, input.contact_person, input, profileId);
+    return { data: { vendorId }, error: null };
+  } catch (error) {
+    return { data: null, error: asError(error) };
+  }
+}
+
+/** Edits an existing vendor. Vendors can be updated at any time. */
+export async function updateVendor(vendorId: string, input: VendorInput): Promise<MutationResult> {
+  try {
+    const problems = validateVendorInput(input);
+    if (problems.length > 0) throw new Error(problems.join(' '));
+
+    const profileId = await currentProfileId();
+    const patch: Record<string, unknown> = {
+      ...vendorColumns(input),
+      updated_by: profileId,
+      updated_at: new Date().toISOString(),
+    };
+    // Only overwrite these when explicitly supplied, so an edit form that omits
+    // them cannot silently reset the vendor code / compliance state / rating.
+    if ((input.vendor_code || '').trim()) patch.vendor_code = input.vendor_code!.trim();
+    if (input.compliance_status) patch.compliance_status = input.compliance_status;
+    if (input.rating !== undefined) patch.rating = input.rating;
+
+    const { error } = await supabase.from('vendors').update(patch).eq('id', vendorId);
+    if (error) throw new Error(error.message);
+
+    await savePrimaryVendorContact(vendorId, input.contact_person, input, profileId);
+    return { data: null, error: null };
+  } catch (error) {
+    return { data: null, error: asError(error) };
+  }
+}
+
+/** Soft-deactivates / reactivates a vendor without losing its procurement history. */
+export async function setVendorActive(vendorId: string, isActive: boolean): Promise<MutationResult> {
+  try {
+    const profileId = await currentProfileId();
+    const { error } = await supabase
+      .from('vendors')
+      .update({ is_active: isActive, updated_by: profileId, updated_at: new Date().toISOString() })
+      .eq('id', vendorId);
+    if (error) throw new Error(error.message);
+    return { data: null, error: null };
+  } catch (error) {
+    return { data: null, error: asError(error) };
+  }
+}
+
+/**
+ * Lists vendors with their full procurement history from vendor_profile_summary.
+ * One query powers both the ledger table and the per-vendor profile panel.
+ */
+export async function listVendorProfiles(): Promise<VendorProfileRow[]> {
+  if (!isLiveSupabase()) return [];
+  const { data, error } = await supabase
+    .from('vendor_profile_summary')
+    .select('*')
+    .order('legal_name');
+  if (error) throw new Error(error.message);
+  return (data || []) as VendorProfileRow[];
+}
+
+/** Fetches a single vendor's profile + history. */
+export async function getVendorProfile(vendorId: string): Promise<MutationResult<VendorProfileRow>> {
+  try {
+    const { data, error } = await supabase
+      .from('vendor_profile_summary')
+      .select('*')
+      .eq('vendor_id', vendorId)
+      .single();
+    if (error) throw new Error(error.message);
+    return { data: data as VendorProfileRow, error: null };
   } catch (error) {
     return { data: null, error: asError(error) };
   }
@@ -2256,7 +2580,7 @@ export async function submitGrn(input: CreateGrnInput): Promise<MutationResult> 
       purchase_order_id: input.purchaseOrderId,
       project_id: poQuery.data.project_id,
       vendor_id: poQuery.data.vendor_id,
-      grn_number: `GRN-${Date.now()}`,
+      grn_number: sequence('GRN'),
       receipt_date: input.receiptDate,
       challan_no: input.challanNumber,
       vehicle_no: input.vehicleNumber,

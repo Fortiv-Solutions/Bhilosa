@@ -20,21 +20,25 @@ import {
   Mail,
   UserCheck,
   Target,
+  Printer,
 } from 'lucide-react';
-import type { PurchaseRequisitionRow } from '@/lib/procurement';
+import type { PurchaseRequisitionRow, VendorRow } from '@/lib/procurement';
 
-// ERP Supplier Master List with Default Contact Emails
-export const MOCK_SUPPLIER_MASTER = [
-  { id: 'sup-1', name: 'UltraTech Cement Ltd.', email: 'sales.west@ultratech.com' },
-  { id: 'sup-2', name: 'Tata Steel Ltd. (Tiscon Division)', email: 'tiscon.orders@tatasteel.com' },
-  { id: 'sup-3', name: 'Jindal Steel & Power Ltd.', email: 'procurement@jindalsteel.com' },
-  { id: 'sup-4', name: 'Asian Paints Ltd. (Industrial)', email: 'corporate.projects@asianpaints.com' },
-  { id: 'sup-5', name: 'ACC Limited (Concrete Division)', email: 'rmc.orders@accltd.com' },
-  { id: 'sup-6', name: 'Polycab India Ltd.', email: 'cables.enquiry@polycab.com' },
-  { id: 'sup-7', name: 'Havells India Ltd. (Switchgear)', email: 'b2b.support@havells.com' },
-  { id: 'sup-8', name: 'Finolex Cables Ltd.', email: 'sales@finolex.com' },
-  { id: 'sup-9', name: 'Supreme Industries Ltd. (Pipes)', email: 'pipes.quote@supreme.co.in' },
-];
+/** Supplier option shape used by the RFQ supplier picker. */
+export interface RfqSupplierOption {
+  id: string;
+  name: string;
+  email: string;
+}
+
+/** Maps live vendor registry rows into supplier picker options. */
+export function toSupplierOptions(vendors: VendorRow[]): RfqSupplierOption[] {
+  return vendors.map((v) => ({
+    id: v.id,
+    name: v.display_name || v.legal_name,
+    email: v.email || '',
+  }));
+}
 
 export interface RfqFormSupplierRow {
   key: string;
@@ -79,11 +83,15 @@ export interface RfqFormState {
 
 interface RfqFormProps {
   approvedPr: PurchaseRequisitionRow;
+  /** Live vendor registry — the supplier picker's source of truth. */
+  suppliers?: RfqSupplierOption[];
   onSubmit: (formData: RfqFormState, isDirectPo: boolean) => void;
+  /** Generates the report-format RFQ PDF and opens it in a new tab. */
+  onPrint?: () => void;
   onCancel: () => void;
 }
 
-export function RfqForm({ approvedPr, onSubmit, onCancel }: RfqFormProps) {
+export function RfqForm({ approvedPr, suppliers: supplierMaster = [], onSubmit, onPrint, onCancel }: RfqFormProps) {
   // Generate Quotation Registration No (e.g. RFQ-20260722-001)
   const autoRegNo = `RFQ-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Math.floor(
     100 + Math.random() * 900
@@ -189,7 +197,7 @@ export function RfqForm({ approvedPr, onSubmit, onCancel }: RfqFormProps) {
   };
 
   const handleSupplierSelect = (index: number, supplierId: string) => {
-    const found = MOCK_SUPPLIER_MASTER.find((s) => s.id === supplierId);
+    const found = supplierMaster.find((s) => s.id === supplierId);
     setForm((prev) => {
       const updated = [...prev.suppliers];
       if (found) {
@@ -251,6 +259,16 @@ export function RfqForm({ approvedPr, onSubmit, onCancel }: RfqFormProps) {
           <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-3 py-1 text-xs font-extrabold text-emerald-700 dark:text-emerald-300">
             <CheckCircle2 className="h-3.5 w-3.5" /> Source PR Approved
           </span>
+          {onPrint && (
+            <button
+              type="button"
+              onClick={onPrint}
+              title="Generate the RFQ report PDF"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-2 text-xs font-bold text-foreground hover:bg-muted transition-colors"
+            >
+              <Printer className="h-3.5 w-3.5 text-primary" /> Print Report
+            </button>
+          )}
           <button
             type="button"
             onClick={onCancel}
@@ -585,8 +603,12 @@ export function RfqForm({ approvedPr, onSubmit, onCancel }: RfqFormProps) {
                         onChange={(e) => handleSupplierSelect(idx, e.target.value)}
                         className="w-full rounded-lg border border-border bg-background px-3 py-2 font-bold text-foreground focus:border-primary focus:outline-none shadow-2xs"
                       >
-                        <option value="">-- Select Supplier from ERP Master --</option>
-                        {MOCK_SUPPLIER_MASTER.map((m) => (
+                        <option value="">
+                          {supplierMaster.length === 0
+                            ? '-- No vendors registered — add one in the Vendor Registry --'
+                            : '-- Select Supplier from Vendor Registry --'}
+                        </option>
+                        {supplierMaster.map((m) => (
                           <option key={m.id} value={m.id}>
                             {m.name}
                           </option>

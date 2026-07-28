@@ -17,6 +17,7 @@ import {
   AlertTriangle,
   FileSpreadsheet,
   ReceiptIndianRupee,
+  Printer,
 } from 'lucide-react';
 import type { VendorBillRow } from './bills-stats-bar';
 
@@ -199,10 +200,12 @@ export interface FullBillsFormState {
 interface BillsFormProps {
   bill: VendorBillRow;
   onSubmit: (formData: FullBillsFormState) => void;
+  /** Generates the report-format Purchase Bill PDF and opens it in a new tab. */
+  onPrint?: () => void;
   onCancel: () => void;
 }
 
-export function BillsForm({ bill, onSubmit, onCancel }: BillsFormProps) {
+export function BillsForm({ bill, onSubmit, onPrint, onCancel }: BillsFormProps) {
   const todayStr = new Date().toISOString().slice(0, 10);
   const defaultDueDate = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
 
@@ -401,6 +404,16 @@ export function BillsForm({ bill, onSubmit, onCancel }: BillsFormProps) {
         </div>
 
         <div className="flex items-center gap-2">
+          {onPrint && (
+            <button
+              type="button"
+              onClick={onPrint}
+              title="Generate the Purchase Bill report PDF"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-2 text-xs font-bold text-foreground hover:bg-muted transition-colors"
+            >
+              <Printer className="h-3.5 w-3.5 text-primary" /> Print Report
+            </button>
+          )}
           <button
             type="button"
             onClick={onCancel}

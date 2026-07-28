@@ -47,7 +47,7 @@ class Vendor(Base):
     __tablename__ = "vendors"
     id = Column(String, primary_key=True)
     vendor_code = Column(String, unique=True, nullable=True)
-    name = Column(String, nullable=True)
+    # NOTE: the live `vendors` table has no `name` column — use legal_name / display_name.
     legal_name = Column(String, nullable=True)
     display_name = Column(String, nullable=True)
     gst_number = Column(String, nullable=True)

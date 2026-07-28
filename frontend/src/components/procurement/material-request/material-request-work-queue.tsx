@@ -48,6 +48,8 @@ interface MaterialRequestWorkQueueProps {
   activeRole: Role;
   loading?: boolean;
   onConvertToPr: (mr: MaterialRequestRow, approvedLines?: ProcurementLineRow[]) => void;
+  /** Generates the report-format Material Request PDF and opens it in a new tab. */
+  onPrintMr?: (mrId: string) => void;
   onRefresh: () => Promise<void>;
   onMessage: (msg: string) => void;
   onError: (msg: string) => void;
@@ -58,6 +60,7 @@ export default function MaterialRequestWorkQueue({
   projectOptions,
   activeRole,
   onConvertToPr,
+  onPrintMr,
   onRefresh,
   onMessage,
   onError,
@@ -202,6 +205,7 @@ export default function MaterialRequestWorkQueue({
                 onConvertToPr(mr, lines);
                 setSelectedMrId(null);
               }}
+              onPrint={onPrintMr ? () => onPrintMr(selectedMr.id) : undefined}
             />
           )}
         </div>

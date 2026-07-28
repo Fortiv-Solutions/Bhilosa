@@ -17,12 +17,13 @@ import type {
   QuotationRow,
   VendorSelectionRow,
   PurchaseOrderRow,
+  VendorRow,
 } from '@/lib/procurement';
 import { RfqStatsBar } from './rfq-stats-bar';
 import { RfqFilterBar, DEFAULT_RFQ_FILTERS, type RfqFiltersState } from './rfq-filter-bar';
 import { RfqTableView } from './rfq-table-view';
 import { RfqWorkbench } from '../rfq-workbench';
-import { RfqForm, type RfqFormState } from './rfq-form';
+import { RfqForm, toSupplierOptions, type RfqFormState } from './rfq-form';
 import { AiPdfQuotationComparison } from './ai-pdf-quotation-comparison';
 
 interface RFQWorkspaceProps {
@@ -31,6 +32,8 @@ interface RFQWorkspaceProps {
   quotations: QuotationRow[];
   selections: VendorSelectionRow[];
   purchaseOrders: PurchaseOrderRow[];
+  /** Live vendor registry, used for the RFQ supplier picker and Direct PO. */
+  vendors?: VendorRow[];
   projectOptions: { id: string; name: string }[];
   activeRole: 'UPPER_MANAGEMENT' | 'PROJECT_MANAGER' | 'PR_TEAM' | string;
   selectedRfqId: string | null;
@@ -40,6 +43,8 @@ interface RFQWorkspaceProps {
   onRecommend: (row: QuotationRow) => void;
   onApproveSelection: (selection: VendorSelectionRow) => void;
   onGeneratePo: (pr: PurchaseRequisitionRow, quotation: QuotationRow, selection: VendorSelectionRow) => void;
+  /** Generates the report-format RFQ PDF for the RFQ raised against a PR. */
+  onPrintRfq?: (rfqId: string) => void;
 }
 
 export function RFQWorkspace(props: RFQWorkspaceProps) {
@@ -49,6 +54,7 @@ export function RFQWorkspace(props: RFQWorkspaceProps) {
     quotations,
     selections,
     purchaseOrders,
+    vendors = [],
     projectOptions,
     activeRole,
     selectedRfqId,
@@ -58,6 +64,7 @@ export function RFQWorkspace(props: RFQWorkspaceProps) {
     onRecommend,
     onApproveSelection,
     onGeneratePo,
+    onPrintRfq,
   } = props;
 
   const [viewMode, setViewMode] = useState<'list' | 'form' | 'ai_pdf' | 'workbench'>('list');
@@ -131,12 +138,19 @@ export function RFQWorkspace(props: RFQWorkspaceProps) {
 
   const handleFormSubmit = (formData: RfqFormState, isDirectPo: boolean) => {
     if (isDirectPo && activeFormPr) {
-      // Direct PO Workflow: Trigger PO generation directly
+      // Direct PO Workflow: Trigger PO generation directly.
+      // Resolve a REAL vendor id — the supplier picked in the form, else the first
+      // registered vendor. purchase_orders.vendor_id is a NOT NULL FK to vendors.
+      const pickedSupplierId = formData.suppliers.find((s) => s.supplier_id)?.supplier_id || '';
+      const pickedVendor = vendors.find((v) => v.id === pickedSupplierId) || vendors[0];
+      const directVendorId = pickedVendor?.id || '';
+
       const dummyQuote: QuotationRow = {
         id: `quote-direct-${Date.now()}`,
         rfq_id: `rfq-direct-${Date.now()}`,
-        vendor_id: 'v-1',
-        vendor_name: formData.contractor_name || 'UltraTech Direct Vendor',
+        vendor_id: directVendorId,
+        vendor_name:
+          pickedVendor?.display_name || pickedVendor?.legal_name || formData.contractor_name || 'Direct Vendor',
         quotation_number: `QT-DIRECT-${Date.now()}`,
         subtotal_amount: formData.items.reduce((s, i) => s + i.quantity * i.previous_rate, 0),
         tax_amount: formData.items.reduce((s, i) => s + i.quantity * i.previous_rate * 0.18, 0),
@@ -159,7 +173,7 @@ export function RFQWorkspace(props: RFQWorkspaceProps) {
       const dummySelection: VendorSelectionRow = {
         id: `sel-direct-${Date.now()}`,
         purchase_requisition_id: activeFormPr.id,
-        selected_vendor_id: 'v-1',
+        selected_vendor_id: directVendorId,
         selected_quotation_id: dummyQuote.id,
         selection_reason: 'Direct PO Process Selected in RFQ Form',
         status: 'approved',
@@ -237,14 +251,23 @@ export function RFQWorkspace(props: RFQWorkspaceProps) {
       </div>
 
       {viewMode === 'form' && activeFormPr ? (
-        <RfqForm
-          approvedPr={activeFormPr}
-          onSubmit={handleFormSubmit}
-          onCancel={() => {
-            setViewMode('list');
-            setActiveFormPr(null);
-          }}
-        />
+        (() => {
+          // Print is only meaningful once an RFQ exists for this PR — a brand-new,
+          // unsaved RFQ has no id to render a report from.
+          const existingRfq = rfqs.find((r) => r.purchase_requisition_id === activeFormPr.id);
+          return (
+            <RfqForm
+              approvedPr={activeFormPr}
+              suppliers={toSupplierOptions(vendors)}
+              onSubmit={handleFormSubmit}
+              onPrint={onPrintRfq && existingRfq ? () => onPrintRfq(existingRfq.id) : undefined}
+              onCancel={() => {
+                setViewMode('list');
+                setActiveFormPr(null);
+              }}
+            />
+          );
+        })()
       ) : viewMode === 'ai_pdf' ? (
         <AiPdfQuotationComparison />
       ) : viewMode === 'list' ? (
