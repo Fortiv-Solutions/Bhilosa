@@ -9,7 +9,10 @@ import {
   Users,
   CheckCircle2,
   Edit3,
+  Eye,
+  Printer,
   FileSpreadsheet,
+  Clock,
 } from 'lucide-react';
 import type { PurchaseRequisitionRow, RfqRow, QuotationRow, VendorSelectionRow } from '@/lib/procurement';
 
@@ -21,6 +24,7 @@ interface RfqTableViewProps {
   onCreateRfq: (pr: PurchaseRequisitionRow) => void;
   onRecordQuote: (rfq: RfqRow) => void;
   onViewComparison: (rfqId: string) => void;
+  onPrintRfq?: (pr: PurchaseRequisitionRow) => void;
 }
 
 function formatDate(dateStr: string | null | undefined): string {
@@ -172,29 +176,48 @@ export function RfqTableView({
                     {/* Column 6: RFQ & Sourcing Status */}
                     <td className="px-4 py-3">
                       <div className="flex flex-col gap-1">
-                        {linkedSelection && linkedSelection.status === 'approved' ? (
-                          <span className="inline-flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-100 px-2 py-0.5 text-[10px] font-extrabold text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800">
-                            <CheckCircle2 className="h-3 w-3" /> Vendor Selection Approved
-                          </span>
-                        ) : linkedRfq ? (
-                          <div className="flex flex-col gap-0.5">
-                            <span className="inline-flex items-center gap-1 rounded-md border border-purple-200 bg-purple-100 px-2 py-0.5 text-[10px] font-extrabold text-purple-800 dark:bg-purple-950/40 dark:text-purple-300 dark:border-purple-800">
-                              <FileCheck2 className="h-3 w-3" /> Sent to {linkedRfq.rfq_vendors?.length || 3} Suppliers ({linkedRfq.status.toUpperCase()})
+                        {(() => {
+                          const prSt = (pr.status || '').toLowerCase();
+                          const rfqSt = (linkedRfq?.status || '').toLowerCase();
+
+                          if (prSt === 'po_issued' || linkedSelection?.status === 'approved') {
+                            return (
+                              <span className="inline-flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-100 px-2.5 py-1 text-[11px] font-extrabold text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800">
+                                <CheckCircle2 className="h-3.5 w-3.5" /> PO Auto-Draft
+                              </span>
+                            );
+                          }
+
+                          if (prSt === 'vendor_selected' || rfqSt.includes('received') || rfqSt.includes('approved')) {
+                            return (
+                              <span className="inline-flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-100 px-2.5 py-1 text-[11px] font-extrabold text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800">
+                                <CheckCircle2 className="h-3.5 w-3.5" /> Approved
+                              </span>
+                            );
+                          }
+
+                          if (prSt === 'rfq_sent' || rfqSt.includes('waiting') || rfqSt.includes('sent')) {
+                            return (
+                              <span className="inline-flex items-center gap-1 rounded-md border border-blue-200 bg-blue-100 px-2.5 py-1 text-[11px] font-extrabold text-blue-800 dark:bg-blue-950/40 dark:text-blue-300 dark:border-blue-800">
+                                <FileCheck2 className="h-3.5 w-3.5" /> Waiting for Quotation
+                              </span>
+                            );
+                          }
+
+                          if (prSt === 'draft' || rfqSt.includes('draft')) {
+                            return (
+                              <span className="inline-flex items-center gap-1 rounded-md border border-amber-200 bg-amber-100 px-2.5 py-1 text-[11px] font-extrabold text-amber-800 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800">
+                                <Clock className="h-3.5 w-3.5" /> Draft
+                              </span>
+                            );
+                          }
+
+                          return (
+                            <span className="inline-flex items-center gap-1 rounded-md border border-purple-200 bg-purple-100 px-2.5 py-1 text-[11px] font-extrabold text-purple-800 dark:bg-purple-950/40 dark:text-purple-300 dark:border-purple-800">
+                              ⚡ Auto-Draft
                             </span>
-                            <span className="text-[10px] font-bold text-muted-foreground">
-                              {rfqQuotes.length} Vendor Quotation(s) Received
-                            </span>
-                          </div>
-                        ) : (
-                          <div className="flex flex-col gap-0.5">
-                            <span className="inline-flex items-center gap-1 rounded-md border border-purple-200 bg-purple-100 px-2 py-0.5 text-[10px] font-extrabold text-purple-800 dark:bg-purple-950/40 dark:text-purple-300 dark:border-purple-800">
-                              ⚡ Auto-Drafted from PR
-                            </span>
-                            <span className="text-[10px] font-semibold text-blue-600 dark:text-blue-400">
-                              Ready for Supplier Dispatch / Direct PO
-                            </span>
-                          </div>
-                        )}
+                          );
+                        })()}
                       </div>
                     </td>
 
@@ -203,32 +226,72 @@ export function RfqTableView({
                       <div className="flex items-center justify-end gap-1.5">
                         <button
                           onClick={() => onCreateRfq(pr)}
-                          className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-bold text-foreground hover:bg-primary hover:text-primary-foreground transition-all shadow-2xs"
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-bold text-foreground hover:bg-primary hover:text-primary-foreground transition-all shadow-2xs cursor-pointer"
                         >
-                          <Edit3 className="h-3.5 w-3.5" />
-                          <span>{linkedRfq ? 'Edit RFQ' : 'Open RFQ Form'}</span>
+                          {pr.status === 'vendor_selected' || pr.status === 'po_issued' ? (
+                            <>
+                              <Eye className="h-3.5 w-3.5 text-emerald-600" />
+                              <span>View RFQ Form</span>
+                            </>
+                          ) : (
+                            <>
+                              <Edit3 className="h-3.5 w-3.5" />
+                              <span>{linkedRfq ? 'Edit RFQ' : 'Open RFQ Form'}</span>
+                            </>
+                          )}
                         </button>
 
-                        {linkedRfq && (
-                          <>
-                            <button
-                              onClick={() => onRecordQuote(linkedRfq)}
-                              className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs font-bold text-foreground hover:bg-primary hover:text-primary-foreground transition-all shadow-2xs"
-                            >
-                              <Users className="h-3.5 w-3.5" />
-                              <span>Record Quote ({rfqQuotes.length})</span>
-                            </button>
+                        {/* Print PDF Report Direct Download Icon Button */}
+                        <button
+                          onClick={async () => {
+                            const { generateRfqPdfBlob, downloadRfqPdfFile } = await import('@/lib/rfq-pdf');
+                            const rfqData = {
+                              quotation_registration_no: linkedRfq?.rfq_number || `RFQ-${pr.pr_number}`,
+                              source_pr_number: pr.pr_number,
+                              company_name: pr.company_name || 'Pramukh Group Infrastructure Ltd.',
+                              project_name: projectName,
+                              site_location: pr.site_id || 'Tower 2 - Commercial',
+                              contractor_name: pr.department || 'Site Engineer',
+                              date: new Date().toISOString().split('T')[0],
+                              goal_delivery_date: pr.required_date || new Date().toISOString().split('T')[0],
+                              process_type: 'Quotation Request' as const,
+                              delivery_address: pr.delivery_address || 'Project site store',
+                              remarks: (pr as any).remarks || '',
+                              status: (pr.status || 'Draft') as any,
+                              suppliers: [],
+                              items: (pr.purchase_requisition_lines || []).map((l, lIdx) => ({
+                                key: `item-${lIdx}`,
+                                item_id: l.item_id ?? null,
+                                item_code: `ITEM-00${lIdx + 1}`,
+                                item_group: 'Materials',
+                                item_brand: 'Standard Brand',
+                                item_description: l.item_description,
+                                specification: l.item_description,
+                                quantity: Number(l.quantity || 1),
+                                pr_balance_qty: Number(l.quantity || 1),
+                                previous_rate: Number(l.estimated_rate || 0),
+                                unit: 'BAGS',
+                                required_date: pr.required_date || new Date().toISOString().split('T')[0],
+                                remarks: '',
+                              })),
+                            };
+                            const pdfBlob = await generateRfqPdfBlob(rfqData);
+                            downloadRfqPdfFile(rfqData, pdfBlob);
+                          }}
+                          title="Print / Download RFQ PDF Report"
+                          className="inline-flex items-center gap-1 rounded-lg border border-border bg-background p-1.5 text-xs font-bold text-foreground hover:bg-primary hover:text-primary-foreground transition-all shadow-2xs cursor-pointer"
+                        >
+                          <Printer className="h-4 w-4" />
+                        </button>
 
-                            {rfqQuotes.length > 0 && (
-                              <button
-                                onClick={() => onViewComparison(linkedRfq.id)}
-                                className="inline-flex items-center gap-1.5 rounded-lg border border-purple-500/30 bg-purple-600 px-2.5 py-1.5 text-xs font-bold text-white hover:bg-purple-700 transition-all shadow-2xs"
-                              >
-                                <FileSpreadsheet className="h-3.5 w-3.5" />
-                                <span>Compare Quotes</span>
-                              </button>
-                            )}
-                          </>
+                        {rfqQuotes.length > 0 && (
+                          <button
+                            onClick={() => onViewComparison(linkedRfq!.id)}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-purple-500/30 bg-purple-600 px-2.5 py-1.5 text-xs font-bold text-white hover:bg-purple-700 transition-all shadow-2xs cursor-pointer"
+                          >
+                            <FileSpreadsheet className="h-3.5 w-3.5" />
+                            <span>Compare Quotes</span>
+                          </button>
                         )}
                       </div>
                     </td>

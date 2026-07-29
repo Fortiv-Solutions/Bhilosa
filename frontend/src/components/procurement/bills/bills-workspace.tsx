@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { CreditCard, ListChecks } from 'lucide-react';
-import type { VendorBillRow as DbVendorBillRow } from '@/lib/procurement';
+import { updateVendorBillStatus, type VendorBillRow as DbVendorBillRow } from '@/lib/procurement';
 import type { Role } from '@/lib/roles';
 import { BillsStatsBar, type VendorBillRow } from './bills-stats-bar';
 import { BillsTableView } from './bills-table-view';
@@ -61,7 +61,17 @@ export function BillsWorkspace({ bills = [], onPrintBill, onRefresh }: BillsWork
     setViewMode('form');
   };
 
-  const handleFormSubmit = (_formData: FullBillsFormState) => {
+  const handleFormSubmit = async (formData: FullBillsFormState) => {
+    if (activeBill?.id) {
+      const statusMap: Record<string, string> = {
+        'Draft': 'draft',
+        'Pending Verification': 'pending_verification',
+        'Pending Approval': 'pending_approval',
+        'Approved': 'approved',
+      };
+      const dbStatus = statusMap[formData.status] || 'draft';
+      await updateVendorBillStatus(activeBill.id, dbStatus);
+    }
     setViewMode('list');
     setActiveBill(null);
     void onRefresh?.();

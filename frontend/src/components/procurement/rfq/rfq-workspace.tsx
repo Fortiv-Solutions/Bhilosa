@@ -19,10 +19,10 @@ import type {
   PurchaseOrderRow,
   VendorRow,
 } from '@/lib/procurement';
+import { generatePurchaseOrder } from '@/lib/procurement';
 import { RfqStatsBar } from './rfq-stats-bar';
 import { RfqFilterBar, DEFAULT_RFQ_FILTERS, type RfqFiltersState } from './rfq-filter-bar';
 import { RfqTableView } from './rfq-table-view';
-import { RfqWorkbench } from '../rfq-workbench';
 import { RfqForm, toSupplierOptions, type RfqFormState } from './rfq-form';
 import { AiPdfQuotationComparison } from './ai-pdf-quotation-comparison';
 
@@ -136,14 +136,38 @@ export function RFQWorkspace(props: RFQWorkspaceProps) {
     setViewMode('form');
   };
 
-  const handleFormSubmit = (formData: RfqFormState, isDirectPo: boolean) => {
+  const handleFormSubmit = async (formData: RfqFormState, isDirectPo: boolean) => {
     if (isDirectPo && activeFormPr) {
-      // Direct PO Workflow: Trigger PO generation directly.
-      // Resolve a REAL vendor id — the supplier picked in the form, else the first
-      // registered vendor. purchase_orders.vendor_id is a NOT NULL FK to vendors.
+      // Direct PO Workflow: Trigger PO generation directly in Supabase.
       const pickedSupplierId = formData.suppliers.find((s) => s.supplier_id)?.supplier_id || '';
       const pickedVendor = vendors.find((v) => v.id === pickedSupplierId) || vendors[0];
       const directVendorId = pickedVendor?.id || '';
+
+      const lines = formData.items.map((i) => ({
+        item_id: i.item_id,
+        item_description: i.item_description || i.specification || 'Direct PO Item',
+        quantity: Number(i.quantity || 1),
+        unit_rate: Number(i.previous_rate || 0),
+        tax_rate: 18,
+        line_total: Number(i.quantity || 1) * Number(i.previous_rate || 0),
+      }));
+
+      try {
+        if (directVendorId) {
+          await generatePurchaseOrder({
+            purchaseRequisitionId: activeFormPr.id,
+            vendorId: directVendorId,
+            vendorSelectionId: null,
+            deliveryDate: formData.goal_delivery_date || new Date().toISOString().slice(0, 10),
+            deliveryLocation: formData.delivery_address || 'Project Site Store',
+            paymentTerms: 'Standard Net 30',
+            termsAndConditions: formData.remarks || null,
+            lines,
+          });
+        }
+      } catch (err) {
+        console.error('Direct PO creation error:', err);
+      }
 
       const dummyQuote: QuotationRow = {
         id: `quote-direct-${Date.now()}`,
@@ -184,7 +208,25 @@ export function RFQWorkspace(props: RFQWorkspaceProps) {
       setViewMode('list');
       setActiveFormPr(null);
     } else if (activeFormPr) {
-      // Quotation Request Workflow: RFQ Dispatched to Suppliers
+      // Quotation Request Workflow: RFQ Status Transition in Supabase
+      const prStatusMap: Record<string, string> = {
+        'Auto-Draft': 'approved',
+        'Draft': 'draft',
+        'RFQ Sent': 'rfq_sent',
+        'Waiting for Quotation': 'rfq_sent',
+        'Quotation Received & Approved': 'vendor_selected',
+        'Approved': 'vendor_selected',
+      };
+      const nextPrStatus = prStatusMap[formData.status] || 'rfq_sent';
+      activeFormPr.status = nextPrStatus as any;
+
+      import('@/utils/supabase-client').then(({ supabase }) => {
+        supabase
+          .from('purchase_requisitions')
+          .update({ status: nextPrStatus })
+          .eq('id', activeFormPr.id)
+          .then(() => {});
+      });
       setViewMode('list');
       setActiveFormPr(null);
     }
@@ -231,22 +273,6 @@ export function RFQWorkspace(props: RFQWorkspaceProps) {
             <Sparkles className="h-3.5 w-3.5" /> AI PDF Quotation Comparison
           </button>
 
-          {/* Quotation Comparison Workbench View */}
-          {rfqs.length > 0 && (
-            <button
-              onClick={() => {
-                setViewMode('workbench');
-                setActiveFormPr(null);
-              }}
-              className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-3 text-xs font-bold transition-all ${
-                viewMode === 'workbench'
-                  ? 'border-primary bg-primary text-primary-foreground shadow-xs'
-                  : 'border-border bg-background text-foreground hover:bg-muted'
-              }`}
-            >
-              <SlidersHorizontal className="h-3.5 w-3.5" /> Quotation Comparison Workbench ({rfqs.length})
-            </button>
-          )}
         </div>
       </div>
 
@@ -260,7 +286,6 @@ export function RFQWorkspace(props: RFQWorkspaceProps) {
               approvedPr={activeFormPr}
               suppliers={toSupplierOptions(vendors)}
               onSubmit={handleFormSubmit}
-              onPrint={onPrintRfq && existingRfq ? () => onPrintRfq(existingRfq.id) : undefined}
               onCancel={() => {
                 setViewMode('list');
                 setActiveFormPr(null);
@@ -270,7 +295,7 @@ export function RFQWorkspace(props: RFQWorkspaceProps) {
         })()
       ) : viewMode === 'ai_pdf' ? (
         <AiPdfQuotationComparison />
-      ) : viewMode === 'list' ? (
+      ) : (
         <>
           {/* Daily RFQ Operational Reminders & Stats Bar */}
           <RfqStatsBar
@@ -300,25 +325,9 @@ export function RFQWorkspace(props: RFQWorkspaceProps) {
             onRecordQuote={onRecordQuote}
             onViewComparison={(rfqId) => {
               onSelectRfq(rfqId);
-              setViewMode('workbench');
             }}
           />
         </>
-      ) : (
-        <RfqWorkbench
-          rfqs={rfqs}
-          prs={prs}
-          quotations={quotations}
-          selections={selections}
-          purchaseOrders={purchaseOrders}
-          selectedRfqId={selectedRfqId}
-          onSelectRfq={onSelectRfq}
-          onRecordQuote={onRecordQuote}
-          onRecommend={onRecommend}
-          onApproveSelection={onApproveSelection}
-          onGeneratePo={onGeneratePo}
-          canApprove={canApprove}
-        />
       )}
     </div>
   );

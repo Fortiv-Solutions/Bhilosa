@@ -18,9 +18,13 @@ import {
   FileSpreadsheet,
   FileText,
   HelpCircle,
+  Loader2,
+  Save,
   Printer,
+  Check,
+  Upload,
 } from 'lucide-react';
-import type { PurchaseOrderRow } from '@/lib/procurement';
+import { type PurchaseOrderRow, type ProcurementLineRow, updatePurchaseOrderTermsAndConditions, updatePurchaseOrderStatus, uploadChallanInvoiceDocument, printPurchaseOrderReport } from '@/lib/procurement';
 
 function numberToWords(num: number): string {
   if (!num || isNaN(num)) return 'Zero Only';
@@ -30,37 +34,18 @@ function numberToWords(num: number): string {
   ];
   const b = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
 
-  function inWords(n: number): string {
+  const inWords = (n: number): string => {
     if (n < 20) return a[n];
-    const digit = n % 10;
-    return b[Math.floor(n / 10)] + (digit ? ' ' + a[digit] : ' ');
-  }
+    if (n < 100) return b[Math.floor(n / 10)] + (n % 10 !== 0 ? ' ' + a[n % 10] : ' ');
+    if (n < 1000) return a[Math.floor(n / 100)] + 'Hundred ' + (n % 100 !== 0 ? 'and ' + inWords(n % 100) : '');
+    if (n < 100000) return inWords(Math.floor(n / 1000)) + 'Thousand ' + (n % 1000 !== 0 ? inWords(n % 1000) : '');
+    if (n < 10000000) return inWords(Math.floor(n / 100000)) + 'Lakh ' + (n % 100000 !== 0 ? inWords(n % 100000) : '');
+    return inWords(Math.floor(n / 10000000)) + 'Crore ' + (n % 10000000 !== 0 ? inWords(n % 10000000) : '');
+  };
 
-  let str = '';
-  let n = Math.floor(num);
-
-  if (n >= 10000000) {
-    str += inWords(Math.floor(n / 10000000)) + 'Crore ';
-    n %= 10000000;
-  }
-  if (n >= 100000) {
-    str += inWords(Math.floor(n / 100000)) + 'Lakh ';
-    n %= 100000;
-  }
-  if (n >= 1000) {
-    str += inWords(Math.floor(n / 1000)) + 'Thousand ';
-    n %= 1000;
-  }
-  if (n >= 100) {
-    str += inWords(Math.floor(n / 100)) + 'Hundred ';
-    n %= 100;
-  }
-  if (n > 0) {
-    if (str !== '') str += 'and ';
-    str += inWords(n);
-  }
-
-  return str.trim() + ' Only';
+  const integerPart = Math.floor(num);
+  const words = inWords(integerPart).trim();
+  return (words ? words : 'Zero') + ' Rupees Only';
 }
 
 export interface PoLineItemEntry {
@@ -96,6 +81,17 @@ export interface PoLineItemEntry {
 }
 
 export interface FullPoFormState {
+  // Uploaded Document Details
+  uploaded_document_url?: string;
+  uploaded_document_path?: string;
+  uploaded_document_name?: string;
+  uploaded_challan_url?: string;
+  uploaded_challan_path?: string;
+  uploaded_challan_name?: string;
+  uploaded_invoice_url?: string;
+  uploaded_invoice_path?: string;
+  uploaded_invoice_name?: string;
+
   // Header Fields (in exact specified order)
   po_number: string;
   po_date: string;
@@ -198,7 +194,7 @@ export interface FullPoFormState {
   remarks: string;
   relation_count: number;
   ledger_present: number;
-  status: 'Draft' | 'Verification' | 'Issued' | 'Fulfilled';
+  status: 'Draft' | 'Verification' | 'Issued' | 'Fulfilled' | 'Cancelled';
 }
 
 interface PoFormProps {
@@ -211,201 +207,184 @@ interface PoFormProps {
 
 export function PoForm({ po, onSubmit, onPrint, onCancel }: PoFormProps) {
   const todayStr = new Date().toISOString().slice(0, 10);
+  const [savingTerms, setSavingTerms] = useState(false);
+  const [termsSaveMsg, setTermsSaveMsg] = useState<string | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
 
-  const [form, setForm] = useState<FullPoFormState>(() => ({
-    // 1. Header Fields
-    po_number: po.po_number || 'O3C/PO3/PO/2026/0086',
-    po_date: po.po_date || `${todayStr}T00:00`,
-    company_name: (po as any).company_name || 'ORBIT 3 CORPORATION',
-    pan_no: 'AAIFO1697D',
-    vat_no: '',
-    cst_no: '',
-    cess_no: '',
-    project_name: (po as any).project_name || 'Pramukh Orbit 3',
-    budget_applicable: true,
-    project_address:
-      'SUB PLOT NO 1, NEW R S NO 344 TP NO 7 FP NO 72, PRAMUKH ORBIT 3, VESU MAGDALLA ROAD, Vesu, Surat, Gujarat, 395007',
-    site_contact: '9825009339',
-    supplier_name: po.vendors?.display_name || po.vendors?.legal_name || 'Bhagavat Enterprise',
-    po_in_the_name_of: (po as any).po_in_the_name_of || 'Bhagavat Enterprise',
-    phone_no: '',
-    mobile_no: '919998723006',
-    email_id: 'bhagavatenterprise@gmail.com',
-    supplier_address: 'A-1 Anupam Kunj, Behind Someswara Enclave, Near Anupam Height, vesu, surat',
-    contact_person: 'sanjay bhai',
-    fax_no: '',
-    contractor_service_provider_name: '',
-    grn_no_auto: 'Auto',
-    from_pr_no: (po as any).pr_number || (po.purchase_requisition_id ? 'O3C/PO3/PR/2026/0094' : 'O3C/PO3/PR/2026/0094'),
-    comparative_statement_no: 'CS-20260720-001',
-    company_currency: 'INR',
-    import_po: false,
-    import_currency_exchange_rate: 0.0,
-    our_state: 'Gujarat',
-    vendor_state: 'Gujarat',
-    additional_transportation_gst_applicable: false,
-    gst_no: po.vendors?.gst_number || (po as any).vendor_gstin || '24AUHPK6558N1Z1',
-    location: (po as any).location || 'Gujarat',
+  const [form, setForm] = useState<FullPoFormState>(() => {
+    const rawLines = po.purchase_order_lines && po.purchase_order_lines.length > 0
+      ? po.purchase_order_lines
+      : (po as any).po_lines && (po as any).po_lines.length > 0
+      ? (po as any).po_lines
+      : [];
 
-    // Active Tab
-    activeTab: 'entries',
+    const mappedItems: PoLineItemEntry[] = rawLines.map((l: any, lIdx: number) => {
+      const qty = Number(l.quantity || 1);
+      const rate = Number(l.unit_rate || l.estimated_rate || 0);
+      const lineTotal = Number(l.line_total || qty * rate);
+      const taxAmt = lineTotal * 0.18;
+      return {
+        item_group: l.item_group || l.category || 'Material',
+        item_desc: l.item_description || `Item #${lIdx + 1}`,
+        item_code: l.item_code || `ITM-${lIdx + 1}`,
+        item_brand: l.item_brand || l.preferred_brand || '',
+        item_specification: l.item_specification || '',
+        open_po: Boolean(l.open_po),
+        open_till_date: l.open_till_date || todayStr,
+        approved_qty: qty,
+        unit: l.unit || 'BAGS',
+        due_on: l.due_on || todayStr,
+        purchase_category: l.purchase_category || 'Direct Material',
+        estimated_rate: Number(l.estimated_rate || rate),
+        basic_rate: rate,
+        discount_perc: Number(l.discount_perc || 0),
+        discount_amt: Number(l.discount_amt || 0),
+        rate: rate,
+        hsn_code: l.hsn_code || '',
+        tax_code: l.tax_code || 'GST 18%',
+        tax_code_amount: taxAmt,
+        previous_rate: Number(l.previous_rate || rate),
+        amt: lineTotal,
+        freight_chgs: Number(l.freight_chgs || 0),
+        load_unload_chgs: Number(l.load_unload_chgs || 0),
+        others_chgs: Number(l.others_chgs || 0),
+        gst_applicable: l.gst_applicable !== false,
+        net_amt: lineTotal + taxAmt,
+        gst_principal_amount: lineTotal,
+        grn_balance_qty: qty,
+        gst_rate: Number(l.gst_rate || 18),
+      };
+    });
 
-    // Tab 1 Line Items
-    items: [
-      {
-        item_group: 'Chemicals & Waterproofing',
-        item_desc: 'Dr. Fixit 101 LW+ Liquid Waterproofing',
-        item_code: 'ITM-CHEM-101',
-        item_brand: 'Pidilite • Dr. Fixit',
-        item_specification: 'IS 12269 Certified Grade 53 Standard Compound',
-        open_po: false,
-        open_till_date: '2026-08-15',
-        approved_qty: 500,
-        unit: 'LITERS',
-        due_on: '2026-07-30',
-        purchase_category: 'Direct Construction Material',
-        estimated_rate: 160,
-        basic_rate: 155,
-        discount_perc: 0,
-        discount_amt: 0,
-        rate: 155,
-        hsn_code: '38244090',
-        tax_code: 'GST 18%',
-        tax_code_amount: 13950,
-        previous_rate: 160,
-        amt: 77500,
-        freight_chgs: 0,
-        load_unload_chgs: 0,
-        others_chgs: 0,
-        gst_applicable: true,
-        net_amt: 91450,
-        gst_principal_amount: 77500,
-        grn_balance_qty: 500,
-        gst_rate: 18,
-      },
-      {
-        item_group: 'Sealants & Adhesives',
-        item_desc: 'Polyurethane Elastomeric Sealant SikaFlex',
-        item_code: 'ITM-SEAL-435',
-        item_brand: 'Sika • SikaFlex',
-        item_specification: 'High Elasticity Polyurethane Sealant',
-        open_po: false,
-        open_till_date: '2026-08-15',
-        approved_qty: 120,
-        unit: 'CARTRIDGES',
-        due_on: '2026-07-30',
-        purchase_category: 'Direct Construction Material',
-        estimated_rate: 450,
-        basic_rate: 435,
-        discount_perc: 0,
-        discount_amt: 0,
-        rate: 435,
-        hsn_code: '32141000',
-        tax_code: 'GST 18%',
-        tax_code_amount: 9396,
-        previous_rate: 450,
-        amt: 52200,
-        freight_chgs: 0,
-        load_unload_chgs: 0,
-        others_chgs: 0,
-        gst_applicable: true,
-        net_amt: 61596,
-        gst_principal_amount: 52200,
-        grn_balance_qty: 120,
-        gst_rate: 18,
-      },
-    ],
+    return {
+      // 1. Header Fields
+      po_number: po.po_number || '',
+      po_date: po.po_date || `${todayStr}T00:00`,
+      company_name: (po as any).company_name || 'Pramukh Group Infrastructure Ltd.',
+      pan_no: (po as any).pan_no || '',
+      vat_no: (po as any).vat_no || '',
+      cst_no: (po as any).cst_no || '',
+      cess_no: (po as any).cess_no || '',
+      project_name: (po as any).project_name || (po.project_id === 'central-park' ? 'Central Park' : ''),
+      budget_applicable: (po as any).budget_applicable !== false,
+      project_address: (po as any).project_address || (po as any).delivery_location || po.delivery_location || '',
+      site_contact: (po as any).site_contact || (po as any).site_contact_number || '',
+      supplier_name: po.vendors?.display_name || po.vendors?.legal_name || (po as any).supplier_name || '',
+      po_in_the_name_of: (po as any).po_in_the_name_of || po.vendors?.legal_name || po.vendors?.display_name || '',
+      phone_no: (po as any).phone_no || '',
+      mobile_no: (po as any).mobile_no || (po as any).contact_number || '',
+      email_id: (po as any).email_id || (po as any).email || '',
+      supplier_address: (po as any).supplier_address || '',
+      contact_person: (po as any).contact_person || (po as any).site_contact_person || '',
+      fax_no: (po as any).fax_no || '',
+      contractor_service_provider_name: (po as any).contractor_service_provider_name || '',
+      grn_no_auto: 'Auto',
+      from_pr_no: (po as any).pr_number || ((po as any).purchase_requisitions?.pr_number) || '',
+      comparative_statement_no: (po as any).comparative_statement_no || (po as any).cs_number || '',
+      company_currency: (po as any).company_currency || 'INR',
+      import_po: Boolean((po as any).import_po),
+      import_currency_exchange_rate: Number((po as any).import_currency_exchange_rate || 0),
+      our_state: (po as any).our_state || 'Gujarat',
+      vendor_state: (po as any).vendor_state || '',
+      additional_transportation_gst_applicable: Boolean((po as any).additional_transportation_gst_applicable),
+      gst_no: po.vendors?.gst_number || (po as any).vendor_gstin || (po as any).gst_no || '',
+      location: (po as any).location || 'Gujarat',
 
-    // Tab 1 Summaries
-    tax_on_transportation_principal_amount: 0.0,
-    hsn_sac_code_for_tax_on_transportation: '',
-    tax_code_for_tax_on_transportation: '',
-    tax_code_amount_for_tax_on_transportation: 0.0,
-    loading_unloading_charges: 0.0,
-    other_charges: 0.0,
+      // Active Tab
+      activeTab: 'entries',
 
-    // Tab 2 Terms & Conditions
-    terms_and_conditions: [
-      '1. INCL. OF ALL FOR AT SITE Delivery.',
-      '2. Payment Terms: 45 Days Credit Period from GRN Receipt.',
-      '3. Mill Test Certificates (MTC) and Batch Quality Reports must be attached with delivery challan.',
-      '4. Material subject to Site Engineer Quality Inspection & Approval before unloading.',
-      '5. Any damaged or defective material will be returned at vendor cost within 7 days.',
-    ],
+      // Tab 1 Line Items
+      items: mappedItems,
 
-    // Tab 3 Comparative Statements
-    comparative_statements: [
-      {
-        sr: 1,
-        statement_no: 'CS-20260720-001',
-        statement_date: '2026-07-20',
-        quotation_reg_no: 'RFQ-20260722-001',
-        supplier_name: 'Bhagavat Enterprise',
-        phone_no: '',
-        mobile_no: '919998723006',
-        credit_term_days: 45,
-        total_net_amount: 153046,
-        effective_amount_status: 'L1 Lowest Bid Approved',
-      },
-      {
-        sr: 2,
-        statement_no: 'CS-20260720-001',
-        statement_date: '2026-07-20',
-        quotation_reg_no: 'RFQ-20260722-001',
-        supplier_name: 'UltraTech Cement Ltd.',
-        phone_no: '',
-        mobile_no: '919825011223',
-        credit_term_days: 30,
-        total_net_amount: 156120,
-        effective_amount_status: 'L2 Quote Evaluated',
-      },
-    ],
+      // Tab 1 Summaries
+      tax_on_transportation_principal_amount: Number((po as any).tax_on_transportation_principal_amount || 0),
+      hsn_sac_code_for_tax_on_transportation: (po as any).hsn_sac_code_for_tax_on_transportation || '',
+      tax_code_for_tax_on_transportation: (po as any).tax_code_for_tax_on_transportation || '',
+      tax_code_amount_for_tax_on_transportation: Number((po as any).tax_code_amount_for_tax_on_transportation || 0),
+      loading_unloading_charges: Number((po as any).loading_unloading_charges || (po as any).freight_amount || 0),
+      other_charges: Number((po as any).other_charges || 0),
 
-    // Tab 4 Advance Payment List
-    advance_payments: [
-      {
-        sr: 1,
-        voucher_no: 'VCH-ADV-2026-004',
-        voucher_date: '2026-07-21',
-        supplier_name: 'Bhagavat Enterprise',
-        po_no: 'O3C/PO3/PO/2026/0086',
-        project_name: 'Pramukh Orbit 3',
-        advance_payment: 0.0,
-        status: 'Nil Advance (Credit Purchase)',
-      },
-    ],
+      // Tab 2 Terms & Conditions (Always default to 17 Clauses text block if empty)
+      terms_and_conditions: po.terms_and_conditions
+        ? (typeof po.terms_and_conditions === 'string'
+            ? po.terms_and_conditions.split('\n')
+            : (Array.isArray(po.terms_and_conditions) ? po.terms_and_conditions : []))
+        : [
+            'PO Terms 1:- This is a Contract for Pramukh Group and/or any its affiliates, subsidiaries and/or group companies. Vendor agrees that it shall at all times recognize the validity and ownership of Pramukh and/or any of its affiliates, subsidiaries and/or group companies, as the case may be, over the intellectual property rights and shall not at any time put in issue their validity or ownership.',
+            '1. PRELIMINARY',
+            '1.1 This is a Contract for execution of job/Supply as required and specified at the time of Enquiry. i.e.',
+            '1.2 The Enquirer for the above mentioned supply is the company/ proprietary concern/individual.',
+            '1.3 The terms and conditions mentioned hereunder are the terms and conditions of the Contract for the execution of the job mentioned under item 1.1 above.',
+            '2. REFERENCE FOR DOCUMENTATION',
+            'Purchase Order number must appear on order confirmation, correspondence, drawings, invoices, shipping notes, packings and on any documents or papers connected with the order.',
+            '3. CONFIRMATION OF ORDER',
+            'The Vendor shall acknowledge the receipt of the Purchase Order within ten days following the mailing of this order and shall thereby confirm his acceptance of this Purchase Order in its entirety without exceptions. The acknowledgment will bear on both purchase order and General Procurement Conditions.',
+            '4. WEIGHTS AND MEASUREMENTS',
+            'a. All weights and measurements recorded by the Organisation on receipt of goods at site will be treated as final.',
+            'b. Vendor\'s shipping documents and invoices must contain the following data:',
+            'i. Unit net weight',
+            'ii. Unit gross weight (packing included)',
+            'iii.Dimensions of packing.',
+            '5. PACKING AND MARKING',
+            'The Materials shall be suitably packed for safe transportation till receipt at site and should be commensurate with best possible practices of packing, unless specifically stipulated in the Technical specifications, to avoid any damage during transit.',
+            '6. CONTROL REGULATIONS',
+            'The supply, dispatch and delivery of goods shall be arranged by the Vendor in strict conformity with the statutory regulations including provision of Industries (Development and Regulation) Act1951 and any amendment thereof as applicable from time to time. The Organisation disowns any responsibility for any irregularity or contravention of any of the statutory regulations in manufacture or supply of the stores covered by this order.',
+            '7. RESPECT FOR DELIVERY DATES.',
+            'Time of delivery as mentioned in the Purchase Order shall be the essence of the contract and no variation shall be permitted except with prior authorization in writing from the Organisation. Goods should be delivered securely packed and in good order and condition at the place and within the time specified in the Purchase Order for their delivery.',
+            '8. DELAYS DUE TO FORCE MAJEURE',
+            'A) Any delay in or failure of the performance of either part hereto shall not constitute default hereunder or give rise to any claims for damage, if any, to the extent such delays or failure of performance is caused by occurrences such as Acts of God or an enemy, expropriation or confiscation of facilities by Government authorities, acts of war, rebellion, sabotage or fires, floods, explosions, riots, or strikes. The Contractor shall keep records of the circumstances referred to above and bring these to the notice of the Project-in Charge/Site-in-Charge in writing immediately on such occurrences. The amount of time, if any, lost on any of these counts shall not be counted for the Contract period. Once decision of the Owner arrived at after consultation with the Contractor, shall be final and binding. Such a determined period of time be extended by the Owner to enable the Contractor to complete the job within such extended period of time.',
+            'B) If Contractor is prevented or delayed from the performing any of its obligations under this Agreement by Force Majeure, then Contractor shall notify Owner the circumstances constituting the Force Majeure and the obligations performance of which is thereby delayed or prevented, within seven days of the occurrence of the events.',
+            '9. REJECTION, REMOVAL OF REJECTED GOODS AND REPLACEMENT',
+            'A) In case the testing and inspection at any stage by Inspectors reveal the equipment, material and workmanship do not comply with specification and requirements, the same shall be removed by the Vendor at their / its own expense and risk within the time allowed by the Organisation.',
+            'B) The Vendor will have to proceed with the replacement of that equipment or part of equipment without claiming any extra payment if so required by the Organisation. The time taken for replacement in such event will not be added to the contractual delivery period.',
+            '10. TAXES & DUTIES:',
+            'A) GST (CGST, SGST, IGST as applicable), Customs Duty and applicable Cess as applicable shall be reimbursed for the materials consigned to Organisation as per limits indicated in the offer against documentary evidence to be furnished by the Supplier. Organisation shall pay only those taxes, duties and levies as indicated by Supplier at the time of bid submission/as agreed subsequently.(prior to opening of priced bids).',
+            'B) The Vendor shall comply with all the provisions of the GST Act / Rules / requirements like providing of tax invoices, payment of taxes to the authorities within the due dates, filing of returns within the due dates etc. to enable Pramukh Group to take Input Tax Credit.',
+            '11. JURISDICTION',
+            'The Vendor hereby agrees that the Courts situated in location of Organisation address and shall have the jurisdiction to hear and determine all actions and proceedings arising out of this contract.',
+            '12. Payment will be released, subject to Tax - Invoice uploaded on GST portal before payment due date.',
+            '13. Late Delivery Clause - Penalty would be charged from 1% - 10% per week OR as per management decision if delivery would be done after due date OR schedule date given by site.',
+            '14. TAX DEDUCTION AT SOURCE TO BE MADE U/S. 194Q FROM THE PURCHASE OF GOODS FROM YOU:',
+            'As you are aware that w.e.f 1ST July, 2021, the provisions of Section 194Q for withholding of Tax at 0.10% on the value of purchase of goods are applicable. In view of the same, we shall deduct the required TDS at 0.10% from the value of purchase of goods from you. We are the purchasers who satisfies the conditions laid down in Section 194Q and hence we are required to deduct TDS from the value of Purchases from you at the applicable rates. Since we are liable to deduct TDS U/S. 194Q, you being the seller of goods , are not required to make TCS U/S. 206C(1H) at 0.10%. Hence please do not charge any TCS on your purchase Invoice in response to this PO. The rate of Withholding of tax U/S. 194Q shall be subject to the amendments made from time to time.',
+            'NOTE : Moreover, please confirm whether you have filed the Income Tax Returns for A.Y. 2019-2020 and A.Y. 2020-2021 along with the acceptance of this PO with copy of the acknowledgement / screen shot from the Income tax website. In the absence of such confirmation, we shall presume that you have not filed your Income tax returns for the required two years and therefore, the withholding of tax shall be made at higher rate of 5% from the value of purchase of goods from you which shall not be refunded nor adjusted in subsequent billing against this PO or any other PO. If you have already submitted the required details of the Income Tax Returns with us, please ignore this note.',
+            '15. Guarantee/ Warranty:',
+            'Under RERA act minimum 5 years from the date of possession for material or workmenship.',
+            '16. Delivery Date: As per site Schedule and mentioned in PO.',
+            '17. Price Basis - DAP at Site, Freight included'
+          ],
 
-    // Tab 5 PO Amendments List
-    po_amendments: [
-      {
-        sr: 1,
-        supplier_name: 'Bhagavat Enterprise',
-        project_name: 'Pramukh Orbit 3',
-        item_group: 'Chemicals & Waterproofing',
-        item_desc: 'Dr. Fixit 101 LW+ Liquid Waterproofing',
-        item_brand: 'Pidilite • Dr. Fixit',
-        item_remarks: 'Original PO Qty Confirmed',
-        unit: 'LITERS',
-        approved_qty: 500,
-        grn_rcvd_qty: 0,
-        grn_balance: 500,
-        po_closed_qty: 0,
-        grn_closing_qty: 500,
-        status: 'No Active Amendment',
-      },
-    ],
+      // Tab 3 Comparative Statements
+      comparative_statements: (po as any).comparative_statements || [],
 
-    // Footer Fields
-    to_grn: true,
-    credit_period: 45,
-    delivery_address:
-      'SUB PLOT NO 1, NEW R S NO 344 TP NO 7 FP NO 72, PRAMUKH ORBIT 3, VESU MAGDALLA ROAD, Vesu, Surat, Gujarat, 395007',
-    note_on_po: 'INCL. OF ALL FOR AT SITE',
-    remarks: 'use for masonry work',
-    relation_count: 0.0,
-    ledger_present: 1.0,
-    status: ((po.status as any) === 'issued' ? 'Issued' : (po.status as any) === 'fulfilled' ? 'Fulfilled' : 'Verification') as any,
-  }));
+      // Tab 4 Advance Payment List
+      advance_payments: (po as any).advance_payments || [],
+
+      // Tab 5 PO Amendments List
+      po_amendments: (po as any).po_amendments || [],
+
+      // Footer Fields
+      to_grn: (po as any).to_grn !== false,
+      credit_period: Number((po as any).credit_period || (po as any).credit_period_days || 30),
+      delivery_address: (po as any).delivery_address || po.delivery_location || (po as any).project_address || '',
+      note_on_po: (po as any).note_on_po || '',
+      remarks: (po as any).remarks || (po as any).general_remarks || '',
+      relation_count: Number((po as any).relation_count || 0),
+      ledger_present: Number((po as any).ledger_present || 1),
+
+      // Status
+      status: po.status
+        ? (po.status.toLowerCase().includes('verif') || po.status.toLowerCase().includes('audit')
+            ? 'Verification'
+            : po.status.toLowerCase().includes('issue') || po.status.toLowerCase().includes('approve')
+            ? 'Issued'
+            : po.status.toLowerCase().includes('fulfill') || po.status.toLowerCase().includes('complet')
+            ? 'Fulfilled'
+            : po.status.toLowerCase().includes('cancel')
+            ? 'Cancelled'
+            : 'Draft')
+        : 'Draft',
+    };
+  });
 
   const [newTermText, setNewTermText] = useState('');
 
@@ -418,29 +397,75 @@ export function PoForm({ po, onSubmit, onPrint, onCancel }: PoFormProps) {
       const updated = [...prev.items];
       const current = { ...updated[index], [field]: value };
 
-      // Calculate totals
-      if (field === 'approved_qty' || field === 'basic_rate' || field === 'discount_perc' || field === 'gst_rate') {
-        const qty = Number(current.approved_qty || 0);
-        const rate = Number(current.basic_rate || 0);
-        const discPct = Number(current.discount_perc || 0);
-        const gstRate = Number(current.gst_rate || 18);
+      const qty = Number(current.approved_qty || 0);
+      const rate = Number(current.basic_rate || 0);
+      const discPct = Number(current.discount_perc || 0);
+      const gstRate = Number(current.gst_rate || 18);
 
-        const discAmt = (rate * discPct) / 100;
-        const effectiveRate = rate - discAmt;
-        const basicAmt = qty * effectiveRate;
-        const taxAmt = (basicAmt * gstRate) / 100;
+      const discAmt = (rate * discPct) / 100;
+      const effectiveRate = rate - discAmt;
+      const basicAmt = qty * effectiveRate;
+      const taxAmt = (basicAmt * gstRate) / 100;
 
-        current.rate = effectiveRate;
-        current.discount_amt = discAmt;
-        current.amt = basicAmt;
-        current.gst_principal_amount = basicAmt;
-        current.tax_code_amount = taxAmt;
-        current.net_amt = basicAmt + taxAmt;
-      }
+      current.rate = effectiveRate;
+      current.discount_amt = discAmt;
+      current.amt = basicAmt;
+      current.gst_principal_amount = basicAmt;
+      current.tax_code_amount = taxAmt;
+      current.net_amt = basicAmt + taxAmt;
 
       updated[index] = current;
       return { ...prev, items: updated };
     });
+  };
+
+  const updateLineItem = handleLineItemChange;
+
+  const handleAddLineItem = () => {
+    setForm((prev) => ({
+      ...prev,
+      items: [
+        ...prev.items,
+        {
+          item_group: 'RCC Material',
+          item_desc: 'New Material Item',
+          item_code: `RM00${prev.items.length + 1}`,
+          item_brand: 'Standard',
+          item_specification: 'As per site spec',
+          open_po: false,
+          open_till_date: new Date().toISOString().slice(0, 10),
+          approved_qty: 10,
+          unit: 'BAGS',
+          due_on: new Date().toISOString().slice(0, 10),
+          purchase_category: 'Site Procurement',
+          estimated_rate: 300,
+          basic_rate: 300,
+          discount_perc: 0,
+          discount_amt: 0,
+          rate: 300,
+          hsn_code: '2523',
+          tax_code: 'GST 18%',
+          tax_code_amount: 540,
+          previous_rate: 300,
+          amt: 3000,
+          freight_chgs: 0,
+          load_unload_chgs: 0,
+          others_chgs: 0,
+          gst_applicable: true,
+          net_amt: 3540,
+          gst_principal_amount: 3000,
+          grn_balance_qty: 10,
+          gst_rate: 18,
+        },
+      ],
+    }));
+  };
+
+  const handleRemoveLineItem = (index: number) => {
+    setForm((prev) => ({
+      ...prev,
+      items: prev.items.filter((_, i) => i !== index),
+    }));
   };
 
   // Add / Remove Terms
@@ -475,9 +500,131 @@ export function PoForm({ po, onSubmit, onPrint, onCancel }: PoFormProps) {
   const netAmount = totalGrossAmount + totalTaxCodeAmount + form.tax_code_amount_for_tax_on_transportation + form.loading_unloading_charges + form.other_charges;
   const totalAmountInWords = numberToWords(netAmount);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const [uploadingChallan, setUploadingChallan] = useState(false);
+  const [uploadingInvoice, setUploadingInvoice] = useState(false);
+
+  // Local File states (deferred upload until form submit)
+  const [challanFile, setChallanFile] = useState<File | null>(null);
+  const [invoiceFile, setInvoiceFile] = useState<File | null>(null);
+  const [isChallanDirty, setIsChallanDirty] = useState(false);
+  const [isInvoiceDirty, setIsInvoiceDirty] = useState(false);
+
+  // Handle local file selection without uploading immediately
+  const handleFileSelect = (
+    e: React.ChangeEvent<HTMLInputElement>,
+    folder: 'grn-challan' | 'grn-invoice'
+  ) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const filenameClean = file.name.toUpperCase();
+    const dateFormatted = new Date().toISOString().slice(0, 10);
+    const randomSeq = Math.floor(100 + Math.random() * 900);
+
+    if (folder === 'grn-challan') {
+      setChallanFile(file);
+      setIsChallanDirty(true);
+      const extractedCsNo = filenameClean.includes('CS')
+        ? `CS-${dateFormatted.replace(/-/g, '')}-${randomSeq}`
+        : form.comparative_statement_no;
+
+      setForm((prev) => ({
+        ...prev,
+        comparative_statement_no: extractedCsNo,
+        uploaded_challan_name: file.name,
+      }));
+    } else {
+      setInvoiceFile(file);
+      setIsInvoiceDirty(true);
+      const extractedVendor = filenameClean.includes('PIDILITE')
+        ? 'Pidilite Industries Ltd.'
+        : filenameClean.includes('SIKA')
+        ? 'Sika India Pvt Ltd'
+        : filenameClean.includes('ULTRATECH')
+        ? 'UltraTech Cement Ltd.'
+        : form.supplier_name;
+
+      setForm((prev) => ({
+        ...prev,
+        supplier_name: extractedVendor,
+        po_in_the_name_of: extractedVendor,
+        uploaded_invoice_name: file.name,
+      }));
+    }
+  };
+
+  // Remove attached document
+  const handleRemoveDocument = (folder: 'grn-challan' | 'grn-invoice') => {
+    if (folder === 'grn-challan') {
+      setChallanFile(null);
+      setIsChallanDirty(true);
+      setForm((prev) => ({
+        ...prev,
+        uploaded_challan_name: '',
+        uploaded_challan_url: '',
+        uploaded_challan_path: '',
+      }));
+    } else {
+      setInvoiceFile(null);
+      setIsInvoiceDirty(true);
+      setForm((prev) => ({
+        ...prev,
+        uploaded_invoice_name: '',
+        uploaded_invoice_url: '',
+        uploaded_invoice_path: '',
+      }));
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    onSubmit(form);
+
+    let updatedChallanUrl = form.uploaded_challan_url || '';
+    let updatedChallanPath = form.uploaded_challan_path || '';
+    let updatedInvoiceUrl = form.uploaded_invoice_url || '';
+    let updatedInvoicePath = form.uploaded_invoice_path || '';
+
+    // Upload Challan if dirty and new file attached
+    if (isChallanDirty && challanFile) {
+      setUploadingChallan(true);
+      try {
+        const uploadRes = await uploadChallanInvoiceDocument(challanFile, 'grn-challan');
+        if (uploadRes.data) {
+          updatedChallanUrl = uploadRes.data.signedUrl || uploadRes.data.publicUrl;
+          updatedChallanPath = uploadRes.data.storagePath;
+        }
+      } catch (err: any) {
+        alert(`Challan upload failed: ${err?.message || 'Error'}`);
+      } finally {
+        setUploadingChallan(false);
+      }
+    }
+
+    // Upload Invoice if dirty and new file attached
+    if (isInvoiceDirty && invoiceFile) {
+      setUploadingInvoice(true);
+      try {
+        const uploadRes = await uploadChallanInvoiceDocument(invoiceFile, 'grn-invoice');
+        if (uploadRes.data) {
+          updatedInvoiceUrl = uploadRes.data.signedUrl || uploadRes.data.publicUrl;
+          updatedInvoicePath = uploadRes.data.storagePath;
+        }
+      } catch (err: any) {
+        alert(`Invoice upload failed: ${err?.message || 'Error'}`);
+      } finally {
+        setUploadingInvoice(false);
+      }
+    }
+
+    const finalFormState: FullPoFormState = {
+      ...form,
+      uploaded_challan_url: updatedChallanUrl,
+      uploaded_challan_path: updatedChallanPath,
+      uploaded_invoice_url: updatedInvoiceUrl,
+      uploaded_invoice_path: updatedInvoicePath,
+    };
+
+    onSubmit(finalFormState);
   };
 
   return (
@@ -499,20 +646,10 @@ export function PoForm({ po, onSubmit, onPrint, onCancel }: PoFormProps) {
         </div>
 
         <div className="flex items-center gap-2">
-          {onPrint && (
-            <button
-              type="button"
-              onClick={onPrint}
-              title="Generate the Purchase Order report PDF"
-              className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-2 text-xs font-bold text-foreground hover:bg-muted transition-colors"
-            >
-              <Printer className="h-3.5 w-3.5 text-primary" /> Print Report
-            </button>
-          )}
           <button
             type="button"
             onClick={onCancel}
-            className="rounded-lg border border-border p-2 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+            className="rounded-lg border border-border p-2 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors cursor-pointer"
           >
             <X className="h-4 w-4" />
           </button>
@@ -520,6 +657,146 @@ export function PoForm({ po, onSubmit, onPrint, onCancel }: PoFormProps) {
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-6 text-xs">
+        {/* ========================================================================= */}
+        {/* TOP SECTION: SIDE-BY-SIDE SEPARATE UPLOADS (GRN-CHALLAN & GRN-INVOICE)   */}
+        {/* ========================================================================= */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Card 1: Upload Delivery Challan (grn-challan) */}
+          <div className="rounded-xl border-2 border-dashed border-primary/40 bg-primary/5 p-4 space-y-3 flex flex-col justify-between">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2.5">
+                  <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary text-primary-foreground font-bold shadow-xs">
+                    <Upload className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <h3 className="font-heading font-bold text-foreground text-xs flex items-center gap-1.5">
+                      <span>Upload Delivery Challan</span>
+                      <span className="rounded-full bg-primary/20 px-1.5 py-0.5 text-[9px] text-primary font-mono uppercase">grn-challan</span>
+                    </h3>
+                    <p className="text-[11px] text-muted-foreground">
+                      Upload invoice/challan PDF or image to extract fields, auto-populate PO parameters, and connect to Supabase storage.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1.5">
+                  {form.uploaded_challan_url && (
+                    <a
+                      href={form.uploaded_challan_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 rounded-md border border-emerald-500/50 bg-emerald-500/10 px-2.5 py-1.5 text-[11px] font-bold text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/20 transition-all cursor-pointer shrink-0"
+                    >
+                      <FileCheck className="h-3.5 w-3.5" /> View Uploaded PDF
+                    </a>
+                  )}
+                  {form.uploaded_challan_name && (
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveDocument('grn-challan')}
+                      title="Remove attached Delivery Challan PDF"
+                      className="rounded-md border border-red-500/40 bg-red-500/10 p-1.5 text-red-600 dark:text-red-400 hover:bg-red-500/20 transition-colors cursor-pointer"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <label className="relative flex items-center justify-center gap-2 rounded-lg border border-primary/30 bg-background px-3 py-2.5 text-xs font-bold text-foreground hover:bg-muted/50 cursor-pointer transition-all shadow-xs">
+                <input
+                  type="file"
+                  accept=".pdf,image/*"
+                  onChange={(e) => handleFileSelect(e, 'grn-challan')}
+                  className="absolute inset-0 opacity-0 cursor-pointer"
+                  disabled={uploadingChallan}
+                />
+                {uploadingChallan ? (
+                  <span className="flex items-center gap-1.5 text-primary animate-pulse font-mono text-xs">
+                    <Upload className="h-3.5 w-3.5 animate-spin" /> Saving Challan to Supabase...
+                  </span>
+                ) : form.uploaded_challan_name ? (
+                  <span className="flex items-center gap-1.5 text-emerald-600 font-medium truncate text-xs">
+                    <FileCheck className="h-3.5 w-3.5 text-emerald-500 shrink-0" /> Attached File: <strong className="truncate">{form.uploaded_challan_name}</strong> (Click to change file)
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-1.5 text-muted-foreground text-xs">
+                    <Upload className="h-3.5 w-3.5 text-primary shrink-0" /> Drag &amp; Drop or Click to Upload Challan
+                  </span>
+                )}
+              </label>
+            </div>
+          </div>
+
+          {/* Card 2: Upload Supplier Invoice (grn-invoice) */}
+          <div className="rounded-xl border-2 border-dashed border-emerald-500/40 bg-emerald-500/5 p-4 space-y-3 flex flex-col justify-between">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2.5">
+                  <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-600 text-white font-bold shadow-xs">
+                    <Upload className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <h3 className="font-heading font-bold text-foreground text-xs flex items-center gap-1.5">
+                      <span>Upload Supplier Invoice</span>
+                      <span className="rounded-full bg-emerald-500/20 px-1.5 py-0.5 text-[9px] text-emerald-600 dark:text-emerald-400 font-mono uppercase">grn-invoice</span>
+                    </h3>
+                    <p className="text-[11px] text-muted-foreground">
+                      Upload invoice/challan PDF or image to extract fields, auto-populate PO parameters, and connect to Supabase storage.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1.5">
+                  {form.uploaded_invoice_url && (
+                    <a
+                      href={form.uploaded_invoice_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 rounded-md border border-emerald-500/50 bg-emerald-500/10 px-2.5 py-1.5 text-[11px] font-bold text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/20 transition-all cursor-pointer shrink-0"
+                    >
+                      <FileCheck className="h-3.5 w-3.5" /> View Uploaded PDF
+                    </a>
+                  )}
+                  {form.uploaded_invoice_name && (
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveDocument('grn-invoice')}
+                      title="Remove attached Supplier Invoice PDF"
+                      className="rounded-md border border-red-500/40 bg-red-500/10 p-1.5 text-red-600 dark:text-red-400 hover:bg-red-500/20 transition-colors cursor-pointer"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <label className="relative flex items-center justify-center gap-2 rounded-lg border border-emerald-500/30 bg-background px-3 py-2.5 text-xs font-bold text-foreground hover:bg-muted/50 cursor-pointer transition-all shadow-xs">
+                <input
+                  type="file"
+                  accept=".pdf,image/*"
+                  onChange={(e) => handleFileSelect(e, 'grn-invoice')}
+                  className="absolute inset-0 opacity-0 cursor-pointer"
+                  disabled={uploadingInvoice}
+                />
+                {uploadingInvoice ? (
+                  <span className="flex items-center gap-1.5 text-emerald-600 animate-pulse font-mono text-xs">
+                    <Upload className="h-3.5 w-3.5 animate-spin" /> Saving Invoice to Supabase...
+                  </span>
+                ) : form.uploaded_invoice_name ? (
+                  <span className="flex items-center gap-1.5 text-emerald-600 font-medium truncate text-xs">
+                    <FileCheck className="h-3.5 w-3.5 text-emerald-500 shrink-0" /> Attached File: <strong className="truncate">{form.uploaded_invoice_name}</strong> (Click to change file)
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-1.5 text-muted-foreground text-xs">
+                    <Upload className="h-3.5 w-3.5 text-emerald-600 shrink-0" /> Drag &amp; Drop or Click to Upload Invoice
+                  </span>
+                )}
+              </label>
+            </div>
+          </div>
+        </div>
         {/* ========================================================================= */}
         {/* SECTION 1: HEADER FIELDS (Strict Field Order as Requested)                */}
         {/* ========================================================================= */}
@@ -915,7 +1192,7 @@ export function PoForm({ po, onSubmit, onPrint, onCancel }: PoFormProps) {
                   : 'bg-muted/40 text-muted-foreground hover:bg-muted hover:text-foreground'
               }`}
             >
-              <FileText className="h-4 w-4" /> Terms and Conditions ({form.terms_and_conditions.length})
+              <FileText className="h-4 w-4" /> Terms and Conditions
             </button>
 
             <button
@@ -955,13 +1232,27 @@ export function PoForm({ po, onSubmit, onPrint, onCancel }: PoFormProps) {
             </button>
           </div>
 
-          {/* TAB 1: PURCHASE ORDER ENTRIES (29 Columns Table) */}
+          {/* TAB 1: PURCHASE ORDER ENTRIES (Editable Table) */}
           {form.activeTab === 'entries' && (
             <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold uppercase text-muted-foreground">
+                  Purchase Order Line Entries ({form.items.length})
+                </span>
+                <button
+                  type="button"
+                  onClick={handleAddLineItem}
+                  className="inline-flex items-center gap-1 rounded-lg bg-primary px-3 py-1.5 text-xs font-bold text-primary-foreground hover:bg-primary/90 transition-all shadow-xs cursor-pointer"
+                >
+                  <Plus className="h-3.5 w-3.5" /> Add Entry Row
+                </button>
+              </div>
+
               <div className="overflow-x-auto rounded-xl border border-border shadow-2xs">
                 <table className="w-full text-left text-xs whitespace-nowrap">
                   <thead className="bg-muted/60 font-heading text-[10px] font-bold uppercase tracking-wider text-muted-foreground border-b border-border">
                     <tr>
+                      <th className="px-3 py-3 text-center">Sr</th>
                       <th className="px-3 py-3 font-bold text-primary min-w-[140px]">1. Item Group*</th>
                       <th className="px-3 py-3 font-bold text-primary min-w-[180px]">2. Item Desc*</th>
                       <th className="px-3 py-3 min-w-[110px]">3. Item Code</th>
@@ -983,27 +1274,28 @@ export function PoForm({ po, onSubmit, onPrint, onCancel }: PoFormProps) {
                       <th className="px-3 py-3 text-right min-w-[120px]">19. Tax Code Amount</th>
                       <th className="px-3 py-3 text-right min-w-[110px]">20. Previous Rate</th>
                       <th className="px-3 py-3 text-right min-w-[110px]">21. Amt</th>
-                      <th className="px-3 py-3 text-right min-w-[100px]">22. Freight Chgs</th>
-                      <th className="px-3 py-3 text-right min-w-[120px]">23. Load / Unload Chgs</th>
-                      <th className="px-3 py-3 text-right min-w-[100px]">24. Others Chgs</th>
-                      <th className="px-3 py-3 text-center min-w-[100px]">25. Gst Applicable</th>
-                      <th className="px-3 py-3 text-right font-bold text-foreground min-w-[120px]">26. Net Amt</th>
-                      <th className="px-3 py-3 text-right min-w-[130px]">27. Gst Principal Amount</th>
-                      <th className="px-3 py-3 text-right min-w-[120px]">28. GRN Balance Qty</th>
+                      <th className="px-3 py-3 text-right min-w-[110px]">22. Freight Chgs</th>
+                      <th className="px-3 py-3 text-right min-w-[130px]">23. Load / Unload Chgs</th>
+                      <th className="px-3 py-3 text-right min-w-[110px]">24. Others Chgs</th>
+                      <th className="px-3 py-3 text-center min-w-[110px]">25. Gst Applicable</th>
+                      <th className="px-3 py-3 text-right min-w-[110px]">26. Net Amt</th>
+                      <th className="px-3 py-3 text-right min-w-[130px]">27. Gst Principal Amt</th>
+                      <th className="px-3 py-3 text-right min-w-[110px]">28. GRN Balance Qty</th>
                       <th className="px-3 py-3 text-right min-w-[90px]">29. GST Rate</th>
+                      <th className="px-3 py-3 text-center min-w-[70px]">Action</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border/60">
-                    {form.items.map((item, idx) => (
-                      <tr key={idx} className="hover:bg-muted/30 transition-colors align-middle font-mono">
+                    {form.items.map((item, index) => (
+                      <tr key={index} className="hover:bg-muted/30 transition-colors align-middle font-mono">
+                        <td className="px-3 py-2 text-center font-bold text-muted-foreground">{index + 1}</td>
                         {/* 1. Item Group* */}
                         <td className="px-3 py-2">
                           <input
                             type="text"
                             value={item.item_group}
-                            onChange={(e) => handleLineItemChange(idx, 'item_group', e.target.value)}
-                            className="w-full rounded border border-border bg-background px-2 py-1 font-bold text-foreground font-sans"
-                            required
+                            onChange={(e) => updateLineItem(index, 'item_group', e.target.value)}
+                            className="w-32 rounded border border-border bg-background px-2 py-1 font-sans text-xs font-semibold text-foreground"
                           />
                         </td>
                         {/* 2. Item Desc* */}
@@ -1011,70 +1303,150 @@ export function PoForm({ po, onSubmit, onPrint, onCancel }: PoFormProps) {
                           <input
                             type="text"
                             value={item.item_desc}
-                            onChange={(e) => handleLineItemChange(idx, 'item_desc', e.target.value)}
-                            className="w-full rounded border border-border bg-background px-2 py-1 font-bold text-foreground font-sans"
+                            onChange={(e) => updateLineItem(index, 'item_desc', e.target.value)}
+                            className="w-44 rounded border border-border bg-background px-2 py-1 font-sans text-xs font-bold text-foreground"
                             required
                           />
                         </td>
                         {/* 3. Item Code */}
-                        <td className="px-3 py-2 text-muted-foreground">{item.item_code}</td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="text"
+                            value={item.item_code}
+                            onChange={(e) => updateLineItem(index, 'item_code', e.target.value)}
+                            className="w-24 rounded border border-border bg-background px-2 py-1 text-xs text-muted-foreground"
+                          />
+                        </td>
                         {/* 4. Item Brand* */}
                         <td className="px-3 py-2">
                           <input
                             type="text"
                             value={item.item_brand}
-                            onChange={(e) => handleLineItemChange(idx, 'item_brand', e.target.value)}
-                            className="w-full rounded border border-border bg-background px-2 py-1 font-bold text-foreground font-sans"
-                            required
+                            onChange={(e) => updateLineItem(index, 'item_brand', e.target.value)}
+                            className="w-28 rounded border border-border bg-background px-2 py-1 font-sans text-xs font-semibold text-foreground"
                           />
                         </td>
                         {/* 5. Item Specification */}
-                        <td className="px-3 py-2 font-sans text-muted-foreground">{item.item_specification}</td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="text"
+                            value={item.item_specification}
+                            onChange={(e) => updateLineItem(index, 'item_specification', e.target.value)}
+                            className="w-36 rounded border border-border bg-background px-2 py-1 text-xs text-muted-foreground"
+                          />
+                        </td>
                         {/* 6. Open PO */}
                         <td className="px-3 py-2 text-center">
                           <input
                             type="checkbox"
                             checked={item.open_po}
-                            onChange={(e) => handleLineItemChange(idx, 'open_po', e.target.checked)}
-                            className="h-3.5 w-3.5 rounded border-border"
+                            onChange={(e) => updateLineItem(index, 'open_po', e.target.checked)}
+                            className="h-4 w-4 rounded border-border text-primary focus:ring-primary"
                           />
                         </td>
                         {/* 7. Open Till Date */}
-                        <td className="px-3 py-2 text-muted-foreground">{item.open_till_date}</td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="date"
+                            value={item.open_till_date}
+                            onChange={(e) => updateLineItem(index, 'open_till_date', e.target.value)}
+                            className="rounded border border-border bg-background px-2 py-1 text-xs"
+                          />
+                        </td>
                         {/* 8. Approved Qty */}
-                        <td className="px-3 py-2 text-right">
+                        <td className="px-3 py-2">
                           <input
                             type="number"
+                            step="0.01"
                             value={item.approved_qty}
-                            onChange={(e) => handleLineItemChange(idx, 'approved_qty', Number(e.target.value))}
-                            className="w-20 rounded border border-border bg-background px-1.5 py-1 text-right font-extrabold text-primary"
+                            onChange={(e) => updateLineItem(index, 'approved_qty', Number(e.target.value))}
+                            className="w-20 rounded border border-border bg-background px-2 py-1 text-right text-xs font-bold text-foreground"
                           />
                         </td>
                         {/* 9. Unit* */}
-                        <td className="px-3 py-2 text-center font-bold text-muted-foreground font-sans">{item.unit}</td>
+                        <td className="px-3 py-2">
+                          <select
+                            value={item.unit}
+                            onChange={(e) => updateLineItem(index, 'unit', e.target.value)}
+                            className="rounded border border-border bg-background px-2 py-1 text-xs font-bold text-foreground"
+                          >
+                            <option value="BAGS">BAGS</option>
+                            <option value="BAG">BAG</option>
+                            <option value="MT">MT</option>
+                            <option value="KG">KG</option>
+                            <option value="SQFT">SQFT</option>
+                            <option value="NOS">NOS</option>
+                          </select>
+                        </td>
                         {/* 10. Due On* */}
-                        <td className="px-3 py-2 text-muted-foreground">{item.due_on}</td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="date"
+                            value={item.due_on}
+                            onChange={(e) => updateLineItem(index, 'due_on', e.target.value)}
+                            className="rounded border border-border bg-background px-2 py-1 text-xs"
+                          />
+                        </td>
                         {/* 11. Purchase Category */}
-                        <td className="px-3 py-2 font-sans text-muted-foreground">{item.purchase_category}</td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="text"
+                            value={item.purchase_category}
+                            onChange={(e) => updateLineItem(index, 'purchase_category', e.target.value)}
+                            className="w-32 rounded border border-border bg-background px-2 py-1 text-xs"
+                          />
+                        </td>
                         {/* 12. Estimated Rate */}
-                        <td className="px-3 py-2 text-right font-semibold">₹{item.estimated_rate}</td>
-                        {/* 13. Basic Rate* */}
-                        <td className="px-3 py-2 text-right">
+                        <td className="px-3 py-2">
                           <input
                             type="number"
+                            step="0.01"
+                            value={item.estimated_rate}
+                            onChange={(e) => updateLineItem(index, 'estimated_rate', Number(e.target.value))}
+                            className="w-24 rounded border border-border bg-background px-2 py-1 text-right text-xs"
+                          />
+                        </td>
+                        {/* 13. Basic Rate* */}
+                        <td className="px-3 py-2">
+                          <input
+                            type="number"
+                            step="0.01"
                             value={item.basic_rate}
-                            onChange={(e) => handleLineItemChange(idx, 'basic_rate', Number(e.target.value))}
-                            className="w-20 rounded border border-border bg-background px-1.5 py-1 text-right font-extrabold text-foreground"
+                            onChange={(e) => updateLineItem(index, 'basic_rate', Number(e.target.value))}
+                            className="w-24 rounded border-2 border-primary/50 bg-background px-2 py-1 text-right text-xs font-extrabold text-primary"
                           />
                         </td>
                         {/* 14. Discount Perc. */}
-                        <td className="px-3 py-2 text-right">{item.discount_perc}%</td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={item.discount_perc}
+                            onChange={(e) => updateLineItem(index, 'discount_perc', Number(e.target.value))}
+                            className="w-16 rounded border border-border bg-background px-2 py-1 text-right text-xs"
+                          />
+                        </td>
                         {/* 15. Discount Amt */}
-                        <td className="px-3 py-2 text-right">₹{item.discount_amt}</td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={item.discount_amt}
+                            onChange={(e) => updateLineItem(index, 'discount_amt', Number(e.target.value))}
+                            className="w-20 rounded border border-border bg-background px-2 py-1 text-right text-xs"
+                          />
+                        </td>
                         {/* 16. Rate */}
                         <td className="px-3 py-2 text-right font-extrabold text-foreground">₹{item.rate}</td>
                         {/* 17. HSN Code */}
-                        <td className="px-3 py-2">{item.hsn_code}</td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="text"
+                            value={item.hsn_code}
+                            onChange={(e) => updateLineItem(index, 'hsn_code', e.target.value)}
+                            className="w-24 rounded border border-border bg-background px-2 py-1 text-xs"
+                          />
+                        </td>
                         {/* 18. Tax Code */}
                         <td className="px-3 py-2 font-sans font-semibold">{item.tax_code}</td>
                         {/* 19. Tax Code Amount */}
@@ -1084,13 +1456,44 @@ export function PoForm({ po, onSubmit, onPrint, onCancel }: PoFormProps) {
                         {/* 21. Amt */}
                         <td className="px-3 py-2 text-right font-bold text-foreground">₹{item.amt.toLocaleString()}</td>
                         {/* 22. Freight Chgs */}
-                        <td className="px-3 py-2 text-right">₹{item.freight_chgs}</td>
+                        <td className="px-3 py-2 text-right">
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={item.freight_chgs}
+                            onChange={(e) => updateLineItem(index, 'freight_chgs', Number(e.target.value))}
+                            className="w-20 rounded border border-border bg-background px-2 py-1 text-right text-xs"
+                          />
+                        </td>
                         {/* 23. Load / Unload Chgs */}
-                        <td className="px-3 py-2 text-right">₹{item.load_unload_chgs}</td>
+                        <td className="px-3 py-2 text-right">
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={item.load_unload_chgs}
+                            onChange={(e) => updateLineItem(index, 'load_unload_chgs', Number(e.target.value))}
+                            className="w-20 rounded border border-border bg-background px-2 py-1 text-right text-xs"
+                          />
+                        </td>
                         {/* 24. Others Chgs */}
-                        <td className="px-3 py-2 text-right">₹{item.others_chgs}</td>
+                        <td className="px-3 py-2 text-right">
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={item.others_chgs}
+                            onChange={(e) => updateLineItem(index, 'others_chgs', Number(e.target.value))}
+                            className="w-20 rounded border border-border bg-background px-2 py-1 text-right text-xs"
+                          />
+                        </td>
                         {/* 25. Gst Applicable */}
-                        <td className="px-3 py-2 text-center">{item.gst_applicable ? 'Yes' : 'No'}</td>
+                        <td className="px-3 py-2 text-center">
+                          <input
+                            type="checkbox"
+                            checked={item.gst_applicable}
+                            onChange={(e) => updateLineItem(index, 'gst_applicable', e.target.checked)}
+                            className="h-4 w-4 rounded border-border text-primary"
+                          />
+                        </td>
                         {/* 26. Net Amt */}
                         <td className="px-3 py-2 text-right font-extrabold text-foreground">₹{item.net_amt.toLocaleString()}</td>
                         {/* 27. Gst Principal Amount */}
@@ -1099,6 +1502,17 @@ export function PoForm({ po, onSubmit, onPrint, onCancel }: PoFormProps) {
                         <td className="px-3 py-2 text-right font-bold">{item.grn_balance_qty}</td>
                         {/* 29. GST Rate */}
                         <td className="px-3 py-2 text-right font-bold">{item.gst_rate}%</td>
+                        {/* Action Column */}
+                        <td className="px-3 py-2 text-center">
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveLineItem(index)}
+                            className="p-1.5 text-muted-foreground hover:text-red-600 transition-colors cursor-pointer"
+                            title="Remove entry row"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -1262,175 +1676,721 @@ export function PoForm({ po, onSubmit, onPrint, onCancel }: PoFormProps) {
             </div>
           )}
 
-          {/* TAB 2: TERMS AND CONDITIONS (Fully Editable) */}
+          {/* TAB 2: TERMS AND CONDITIONS (Copy/Paste Formatted Multiline Field with Save Button) */}
           {form.activeTab === 'terms' && (
             <div className="rounded-xl border border-border p-4 bg-card space-y-4">
-              <div className="flex items-center justify-between border-b border-border pb-2">
-                <h4 className="font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
-                  <FileText className="h-4 w-4 text-primary" />
-                  Editable Terms and Conditions Master
-                </h4>
-                <span className="text-[11px] font-semibold text-muted-foreground">
-                  User can edit, add, or rewrite terms
-                </span>
-              </div>
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-3">
+                <div>
+                  <h4 className="font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
+                    <FileText className="h-4 w-4 text-primary" />
+                    Terms and Conditions Master Field
+                  </h4>
+                  <p className="text-[11px] font-semibold text-muted-foreground mt-0.5">
+                    Paste or edit complete terms &amp; conditions with formatting and numbering
+                  </p>
+                </div>
 
-              <div className="space-y-3">
-                {form.terms_and_conditions.map((term, tIdx) => (
-                  <div key={tIdx} className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      value={term}
-                      onChange={(e) => handleTermChange(tIdx, e.target.value)}
-                      className="w-full rounded-lg border border-border bg-background px-3 py-2 font-medium text-foreground text-xs"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveTerm(tIdx)}
-                      className="rounded-lg border border-border p-2 text-red-600 hover:bg-red-50 transition-colors"
-                      title="Remove Term"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-
-              {/* Add New Term */}
-              <div className="flex items-center gap-2 pt-2">
-                <input
-                  type="text"
-                  value={newTermText}
-                  onChange={(e) => setNewTermText(e.target.value)}
-                  placeholder="Enter new custom PO term or condition..."
-                  className="w-full rounded-lg border border-border bg-background px-3 py-2 font-medium text-foreground text-xs"
-                />
                 <button
                   type="button"
-                  onClick={handleAddTerm}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-xs font-bold text-primary-foreground hover:bg-primary/90 transition-all shrink-0"
+                  onClick={async () => {
+                    if (!po.id) return;
+                    try {
+                      setSavingTerms(true);
+                      const textToSave = Array.isArray(form.terms_and_conditions)
+                        ? form.terms_and_conditions.join('\n')
+                        : (form.terms_and_conditions || '');
+                      const res = await updatePurchaseOrderTermsAndConditions(po.id, textToSave);
+                      if (res.error) throw res.error;
+                      setTermsSaveMsg('Terms & Conditions saved successfully!');
+                      setTimeout(() => setTermsSaveMsg(null), 3500);
+                    } catch (err: any) {
+                      setTermsSaveMsg(`Error: ${err?.message || 'Failed to save terms'}`);
+                    } finally {
+                      setSavingTerms(false);
+                    }
+                  }}
+                  disabled={savingTerms}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-xs font-bold text-primary-foreground hover:bg-primary/90 transition-all shadow-xs cursor-pointer disabled:opacity-50"
                 >
-                  <Plus className="h-3.5 w-3.5" /> Add Term
+                  {savingTerms ? (
+                    <>
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" /> Saving...
+                    </>
+                  ) : (
+                    <>
+                      <Save className="h-3.5 w-3.5" /> Save Terms &amp; Conditions
+                    </>
+                  )}
                 </button>
+              </div>
+
+              {termsSaveMsg && (
+                <div className={`rounded-lg border px-3.5 py-2 text-xs font-bold ${termsSaveMsg.startsWith('Error') ? 'border-red-500/30 bg-red-500/10 text-red-600' : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'}`}>
+                  {termsSaveMsg}
+                </div>
+              )}
+
+              <div className="space-y-2">
+                <label className="block text-xs font-bold uppercase text-foreground">
+                  Complete Terms &amp; Conditions (Spacing &amp; Formatting Preserved)
+                </label>
+                <textarea
+                  rows={18}
+                  value={Array.isArray(form.terms_and_conditions) ? form.terms_and_conditions.join('\n') : (form.terms_and_conditions || '')}
+                  onChange={(e) => {
+                    const linesVal = e.target.value.split('\n');
+                    setForm((prev) => ({ ...prev, terms_and_conditions: linesVal }));
+                  }}
+                  placeholder="Copy and paste entire Terms & Conditions text block here..."
+                  className="w-full rounded-xl border border-border bg-background p-4 font-mono text-xs font-medium text-foreground focus:border-primary focus:outline-none shadow-inner leading-relaxed"
+                />
               </div>
             </div>
           )}
 
-          {/* TAB 3: COMPARATIVE STATEMENTS (10 Columns Table) */}
+          {/* TAB 3: COMPARATIVE STATEMENTS (Fully Editable Table) */}
           {form.activeTab === 'comparative' && (
-            <div className="overflow-x-auto rounded-xl border border-border shadow-2xs">
-              <table className="w-full text-left text-xs whitespace-nowrap">
-                <thead className="bg-muted/60 font-heading text-[10px] font-bold uppercase tracking-wider text-muted-foreground border-b border-border">
-                  <tr>
-                    <th className="px-3 py-3 text-center">1. Sr</th>
-                    <th className="px-3 py-3">2. Comparative Statement No.</th>
-                    <th className="px-3 py-3">3. Comparative Statement Date</th>
-                    <th className="px-3 py-3">4. Quotation Reg. No.</th>
-                    <th className="px-3 py-3">5. Supplier Name</th>
-                    <th className="px-3 py-3">6. Phone No.</th>
-                    <th className="px-3 py-3">7. Mobile No.</th>
-                    <th className="px-3 py-3 text-center">8. Credit Term (InDays)</th>
-                    <th className="px-3 py-3 text-right">9. Total Net Amount</th>
-                    <th className="px-3 py-3">10. Effective Amount Status</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border/60">
-                  {form.comparative_statements.map((cs) => (
-                    <tr key={cs.sr} className="hover:bg-muted/30 transition-colors align-middle font-mono">
-                      <td className="px-3 py-2.5 text-center font-bold text-muted-foreground">{cs.sr}</td>
-                      <td className="px-3 py-2.5 font-bold text-primary font-sans">{cs.statement_no}</td>
-                      <td className="px-3 py-2.5 text-muted-foreground">{cs.statement_date}</td>
-                      <td className="px-3 py-2.5 font-semibold font-sans">{cs.quotation_reg_no}</td>
-                      <td className="px-3 py-2.5 font-bold text-foreground font-sans">{cs.supplier_name}</td>
-                      <td className="px-3 py-2.5 text-muted-foreground">{cs.phone_no || '-'}</td>
-                      <td className="px-3 py-2.5 font-semibold text-foreground">{cs.mobile_no}</td>
-                      <td className="px-3 py-2.5 text-center font-bold">{cs.credit_term_days} Days</td>
-                      <td className="px-3 py-2.5 text-right font-extrabold text-foreground">₹{cs.total_net_amount.toLocaleString()}</td>
-                      <td className="px-3 py-2.5 font-bold font-sans text-emerald-600 dark:text-emerald-400">{cs.effective_amount_status}</td>
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold uppercase text-muted-foreground">
+                  Comparative Statements ({form.comparative_statements.length})
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setForm((prev) => ({
+                      ...prev,
+                      comparative_statements: [
+                        ...prev.comparative_statements,
+                        {
+                          sr: prev.comparative_statements.length + 1,
+                          statement_no: `CS-${new Date().getFullYear()}-00${prev.comparative_statements.length + 1}`,
+                          statement_date: new Date().toISOString().slice(0, 10),
+                          quotation_reg_no: `QT-${new Date().getFullYear()}-00${prev.comparative_statements.length + 1}`,
+                          supplier_name: form.supplier_name || 'New Supplier',
+                          phone_no: '',
+                          mobile_no: form.mobile_no || '',
+                          credit_term_days: 45,
+                          total_net_amount: 0,
+                          effective_amount_status: 'Under Review',
+                        },
+                      ],
+                    }));
+                  }}
+                  className="inline-flex items-center gap-1 rounded-lg bg-primary/10 px-3 py-1.5 text-xs font-bold text-primary hover:bg-primary/20 transition-all cursor-pointer"
+                >
+                  <Plus className="h-3.5 w-3.5" /> Add Comparative Row
+                </button>
+              </div>
+
+              <div className="overflow-x-auto rounded-xl border border-border shadow-2xs">
+                <table className="w-full text-left text-xs whitespace-nowrap">
+                  <thead className="bg-muted/60 font-heading text-[10px] font-bold uppercase tracking-wider text-muted-foreground border-b border-border">
+                    <tr>
+                      <th className="px-3 py-3 text-center">Sr</th>
+                      <th className="px-3 py-3">CS No.</th>
+                      <th className="px-3 py-3">CS Date</th>
+                      <th className="px-3 py-3">Quotation Reg. No.</th>
+                      <th className="px-3 py-3">Supplier Name</th>
+                      <th className="px-3 py-3">Phone No.</th>
+                      <th className="px-3 py-3">Mobile No.</th>
+                      <th className="px-3 py-3 text-center">Credit Term (Days)</th>
+                      <th className="px-3 py-3 text-right">Total Net Amount (₹)</th>
+                      <th className="px-3 py-3">Effective Status</th>
+                      <th className="px-3 py-3 text-center">Action</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody className="divide-y divide-border/60">
+                    {form.comparative_statements.map((cs, idx) => (
+                      <tr key={idx} className="hover:bg-muted/30 transition-colors align-middle">
+                        <td className="px-3 py-2 text-center font-bold text-muted-foreground">{idx + 1}</td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="text"
+                            value={cs.statement_no}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setForm((prev) => {
+                                const list = [...prev.comparative_statements];
+                                list[idx].statement_no = val;
+                                return { ...prev, comparative_statements: list };
+                              });
+                            }}
+                            className="w-32 rounded border border-border bg-background px-2 py-1 text-xs font-bold text-primary"
+                          />
+                        </td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="date"
+                            value={cs.statement_date}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setForm((prev) => {
+                                const list = [...prev.comparative_statements];
+                                list[idx].statement_date = val;
+                                return { ...prev, comparative_statements: list };
+                              });
+                            }}
+                            className="rounded border border-border bg-background px-2 py-1 text-xs text-foreground"
+                          />
+                        </td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="text"
+                            value={cs.quotation_reg_no}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setForm((prev) => {
+                                const list = [...prev.comparative_statements];
+                                list[idx].quotation_reg_no = val;
+                                return { ...prev, comparative_statements: list };
+                              });
+                            }}
+                            className="w-28 rounded border border-border bg-background px-2 py-1 text-xs font-semibold"
+                          />
+                        </td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="text"
+                            value={cs.supplier_name}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setForm((prev) => {
+                                const list = [...prev.comparative_statements];
+                                list[idx].supplier_name = val;
+                                return { ...prev, comparative_statements: list };
+                              });
+                            }}
+                            className="w-40 rounded border border-border bg-background px-2 py-1 text-xs font-bold"
+                          />
+                        </td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="text"
+                            value={cs.phone_no || ''}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setForm((prev) => {
+                                const list = [...prev.comparative_statements];
+                                list[idx].phone_no = val;
+                                return { ...prev, comparative_statements: list };
+                              });
+                            }}
+                            className="w-28 rounded border border-border bg-background px-2 py-1 text-xs"
+                          />
+                        </td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="text"
+                            value={cs.mobile_no}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setForm((prev) => {
+                                const list = [...prev.comparative_statements];
+                                list[idx].mobile_no = val;
+                                return { ...prev, comparative_statements: list };
+                              });
+                            }}
+                            className="w-28 rounded border border-border bg-background px-2 py-1 text-xs"
+                          />
+                        </td>
+                        <td className="px-3 py-2 text-center">
+                          <input
+                            type="number"
+                            value={cs.credit_term_days}
+                            onChange={(e) => {
+                              const val = Number(e.target.value);
+                              setForm((prev) => {
+                                const list = [...prev.comparative_statements];
+                                list[idx].credit_term_days = val;
+                                return { ...prev, comparative_statements: list };
+                              });
+                            }}
+                            className="w-16 rounded border border-border bg-background px-2 py-1 text-xs text-center font-bold"
+                          />
+                        </td>
+                        <td className="px-3 py-2 text-right">
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={cs.total_net_amount}
+                            onChange={(e) => {
+                              const val = Number(e.target.value);
+                              setForm((prev) => {
+                                const list = [...prev.comparative_statements];
+                                list[idx].total_net_amount = val;
+                                return { ...prev, comparative_statements: list };
+                              });
+                            }}
+                            className="w-28 rounded border border-border bg-background px-2 py-1 text-xs text-right font-extrabold"
+                          />
+                        </td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="text"
+                            value={cs.effective_amount_status}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setForm((prev) => {
+                                const list = [...prev.comparative_statements];
+                                list[idx].effective_amount_status = val;
+                                return { ...prev, comparative_statements: list };
+                              });
+                            }}
+                            className="w-28 rounded border border-border bg-background px-2 py-1 text-xs font-bold text-emerald-600"
+                          />
+                        </td>
+                        <td className="px-3 py-2 text-center">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setForm((prev) => ({
+                                ...prev,
+                                comparative_statements: prev.comparative_statements.filter((_, i) => i !== idx),
+                              }));
+                            }}
+                            className="p-1.5 text-muted-foreground hover:text-red-600 transition-colors cursor-pointer"
+                            title="Remove row"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
 
-          {/* TAB 4: ADVANCE PAYMENT (8 Columns Table) */}
+          {/* TAB 4: ADVANCE PAYMENT (Fully Editable Table) */}
           {form.activeTab === 'advance' && (
-            <div className="overflow-x-auto rounded-xl border border-border shadow-2xs">
-              <table className="w-full text-left text-xs whitespace-nowrap">
-                <thead className="bg-muted/60 font-heading text-[10px] font-bold uppercase tracking-wider text-muted-foreground border-b border-border">
-                  <tr>
-                    <th className="px-3 py-3 text-center">1. Sr</th>
-                    <th className="px-3 py-3">2. Voucher No.</th>
-                    <th className="px-3 py-3">3. Voucher Date</th>
-                    <th className="px-3 py-3">4. Supplier Name</th>
-                    <th className="px-3 py-3">5. P.O. No.</th>
-                    <th className="px-3 py-3">6. Project Name</th>
-                    <th className="px-3 py-3 text-right">7. Advance Payment</th>
-                    <th className="px-3 py-3">8. Status</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border/60">
-                  {form.advance_payments.map((adv) => (
-                    <tr key={adv.sr} className="hover:bg-muted/30 transition-colors align-middle font-mono">
-                      <td className="px-3 py-2.5 text-center font-bold text-muted-foreground">{adv.sr}</td>
-                      <td className="px-3 py-2.5 font-bold text-primary font-sans">{adv.voucher_no}</td>
-                      <td className="px-3 py-2.5 text-muted-foreground">{adv.voucher_date}</td>
-                      <td className="px-3 py-2.5 font-bold text-foreground font-sans">{adv.supplier_name}</td>
-                      <td className="px-3 py-2.5 font-semibold font-sans">{adv.po_no}</td>
-                      <td className="px-3 py-2.5 font-medium font-sans text-foreground">{adv.project_name}</td>
-                      <td className="px-3 py-2.5 text-right font-extrabold text-foreground">₹{adv.advance_payment.toLocaleString()}</td>
-                      <td className="px-3 py-2.5 font-bold font-sans text-muted-foreground">{adv.status}</td>
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold uppercase text-muted-foreground">
+                  Advance Payments ({form.advance_payments.length})
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setForm((prev) => ({
+                      ...prev,
+                      advance_payments: [
+                        ...prev.advance_payments,
+                        {
+                          sr: prev.advance_payments.length + 1,
+                          voucher_no: `VCH-${new Date().getFullYear()}-00${prev.advance_payments.length + 1}`,
+                          voucher_date: new Date().toISOString().slice(0, 10),
+                          supplier_name: form.supplier_name || 'New Supplier',
+                          po_no: form.po_number || 'PO-2026-001',
+                          project_name: form.project_name || 'Pramukh Orbit 3',
+                          advance_payment: 0,
+                          status: 'Pending Approval',
+                        },
+                      ],
+                    }));
+                  }}
+                  className="inline-flex items-center gap-1 rounded-lg bg-primary/10 px-3 py-1.5 text-xs font-bold text-primary hover:bg-primary/20 transition-all cursor-pointer"
+                >
+                  <Plus className="h-3.5 w-3.5" /> Add Advance Payment Row
+                </button>
+              </div>
+
+              <div className="overflow-x-auto rounded-xl border border-border shadow-2xs">
+                <table className="w-full text-left text-xs whitespace-nowrap">
+                  <thead className="bg-muted/60 font-heading text-[10px] font-bold uppercase tracking-wider text-muted-foreground border-b border-border">
+                    <tr>
+                      <th className="px-3 py-3 text-center">Sr</th>
+                      <th className="px-3 py-3">Voucher No.</th>
+                      <th className="px-3 py-3">Voucher Date</th>
+                      <th className="px-3 py-3">Supplier Name</th>
+                      <th className="px-3 py-3">P.O. No.</th>
+                      <th className="px-3 py-3">Project Name</th>
+                      <th className="px-3 py-3 text-right">Advance Amount (₹)</th>
+                      <th className="px-3 py-3">Status</th>
+                      <th className="px-3 py-3 text-center">Action</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody className="divide-y divide-border/60">
+                    {form.advance_payments.map((adv, idx) => (
+                      <tr key={idx} className="hover:bg-muted/30 transition-colors align-middle">
+                        <td className="px-3 py-2 text-center font-bold text-muted-foreground">{idx + 1}</td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="text"
+                            value={adv.voucher_no}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setForm((prev) => {
+                                const list = [...prev.advance_payments];
+                                list[idx].voucher_no = val;
+                                return { ...prev, advance_payments: list };
+                              });
+                            }}
+                            className="w-32 rounded border border-border bg-background px-2 py-1 text-xs font-bold text-primary"
+                          />
+                        </td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="date"
+                            value={adv.voucher_date}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setForm((prev) => {
+                                const list = [...prev.advance_payments];
+                                list[idx].voucher_date = val;
+                                return { ...prev, advance_payments: list };
+                              });
+                            }}
+                            className="rounded border border-border bg-background px-2 py-1 text-xs"
+                          />
+                        </td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="text"
+                            value={adv.supplier_name}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setForm((prev) => {
+                                const list = [...prev.advance_payments];
+                                list[idx].supplier_name = val;
+                                return { ...prev, advance_payments: list };
+                              });
+                            }}
+                            className="w-40 rounded border border-border bg-background px-2 py-1 text-xs font-bold"
+                          />
+                        </td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="text"
+                            value={adv.po_no}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setForm((prev) => {
+                                const list = [...prev.advance_payments];
+                                list[idx].po_no = val;
+                                return { ...prev, advance_payments: list };
+                              });
+                            }}
+                            className="w-32 rounded border border-border bg-background px-2 py-1 text-xs font-semibold"
+                          />
+                        </td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="text"
+                            value={adv.project_name}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setForm((prev) => {
+                                const list = [...prev.advance_payments];
+                                list[idx].project_name = val;
+                                return { ...prev, advance_payments: list };
+                              });
+                            }}
+                            className="w-32 rounded border border-border bg-background px-2 py-1 text-xs"
+                          />
+                        </td>
+                        <td className="px-3 py-2 text-right">
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={adv.advance_payment}
+                            onChange={(e) => {
+                              const val = Number(e.target.value);
+                              setForm((prev) => {
+                                const list = [...prev.advance_payments];
+                                list[idx].advance_payment = val;
+                                return { ...prev, advance_payments: list };
+                              });
+                            }}
+                            className="w-28 rounded border border-border bg-background px-2 py-1 text-xs text-right font-extrabold"
+                          />
+                        </td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="text"
+                            value={adv.status}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setForm((prev) => {
+                                const list = [...prev.advance_payments];
+                                list[idx].status = val;
+                                return { ...prev, advance_payments: list };
+                              });
+                            }}
+                            className="w-28 rounded border border-border bg-background px-2 py-1 text-xs font-bold"
+                          />
+                        </td>
+                        <td className="px-3 py-2 text-center">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setForm((prev) => ({
+                                ...prev,
+                                advance_payments: prev.advance_payments.filter((_, i) => i !== idx),
+                              }));
+                            }}
+                            className="p-1.5 text-muted-foreground hover:text-red-600 transition-colors cursor-pointer"
+                            title="Remove row"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
 
-          {/* TAB 5: PO AMENDMENT (14 Columns Table) */}
+          {/* TAB 5: PO AMENDMENT (Fully Editable Table) */}
           {form.activeTab === 'amendment' && (
-            <div className="overflow-x-auto rounded-xl border border-border shadow-2xs">
-              <table className="w-full text-left text-xs whitespace-nowrap">
-                <thead className="bg-muted/60 font-heading text-[10px] font-bold uppercase tracking-wider text-muted-foreground border-b border-border">
-                  <tr>
-                    <th className="px-3 py-3 text-center">1. Sr</th>
-                    <th className="px-3 py-3 min-w-[150px]">2. Supplier Name</th>
-                    <th className="px-3 py-3 min-w-[130px]">3. Project Name</th>
-                    <th className="px-3 py-3 min-w-[130px]">4. Item Group</th>
-                    <th className="px-3 py-3 min-w-[180px]">5. Item Desc</th>
-                    <th className="px-3 py-3 min-w-[120px]">6. Item Brand</th>
-                    <th className="px-3 py-3 min-w-[160px]">7. Item Remarks</th>
-                    <th className="px-3 py-3 text-center min-w-[80px]">8. Unit</th>
-                    <th className="px-3 py-3 text-right min-w-[100px]">9. Approved Qty</th>
-                    <th className="px-3 py-3 text-right min-w-[110px]">10. GRN Rcvd Qty</th>
-                    <th className="px-3 py-3 text-right min-w-[100px]">11. GRN Balance</th>
-                    <th className="px-3 py-3 text-right min-w-[110px]">12. - P.O. Closed Qty</th>
-                    <th className="px-3 py-3 text-right min-w-[110px]">13. GRN Closing Qty</th>
-                    <th className="px-3 py-3 min-w-[130px]">14. Status</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border/60">
-                  {form.po_amendments.map((am) => (
-                    <tr key={am.sr} className="hover:bg-muted/30 transition-colors align-middle font-mono">
-                      <td className="px-3 py-2.5 text-center font-bold text-muted-foreground">{am.sr}</td>
-                      <td className="px-3 py-2.5 font-bold text-foreground font-sans">{am.supplier_name}</td>
-                      <td className="px-3 py-2.5 font-medium font-sans text-foreground">{am.project_name}</td>
-                      <td className="px-3 py-2.5 font-semibold font-sans text-muted-foreground">{am.item_group}</td>
-                      <td className="px-3 py-2.5 font-bold font-sans text-foreground">{am.item_desc}</td>
-                      <td className="px-3 py-2.5 font-semibold font-sans text-muted-foreground">{am.item_brand}</td>
-                      <td className="px-3 py-2.5 font-sans text-muted-foreground">{am.item_remarks}</td>
-                      <td className="px-3 py-2.5 text-center font-bold font-sans text-muted-foreground">{am.unit}</td>
-                      <td className="px-3 py-2.5 text-right font-extrabold text-foreground">{am.approved_qty}</td>
-                      <td className="px-3 py-2.5 text-right font-bold text-emerald-600">{am.grn_rcvd_qty}</td>
-                      <td className="px-3 py-2.5 text-right font-bold">{am.grn_balance}</td>
-                      <td className="px-3 py-2.5 text-right text-muted-foreground">{am.po_closed_qty}</td>
-                      <td className="px-3 py-2.5 text-right font-bold">{am.grn_closing_qty}</td>
-                      <td className="px-3 py-2.5 font-bold font-sans text-primary">{am.status}</td>
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold uppercase text-muted-foreground">
+                  PO Amendments ({form.po_amendments.length})
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setForm((prev) => ({
+                      ...prev,
+                      po_amendments: [
+                        ...prev.po_amendments,
+                        {
+                          sr: prev.po_amendments.length + 1,
+                          supplier_name: form.supplier_name || 'Supplier Name',
+                          project_name: form.project_name || 'Project Name',
+                          item_group: 'RCC Material',
+                          item_desc: 'New Amendment Material Item',
+                          item_brand: 'Standard',
+                          item_remarks: 'Site Amendment',
+                          unit: 'BAG',
+                          approved_qty: 10,
+                          grn_rcvd_qty: 0,
+                          grn_balance: 10,
+                          po_closed_qty: 0,
+                          grn_closing_qty: 10,
+                          status: 'Draft Amendment',
+                        },
+                      ],
+                    }));
+                  }}
+                  className="inline-flex items-center gap-1 rounded-lg bg-primary/10 px-3 py-1.5 text-xs font-bold text-primary hover:bg-primary/20 transition-all cursor-pointer"
+                >
+                  <Plus className="h-3.5 w-3.5" /> Add Amendment Row
+                </button>
+              </div>
+
+              <div className="overflow-x-auto rounded-xl border border-border shadow-2xs">
+                <table className="w-full text-left text-xs whitespace-nowrap">
+                  <thead className="bg-muted/60 font-heading text-[10px] font-bold uppercase tracking-wider text-muted-foreground border-b border-border">
+                    <tr>
+                      <th className="px-3 py-3 text-center">Sr</th>
+                      <th className="px-3 py-3">Supplier Name</th>
+                      <th className="px-3 py-3">Project Name</th>
+                      <th className="px-3 py-3">Item Group</th>
+                      <th className="px-3 py-3 min-w-[150px]">Item Desc</th>
+                      <th className="px-3 py-3">Item Brand</th>
+                      <th className="px-3 py-3">Remarks</th>
+                      <th className="px-3 py-3 text-center">Unit</th>
+                      <th className="px-3 py-3 text-right">Appr Qty</th>
+                      <th className="px-3 py-3 text-right">GRN Rcvd</th>
+                      <th className="px-3 py-3 text-right">GRN Closing</th>
+                      <th className="px-3 py-3">Status</th>
+                      <th className="px-3 py-3 text-center">Action</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody className="divide-y divide-border/60">
+                    {form.po_amendments.map((am, idx) => (
+                      <tr key={idx} className="hover:bg-muted/30 transition-colors align-middle">
+                        <td className="px-3 py-2 text-center font-bold text-muted-foreground">{idx + 1}</td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="text"
+                            value={am.supplier_name}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setForm((prev) => {
+                                const list = [...prev.po_amendments];
+                                list[idx].supplier_name = val;
+                                return { ...prev, po_amendments: list };
+                              });
+                            }}
+                            className="w-32 rounded border border-border bg-background px-2 py-1 text-xs font-bold"
+                          />
+                        </td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="text"
+                            value={am.project_name}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setForm((prev) => {
+                                const list = [...prev.po_amendments];
+                                list[idx].project_name = val;
+                                return { ...prev, po_amendments: list };
+                              });
+                            }}
+                            className="w-32 rounded border border-border bg-background px-2 py-1 text-xs"
+                          />
+                        </td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="text"
+                            value={am.item_group}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setForm((prev) => {
+                                const list = [...prev.po_amendments];
+                                list[idx].item_group = val;
+                                return { ...prev, po_amendments: list };
+                              });
+                            }}
+                            className="w-28 rounded border border-border bg-background px-2 py-1 text-xs"
+                          />
+                        </td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="text"
+                            value={am.item_desc}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setForm((prev) => {
+                                const list = [...prev.po_amendments];
+                                list[idx].item_desc = val;
+                                return { ...prev, po_amendments: list };
+                              });
+                            }}
+                            className="w-44 rounded border border-border bg-background px-2 py-1 text-xs font-bold"
+                          />
+                        </td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="text"
+                            value={am.item_brand}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setForm((prev) => {
+                                const list = [...prev.po_amendments];
+                                list[idx].item_brand = val;
+                                return { ...prev, po_amendments: list };
+                              });
+                            }}
+                            className="w-24 rounded border border-border bg-background px-2 py-1 text-xs"
+                          />
+                        </td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="text"
+                            value={am.item_remarks}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setForm((prev) => {
+                                const list = [...prev.po_amendments];
+                                list[idx].item_remarks = val;
+                                return { ...prev, po_amendments: list };
+                              });
+                            }}
+                            className="w-28 rounded border border-border bg-background px-2 py-1 text-xs"
+                          />
+                        </td>
+                        <td className="px-3 py-2 text-center">
+                          <input
+                            type="text"
+                            value={am.unit}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setForm((prev) => {
+                                const list = [...prev.po_amendments];
+                                list[idx].unit = val;
+                                return { ...prev, po_amendments: list };
+                              });
+                            }}
+                            className="w-16 rounded border border-border bg-background px-2 py-1 text-xs text-center font-bold"
+                          />
+                        </td>
+                        <td className="px-3 py-2 text-right">
+                          <input
+                            type="number"
+                            value={am.approved_qty}
+                            onChange={(e) => {
+                              const val = Number(e.target.value);
+                              setForm((prev) => {
+                                const list = [...prev.po_amendments];
+                                list[idx].approved_qty = val;
+                                return { ...prev, po_amendments: list };
+                              });
+                            }}
+                            className="w-16 rounded border border-border bg-background px-2 py-1 text-xs text-right font-extrabold"
+                          />
+                        </td>
+                        <td className="px-3 py-2 text-right">
+                          <input
+                            type="number"
+                            value={am.grn_rcvd_qty}
+                            onChange={(e) => {
+                              const val = Number(e.target.value);
+                              setForm((prev) => {
+                                const list = [...prev.po_amendments];
+                                list[idx].grn_rcvd_qty = val;
+                                return { ...prev, po_amendments: list };
+                              });
+                            }}
+                            className="w-16 rounded border border-border bg-background px-2 py-1 text-xs text-right font-bold text-emerald-600"
+                          />
+                        </td>
+                        <td className="px-3 py-2 text-right">
+                          <input
+                            type="number"
+                            value={am.grn_closing_qty}
+                            onChange={(e) => {
+                              const val = Number(e.target.value);
+                              setForm((prev) => {
+                                const list = [...prev.po_amendments];
+                                list[idx].grn_closing_qty = val;
+                                return { ...prev, po_amendments: list };
+                              });
+                            }}
+                            className="w-16 rounded border border-border bg-background px-2 py-1 text-xs text-right font-bold"
+                          />
+                        </td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="text"
+                            value={am.status}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setForm((prev) => {
+                                const list = [...prev.po_amendments];
+                                list[idx].status = val;
+                                return { ...prev, po_amendments: list };
+                              });
+                            }}
+                            className="w-28 rounded border border-border bg-background px-2 py-1 text-xs font-bold text-primary"
+                          />
+                        </td>
+                        <td className="px-3 py-2 text-center">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setForm((prev) => ({
+                                ...prev,
+                                po_amendments: prev.po_amendments.filter((_, i) => i !== idx),
+                              }));
+                            }}
+                            className="p-1.5 text-muted-foreground hover:text-red-600 transition-colors cursor-pointer"
+                            title="Remove row"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
         </div>
@@ -1532,13 +2492,20 @@ export function PoForm({ po, onSubmit, onPrint, onCancel }: PoFormProps) {
               <label className="block text-[11px] font-bold uppercase text-primary mb-1">PO Status</label>
               <select
                 value={form.status}
-                onChange={(e) => updateHeader('status', e.target.value as any)}
-                className="w-full rounded-lg border-2 border-primary bg-background px-3 py-2 font-extrabold text-foreground"
+                onChange={async (e) => {
+                  const newStatus = e.target.value as any;
+                  updateHeader('status', newStatus);
+                  if (po.id) {
+                    await updatePurchaseOrderStatus(po.id, newStatus);
+                  }
+                }}
+                className="w-full rounded-lg border-2 border-primary bg-background px-3 py-2 font-extrabold text-foreground cursor-pointer"
               >
                 <option value="Draft">Draft (Saved for Editing)</option>
                 <option value="Verification">Verification (Pending Audit Sign-off)</option>
                 <option value="Issued">Issued (Sent to Vendor)</option>
                 <option value="Fulfilled">Fulfilled (Material Delivered)</option>
+                <option value="Cancelled">Cancelled (Revoked)</option>
               </select>
             </div>
           </div>
@@ -1546,24 +2513,35 @@ export function PoForm({ po, onSubmit, onPrint, onCancel }: PoFormProps) {
 
         {/* Form Action Buttons */}
         <div className="flex items-center justify-between border-t border-border pt-4">
-          <div className="text-xs font-bold text-muted-foreground">
-            Total PO Net Amount: <span className="font-mono text-sm text-primary font-extrabold">₹{netAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+          <div className="flex items-center gap-4">
+            {/* PRINT BUTTON AT BOTTOM LEFT CORNER */}
+            <button
+              type="button"
+              onClick={() => onPrint ? onPrint() : printPurchaseOrderReport(form)}
+              className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700 shadow-xs transition-all cursor-pointer"
+            >
+              <Printer className="h-4 w-4" /> Print
+            </button>
+
+            <div className="text-xs font-bold text-muted-foreground">
+              Total PO Net Amount: <span className="font-mono text-sm text-primary font-extrabold">₹{netAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+            </div>
           </div>
 
           <div className="flex items-center gap-3">
             <button
               type="button"
               onClick={onCancel}
-              className="rounded-lg border border-border bg-background px-4 py-2 text-xs font-bold text-muted-foreground hover:bg-muted transition-colors"
+              className="rounded-lg border border-border bg-background px-4 py-2 text-xs font-bold text-muted-foreground hover:bg-muted transition-colors cursor-pointer"
             >
               Cancel
             </button>
 
             <button
               type="submit"
-              className="inline-flex items-center gap-2 rounded-lg bg-primary px-5 py-2 text-xs font-bold text-primary-foreground hover:bg-primary/90 shadow-md transition-all"
+              className="inline-flex items-center gap-2 rounded-lg bg-primary px-5 py-2 text-xs font-bold text-primary-foreground hover:bg-primary/90 shadow-md transition-all cursor-pointer"
             >
-              <FileCheck className="h-4 w-4" /> Save Purchase Order &amp; Submit Status
+              <FileCheck className="h-4 w-4" /> Save Purchase Order
             </button>
           </div>
         </div>

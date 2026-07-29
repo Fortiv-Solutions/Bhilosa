@@ -18,8 +18,11 @@ import {
   FileSpreadsheet,
   ReceiptIndianRupee,
   Printer,
+  Save,
+  UserCheck,
 } from 'lucide-react';
 import type { VendorBillRow } from './bills-stats-bar';
+import { printPurchaseBillReport } from '@/lib/procurement';
 
 function numberToWords(num: number): string {
   if (!num || isNaN(num)) return 'Zero Only';
@@ -194,7 +197,34 @@ export interface FullBillsFormState {
     grn_balance_qty: number;
   }[];
 
-  status: '3_way_matched' | 'pending_verification' | 'discrepancy';
+  // Section 8: GRN Remarks Table
+  grn_remarks_list: {
+    sr: number;
+    grn_no: string;
+    remark: string;
+  }[];
+
+  // Section 9: Summary & Audit Indicators
+  unlocked_fy: number;
+  ledger_present: number;
+  not_a_valid_bill_no: number;
+  bill_has_already_signed: boolean;
+  status_issue_relation_count: string;
+
+  // Section 10: Ledger Posting Info Table
+  ledger_posting_info: {
+    id: string;
+    date: string;
+    ledger_main: string;
+    ledger_group: string;
+    account_head: string;
+    project: string;
+    dr: number;
+    cr: number;
+  }[];
+
+  status: 'Draft' | 'Pending Verification' | 'Pending Approval' | 'Approved';
+  assigned_approval_role?: string;
 }
 
 interface BillsFormProps {
@@ -208,6 +238,7 @@ interface BillsFormProps {
 export function BillsForm({ bill, onSubmit, onPrint, onCancel }: BillsFormProps) {
   const todayStr = new Date().toISOString().slice(0, 10);
   const defaultDueDate = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
+  const [selectedRole, setSelectedRole] = useState<string>('Purchase Manager');
 
   const [form, setForm] = useState<FullBillsFormState>(() => ({
     // 1. Header Fields
@@ -274,8 +305,18 @@ export function BillsForm({ bill, onSubmit, onPrint, onCancel }: BillsFormProps)
     roundoff_adjustment: 0.0,
     lumpsum_discount_amount: 0.0,
 
-    // 4. Advance Payment Entries
-    advance_payment_entries: [],
+    // 4. Advance Payment Entries (1 default empty row)
+    advance_payment_entries: [
+      {
+        voucher_no: '',
+        voucher_date: todayStr,
+        po_no: bill.po_number || '',
+        advanced_payment: 0.0,
+        adjusted_payment: 0.0,
+        balance_amt: 0.0,
+        adjust_amt: 0.0,
+      },
+    ],
     total_adjusted_amount: 0.0,
 
     // 5. Purchase Bill Payments Section
@@ -337,7 +378,47 @@ export function BillsForm({ bill, onSubmit, onPrint, onCancel }: BillsFormProps)
       },
     ],
 
-    status: (bill.matching_status as FullBillsFormState['status']) || '3_way_matched',
+    // 8. GRN Remarks Table
+    grn_remarks_list: [
+      {
+        sr: 1,
+        grn_no: bill.grn_no || 'TI/PRGRN202600025',
+        remark: 'MATERIAL USE FOR HYDROPNEUMATICS PUMP CONNECTION LINE ASSEMBLY',
+      },
+    ],
+
+    // 9. Summary & Audit Indicators
+    unlocked_fy: 1.00,
+    ledger_present: 1,
+    not_a_valid_bill_no: 0.00,
+    bill_has_already_signed: false,
+    status_issue_relation_count: 'To: Payment Voucher IN Financial Management (ID: 238)',
+
+    // 10. Ledger Posting Info Table
+    ledger_posting_info: [
+      {
+        id: 'LEG-001',
+        date: '2026-07-20',
+        ledger_main: 'Purchase Material Account',
+        ledger_group: 'Direct Construction Expenses',
+        account_head: 'Material Purchase',
+        project: bill.project_name || 'Pramukh Revanta',
+        dr: 72250.00,
+        cr: 0.00,
+      },
+      {
+        id: 'LEG-002',
+        date: '2026-07-20',
+        ledger_main: 'Modern Engineering A/C',
+        ledger_group: 'Sundry Creditors (Suppliers)',
+        account_head: 'Vendor Accounts Payable',
+        project: bill.project_name || 'Pramukh Revanta',
+        dr: 0.00,
+        cr: 72250.00,
+      },
+    ],
+
+    status: !bill.id ? 'Draft' : (bill.matching_status === 'approved' ? 'Approved' : 'Draft'),
   }));
 
   const updateHeader = <K extends keyof FullBillsFormState>(key: K, value: FullBillsFormState[K]) => {
@@ -372,13 +453,97 @@ export function BillsForm({ bill, onSubmit, onPrint, onCancel }: BillsFormProps)
     });
   };
 
-  // Financial Calculations
+  // Financial & Ledger Calculations
   const totalGrossAmount = form.purchase_bill_entries.reduce((sum, i) => sum + i.gross_amount, 0);
   const totalNetBeforeRoundoff = totalGrossAmount + form.purchase_bill_entries.reduce((sum, i) => sum + i.vat_amt, 0) + form.lumpsum_freight_charges + form.lumpsum_loading_unloading_charges + form.lumpsum_other_charges - form.lumpsum_discount_amount;
   const totalAmountPb = Math.round(totalNetBeforeRoundoff);
   const roundoffAmount = Number((totalAmountPb - totalNetBeforeRoundoff).toFixed(2));
-  const finalBillAmount = totalAmountPb - form.total_adjusted_amount;
+  const calculatedTotalAdjustedAmount = form.advance_payment_entries.reduce((sum, i) => sum + Number(i.adjust_amt || 0), 0);
+  const finalBillAmount = totalAmountPb - calculatedTotalAdjustedAmount;
   const amountInWordsStr = numberToWords(finalBillAmount);
+
+  const totalDr = form.ledger_posting_info.reduce((sum, i) => sum + Number(i.dr || 0), 0);
+  const totalCr = form.ledger_posting_info.reduce((sum, i) => sum + Number(i.cr || 0), 0);
+
+  const handleAddAdvancePayment = () => {
+    setForm((prev) => ({
+      ...prev,
+      advance_payment_entries: [
+        ...prev.advance_payment_entries,
+        {
+          voucher_no: '',
+          voucher_date: todayStr,
+          po_no: prev.from_pos || '',
+          advanced_payment: 0.0,
+          adjusted_payment: 0.0,
+          balance_amt: 0.0,
+          adjust_amt: 0.0,
+        },
+      ],
+    }));
+  };
+
+  const handleRemoveAdvancePayment = (index: number) => {
+    setForm((prev) => ({
+      ...prev,
+      advance_payment_entries: prev.advance_payment_entries.filter((_, i) => i !== index),
+    }));
+  };
+
+  const handleAdvancePaymentChange = (index: number, field: keyof FullBillsFormState['advance_payment_entries'][0], value: any) => {
+    setForm((prev) => {
+      const updated = [...prev.advance_payment_entries];
+      updated[index] = { ...updated[index], [field]: value };
+      return { ...prev, advance_payment_entries: updated };
+    });
+  };
+
+  const handleAddGrnRemark = () => {
+    setForm((prev) => ({
+      ...prev,
+      grn_remarks_list: [
+        ...prev.grn_remarks_list,
+        {
+          sr: prev.grn_remarks_list.length + 1,
+          grn_no: prev.from_challans || '',
+          remark: '',
+        },
+      ],
+    }));
+  };
+
+  const handleRemoveGrnRemark = (index: number) => {
+    setForm((prev) => ({
+      ...prev,
+      grn_remarks_list: prev.grn_remarks_list.filter((_, i) => i !== index),
+    }));
+  };
+
+  const handleAddLedgerPosting = () => {
+    setForm((prev) => ({
+      ...prev,
+      ledger_posting_info: [
+        ...prev.ledger_posting_info,
+        {
+          id: `LEG-00${prev.ledger_posting_info.length + 1}`,
+          date: new Date().toISOString().slice(0, 10),
+          ledger_main: 'General Ledger Account',
+          ledger_group: 'Expenses',
+          account_head: 'General Expense',
+          project: prev.project_name || '',
+          dr: 0.0,
+          cr: 0.0,
+        },
+      ],
+    }));
+  };
+
+  const handleRemoveLedgerPosting = (index: number) => {
+    setForm((prev) => ({
+      ...prev,
+      ledger_posting_info: prev.ledger_posting_info.filter((_, i) => i !== index),
+    }));
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -889,49 +1054,126 @@ export function BillsForm({ bill, onSubmit, onPrint, onCancel }: BillsFormProps)
               <CheckCircle2 className="h-4 w-4 text-primary" />
               4. Advance Payment Entries ({form.advance_payment_entries.length})
             </h3>
-            <span className="text-[11px] font-semibold text-muted-foreground">
-              Vendor Advance Adjustment Ledger
-            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleAddAdvancePayment}
+                className="inline-flex items-center gap-1 rounded bg-primary/10 px-2.5 py-1 text-[11px] font-bold text-primary hover:bg-primary/20 transition-all cursor-pointer"
+              >
+                <Plus className="h-3.5 w-3.5" /> Add Advance Payment Row
+              </button>
+              <span className="text-[11px] font-semibold text-muted-foreground">
+                Vendor Advance Adjustment Ledger
+              </span>
+            </div>
           </div>
 
-          {form.advance_payment_entries.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-border p-4 text-center text-xs text-muted-foreground">
-              No advance payments adjusted against this purchase bill. Total Adjusted Amount: ₹0.00
-            </div>
-          ) : (
-            <div className="overflow-x-auto rounded-xl border border-border shadow-2xs">
-              <table className="w-full text-left text-xs whitespace-nowrap font-mono">
-                <thead className="bg-muted/60 font-heading text-[10px] font-bold uppercase tracking-wider text-muted-foreground border-b border-border">
+          <div className="overflow-x-auto rounded-xl border border-border shadow-2xs">
+            <table className="w-full text-left text-xs whitespace-nowrap font-mono">
+              <thead className="bg-muted/60 font-heading text-[10px] font-bold uppercase tracking-wider text-muted-foreground border-b border-border">
+                <tr>
+                  <th className="px-3 py-3 font-sans">1. Voucher No</th>
+                  <th className="px-3 py-3">2. Voucher Date</th>
+                  <th className="px-3 py-3 font-sans">3. P.O. No</th>
+                  <th className="px-3 py-3 text-right">4. Advanced Payment</th>
+                  <th className="px-3 py-3 text-right">5. Adjusted Payment</th>
+                  <th className="px-3 py-3 text-right">6. Balance Amt</th>
+                  <th className="px-3 py-3 text-right font-bold text-primary">7. Adjust Amt</th>
+                  <th className="px-3 py-3 text-right font-sans">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border/60">
+                {form.advance_payment_entries.length === 0 ? (
                   <tr>
-                    <th className="px-3 py-3 font-sans">1. Voucher No</th>
-                    <th className="px-3 py-3">2. Voucher Date</th>
-                    <th className="px-3 py-3 font-sans">3. P.O. No</th>
-                    <th className="px-3 py-3 text-right">4. Advanced Payment</th>
-                    <th className="px-3 py-3 text-right">5. Adjusted Payment</th>
-                    <th className="px-3 py-3 text-right">6. Balance Amt</th>
-                    <th className="px-3 py-3 text-right font-bold text-primary">7. Adjust Amt</th>
+                    <td colSpan={8} className="px-3 py-4 text-center text-xs font-sans text-muted-foreground">
+                      No advance payment rows. Click <strong>[+ Add Advance Payment Row]</strong> above to add entries.
+                    </td>
                   </tr>
-                </thead>
-                <tbody className="divide-y divide-border/60">
-                  {form.advance_payment_entries.map((adv, idx) => (
+                ) : (
+                  form.advance_payment_entries.map((adv, idx) => (
                     <tr key={idx} className="hover:bg-muted/30 transition-colors align-middle">
-                      <td className="px-3 py-2 font-bold font-sans text-primary">{adv.voucher_no}</td>
-                      <td className="px-3 py-2 text-muted-foreground">{adv.voucher_date}</td>
-                      <td className="px-3 py-2 font-bold font-sans text-foreground">{adv.po_no}</td>
-                      <td className="px-3 py-2 text-right">₹{adv.advanced_payment.toLocaleString()}</td>
-                      <td className="px-3 py-2 text-right">₹{adv.adjusted_payment.toLocaleString()}</td>
-                      <td className="px-3 py-2 text-right">₹{adv.balance_amt.toLocaleString()}</td>
-                      <td className="px-3 py-2 text-right font-extrabold text-primary">₹{adv.adjust_amt.toLocaleString()}</td>
+                      <td className="px-3 py-2">
+                        <input
+                          type="text"
+                          placeholder="Voucher No"
+                          value={adv.voucher_no}
+                          onChange={(e) => handleAdvancePaymentChange(idx, 'voucher_no', e.target.value)}
+                          className="w-28 rounded border border-border bg-background px-1.5 py-1 text-xs font-mono font-bold text-primary"
+                        />
+                      </td>
+                      <td className="px-3 py-2">
+                        <input
+                          type="date"
+                          value={adv.voucher_date}
+                          onChange={(e) => handleAdvancePaymentChange(idx, 'voucher_date', e.target.value)}
+                          className="w-28 rounded border border-border bg-background px-1.5 py-1 text-xs font-mono text-foreground"
+                        />
+                      </td>
+                      <td className="px-3 py-2">
+                        <input
+                          type="text"
+                          placeholder="P.O. No"
+                          value={adv.po_no}
+                          onChange={(e) => handleAdvancePaymentChange(idx, 'po_no', e.target.value)}
+                          className="w-32 rounded border border-border bg-background px-1.5 py-1 text-xs font-mono font-bold text-foreground"
+                        />
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={adv.advanced_payment}
+                          onChange={(e) => handleAdvancePaymentChange(idx, 'advanced_payment', Number(e.target.value))}
+                          className="w-24 rounded border border-border bg-background px-1.5 py-1 text-right font-mono font-bold text-foreground"
+                        />
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={adv.adjusted_payment}
+                          onChange={(e) => handleAdvancePaymentChange(idx, 'adjusted_payment', Number(e.target.value))}
+                          className="w-24 rounded border border-border bg-background px-1.5 py-1 text-right font-mono font-bold text-foreground"
+                        />
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={adv.balance_amt}
+                          onChange={(e) => handleAdvancePaymentChange(idx, 'balance_amt', Number(e.target.value))}
+                          className="w-24 rounded border border-border bg-background px-1.5 py-1 text-right font-mono font-bold text-foreground"
+                        />
+                      </td>
+                      <td className="px-3 py-2 text-right font-extrabold text-primary">
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={adv.adjust_amt}
+                          onChange={(e) => handleAdvancePaymentChange(idx, 'adjust_amt', Number(e.target.value))}
+                          className="w-24 rounded border border-primary/50 bg-background px-1.5 py-1 text-right font-mono font-extrabold text-primary"
+                        />
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveAdvancePayment(idx)}
+                          className="rounded p-1 text-red-600 hover:bg-red-50 transition-colors cursor-pointer"
+                          title="Remove advance payment row"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </td>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
 
           <div className="flex items-center justify-between pt-1 font-bold">
             <span className="text-muted-foreground uppercase text-[11px]">Total Adjusted Amount</span>
-            <span className="font-mono text-sm text-foreground">₹{form.total_adjusted_amount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+            <span className="font-mono text-sm text-foreground">₹{calculatedTotalAdjustedAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
           </div>
           <div className="flex items-center justify-between border-t border-border pt-2 font-extrabold">
             <span className="text-primary uppercase text-xs">Net Amount (Rs.)</span>
@@ -1413,27 +1655,509 @@ export function BillsForm({ bill, onSubmit, onPrint, onCancel }: BillsFormProps)
           </div>
         </div>
 
-        {/* Form Action Buttons */}
-        <div className="flex items-center justify-between border-t border-border pt-4">
-          <div className="text-xs font-bold text-muted-foreground">
-            Final Bill Settlement: <span className="font-mono text-sm text-primary font-extrabold">₹{finalBillAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
-          </div>
-
-          <div className="flex items-center gap-3">
+        {/* ========================================================================= */}
+        {/* SECTION 8: GRN REMARKS TABLE & AUDIT INDICATORS                            */}
+        {/* ========================================================================= */}
+        <div className="space-y-4 rounded-xl border border-border p-4 bg-card">
+          <div className="flex items-center justify-between border-b border-border pb-2">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-foreground flex items-center gap-2">
+              <Layers className="h-4 w-4 text-primary" />
+              GRN Remarks : Total {form.grn_remarks_list.length}
+            </h3>
             <button
               type="button"
-              onClick={onCancel}
-              className="rounded-lg border border-border bg-background px-4 py-2 text-xs font-bold text-muted-foreground hover:bg-muted transition-colors"
+              onClick={handleAddGrnRemark}
+              className="inline-flex items-center gap-1 rounded bg-primary/10 px-2.5 py-1 text-[11px] font-bold text-primary hover:bg-primary/20 transition-all cursor-pointer"
             >
-              Cancel
+              <Plus className="h-3.5 w-3.5" /> Add GRN Remark Row
+            </button>
+          </div>
+
+          <div className="overflow-x-auto rounded-xl border border-border shadow-2xs">
+            <table className="w-full text-left text-xs whitespace-nowrap font-mono">
+              <thead className="bg-muted/60 font-heading text-[10px] font-bold uppercase tracking-wider text-muted-foreground border-b border-border">
+                <tr>
+                  <th className="px-3 py-3 text-center">Sr</th>
+                  <th className="px-3 py-3 font-sans">GRN No</th>
+                  <th className="px-3 py-3 font-sans min-w-[260px]">Remark</th>
+                  <th className="px-3 py-3 text-right font-sans">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border/60">
+                {form.grn_remarks_list.length === 0 ? (
+                  <tr>
+                    <td colSpan={4} className="px-3 py-4 text-center text-xs font-sans text-muted-foreground">
+                      No GRN remarks recorded. Click <strong>[+ Add GRN Remark Row]</strong> above to add.
+                    </td>
+                  </tr>
+                ) : (
+                  form.grn_remarks_list.map((grnRem, rIdx) => (
+                    <tr key={rIdx} className="hover:bg-muted/30 transition-colors align-middle">
+                      <td className="px-3 py-2 text-center font-bold text-muted-foreground">{rIdx + 1}</td>
+                      <td className="px-3 py-2">
+                        <input
+                          type="text"
+                          value={grnRem.grn_no}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setForm((prev) => {
+                              const updated = [...prev.grn_remarks_list];
+                              updated[rIdx].grn_no = val;
+                              return { ...prev, grn_remarks_list: updated };
+                            });
+                          }}
+                          className="w-36 rounded border border-border bg-background px-1.5 py-1 text-xs font-mono font-bold text-primary"
+                        />
+                      </td>
+                      <td className="px-3 py-2">
+                        <input
+                          type="text"
+                          value={grnRem.remark}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setForm((prev) => {
+                              const updated = [...prev.grn_remarks_list];
+                              updated[rIdx].remark = val;
+                              return { ...prev, grn_remarks_list: updated };
+                            });
+                          }}
+                          className="w-full rounded border border-border bg-background px-1.5 py-1 text-xs font-sans font-medium text-foreground"
+                        />
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveGrnRemark(rIdx)}
+                          className="rounded p-1 text-red-600 hover:bg-red-50 transition-colors cursor-pointer"
+                          title="Remove GRN remark"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Audit & Indicator Fields */}
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5 pt-2">
+            <div>
+              <label className="block text-[11px] font-bold uppercase text-muted-foreground mb-1">Unlocked FY</label>
+              <input
+                type="number"
+                step="0.01"
+                value={form.unlocked_fy}
+                onChange={(e) => updateHeader('unlocked_fy', Number(e.target.value))}
+                className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono font-bold text-foreground"
+              />
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold uppercase text-muted-foreground mb-1">Ledger Present</label>
+              <input
+                type="number"
+                value={form.ledger_present}
+                onChange={(e) => updateHeader('ledger_present', Number(e.target.value))}
+                className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono font-bold text-foreground"
+              />
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold uppercase text-muted-foreground mb-1">Not a Valid Bill No</label>
+              <input
+                type="number"
+                step="0.01"
+                value={form.not_a_valid_bill_no}
+                onChange={(e) => updateHeader('not_a_valid_bill_no', Number(e.target.value))}
+                className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono font-bold text-foreground"
+              />
+            </div>
+
+            <div className="flex items-center gap-2 pt-5">
+              <input
+                type="checkbox"
+                id="bill_signed"
+                checked={form.bill_has_already_signed}
+                onChange={(e) => updateHeader('bill_has_already_signed', e.target.checked)}
+                className="h-4 w-4 rounded border-border text-primary cursor-pointer"
+              />
+              <label htmlFor="bill_signed" className="font-bold text-foreground text-xs cursor-pointer">
+                Bill has Already Signed
+              </label>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold uppercase text-muted-foreground mb-1">Status Issue Relation Count</label>
+              <input
+                type="text"
+                value={form.status_issue_relation_count}
+                onChange={(e) => updateHeader('status_issue_relation_count', e.target.value)}
+                className="w-full rounded-lg border border-border bg-background px-3 py-2 font-medium text-foreground text-xs"
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* ========================================================================= */}
+        {/* SECTION 9: LEDGER POSTING INFO TABLE                                       */}
+        {/* ========================================================================= */}
+        <div className="space-y-3 rounded-xl border border-border p-4 bg-card">
+          <div className="flex items-center justify-between border-b border-border pb-2">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-foreground flex items-center gap-2">
+              <FileCheck className="h-4 w-4 text-emerald-600" />
+              Ledger Posting Info ({form.ledger_posting_info.length})
+            </h3>
+            <button
+              type="button"
+              onClick={handleAddLedgerPosting}
+              className="inline-flex items-center gap-1 rounded bg-primary/10 px-2.5 py-1 text-[11px] font-bold text-primary hover:bg-primary/20 transition-all cursor-pointer"
+            >
+              <Plus className="h-3.5 w-3.5" /> Add Ledger Entry
+            </button>
+          </div>
+
+          <div className="overflow-x-auto rounded-xl border border-border shadow-2xs">
+            <table className="w-full text-left text-xs whitespace-nowrap font-mono">
+              <thead className="bg-muted/60 font-heading text-[10px] font-bold uppercase tracking-wider text-muted-foreground border-b border-border">
+                <tr>
+                  <th className="px-3 py-3 font-sans">1. ID</th>
+                  <th className="px-3 py-3">2. DATE</th>
+                  <th className="px-3 py-3 font-sans">3. LEDGER MAIN</th>
+                  <th className="px-3 py-3 font-sans">4. LEDGER GROUP</th>
+                  <th className="px-3 py-3 font-sans">5. ACCOUNT HEAD</th>
+                  <th className="px-3 py-3 font-sans">6. PROJECT</th>
+                  <th className="px-3 py-3 text-right">7. DR</th>
+                  <th className="px-3 py-3 text-right">8. CR</th>
+                  <th className="px-3 py-3 text-right font-sans">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border/60">
+                {form.ledger_posting_info.length === 0 ? (
+                  <tr>
+                    <td colSpan={9} className="px-3 py-4 text-center text-xs font-sans text-muted-foreground">
+                      No ledger posting entries. Click <strong>[+ Add Ledger Entry]</strong> above to add.
+                    </td>
+                  </tr>
+                ) : (
+                  form.ledger_posting_info.map((leg, lIdx) => (
+                    <tr key={lIdx} className="hover:bg-muted/30 transition-colors align-middle">
+                      <td className="px-3 py-2">
+                        <input
+                          type="text"
+                          value={leg.id}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setForm((prev) => {
+                              const updated = [...prev.ledger_posting_info];
+                              updated[lIdx].id = val;
+                              return { ...prev, ledger_posting_info: updated };
+                            });
+                          }}
+                          className="w-24 rounded border border-border bg-background px-1.5 py-1 text-xs font-mono font-bold text-primary"
+                        />
+                      </td>
+                      <td className="px-3 py-2">
+                        <input
+                          type="date"
+                          value={leg.date}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setForm((prev) => {
+                              const updated = [...prev.ledger_posting_info];
+                              updated[lIdx].date = val;
+                              return { ...prev, ledger_posting_info: updated };
+                            });
+                          }}
+                          className="w-28 rounded border border-border bg-background px-1.5 py-1 text-xs font-mono text-foreground"
+                        />
+                      </td>
+                      <td className="px-3 py-2">
+                        <input
+                          type="text"
+                          value={leg.ledger_main}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setForm((prev) => {
+                              const updated = [...prev.ledger_posting_info];
+                              updated[lIdx].ledger_main = val;
+                              return { ...prev, ledger_posting_info: updated };
+                            });
+                          }}
+                          className="w-36 rounded border border-border bg-background px-1.5 py-1 text-xs font-sans font-bold text-foreground"
+                        />
+                      </td>
+                      <td className="px-3 py-2">
+                        <input
+                          type="text"
+                          value={leg.ledger_group}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setForm((prev) => {
+                              const updated = [...prev.ledger_posting_info];
+                              updated[lIdx].ledger_group = val;
+                              return { ...prev, ledger_posting_info: updated };
+                            });
+                          }}
+                          className="w-36 rounded border border-border bg-background px-1.5 py-1 text-xs font-sans font-medium text-muted-foreground"
+                        />
+                      </td>
+                      <td className="px-3 py-2">
+                        <input
+                          type="text"
+                          value={leg.account_head}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setForm((prev) => {
+                              const updated = [...prev.ledger_posting_info];
+                              updated[lIdx].account_head = val;
+                              return { ...prev, ledger_posting_info: updated };
+                            });
+                          }}
+                          className="w-32 rounded border border-border bg-background px-1.5 py-1 text-xs font-sans font-medium text-foreground"
+                        />
+                      </td>
+                      <td className="px-3 py-2">
+                        <input
+                          type="text"
+                          value={leg.project}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setForm((prev) => {
+                              const updated = [...prev.ledger_posting_info];
+                              updated[lIdx].project = val;
+                              return { ...prev, ledger_posting_info: updated };
+                            });
+                          }}
+                          className="w-28 rounded border border-border bg-background px-1.5 py-1 text-xs font-sans font-semibold text-foreground"
+                        />
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={leg.dr}
+                          onChange={(e) => {
+                            const val = Number(e.target.value);
+                            setForm((prev) => {
+                              const updated = [...prev.ledger_posting_info];
+                              updated[lIdx].dr = val;
+                              return { ...prev, ledger_posting_info: updated };
+                            });
+                          }}
+                          className="w-24 rounded border border-border bg-background px-1.5 py-1 text-right font-mono font-bold text-emerald-600"
+                        />
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={leg.cr}
+                          onChange={(e) => {
+                            const val = Number(e.target.value);
+                            setForm((prev) => {
+                              const updated = [...prev.ledger_posting_info];
+                              updated[lIdx].cr = val;
+                              return { ...prev, ledger_posting_info: updated };
+                            });
+                          }}
+                          className="w-24 rounded border border-border bg-background px-1.5 py-1 text-right font-mono font-bold text-blue-600"
+                        />
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveLedgerPosting(lIdx)}
+                          className="rounded p-1 text-red-600 hover:bg-red-50 transition-colors cursor-pointer"
+                          title="Remove ledger entry"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Bottom Right Corner Amount Calculation */}
+          <div className="flex justify-end pt-2">
+            <div className="rounded-lg border border-border bg-muted/40 px-4 py-2 text-right font-mono text-xs shadow-xs space-y-1">
+              <div className="font-extrabold text-foreground">
+                Total DR: <span className="text-emerald-600">₹{totalDr.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+              </div>
+              <div className="font-extrabold text-foreground">
+                Total CR: <span className="text-blue-600">₹{totalCr.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+              </div>
+              <div className="border-t border-border pt-1 font-black text-primary">
+                Total: ₹{totalDr.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Form Action Buttons */}
+        <div className="flex flex-wrap items-center justify-between gap-4 border-t border-border pt-4">
+          <div className="flex items-center gap-4">
+            {/* PRINT BUTTON AT BOTTOM LEFT CORNER */}
+            <button
+              type="button"
+              onClick={onPrint || (() => printPurchaseBillReport(form))}
+              className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700 shadow-xs transition-all cursor-pointer"
+            >
+              <Printer className="h-4 w-4" /> Print
             </button>
 
-            <button
-              type="submit"
-              className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-5 py-2 text-xs font-bold text-white hover:bg-emerald-700 shadow-md transition-all"
-            >
-              <CheckCircle2 className="h-4 w-4" /> Save Purchase Bill &amp; Post to Financial Ledger
-            </button>
+            <div className="text-xs font-bold text-muted-foreground">
+              Final Bill Settlement: <span className="font-mono text-sm text-primary font-extrabold">₹{finalBillAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            {/* 1. DRAFT STATUS */}
+            {form.status === 'Draft' && (
+              <>
+                <button
+                  type="button"
+                  onClick={onCancel}
+                  className="rounded-lg border border-border bg-background px-4 py-2 text-xs font-bold text-muted-foreground hover:bg-muted transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    const draftForm = { ...form, status: 'Draft' as const };
+                    setForm(draftForm);
+                    onSubmit(draftForm);
+                  }}
+                  className="inline-flex items-center gap-2 rounded-lg border border-amber-500/50 bg-amber-500/10 px-4 py-2 text-xs font-bold text-amber-700 dark:text-amber-300 hover:bg-amber-500/20 transition-all cursor-pointer"
+                >
+                  <Save className="h-4 w-4" /> Save as Draft
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    const verForm = { ...form, status: 'Pending Verification' as const };
+                    setForm(verForm);
+                    onSubmit(verForm);
+                  }}
+                  className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-5 py-2 text-xs font-bold text-white hover:bg-blue-700 shadow-md transition-all cursor-pointer"
+                >
+                  <Send className="h-4 w-4" /> Send for Verification
+                </button>
+              </>
+            )}
+
+            {/* 2. PENDING VERIFICATION STATUS */}
+            {form.status === 'Pending Verification' && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const draftForm = { ...form, status: 'Draft' as const };
+                    setForm(draftForm);
+                    onSubmit(draftForm);
+                  }}
+                  className="rounded-lg border border-border bg-background px-4 py-2 text-xs font-bold text-muted-foreground hover:bg-muted transition-colors cursor-pointer"
+                >
+                  Return to Draft
+                </button>
+
+                <div className="flex items-center gap-1.5 bg-muted/40 p-1 rounded-lg border border-border">
+                  <select
+                    value={selectedRole}
+                    onChange={(e) => setSelectedRole(e.target.value)}
+                    className="rounded-md border border-border bg-background px-2 py-1 text-xs font-semibold text-foreground cursor-pointer"
+                  >
+                    <option value="Site Engineer">Site Engineer</option>
+                    <option value="Store Keeper">Store Keeper</option>
+                    <option value="Project Manager">Project Manager</option>
+                    <option value="Purchase Manager">Purchase Manager</option>
+                    <option value="QC Inspector">QC Inspector</option>
+                    <option value="Upper Management">Upper Management</option>
+                  </select>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const appForm = {
+                        ...form,
+                        status: 'Pending Approval' as const,
+                        assigned_approval_role: selectedRole,
+                      };
+                      setForm(appForm);
+                      onSubmit(appForm);
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-md bg-purple-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-purple-700 transition-all cursor-pointer"
+                  >
+                    <UserCheck className="h-3.5 w-3.5" /> Assign for Approval
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    const approvedForm = { ...form, status: 'Approved' as const };
+                    setForm(approvedForm);
+                    onSubmit(approvedForm);
+                  }}
+                  className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-5 py-2 text-xs font-bold text-white hover:bg-emerald-700 shadow-md transition-all cursor-pointer"
+                >
+                  <CheckCircle2 className="h-4 w-4" /> Approve Purchase Bill
+                </button>
+              </>
+            )}
+
+            {/* 3. PENDING APPROVAL STATUS */}
+            {form.status === 'Pending Approval' && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const draftForm = { ...form, status: 'Draft' as const };
+                    setForm(draftForm);
+                    onSubmit(draftForm);
+                  }}
+                  className="rounded-lg border border-border bg-background px-4 py-2 text-xs font-bold text-muted-foreground hover:bg-muted transition-colors cursor-pointer"
+                >
+                  Return to Draft
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    const approvedForm = { ...form, status: 'Approved' as const };
+                    setForm(approvedForm);
+                    onSubmit(approvedForm);
+                  }}
+                  className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-5 py-2 text-xs font-bold text-white hover:bg-emerald-700 shadow-md transition-all cursor-pointer"
+                >
+                  <CheckCircle2 className="h-4 w-4" /> Approve Purchase Bill
+                </button>
+              </>
+            )}
+
+            {/* 4. APPROVED STATUS */}
+            {form.status === 'Approved' && (
+              <>
+                <span className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/50 bg-emerald-500/10 px-3 py-1.5 text-xs font-bold text-emerald-700 dark:text-emerald-300">
+                  <CheckCircle2 className="h-4 w-4 text-emerald-500" /> PB Approved &amp; Ledger Posted
+                </span>
+
+                <button
+                  type="button"
+                  onClick={onCancel}
+                  className="rounded-lg border border-border bg-background px-4 py-2 text-xs font-bold text-foreground hover:bg-muted transition-colors cursor-pointer"
+                >
+                  Close
+                </button>
+              </>
+            )}
           </div>
         </div>
       </form>

@@ -25,6 +25,7 @@ import { MRRequestsFilterBar, EMPTY_MR_FILTERS, type MrRequestFilters } from './
 import { MRTableView } from './mr-table-view';
 import { MRInspectorPanel } from './mr-inspector-panel';
 import { CreateMRModal } from './create-mr-modal';
+import { MRPdfPreviewModal } from './mr-pdf-preview-modal';
 import { Pagination } from '../pagination';
 
 const PAGE_SIZE = 15;
@@ -48,8 +49,8 @@ interface MaterialRequestWorkQueueProps {
   activeRole: Role;
   loading?: boolean;
   onConvertToPr: (mr: MaterialRequestRow, approvedLines?: ProcurementLineRow[]) => void;
-  /** Generates the report-format Material Request PDF and opens it in a new tab. */
-  onPrintMr?: (mrId: string) => void;
+  /** Generates and downloads the report-format Material Request PDF. */
+  onPrintMr?: (mr: MaterialRequestRow) => void;
   onRefresh: () => Promise<void>;
   onMessage: (msg: string) => void;
   onError: (msg: string) => void;
@@ -78,6 +79,7 @@ export default function MaterialRequestWorkQueue({
   const [reviewers, setReviewers] = useState<ReviewerOption[]>([]);
 
   const [selectedMrId, setSelectedMrId] = useState<string | null>(null);
+  const [previewMr, setPreviewMr] = useState<MaterialRequestRow | null>(null);
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
 
@@ -188,6 +190,7 @@ export default function MaterialRequestWorkQueue({
             activeRole={activeRole}
             selectedMrId={selectedMr?.id}
             onSelectMr={(mr) => setSelectedMrId(mr.id)}
+            onPrintMr={(mr) => setPreviewMr(mr)}
             onAction={runAction}
             onConvertToPr={onConvertToPr}
           />
@@ -203,12 +206,18 @@ export default function MaterialRequestWorkQueue({
               onAction={runAction}
               onConvertToPr={(mr, lines) => {
                 onConvertToPr(mr, lines);
-                setSelectedMrId(null);
               }}
-              onPrint={onPrintMr ? () => onPrintMr(selectedMr.id) : undefined}
+              onPrint={() => setPreviewMr(selectedMr)}
             />
           )}
         </div>
+      )}
+
+      {previewMr && (
+        <MRPdfPreviewModal
+          mr={previewMr}
+          onClose={() => setPreviewMr(null)}
+        />
       )}
 
       {createModalOpen && (

@@ -11,6 +11,7 @@ import {
   ThumbsUp,
   Zap,
   Clock,
+  FileDown,
 } from 'lucide-react';
 import type { MaterialRequestRow, PurchaseRequisitionRow, Role } from '@/lib/erp/material-request/types';
 import type { ProcurementLineRow } from '@/lib/procurement';
@@ -26,6 +27,7 @@ interface MRTableViewProps {
   activeRole: Role;
   selectedMrId?: string | null;
   onSelectMr?: (mr: MaterialRequestRow) => void;
+  onPrintMr?: (mr: MaterialRequestRow) => void;
   onAction: (label: string, fn: () => Promise<{ data: unknown; error: Error | null }>) => Promise<void>;
   onConvertToPr: (mr: MaterialRequestRow, approvedLines?: ProcurementLineRow[]) => void;
 }
@@ -78,10 +80,44 @@ function PriorityBadge({ priority }: { priority: string }) {
 function StatusBadge({ status }: { status: string }) {
   const config = STATUS_CONFIG[status] ?? { label: status.replace(/_/g, ' '), className: 'bg-muted text-muted-foreground border-border' };
   return (
-    <span className={`inline-flex rounded-md border px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide ${config.className}`}>
+    <span className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[10px] font-bold ${config.className}`}>
       {config.label}
     </span>
   );
+}
+
+function normalizeLineStatus(status?: string | null): 'approved_for_pr' | 'fulfilled_from_stock' | 'rejected' | 'pending' {
+  if (!status) return 'pending';
+  if (status === 'approved' || status === 'approved_for_pr') return 'approved_for_pr';
+  if (status === 'closed' || status === 'fulfilled_from_stock') return 'fulfilled_from_stock';
+  if (status === 'rejected') return 'rejected';
+  return 'pending';
+}
+
+function LineStatusBadge({ lineStatus, mrStatus }: { lineStatus?: string | null; mrStatus: string }) {
+  const norm = normalizeLineStatus(lineStatus);
+  if (norm === 'approved_for_pr') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-md bg-emerald-100 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800 px-2 py-0.5 text-[10px] font-bold">
+        ✓ Approved PR
+      </span>
+    );
+  }
+  if (norm === 'fulfilled_from_stock') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-md bg-blue-100 text-blue-800 dark:bg-blue-950/50 dark:text-blue-300 border border-blue-300 dark:border-blue-800 px-2 py-0.5 text-[10px] font-bold">
+        📦 Stock Issue
+      </span>
+    );
+  }
+  if (norm === 'rejected') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-md bg-red-100 text-red-800 dark:bg-red-950/50 dark:text-red-300 border border-red-300 dark:border-red-800 px-2 py-0.5 text-[10px] font-bold">
+        ✕ Rejected
+      </span>
+    );
+  }
+  return <StatusBadge status={mrStatus} />;
 }
 
 function StockDecisionBadge({ decision }: { decision?: string | null }) {
@@ -98,6 +134,7 @@ export function MRTableView({
   activeRole,
   selectedMrId,
   onSelectMr,
+  onPrintMr,
   onAction,
   onConvertToPr,
 }: MRTableViewProps) {
@@ -111,10 +148,13 @@ export function MRTableView({
     setActionLoading(false);
   }
 
-  // Flatten Material Request Header + Lines into flat Table Rows
+  // Flatten Material Request Header + Lines into flat Table Rows grouped by MR
   type FlatRow = {
     srNo: number;
     mr: MaterialRequestRow;
+    mrIndex: number;
+    isFirstLineOfMr: boolean;
+    totalLinesInMr: number;
     line: ProcurementLineRow | null;
     lineIndex: number;
     linkedPr: PurchaseRequisitionRow | undefined;
@@ -124,7 +164,7 @@ export function MRTableView({
     canFulfill: boolean;
   };
   let globalRowCounter = 1;
-  const flatRows = materialRequests.flatMap((mr): FlatRow[] => {
+  const flatRows = materialRequests.flatMap((mr, mrIndex): FlatRow[] => {
     const lines = mr.material_request_lines ?? [];
     const linkedPr = purchaseRequisitions.find((pr) => pr.material_request_id === mr.id);
     const overdue = isOverdue(mr.required_date) && mr.status !== 'closed' && mr.status !== 'rejected' && mr.status !== 'cancelled';
@@ -137,6 +177,9 @@ export function MRTableView({
       return [{
         srNo,
         mr,
+        mrIndex,
+        isFirstLineOfMr: true,
+        totalLinesInMr: 1,
         line: null,
         lineIndex: 0,
         linkedPr,
@@ -152,6 +195,9 @@ export function MRTableView({
       return {
         srNo,
         mr,
+        mrIndex,
+        isFirstLineOfMr: lineIndex === 0,
+        totalLinesInMr: lines.length,
         line,
         lineIndex,
         linkedPr,
@@ -164,160 +210,231 @@ export function MRTableView({
   });
 
   return (
-    <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
-      <div className="overflow-x-auto max-h-[720px]">
+    <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden space-y-0">
+      <div className="overflow-x-auto max-h-[740px]">
         <table className="w-full text-xs text-left border-collapse whitespace-nowrap">
-                   {/* CLEAN ERP TABLE HEADER FOR MATERIAL REQUESTS (18 SPECIFIED MR COLUMNS) */}
-          <thead className="bg-muted/90 text-muted-foreground uppercase font-bold text-[10px] tracking-wider border-b border-border sticky top-0 z-30 shadow-xs">
+          {/* SOLID OPAQUE ERP TABLE HEADER */}
+          <thead className="bg-muted text-muted-foreground uppercase font-bold text-[10px] tracking-wider border-b-2 border-border sticky top-0 z-30">
             <tr>
               {/* 1. Sr No (Sticky Column 1) */}
-              <th className="px-3 py-3 text-center border-r border-border/70 font-bold text-foreground bg-muted/90 sticky left-0 z-20 w-12 shadow-xs">Sr No.</th>
+              <th className="px-3.5 py-3 text-center font-bold text-foreground bg-muted sticky left-0 z-20 w-12">Sr No.</th>
               
-              {/* 2. MR Number (Sticky Column 2) */}
-              <th className="px-3.5 py-3 border-r border-border/70 font-bold text-primary bg-muted/90 sticky left-12 z-20 shadow-xs">MR Number</th>
+              {/* 2. MR Number (Standard Scrollable Column) */}
+              <th className="px-4 py-3 font-bold text-primary bg-muted">MR Number</th>
               
               {/* 3. Status / Approval */}
-              <th className="px-3 py-3 border-r border-border/70">Status / Approved</th>
+              <th className="px-3.5 py-3 bg-muted">Status / Approved</th>
               
               {/* 4. Priority */}
-              <th className="px-3 py-3 border-r border-border/70">Priority</th>
+              <th className="px-3.5 py-3 bg-muted">Priority</th>
               
               {/* 5. Stock Audit */}
-              <th className="px-3 py-3 border-r border-border/70">Stock Audit</th>
+              <th className="px-3.5 py-3 bg-muted">Stock Audit</th>
               
               {/* 6. Project & Site */}
-              <th className="px-4 py-3 border-r border-border/70 font-bold text-foreground">Project & Site</th>
+              <th className="px-4 py-3 font-bold text-foreground bg-muted">Project & Site</th>
               
               {/* 7. Work Activity */}
-              <th className="px-3.5 py-3 border-r border-border/70">Work Activity</th>
-              <th className="px-2.5 py-3 border-r border-border/70">Activity Code</th>
+              <th className="px-4 py-3 bg-muted">Work Activity</th>
+              <th className="px-3 py-3 bg-muted">Activity Code</th>
               
               {/* 8. Item Catalogue Columns */}
-              <th className="px-2.5 py-3 border-r border-border/70">Item Code</th>
-              <th className="px-3 py-3 border-r border-border/70">Item Group</th>
-              <th className="px-4 py-3 border-r border-border/70 font-bold text-foreground">Item Description</th>
-              <th className="px-2.5 py-3 text-center border-r border-border/70 text-primary font-bold">Units *</th>
-              <th className="px-3 py-3 text-center border-r border-border/70 text-primary font-bold">Required Date *</th>
-              <th className="px-3 py-3 border-r border-border/70">Item Brand</th>
-              <th className="px-3 py-3 border-r border-border/70">Item Specification</th>
+              <th className="px-3 py-3 bg-muted">Item Code</th>
+              <th className="px-3.5 py-3 bg-muted">Item Group</th>
+              <th className="px-4 py-3 font-bold text-foreground bg-muted">Item Description</th>
+              <th className="px-3 py-3 text-center text-primary font-bold bg-muted">Units *</th>
+              <th className="px-3.5 py-3 text-center text-primary font-bold bg-muted">Required Date *</th>
+              <th className="px-3.5 py-3 bg-muted">Item Brand</th>
+              <th className="px-3.5 py-3 bg-muted">Item Specification</th>
               
               {/* 9. Quantity */}
-              <th className="px-3 py-3 text-right border-r border-border/70 text-primary font-bold bg-primary/10">Quantity *</th>
+              <th className="px-4 py-3 text-right text-primary font-bold bg-muted">Quantity *</th>
               
               {/* 10. Raised By & Submitted */}
-              <th className="px-3 py-3 border-r border-border/70">Raised By</th>
-              <th className="px-3 py-3 text-center">Submitted</th>
+              <th className="px-4 py-3 bg-muted">Raised By</th>
+              <th className="px-3.5 py-3 text-center bg-muted">Submitted</th>
+
+              {/* 11. View Details Action */}
+              <th className="px-4 py-3 text-center bg-muted">View Details</th>
             </tr>
           </thead>
 
-          <tbody className="divide-y divide-border/80 bg-card">
-            {flatRows.map(({ srNo, mr, line, lineIndex, linkedPr, overdue, canAct, canConvert, canFulfill }) => {
+          <tbody className="divide-y-0">
+            {flatRows.map(({ srNo, mr, mrIndex, isFirstLineOfMr, totalLinesInMr, line, lineIndex, linkedPr, overdue, canAct, canConvert, canFulfill }) => {
               const reqDate = line?.required_date ?? mr.required_date;
               const isSelected = selectedMrId === mr.id;
+
+              // Two distinct solid alternating row group colors per Material Request (MR)
+              const isEvenMr = mrIndex % 2 === 0;
+              
+              // 100% Solid Opaque Background Color for the ENTIRE Row (No transparency)
+              const baseBgClass = isSelected
+                ? 'bg-amber-100 dark:bg-amber-950 font-medium'
+                : isEvenMr 
+                  ? 'bg-card' 
+                  : 'bg-slate-100 dark:bg-slate-900';
+
+              const hoverBgClass = isSelected
+                ? 'hover:bg-amber-200 dark:hover:bg-amber-900'
+                : isEvenMr
+                  ? 'hover:bg-slate-200/70 dark:hover:bg-slate-800'
+                  : 'hover:bg-slate-200 dark:hover:bg-slate-800/90';
+
+              const cellBgClass = `${baseBgClass} ${hoverBgClass} transition-colors`;
 
               return (
                 <tr
                   key={`${mr.id}-${line?.id ?? lineIndex}`}
                   onClick={() => onSelectMr?.(mr)}
-                  className={`cursor-pointer transition-colors ${
-                    isSelected ? 'bg-primary/10 font-medium border-l-4 border-l-primary' : 'hover:bg-muted/30'
-                  }`}
+                  className={`cursor-pointer ${isSelected ? 'border-l-4 border-l-primary' : ''}`}
                 >
                   
-                  {/* Column 1: Sr No. (Sticky Left 1) */}
-                  <td className="px-3 py-2.5 text-center font-bold text-foreground border-r border-border/60 bg-card sticky left-0 z-10 w-12">
+                  {/* Column 1: Sr No. (Sticky Left 1 - Solid Opaque) */}
+                  <td className={`px-3.5 py-2.5 text-center font-bold text-foreground sticky left-0 z-10 w-12 ${cellBgClass}`}>
                     {srNo}
                   </td>
 
-                  {/* Column 2: MR Number (Sticky Left 2) */}
-                  <td className="px-3.5 py-2.5 font-mono font-bold text-primary border-r border-border/60 bg-card sticky left-12 z-10">
-                    {mr.mr_number}
+                  {/* Column 2: MR Number (Standard Scrollable Column with View Details Quick Trigger) */}
+                  <td className={`px-4 py-2.5 font-mono font-bold text-primary ${cellBgClass}`}>
+                    <div className="flex items-center gap-1.5">
+                      <span>{mr.mr_number}</span>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onSelectMr?.(mr);
+                        }}
+                        title="View MR Details"
+                        className="rounded p-1 text-primary hover:bg-primary/15 transition-colors"
+                      >
+                        <Eye className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
                     {linkedPr && (
                       <span className="ml-1 text-[10px] text-sky-600 font-normal">({linkedPr.pr_number})</span>
+                    )}
+                    {totalLinesInMr > 1 && (
+                      <span className="ml-2 inline-flex items-center rounded-full bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 px-1.5 py-0.2 text-[9px] font-bold">
+                        {lineIndex + 1}/{totalLinesInMr}
+                      </span>
                     )}
                   </td>
 
                   {/* Column 3: Status / Approved */}
-                  <td className="px-3 py-2.5 border-r border-border/60">
-                    <StatusBadge status={mr.status} />
+                  <td className={`px-3.5 py-2.5 ${cellBgClass}`}>
+                    <LineStatusBadge lineStatus={line?.line_status} mrStatus={mr.status} />
                   </td>
 
                   {/* Column 4: Priority */}
-                  <td className="px-3 py-2.5 border-r border-border/60">
+                  <td className={`px-3.5 py-2.5 ${cellBgClass}`}>
                     <PriorityBadge priority={mr.priority} />
                   </td>
 
                   {/* Column 5: Stock Audit */}
-                  <td className="px-3 py-2.5 border-r border-border/60">
+                  <td className={`px-3.5 py-2.5 ${cellBgClass}`}>
                     <StockDecisionBadge decision={mr.stock_decision} />
                   </td>
 
                   {/* Column 6: Project & Site */}
-                  <td className="px-4 py-2.5 border-r border-border/60">
+                  <td className={`px-4 py-2.5 ${cellBgClass}`}>
                     <div className="font-bold text-foreground">{mr.projects?.name ?? '—'}</div>
                     <div className="text-[10px] text-muted-foreground">({mr.site_block ?? mr.project_sites?.name ?? 'Main Site'})</div>
                   </td>
 
                   {/* Column 7: Work Activity */}
-                  <td className="px-3.5 py-2.5 font-medium text-foreground border-r border-border/60">
+                  <td className={`px-4 py-2.5 font-medium text-foreground ${cellBgClass}`}>
                     {line?.activity_name ?? mr.work_activity ?? '—'}
                   </td>
 
                   {/* Activity Code */}
-                  <td className="px-2.5 py-2.5 text-muted-foreground font-mono text-[11px] border-r border-border/60">
+                  <td className={`px-3 py-2.5 text-muted-foreground font-mono text-[11px] ${cellBgClass}`}>
                     {line?.activity_code ?? '—'}
                   </td>
 
                   {/* Item Code */}
-                  <td className="px-2.5 py-2.5 text-muted-foreground font-mono text-[11px] border-r border-border/60">
+                  <td className={`px-3 py-2.5 text-muted-foreground font-mono text-[11px] ${cellBgClass}`}>
                     {line?.item_code ?? '—'}
                   </td>
 
                   {/* Item Group */}
-                  <td className="px-3 py-2.5 text-muted-foreground border-r border-border/60">
+                  <td className={`px-3.5 py-2.5 text-muted-foreground ${cellBgClass}`}>
                     {line?.item_group ?? '—'}
                   </td>
 
                   {/* Item Description */}
-                  <td className="px-4 py-2.5 font-bold text-foreground border-r border-border/60">
-                    {line?.item_description ?? '—'}
+                  <td className={`px-4 py-2.5 font-bold text-foreground ${cellBgClass}`}>
+                    <div className="flex items-center gap-1.5">
+                      <span>{line?.item_description ?? '—'}</span>
+                      {totalLinesInMr > 1 && (
+                        <span className="text-[9px] font-semibold text-indigo-700 dark:text-indigo-300 bg-indigo-500/10 px-1.5 py-0.5 rounded border border-indigo-500/20">
+                          Item {lineIndex + 1}
+                        </span>
+                      )}
+                    </div>
                   </td>
 
                   {/* Units (Mandatory) */}
-                  <td className="px-2.5 py-2.5 text-center font-bold text-primary border-r border-border/60">
+                  <td className={`px-3 py-2.5 text-center font-bold text-primary ${cellBgClass}`}>
                     {line?.unit ?? 'nos'}
                   </td>
 
                   {/* Required Date (Mandatory) */}
-                  <td className="px-3 py-2.5 text-center border-r border-border/60">
+                  <td className={`px-3.5 py-2.5 text-center ${cellBgClass}`}>
                     <span className={`font-bold ${overdue ? 'text-red-500' : 'text-foreground'}`}>
                       {formatDate(reqDate)}
                     </span>
                   </td>
 
                   {/* Item Brand */}
-                  <td className="px-3 py-2.5 text-muted-foreground font-semibold border-r border-border/60">
+                  <td className={`px-3.5 py-2.5 text-muted-foreground font-semibold ${cellBgClass}`}>
                     {line?.item_brand ?? '—'}
                   </td>
 
                   {/* Item Specification */}
-                  <td className="px-3 py-2.5 text-muted-foreground border-r border-border/60">
+                  <td className={`px-3.5 py-2.5 text-muted-foreground ${cellBgClass}`}>
                     {line?.item_specification ?? '—'}
                   </td>
 
-                  {/* Quantity (Mandatory) */}
-                  <td className="px-3 py-2.5 text-right font-bold text-primary bg-primary/5 text-sm border-r border-border/60">
+                  {/* Quantity (Mandatory - Uniform background matching row) */}
+                  <td className={`px-4 py-2.5 text-right font-bold text-primary text-sm ${cellBgClass}`}>
                     {line?.quantity ?? 0}
                   </td>
 
                   {/* Raised By */}
-                  <td className="px-3 py-2.5 border-r border-border/60 font-medium text-foreground">
+                  <td className={`px-4 py-2.5 font-medium text-foreground ${cellBgClass}`}>
                     {mr.profiles?.name ?? 'Site Team'}
                   </td>
 
                   {/* Submitted Date */}
-                  <td className="px-3 py-2.5 text-center text-muted-foreground">
+                  <td className={`px-3.5 py-2.5 text-center text-muted-foreground ${cellBgClass}`}>
                     {formatAge(mr.created_at)}
+                  </td>
+
+                  {/* View Details Action Button */}
+                  <td className={`px-4 py-2.5 text-center ${cellBgClass}`}>
+                    <div className="flex items-center justify-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onSelectMr?.(mr);
+                        }}
+                        className="inline-flex items-center gap-1 rounded-lg border border-primary/30 bg-primary/10 px-2 py-1 text-xs font-bold text-primary hover:bg-primary/20 transition-all shadow-2xs"
+                        title="View Material Request Details & Take Action"
+                      >
+                        <Eye className="h-3.5 w-3.5" /> Details
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onPrintMr?.(mr);
+                        }}
+                        className="inline-flex items-center gap-1 rounded-lg border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-xs font-bold text-amber-700 dark:text-amber-300 hover:bg-amber-500/20 transition-all shadow-2xs"
+                        title="Directly Download Material Request PDF Report"
+                      >
+                        <FileDown className="h-3.5 w-3.5" /> PDF
+                      </button>
+                    </div>
                   </td>
                 </tr>
               );

@@ -742,11 +742,13 @@ export const useAppStore = create<AppState>((set) => ({
     if (!isLiveSupabase()) return;
 
     try {
-      const { data: dbMaterials, error: matError } = await supabase.from('materials').select('*');
-      if (matError) throw matError;
+      let { data: dbMaterials, error: matError } = await supabase.from('materials').select('*');
+      if (matError) {
+        const { data: itemMasterData } = await supabase.from('item_master').select('*');
+        if (itemMasterData) dbMaterials = itemMasterData;
+      }
 
-      const { data: dbTransactions, error: txError } = await supabase.from('material_transactions').select('*');
-      if (txError) throw txError;
+      const { data: dbTransactions } = await supabase.from('material_transactions').select('*');
 
       set((state) => {
         const updatedProjects = state.projects.map((proj) => {

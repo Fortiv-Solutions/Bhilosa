@@ -28,6 +28,7 @@ import { AssignApprovalModal, type AssignApprovalPayload } from './assign-approv
 import { PrHistoryDrawer } from './pr-history-drawer';
 import { PRStatsBar } from './pr-stats-bar';
 import { PRRequestsFilterBar, DEFAULT_PR_FILTERS, type PrFiltersState } from './pr-requests-filter-bar';
+import { PRPdfPreviewModal } from './pr-pdf-preview-modal';
 import { PRTableView } from './pr-table-view';
 import { Pagination } from '../pagination';
 
@@ -214,6 +215,7 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
   const [mode, setMode] = useState<'list' | 'form'>('list');
   const [form, setForm] = useState<PrFormState | null>(() => blankForm(projectOptions[0]?.id ?? ''));
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [previewPr, setPreviewPr] = useState<PurchaseRequisitionRow | null>(null);
   const [approvedMrs, setApprovedMrs] = useState<ApprovedMrRow[]>([]);
   const [loadingApproved, setLoadingApproved] = useState(false);
   const [budgetSnapshot, setBudgetSnapshot] = useState<BudgetSnapshot | null>(null);
@@ -608,9 +610,8 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
     if (!form?.id) return null;
     const row = props.rows.find((r) => r.id === form.id);
     return (<>
-      {row && <button onClick={() => props.onPdf(row)} title="Generate the Purchase Requisition report PDF" className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-2 font-bold hover:bg-muted"><FileDown className="h-3.5 w-3.5" /> {props.attachments.some((a) => a.entity_id === row.id) ? 'Reprint Report' : 'Print Report'}</button>}
-      {row && <button onClick={() => props.onOpenPdf(row)} disabled={!props.attachments.some((a) => a.entity_id === row.id)} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-2 font-bold hover:bg-muted disabled:opacity-40"><Eye className="h-3.5 w-3.5" /> Preview</button>}
-      <button onClick={() => setHistoryOpen(true)} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-2 font-bold hover:bg-muted"><History className="h-3.5 w-3.5" /> History</button>
+      {row && <button onClick={() => setPreviewPr(row)} title="Preview and Print Purchase Requisition PDF" className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-2 font-bold hover:bg-muted cursor-pointer"><FileDown className="h-3.5 w-3.5" /> Print / PDF Report</button>}
+      <button onClick={() => setHistoryOpen(true)} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-2 font-bold hover:bg-muted cursor-pointer"><History className="h-3.5 w-3.5" /> History</button>
     </>);
   }
 
@@ -755,7 +756,7 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
       <PRTableView
         rows={pagedRows}
         onEdit={editPr}
-        onPdf={props.onPdf}
+        onPdf={(pr) => setPreviewPr(pr)}
         onApprove={props.onApprove}
       />
 
@@ -766,6 +767,13 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
           pageSize={PAGE_SIZE}
           total={filteredRows.length}
           onPageChange={setPage}
+        />
+      )}
+
+      {previewPr && (
+        <PRPdfPreviewModal
+          pr={previewPr}
+          onClose={() => setPreviewPr(null)}
         />
       )}
     </div>

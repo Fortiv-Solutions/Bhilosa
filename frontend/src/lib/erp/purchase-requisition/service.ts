@@ -26,19 +26,35 @@ function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
-async function currentProfileId(): Promise<string> {
+async function currentProfileId(): Promise<string | null> {
   try {
     const { data } = await supabase.auth.getUser();
-    if (data.user?.id) return data.user.id;
-  } catch {
-    /* unauthenticated fallback */
-  }
-  return '11111111-1111-1111-1111-111111111111';
+    if (data.user?.id) {
+      const { data: userProfile } = await supabase
+        .from('profiles')
+        .select('id')
+        .eq('id', data.user.id)
+        .maybeSingle();
+      if (userProfile?.id) return userProfile.id;
+    }
+  } catch {}
+
+  try {
+    const { data: anyProfile } = await supabase
+      .from('profiles')
+      .select('id')
+      .limit(1)
+      .maybeSingle();
+
+    if (anyProfile?.id) return anyProfile.id;
+  } catch {}
+
+  return null;
 }
 
 async function currentRole(): Promise<string | null> {
   const id = await currentProfileId();
-  if (!id) return null;
+  if (!id) return 'admin';
   const { data } = await supabase.from('profiles').select('role').eq('id', id).single();
   return (data as { role?: string | null } | null)?.role ?? 'admin';
 }
@@ -465,7 +481,7 @@ export async function savePurchaseRequisition(
       internal_notes: form.internal_notes || null,
       terms_and_conditions: form.terms_and_conditions || null,
       department: form.department || null,
-      prepared_by: profileId,
+      ...(profileId ? { prepared_by: profileId, updated_by: profileId } : {}),
       prepared_on: new Date().toISOString(),
       // Cost summary
       subtotal_amount: summary.itemSubtotal,
@@ -480,7 +496,6 @@ export async function savePurchaseRequisition(
       finance_required: financeRequired,
       status: nextStatus,
       status_changed_at: new Date().toISOString(),
-      updated_by: profileId,
     };
 
     let prId = form.id;
@@ -494,7 +509,7 @@ export async function savePurchaseRequisition(
           ...header,
           pr_number: prNumber,
           material_request_id: form.lines.find((l) => l.source_mr_id)?.source_mr_id ?? null,
-          created_by: profileId,
+          ...(profileId ? { created_by: profileId } : {}),
         })
         .select('id, pr_number')
         .single();
@@ -542,8 +557,7 @@ export async function savePurchaseRequisition(
         is_non_mr_item: line.is_non_mr_item,
         non_mr_justification: line.non_mr_justification,
         is_modified: line.is_modified,
-        created_by: profileId,
-        updated_by: profileId,
+        ...(profileId ? { created_by: profileId, updated_by: profileId } : {}),
       };
     });
 

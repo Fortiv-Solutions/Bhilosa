@@ -1,0 +1,482 @@
+[
+  {
+    "meta": {
+      "sourceFileName": "sample_invoice.pdf",
+      "sourceFileHash": "74ad351294c85c9cc9551a1c01c76a2f6390368871b1f6c77ec96e32c0096778",
+      "pageNumbers": [
+        1,
+        2,
+        3
+      ],
+      "pageRotations": [
+        270,
+        0,
+        0
+      ],
+      "detectedTemplate": "generic-geometric",
+      "templateConfidence": 1,
+      "engine": "tesseract.js/eng trim+srgb@400dpi rot270 psm3+psm11",
+      "ocrMeanConfidence": 81.62552423805737,
+      "processingMs": 522504
+    },
+    "vendor": {
+      "name": "Scanner",
+      "addressLines": [
+        "Ct- OP GINAL FOR RECIPIENT",
+        "AJIT TRADING CO OKEN",
+        "43.44, S SK K IN DUSTRIAL ESTATE, SOMAKANJI NR",
+        "ESTATE SAGA FURNITURE, OPP SANIDEV TEMPLE,UDHNA TEMPLE, UDHNA MAGDALLA ROAD,SURAT ROAD, SURAT GUJARAT 24",
+        "a eceiver Details(Billed to) Pi Place Place Of Supply :GUJARAT-24 Challan No No: 2987",
+        "Consignee Details(Shipped to)",
+        "M/S. AGASTYA DEVELOPERS P.O.NO. 8055",
+        "» /S. AGASTYA DEVELOPERS Scanned",
+        "SITE AGASTYA",
+        "is AGSTYA",
+        "5, CITY CENTER, SARDAR BAUG ROAD, [Transport T rt Details",
+        "OPP VESU FIRE STATION",
+        "Sardar Bagh Chowk, LR. No."
+      ],
+      "city": null,
+      "state": null,
+      "pincode": "395007",
+      "gstin": "24AVOPS6752N2ZN",
+      "pan": "AVOPS6752N",
+      "phones": [
+        "9723434726"
+      ],
+      "emails": [],
+      "website": null,
+      "siteName": null
+    },
+    "buyer": {
+      "name": "Pi Place Place Of Supply :GUJARAT-24",
+      "addressLines": [
+        "AGASTYA DEVELOPERS",
+        "» /S.",
+        "SITE AGASTYA",
+        "5, CITY CENTER, SARDAR BAUG ROAD,",
+        "OPP",
+        "Sardar Bagh Chowk,",
+        "VIP Lega ROAD,"
+      ],
+      "city": null,
+      "state": null,
+      "pincode": null,
+      "gstin": "24ABZFA6800G1ZB",
+      "pan": "ABZFA6800G",
+      "phones": [
+        "7016951962"
+      ],
+      "emails": [],
+      "website": null,
+      "siteName": "AGASTYA"
+    },
+    "shipTo": {
+      "name": "to) Challan No No",
+      "addressLines": [
+        "P.O.NO.",
+        "DEVELOPERS",
+        "[Transport T rt Details",
+        "LR. No.",
+        "Date"
+      ],
+      "city": null,
+      "state": null,
+      "pincode": "395009",
+      "gstin": "24ABZFA6800G1ZB",
+      "pan": null,
+      "phones": [
+        "9913445849"
+      ],
+      "emails": [],
+      "website": null,
+      "siteName": "SATVA"
+    },
+    "dispatchFrom": null,
+    "document": {
+      "invoiceNumber": "11/07/2026",
+      "invoiceDate": "2026-07-11",
+      "dueDate": "2026-08-10",
+      "creditDays": 30,
+      "challanNumber": "2987",
+      "buyerPoNumber": "AD/PAG/PO/2026/0122",
+      "buyerPoNumberSource": "remarks",
+      "vendorOrderRef": "8055",
+      "placeOfSupply": ":GUJARAT-24",
+      "irn": null,
+      "ackNo": "162625322158405",
+      "ackDate": "2026-07-20T13:28:00",
+      "ewayBillNo": null,
+      "ewayDate": null,
+      "reverseCharge": false,
+      "agentOrBroker": "wad |",
+      "zoneCode": null,
+      "documentType": "TAX INVOICE",
+      "copyType": "ORIGINAL FOR RECIPIENT",
+      "isEInvoice": false
+    },
+    "transport": {
+      "transporterName": "Details |",
+      "station": null,
+      "lrNumber": null,
+      "lrDate": null,
+      "vehicleNumber": null,
+      "driverName": null,
+      "caseNo": null
+    },
+    "lineItems": [
+      {
+        "sr": 1,
+        "itemCode": "LCCO00000004",
+        "brandOrCompany": null,
+        "description": "LIXIL CLO294F1-6DA10 CONCEPT COUNTER TOP BASIN",
+        "hsnSac": "69109000",
+        "quantity": 88,
+        "unit": "PCS",
+        "unitSource": "unit_column",
+        "listRate": null,
+        "unitRate": 4840,
+        "discountPercents": [
+          55,
+          15.25
+        ],
+        "discountAmount": null,
+        "taxableValue": 162435.24,
+        "cgstRate": 9,
+        "cgstAmount": null,
+        "sgstRate": 9,
+        "sgstAmount": null,
+        "igstRate": null,
+        "igstAmount": null,
+        "cessRate": null,
+        "cessAmount": null,
+        "combinedTaxRate": null,
+        "lineTotal": null
+      },
+      {
+        "sr": 2,
+        "itemCode": "LCCo00000001",
+        "brandOrCompany": null,
+        "description": "LIXIL CCAS3105-4W20410A0 CONCEPT WALL HUNG",
+        "hsnSac": "69109000",
+        "quantity": 50,
+        "unit": "PCS",
+        "unitSource": "unit_column",
+        "listRate": null,
+        "unitRate": 14750,
+        "discountPercents": [],
+        "discountAmount": null,
+        "taxableValue": 218760.94,
+        "cgstRate": 9,
+        "cgstAmount": null,
+        "sgstRate": 9,
+        "sgstAmount": null,
+        "igstRate": null,
+        "igstAmount": null,
+        "cessRate": null,
+        "cessAmount": null,
+        "combinedTaxRate": null,
+        "lineTotal": null
+      },
+      {
+        "sr": 3,
+        "itemCode": "LCC000000002",
+        "brandOrCompany": null,
+        "description": "LIXIL CCASC105-0200410A0 CONCEPT WALLHUNG SLIM AMORLID SEAT COVER",
+        "hsnSac": "39222000",
+        "quantity": 50,
+        "unit": "PCS",
+        "unitSource": "unit_column",
+        "listRate": null,
+        "unitRate": 5810,
+        "discountPercents": [],
+        "discountAmount": null,
+        "taxableValue": 86169.56,
+        "cgstRate": 9,
+        "cgstAmount": null,
+        "sgstRate": 9,
+        "sgstAmount": null,
+        "igstRate": null,
+        "igstAmount": null,
+        "cessRate": null,
+        "cessAmount": null,
+        "combinedTaxRate": null,
+        "lineTotal": null
+      },
+      {
+        "sr": 4,
+        "itemCode": null,
+        "brandOrCompany": null,
+        "description": "JOINT FILLER IVORY 1 KG",
+        "hsnSac": "38241000",
+        "quantity": 150,
+        "unit": "PKTS",
+        "unitSource": "fused_in_qty",
+        "listRate": null,
+        "unitRate": 47,
+        "discountPercents": [],
+        "discountAmount": null,
+        "taxableValue": 7050,
+        "cgstRate": null,
+        "cgstAmount": null,
+        "sgstRate": null,
+        "sgstAmount": null,
+        "igstRate": null,
+        "igstAmount": null,
+        "cessRate": null,
+        "cessAmount": null,
+        "combinedTaxRate": 18,
+        "lineTotal": null
+      },
+      {
+        "sr": 5,
+        "itemCode": null,
+        "brandOrCompany": null,
+        "description": "SHREE CEMENT PPC",
+        "hsnSac": "25232930",
+        "quantity": 150,
+        "unit": "BAGS",
+        "unitSource": "column_header",
+        "listRate": 305,
+        "unitRate": 258.48,
+        "discountPercents": [
+          0
+        ],
+        "discountAmount": null,
+        "taxableValue": 38771.25,
+        "cgstRate": 9,
+        "cgstAmount": 3489.41,
+        "sgstRate": 9,
+        "sgstAmount": 3489.41,
+        "igstRate": null,
+        "igstAmount": null,
+        "cessRate": null,
+        "cessAmount": null,
+        "combinedTaxRate": null,
+        "lineTotal": null
+      }
+    ],
+    "hsnSummary": [
+      {
+        "hsnSac": "65109000",
+        "taxableValue": 381196189,
+        "cgstRate": 5,
+        "cgstAmount": null,
+        "sgstRate": 34307.65,
+        "sgstAmount": null,
+        "igstRate": null,
+        "igstAmount": null,
+        "cessAmount": null,
+        "totalTax": 68615.3
+      },
+      {
+        "hsnSac": "35222000",
+        "taxableValue": 8616956569,
+        "cgstRate": 9,
+        "cgstAmount": null,
+        "sgstRate": 7755.26,
+        "sgstAmount": null,
+        "igstRate": null,
+        "igstAmount": null,
+        "cessAmount": null,
+        "totalTax": 15510.52
+      },
+      {
+        "hsnSac": "38241000",
+        "taxableValue": 7050,
+        "cgstRate": 9,
+        "cgstAmount": null,
+        "sgstRate": null,
+        "sgstAmount": null,
+        "igstRate": null,
+        "igstAmount": null,
+        "cessAmount": null,
+        "totalTax": 1269
+      },
+      {
+        "hsnSac": null,
+        "taxableValue": 707417050,
+        "cgstRate": null,
+        "cgstAmount": null,
+        "sgstRate": null,
+        "sgstAmount": null,
+        "igstRate": null,
+        "igstAmount": null,
+        "cessAmount": null,
+        "totalTax": 1269
+      }
+    ],
+    "totals": {
+      "totalQuantity": null,
+      "taxableAmount": 38771.25,
+      "cgstAmount": 4,
+      "sgstAmount": 4,
+      "igstAmount": 4,
+      "cessAmount": 40,
+      "tcsRate": null,
+      "tcsAmount": null,
+      "freight": null,
+      "packing": null,
+      "insurance": null,
+      "loadingUnloading": null,
+      "otherCharges": null,
+      "roundOff": 0.07,
+      "grandTotal": 38771.25,
+      "amountInWords": "Forty Five Thousand Seven Hundred Fifty Only. Net Amount Rs. 45750.00",
+      "ledgerBalanceDue": 2108663
+    },
+    "payment": {
+      "bankAccounts": [
+        {
+          "bankName": null,
+          "branch": "GOD DOD",
+          "accountNumber": "10088337585",
+          "ifsc": null
+        }
+      ],
+      "upiId": null,
+      "paymentTermsText": "PAYMENT DUE IN 30 DAYS ON 10/08/2026 Total : 188.00 467365.74"
+    },
+    "termsAndConditions": [
+      "(1) Goods Once Sold Will Not Be Taken Ba ck Or Exchanged. (2) Any Complaint Regarding This Bill Must Be Settled Immediately. (3) Payament Should Be Made Withing a Week Fro m The Date Of purchase After Which Interest Will Be Charges At 24% Pa. And The Rights Are Reserved To KOT. HORA BANK GHOD DOIA/c. No. 15611279333 Rigs/Neft/Ifse KKBK0O00OO87"
+    ],
+    "remarks": "AD/PAGPO203610 t#4 Mumba Logisi Lt > 4 a AD/PAG/PO/2026/0122 122 ny : | wad",
+    "validation": {
+      "lineMathOk": false,
+      "taxMathOk": false,
+      "grandTotalOk": true,
+      "hsnSummaryMatchesLines": false,
+      "amountInWordsMatches": false,
+      "gstinValid": {
+        "vendor": true,
+        "buyer": true
+      },
+      "warnings": [
+        {
+          "code": "po_found_outside_po_field",
+          "field": "document.buyerPoNumber",
+          "severity": "info",
+          "message": "PO AD/PAG/PO/2026/0122 was found in the document body rather than a PO field — please confirm."
+        },
+        {
+          "code": "gstin_repaired",
+          "field": "vendor.gstin",
+          "severity": "info",
+          "message": "Vendor GSTIN corrected by checksum (1 character(s)): 24AUHPK6558N1Z1"
+        },
+        {
+          "code": "po_found_outside_po_field",
+          "field": "document.buyerPoNumber",
+          "severity": "info",
+          "message": "PO AC/PAM/PO/2026/0351 was found in the document body rather than a PO field — please confirm."
+        },
+        {
+          "code": "ledger_balance_present",
+          "field": "totals.ledgerBalanceDue",
+          "severity": "info",
+          "message": "This invoice prints a running account balance of 2108663, which is not this invoice's value (8319). It has been excluded from the total."
+        },
+        {
+          "code": "line_math_mismatch",
+          "field": "lineItems.1.taxableValue",
+          "severity": "warn",
+          "message": "Line 2: 50 x 14750 = 737500, but the invoice shows 218760.94. Please verify."
+        },
+        {
+          "code": "line_math_mismatch",
+          "field": "lineItems.2.taxableValue",
+          "severity": "warn",
+          "message": "Line 3: 50 x 5810 = 290500, but the invoice shows 86169.56. Please verify."
+        },
+        {
+          "code": "taxable_sum_mismatch",
+          "field": "totals.taxableAmount",
+          "severity": "warn",
+          "message": "Line items sum to 513186.99 but the invoice states a taxable value of 38771.25."
+        },
+        {
+          "code": "tax_math_mismatch",
+          "field": "totals.cgstAmount",
+          "severity": "warn",
+          "message": "CGST of 4 does not match 9% of 38771.25 (3489.41)."
+        },
+        {
+          "code": "tax_math_mismatch",
+          "field": "totals.sgstAmount",
+          "severity": "warn",
+          "message": "SGST of 4 does not match 9% of 38771.25 (3489.41)."
+        },
+        {
+          "code": "amount_in_words_mismatch",
+          "field": "totals.amountInWords",
+          "severity": "warn",
+          "message": "The amount in words reads 45750 but the numeric total is 38771.25."
+        },
+        {
+          "code": "hsn_summary_mismatch",
+          "field": "hsnSummary",
+          "severity": "info",
+          "message": "The HSN summary's taxable values sum to 8998159808 against a stated 38771.25. The line items were used instead."
+        },
+        {
+          "code": "tax_type_unexpected",
+          "field": "totals.igstAmount",
+          "severity": "warn",
+          "message": "Both parties are in state 24, so CGST + SGST is expected, but IGST was found."
+        }
+      ],
+      "fieldConfidence": {
+        "vendor.name": 0.9623722839355469,
+        "lineItems.0.sr": 0.93904052734375,
+        "lineItems.0.itemCode": 0.6308330154418945,
+        "lineItems.0.col2": 0.42864990234375,
+        "lineItems.0.description": 0.9363234074910481,
+        "lineItems.0.hsn": 0.9633358001708985,
+        "lineItems.0.quantity": 0.9439936065673828,
+        "lineItems.0.unit": 0.9559987640380859,
+        "lineItems.0.rate": 0.9672438049316406,
+        "lineItems.0.discountPercent": 0.7011493428548177,
+        "lineItems.0.sgstRate": 0.9408302307128906,
+        "lineItems.0.cgstRate": 0.9648170471191406,
+        "lineItems.0.taxableValue": 0.8703305816650391,
+        "lineItems.1.sr": 0.7630313110351562,
+        "lineItems.1.itemCode": 0.37391746520996094,
+        "lineItems.1.col2": 0.9112884521484375,
+        "lineItems.1.description": 0.9182891082763672,
+        "lineItems.1.hsn": 0.9626068878173828,
+        "lineItems.1.quantity": 0.9678994750976563,
+        "lineItems.1.unit": 0.9347974395751953,
+        "lineItems.1.rate": 0.76350830078125,
+        "lineItems.1.discountPercent": 0.9596892166137695,
+        "lineItems.1.sgstRate": 0.9677338409423828,
+        "lineItems.1.cgstRate": 0.9659242248535156,
+        "lineItems.1.taxableValue": 0.4,
+        "lineItems.2.sr": 0.7872248077392578,
+        "lineItems.2.itemCode": 0.44260387420654296,
+        "lineItems.2.col2": 0.5524995803833008,
+        "lineItems.2.description": 0.9204930686950683,
+        "lineItems.2.hsn": 0.9661161041259766,
+        "lineItems.2.quantity": 0.9670069122314453,
+        "lineItems.2.unit": 0.9536934661865234,
+        "lineItems.2.rate": 0.9664777374267578,
+        "lineItems.2.discountPercent": 0.9325081634521485,
+        "lineItems.2.sgstRate": 0.9505107116699218,
+        "lineItems.2.cgstRate": 0.9697189331054688,
+        "lineItems.2.taxableValue": 0.4,
+        "totals.taxableAmount": 0.5,
+        "totals.cgstAmount": 0.5,
+        "totals.sgstAmount": 0.5,
+        "document.invoiceNumber": 0.5,
+        "document.invoiceDate": 0.5,
+        "totals.grandTotal": 0.5
+      },
+      "overallConfidence": 0.1,
+      "repairedFields": []
+    },
+    "rawText": [
+      "Ct ORGINAL FOR RECIPIENT\n\nAJIT TRADING CO\n\nContact No. : 9723434726, 9723434726 | Email : ajittradingsurat@rediffmailcom\n\n| INVOICE : G-2987  | INVOICE DATE : 11/07/2026\n\n43.44, SK IN\nDUSTRIAL ESTATE, SOMAKANJI ESTATE NR SAGA FURNITURE, OPP SANIDEV TEMPLE,UDHNA MAGDALLA ROAD, SURAT GUJARAT 24\n\nTerms Of Sale:\n\n(1) Goods Once Sold Will Not Be Taken Ba\nMust Be Settled Immediately. (3) Payament Should Be Made Withing a Week Fro\npurchase After Which Interest Will Be Charges At 24% Pa. And The Rights Are Reserved To\nWithdraw Credit Whenever We Desire. (4) Subject To Surat Jurisdiction. (5) E. & O.E.\n\nck Or Exchanged. (2) Any Complaint Regarding This Bill\n\nm The Date Of\n\nAuthorised Signatory\n\n:\n:\na                                                   P.AN. : AVOPS6752N | GSTIN NO : 24AVOPS6752N2ZN\neceiver Details(Billed      Pi              :                                                                    i\n(         to) Place Of Supply :GUJARAT-24                                          Consignee Details(Shipped to)                              Challan No: 2987                           |\nM/S. AGASTYA DEVELOPERS                                   »                                                                P.O.NO.      : 8055                  |\nSITE : AGASTYA                                                                                  /S. AGASTYA DEVELOPERS                                                                                                                                           |\n5, CITY CENTER, SARDAR                                                            is                                                                                      T       rt Details\nPAG ROAD,                                         OPP VESU FIRE STATION                                                                     [rranspo\nSardar Bagh Chowk,                                                    Lega                                                                    LR. No. :\nJunagadh 362001, GUIARAT-24                                              SURAT 485007 GUJARAT-24                                                               -\nSite Supervisor :                          Account Supervisor                      Site Supervisor :                                   Account Supervisor :                             _\nFinance Supervisor : 8488800271     Owner :                                   Finance Supervisor : 8488800271              Owner:                                       Win Sis\n_GSTIN NO. : 24ABYFA3137F12¢                                          GSTIN NO. : 24ABYFA3137F1ZE                                                      Evive\nNo.      Item Code            Item Company                            Description                              Hsn/Sac      Qty.       Unit      Rate        Discount      S.Gst  | c.Gst     Taxable\n—                                                                                                                                                                                    %            Yo       %        Value\n1 |[LCCODO000004  [LIXIL                           LIXIL CLO294F1-6DA10 CONCEPT COUNTER TOP BASIN               69109000| 88        PCS | 4840.00 | 55.00+15.25 | 9.00 | 9.00 | 162435.24\n2 |LCCo00000001 |LIXIL                       LIXIL CCAS3105-4W20410A0 CONCEPT WALL HUNG               69109000 SO       pcs | 14750.00| 65.00 +15.25 | 9.00 | 9.00 | 218760.94\n3 |LCC000000002  jLIXIL                         LIXIL CCASC105-0200410A0 CONCEPT WALLHUNG SLIM AMORLID | 39222000 50        pcs | 5810.00| 65.00+ 15.25 | 9.00 | 9.00      86169.56\nSEAT COVER\nPAYMENT DUE IN 30 DAYS ON 10/08/2026                                                                                Total : 188.00                                                               467365.74\nHsn / Sac                              Basic] S.Gst% | CGst%              5.Gst             C.Gst              Total                                                                                                              S.Gst:           42062.92\n65109000                  38119618] 9.00        5.00        32307.65] 3430765]  68615.30                   5H Ae                                                            Cast:         42062.92\n35222000              86169 56] 9.00     9.00       7755.26     7755.26     1551052             IL INDIA PVT LTD                           Ta. © R007          0.009\n’                                    ROUN         -\n467365.74                      42062.91     42062.91     84125.82             ». Kuehne+Nagel Private Limited                   USE oe            hi\n—_           -                                                                                      GR Reality Logistics & Industrial Park            GRAND TOTAL :     551492.00\nRemarks : AD/PAG/PO/2026/0122                                                                           t#4 Mumba Logisi                                        ee\nTotal Invoive Value In Words : Five lakh fifty one thousand four hundred ninety two only                                           age  .- vs                    each Moh\nAmount of tax subject to reverse Charges : N.A.                                                                                                    da                         i hase Rghway,\nE.& O.E.                                                                                            FOR, AJIT TRADING CO\n\nKOT.\n\nHRA BANK GHOD DOIA/c. Neo. 15611279333\n\nRigs/Neft/Ifse KKBK0O00OO87 |\n\nZone : ZV-MITESH\n\nScanned with OKEN Scanner\n",
+      "TAX INVOICE\n\nORIGINAL FOR BECIPIENT\n\nBHAGAVAT ENTERPRISE\n\nGSTIN: 24AUHPK6558N121\n\nBEHIND BHIMARAD VILLAGE, OPPOSITE SUMAN SMIT AWAS, BHIMARAD,\n\nSURAT, GUJARAT, 395007\n\nMobile: +91 9098723006, 9924733006, 9737776727 Email: bhagavatenterprise@gmall. com\nWebsite: www. bhagavatenterprise com\n\nPAN: AUHPK6558N\n\nCustomer Details:\n\nAMAYA CORPORATION   TY\n\nPh: 7016951962\n\nGSTIN: 24ABZFA6800G1ZB\n\nBilling Address:\n\nOFFICE NO 1001, 10TH, PRAMUKH ORBIT2\nVESU MAIN ROAD, SURAT\n\nSURAT, GUJARAT, 395007\n\nContact Person: +91 70160 51962\n\nInvoice #:\nInvoice Date:\nDue Date:\n\nVehicle No:\nPO Number;\n\nPALANPURE\n\nPlace of Supply:\n\nShipping Address:\nAMAYA CORPORATION\nNEAR DREAM FESTIVA, GUARAV PATH ROAD\n\nSurat, GUJARAT, 395009\nCONTACT PERSON +91 99134 45849\n\n“~~ BE-2026-27-3343\n16 Jul 2026\n16 Jul 2026\n24-GUJARAT\nGJO5CVA4633\nAC/PAM/P0/2026/0351\n\n@24 % Per Annum.\n3)) Please Check Quality and Quantity before receiving materials.\n4)) Any Complains Regarding Supply of Good must be inform within 24\n\n# | Item                                                                               HSN/SAC        Tax                 Qty           Rate / Item              Disc (%)                 Amount\n1      JOINT FILLER IVORY 1 KG                                             38241000 | 18%        150 PKTS               47.00                                    7,050.00\n|            |                     |\n|                                                                                 |                   |            |                     |\n|\n|                                                                                 |                                                   |                                               |\ni                                                                                 |                     {                                               |\nTaxable Amount |              |         |           |      7,050.00\n|                                                CGST 9.0% @ 7050.00                               |                    |                       |                       |               634.50\n|                                                SGST 9.0% @ 7050.00                   |                               |                       |                       |               634.50\n|                              Total        |           150                   L_ 8,319.00\nAmount Chargeable (in words): INR Eight Thousand, Three Hundred And Nineteen Rupees Only. E & O.E\nHSN/SAC                                                                Taxable Value                            Central Tax                                                 State/UT Tax                                               Total Tax\nRate                 Amount                 Rate                 Amount\n38241000                                                                          7050.00                  9%                           634.50                          9%                           634.50                                    1269.00\nTOTAL                         7,050.00                                                 634.50                                                          634.50                                    1269.00\nAmount Payable:                                         ¥8,319.00\nTotal Amount Due:                            ¥21,08,663.00\nBank Details:                                                                                               Pay using UPL:                                                                For BHAGAVAT ENTERPRISE\nBank:                            IDFC FIRST BANK   iE rr Ol                                                                   1\nAccount #:                         10088337585                                                         Le 9 4b\nIFSC Code:                    IDFB0042261\nBranch:                          GOD DOD ROAD\n1)) All dispute Subject ot Surat Jurisdiction.\n2)) Payment Must be Within 30 Days Otherwise Interest will be charged                                                                                   Authorized Signatory\n\nHours,\nReceiver's Signature\nWHOLESALE BUILDIN   TERIA    NSTR  ION CHEMI    PLLIER       H     -\n\nPage 1/1 + Thisis a digitally signed document.\n\nCG:  Scanned with OKEN Scanner\n\n",
+      "\" * Shree Oumeriay Romeh dl                              ORIGINAL FOR RECIPIENT\n\nARCHIT CORPORATION\n\n310-CANAL POINT NEAR INS HOSPITAL , SOMA KANJI NI WADI\nKHATODARA SURAT 395002 GUJARAT\nEmail:archit.corporation@®gmail.com (Mo):9913400088\n\ni\n\nPAN :ACIPS4047H GSTIN :24ACIPS4047H1ZI                    ear JTRS\n-   an ee  a    x      od  or !\nTAX INVOICE                        Place of Supply : 24-GUJARAT      2\nDispatch from pin :  394315                 Dispatch from State : GUJARAT             Dispatch from City : Palsana\nBilled to (Customer):                              Delivery Address:                                            RINE E\nPRAMUKH SATVA HOMES LLP                       SATVA                                              Invoice No. : 26-27/499\n10TH OFFICE NO 1001 Orbit 2                             NEAR HAPPY ELAGENCE                                  slibteadaia rl ia    |\nVESU CANAL ROAD                                          VESU-MAGDALLA                                           Challan No.\nSurat SURAT                                        SURAT SURAT                                     Due Date. : 20-07-2026\nGSTIN ©: 24ABDFP8234D12G                    GSTIN :                                   Order No\nSTATE : 24-GUJARAT                              STATE : 24-GUJARAT\nAgent : Broker :JB                                                                Transport : P N CORPORATION                              |\nIRN: b290d6cB492cbb0d3ea2d04a22fdcf4ae9097¢1e9a09aefac6ca592a4a7 13153   Station    : SURAT\nAck. No: 162625322158405 Ack. Date: 20-07-2026 13:28:00             L.R.No. :4206                      LR.Dt. :           |\nEway Bill No :                                  Eway Dt :                            Case No               VahicleNo : GJ19Z3519            |\nHaste ;\n1\n-                                                                             Taxable       CGST        UT/SGST\nDescription of                                       Net               Disc             Amount\nRate A     t | Rate A     t\nSr          Goods          HSN CODE    BAGES    Rate    Rate | oy     Disc.     Rs.     i Faia    (%)  Re    (%)  |\n1| SHREE CEMENT PPC        25232930          150.00 | 305.000 | 258.48 | 0.00             38771.25| 38771.25| 9.00 3489.41 9.00 3489.41\nPayment within 0 days       Total         150.00                                   38771.25 | 38771.25         3489.41        3489.41\n\nBank Details for RTGS / NEFT :\n(1) Bank: YES BANK, RING ROAD, SURAT IFSC: YESBO000011 A/c No: 001184600003837\n\n(2) Bank: YES BANK, RING ROAD, SURAT IFSC: YESB0O000011 A/c No: 001184600008824\nfas  Tax. Saine   a    aor    Pe B00    LURE  ion:                   Taxable Amount          38771.25\n18.00] 38771.25| 9.00 3489.41] 9.00 3489.41] ©        of o        d 6978.82                      pap pes   22090  3      hs 4\nBill Amount:               45750.07\nTotal:        3489.41        3489.41             0            0| 6978.82                                           A RR\nRupees. Forty Five Thousand Seven Hundred Fifty Only.                                                   Net Amount Rs.          45750.00\n\nE. & O.E,\n\nTERNS CONDITIONS                                                                                                         For ARCHIT CORPORATION\n1. Any claim or dispute arising from change in quality or shortage in quantity or any cause\nwhatsoever will not be entertained once the goods are deliverd.       )\n2. Late payment charges at 24% p.a. will be charged on amount of the bill after due date.\n3. We are not responsible for any loss or damage during transit.\n4, Subject to SURAT Jurisdiction only.\n\nmade by Payee A/c Cheue,Draft or NEFT/RTGS/IMPS.\nBisa       hing                                                                                                              Authorised Signatory\n\nCG:  Scanned with OKEN Scanner\n"
+    ]
+  }
+]

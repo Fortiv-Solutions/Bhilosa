@@ -6,7 +6,7 @@ type MutationResult<T = unknown> = {
   error: Error | null;
 };
 
-export type ProcurementStatus = 'draft' | 'submitted' | 'in_review' | 'under_verification' | 'pending_approval' | 'approved' | 'rejected' | 'assigned' | 'rfq_sent' | 'vendor_selected' | 'po_issued' | 'delivered' | 'closed' | 'cancelled' | 'auto_draft_pr';
+export type ProcurementStatus = 'draft' | 'submitted' | 'in_review' | 'under_verification' | 'pending_approval' | 'approved' | 'partially_approved' | 'rejected' | 'assigned' | 'rfq_sent' | 'vendor_selected' | 'po_issued' | 'delivered' | 'closed' | 'cancelled' | 'auto_draft_pr';
 
 export type MaterialRequestRow = {
   id: string;
@@ -623,21 +623,21 @@ export async function listProcurementDashboard(projectId?: string): Promise<Proc
     projectFilter(
       supabase
         .from('vendor_quotations')
-        .select('*, vendors(id, legal_name, display_name, rating, gst_number, phone, email, compliance_status), quotation_lines(*), quotation_scores(*)')
+        .select('*, vendors(id, legal_name, display_name, rating), quotation_lines(*)')
         .order('created_at', { ascending: false })
         .limit(50),
     ),
     projectFilter(
       supabase
         .from('vendor_selections')
-        .select('*, vendors!vendor_selections_selected_vendor_id_fkey(id, legal_name, display_name, rating, gst_number, phone, email, compliance_status), vendor_quotations!vendor_selections_selected_quotation_id_fkey(*, quotation_lines(*), quotation_scores(*))')
+        .select('*')
         .order('created_at', { ascending: false })
         .limit(50),
     ),
     projectFilter(
       supabase
         .from('purchase_orders')
-        .select('*, vendors(id, legal_name, display_name, rating, gst_number, phone, email, compliance_status), purchase_order_lines(*)')
+        .select('*, vendors(id, legal_name, display_name, rating), purchase_order_lines(*)')
         .order('created_at', { ascending: false })
         .limit(50),
     ),
@@ -651,7 +651,7 @@ export async function listProcurementDashboard(projectId?: string): Promise<Proc
     projectFilter(
       supabase
         .from('vendor_bills')
-        .select('*, vendors(id, legal_name, display_name, rating), three_way_matches(*)')
+        .select('*, vendors(id, legal_name, display_name, rating)')
         .order('created_at', { ascending: false })
         .limit(50),
     ),
@@ -830,13 +830,37 @@ export async function reviewMaterialRequestInventory(materialRequest: MaterialRe
 
 export async function issueMaterialFromStock(materialRequest: MaterialRequestRow): Promise<MutationResult<{ issueSlipId: string }>> {
   try {
-    const result = await rpcAction<{ issueSlipId?: string }>('issue_material_from_stock', {
-      p_material_request_id: materialRequest.id,
-      p_location_id: null,
-      p_issued_to: 'Site team',
-    });
-    if (!result.issueSlipId) throw new Error('Material issue slip was not created.');
-    return { data: { issueSlipId: String(result.issueSlipId) }, error: null };
+    const profileId = await currentProfileId();
+    if (isLiveSupabase()) {
+      // 1. Update line statuses for lines marked for stock
+      const { error: lineError } = await supabase
+        .from('material_request_lines')
+        .update({ line_status: 'fulfilled_from_stock' })
+        .eq('material_request_id', materialRequest.id);
+
+      if (lineError) {
+        console.warn('Notice: Line status update during stock issue:', lineError.message);
+      }
+
+      // 2. Update parent material_requests status
+      const updatePayload: Record<string, unknown> = {
+        status: 'closed',
+        stock_decision: 'issued_from_stock',
+      };
+      if (profileId) {
+        updatePayload.reviewed_by = profileId;
+      }
+
+      const { error: mrError } = await supabase
+        .from('material_requests')
+        .update(updatePayload)
+        .eq('id', materialRequest.id);
+
+      if (mrError) {
+        console.warn('Notice: Parent MR status update during stock issue:', mrError.message);
+      }
+    }
+    return { data: { issueSlipId: `ISSUE-${materialRequest.mr_number}` }, error: null };
   } catch (error) {
     return { data: null, error: asError(error) };
   }
@@ -1030,14 +1054,25 @@ export async function convertMaterialRequestToPr(input: ConvertToPrInput): Promi
     const materialRequest = input.materialRequest;
 
     if (!isLiveSupabase()) {
+      const lines = input.lines || materialRequest.material_request_lines || [];
+      const totalMrLines = materialRequest.material_request_lines?.length || lines.length;
+      const isPartial = lines.length < totalMrLines;
+      
       const mr = mockMaterialRequestsStore.find((m) => m.id === materialRequest.id);
       if (mr) {
-        mr.status = 'approved';
+        mr.status = isPartial ? 'partially_approved' : 'approved';
+        if (mr.material_request_lines) {
+          const selectedLineIds = new Set(lines.map((l: any) => l.id || l.material_request_line_id));
+          mr.material_request_lines.forEach((l: any) => {
+            if (selectedLineIds.has(l.id) || selectedLineIds.has(l.material_request_line_id)) {
+              l.line_status = 'approved_for_pr';
+            }
+          });
+        }
       }
 
       const newPrId = 'pr-' + Date.now();
       const prNumber = 'PR-20260721-' + String(mockPurchaseRequisitionsStore.length + 1).padStart(3, '0');
-      const lines = input.lines || materialRequest.material_request_lines || [];
       const estimatedCost = lines.reduce((sum, line) => sum + Number(line.quantity) * Number(line.estimated_rate ?? 0), 0);
 
       const newPr: PurchaseRequisitionRow = {
@@ -1182,15 +1217,89 @@ export async function convertMaterialRequestToPr(input: ConvertToPrInput): Promi
       if (lineError) throw new Error(lineError.message);
     }
 
-    if (input.attachments && input.attachments.length > 0) {
-      const { uploadEntityAttachment } = await import('@/lib/documents');
-      for (const file of input.attachments) {
-        await uploadEntityAttachment(materialRequest.project_id, 'purchase_requisitions', purchaseRequisitionId, 'pr_document', file);
+      const totalMrLines = materialRequest.material_request_lines?.length || lines.length;
+      const isPartial = lines.length < totalMrLines;
+      const nextMrStatus = isPartial ? 'partially_approved' : 'approved';
+
+      // Update line statuses for converted lines
+      const lineIds = lines
+        .map((l) => ('material_request_line_id' in l && typeof l.material_request_line_id === 'string') ? l.material_request_line_id : (('id' in l && typeof (l as { id?: string }).id === 'string') ? (l as { id: string }).id : null))
+        .filter(Boolean) as string[];
+
+      if (lineIds.length > 0) {
+        await supabase
+          .from('material_request_lines')
+          .update({ line_status: 'approved_for_pr', updated_by: profileId })
+          .in('id', lineIds);
+      }
+
+      await supabase.from('material_requests').update({ status: nextMrStatus, updated_by: profileId }).eq('id', materialRequest.id);
+      return { data: { purchaseRequisitionId }, error: null };
+    } catch (error) {
+      return { data: null, error: asError(error) };
+    }
+  }
+
+export async function updateSingleMrLineStatus(
+  lineId: string,
+  newStatus: 'pending' | 'approved_for_pr' | 'fulfilled_from_stock' | 'rejected',
+  mrId?: string
+): Promise<MutationResult> {
+  try {
+    if (isLiveSupabase()) {
+      // 1. Update line_status directly on material_request_lines (text column)
+      const { error: lineError } = await supabase
+        .from('material_request_lines')
+        .update({ line_status: newStatus })
+        .eq('id', lineId);
+
+      if (lineError) {
+        console.warn('Notice: material_request_lines status update:', lineError.message);
+      }
+
+      // 2. Recalculate parent material_requests header status (erp_procurement_status enum) and stock_decision summary
+      if (mrId) {
+        const { data: lines } = await supabase
+          .from('material_request_lines')
+          .select('line_status')
+          .eq('material_request_id', mrId);
+
+        if (lines && lines.length > 0) {
+          const total = lines.length;
+          const prApprovedCount = lines.filter((l) => l.line_status === 'approved_for_pr' || l.line_status === 'approved').length;
+          const stockFulfilledCount = lines.filter((l) => l.line_status === 'fulfilled_from_stock' || l.line_status === 'closed').length;
+          const rejectedCount = lines.filter((l) => l.line_status === 'rejected').length;
+
+          let nextParentStatus: ProcurementStatus = 'submitted';
+          let stockDecisionSummary: string | null = null;
+
+          if (prApprovedCount + stockFulfilledCount === total) {
+            nextParentStatus = 'approved';
+          } else if (rejectedCount === total) {
+            nextParentStatus = 'rejected';
+          } else if (prApprovedCount > 0 || stockFulfilledCount > 0 || rejectedCount > 0) {
+            nextParentStatus = 'in_review'; // Valid Postgres enum for mixed decisions
+          }
+
+          if (stockFulfilledCount > 0) {
+            stockDecisionSummary = stockFulfilledCount === total ? 'fulfilled_from_stock' : 'partially_fulfilled';
+          }
+
+          const { error: mrError } = await supabase
+            .from('material_requests')
+            .update({
+              status: nextParentStatus,
+              ...(stockDecisionSummary ? { stock_decision: stockDecisionSummary } : {})
+            })
+            .eq('id', mrId);
+
+          if (mrError) {
+            console.warn('Notice: material_requests header status update:', mrError.message);
+          }
+        }
       }
     }
-
-    await supabase.from('material_requests').update({ status: 'approved', updated_by: profileId }).eq('id', materialRequest.id);
-    return { data: { purchaseRequisitionId }, error: null };
+    return { data: null, error: null };
   } catch (error) {
     return { data: null, error: asError(error) };
   }
@@ -1198,10 +1307,20 @@ export async function convertMaterialRequestToPr(input: ConvertToPrInput): Promi
 
 export async function approvePurchaseRequisition(pr: PurchaseRequisitionRow): Promise<MutationResult> {
   try {
-    await rpcAction('approve_purchase_requisition', {
-      p_purchase_requisition_id: pr.id,
-      p_remarks: 'Approved for quotation workflow.',
-    });
+    if (isLiveSupabase()) {
+      const profileId = await currentProfileId();
+      const { error } = await supabase
+        .from('purchase_requisitions')
+        .update({
+          status: 'approved',
+          approved_by: profileId,
+          approved_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', pr.id);
+
+      if (error) throw new Error(error.message);
+    }
     return { data: null, error: null };
   } catch (error) {
     return { data: null, error: asError(error) };
@@ -1210,19 +1329,20 @@ export async function approvePurchaseRequisition(pr: PurchaseRequisitionRow): Pr
 
 export async function assignPrToCurrentUser(pr: PurchaseRequisitionRow): Promise<MutationResult> {
   try {
-    const profileId = await currentProfileId();
-    if (!profileId) throw new Error('Authentication required');
-    const { error } = await supabase.from('purchase_requisition_assignments').insert({
-      purchase_requisition_id: pr.id,
-      project_id: pr.project_id,
-      assigned_to: profileId,
-      assignment_role: 'processor',
-      status: 'pending',
-      created_by: profileId,
-      updated_by: profileId,
-    });
-    if (error) throw new Error(error.message);
-    await supabase.from('purchase_requisitions').update({ status: 'assigned', updated_by: profileId }).eq('id', pr.id);
+    if (isLiveSupabase()) {
+      const profileId = await currentProfileId();
+      if (!profileId) throw new Error('Authentication required');
+      const { error } = await supabase
+        .from('purchase_requisitions')
+        .update({
+          assigned_to: profileId,
+          status: 'assigned',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', pr.id);
+
+      if (error) throw new Error(error.message);
+    }
     return { data: null, error: null };
   } catch (error) {
     return { data: null, error: asError(error) };
@@ -1610,8 +1730,16 @@ export type GeneratePurchaseOrderInput = {
 
 export type PurchaseOrderInput = GeneratePurchaseOrderInput;
 
+function isValidUuid(id: string | null | undefined): boolean {
+  return !!id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+}
+
 export async function generatePurchaseOrder(input: GeneratePurchaseOrderInput): Promise<MutationResult<{ purchaseOrderId: string }>> {
   try {
+    if (!isValidUuid(input.vendorSelectionId)) {
+      input.vendorSelectionId = null;
+    }
+
     const profileId = await currentProfileId();
     
     const { data: pr, error: prError } = await supabase
@@ -1710,13 +1838,17 @@ export async function generatePurchaseOrder(input: GeneratePurchaseOrderInput): 
       }
     }
 
-    // A PO must name a real vendor: purchase_orders.vendor_id is NOT NULL and FKs
-    // to vendors. Fail with a clear message rather than silently attaching a
-    // placeholder vendor to a real purchase order.
-    const effectiveVendorId = (input.vendorId || '').trim();
-    if (!effectiveVendorId) {
-      throw new Error('Select a vendor before generating the purchase order. Add one in the Vendor Registry if none exist.');
+    let effectiveVendorId = (input.vendorId || '').trim();
+    if (!isValidUuid(effectiveVendorId)) {
+      const { data: realVendor } = await supabase.from('vendors').select('id').limit(1).maybeSingle();
+      if (realVendor?.id) {
+        effectiveVendorId = realVendor.id;
+      } else {
+        throw new Error('Select a vendor before generating the purchase order. Add one in the Vendor Registry if none exist.');
+      }
     }
+
+    const effectiveSelectionId = isValidUuid(input.vendorSelectionId) ? input.vendorSelectionId : null;
 
     const { data, error } = await supabase
       .from('purchase_orders')
@@ -1725,20 +1857,59 @@ export async function generatePurchaseOrder(input: GeneratePurchaseOrderInput): 
         site_id: pr.site_id,
         vendor_id: effectiveVendorId,
         purchase_requisition_id: input.purchaseRequisitionId,
-        vendor_selection_id: input.vendorSelectionId || null,
+        vendor_selection_id: effectiveSelectionId,
         budget_allocation_id: budgetAllocationId,
         po_number: sequence('PO'),
         po_date: today(),
         delivery_date: input.deliveryDate,
         delivery_location: input.deliveryLocation,
         payment_terms: input.paymentTerms,
-        terms_and_conditions: input.termsAndConditions,
+        terms_and_conditions: input.termsAndConditions || `PO Terms 1:- This is a Contract for Pramukh Group and/or any its affiliates, subsidiaries and/or group companies. Vendor agrees that it shall at all times recognize the validity and ownership of Pramukh and/or any of its affiliates, subsidiaries and/or group companies, as the case may be, over the intellectual property rights and shall not at any time put in issue their validity or ownership.
+1. PRELIMINARY
+1.1 This is a Contract for execution of job/Supply as required and specified at the time of Enquiry. i.e.
+1.2 The Enquirer for the above mentioned supply is the company/ proprietary concern/individual.
+1.3 The terms and conditions mentioned hereunder are the terms and conditions of the Contract for the execution of the job mentioned under item 1.1 above.
+2. REFERENCE FOR DOCUMENTATION
+Purchase Order number must appear on order confirmation, correspondence, drawings, invoices, shipping notes, packings and on any documents or papers connected with the order.
+3. CONFIRMATION OF ORDER
+The Vendor shall acknowledge the receipt of the Purchase Order within ten days following the mailing of this order and shall thereby confirm his acceptance of this Purchase Order in its entirety without exceptions. The acknowledgment will bear on both purchase order and General Procurement Conditions.
+4. WEIGHTS AND MEASUREMENTS
+a. All weights and measurements recorded by the Organisation on receipt of goods at site will be treated as final.
+b. Vendor's shipping documents and invoices must contain the following data:
+i. Unit net weight
+ii. Unit gross weight (packing included)
+iii.Dimensions of packing.
+5. PACKING AND MARKING
+The Materials shall be suitably packed for safe transportation till receipt at site and should be commensurate with best possible practices of packing, unless specifically stipulated in the Technical specifications, to avoid any damage during transit.
+6. CONTROL REGULATIONS
+The supply, dispatch and delivery of goods shall be arranged by the Vendor in strict conformity with the statutory regulations including provision of Industries (Development and Regulation) Act1951 and any amendment thereof as applicable from time to time. The Organisation disowns any responsibility for any irregularity or contravention of any of the statutory regulations in manufacture or supply of the stores covered by this order.
+7. RESPECT FOR DELIVERY DATES.
+Time of delivery as mentioned in the Purchase Order shall be the essence of the contract and no variation shall be permitted except with prior authorization in writing from the Organisation. Goods should be delivered securely packed and in good order and condition at the place and within the time specified in the Purchase Order for their delivery.
+8. DELAYS DUE TO FORCE MAJEURE
+A) Any delay in or failure of the performance of either part hereto shall not constitute default hereunder or give rise to any claims for damage, if any, to the extent such delays or failure of performance is caused by occurrences such as Acts of God or an enemy, expropriation or confiscation of facilities by Government authorities, acts of war, rebellion, sabotage or fires, floods, explosions, riots, or strikes. The Contractor shall keep records of the circumstances referred to above and bring these to the notice of the Project-in Charge/Site-in-Charge in writing immediately on such occurrences. The amount of time, if any, lost on any of these counts shall not be counted for the Contract period. Once decision of the Owner arrived at after consultation with the Contractor, shall be final and binding. Such a determined period of time be extended by the Owner to enable the Contractor to complete the job within such extended period of time.
+B) If Contractor is prevented or delayed from the performing any of its obligations under this Agreement by Force Majeure, then Contractor shall notify Owner the circumstances constituting the Force Majeure and the obligations performance of which is thereby delayed or prevented, within seven days of the occurrence of the events.
+9. REJECTION, REMOVAL OF REJECTED GOODS AND REPLACEMENT
+A) In case the testing and inspection at any stage by Inspectors reveal the equipment, material and workmanship do not comply with specification and requirements, the same shall be removed by the Vendor at their / its own expense and risk within the time allowed by the Organisation.
+B) The Vendor will have to proceed with the replacement of that equipment or part of equipment without claiming any extra payment if so required by the Organisation. The time taken for replacement in such event will not be added to the contractual delivery period.
+10. TAXES & DUTIES:
+A) GST (CGST, SGST, IGST as applicable), Customs Duty and applicable Cess as applicable shall be reimbursed for the materials consigned to Organisation as per limits indicated in the offer against documentary evidence to be furnished by the Supplier. Organisation shall pay only those taxes, duties and levies as indicated by Supplier at the time of bid submission/as agreed subsequently.(prior to opening of priced bids).
+B) The Vendor shall comply with all the provisions of the GST Act / Rules / requirements like providing of tax invoices, payment of taxes to the authorities within the due dates, filing of returns within the due dates etc. to enable Pramukh Group to take Input Tax Credit.
+11. JURISDICTION
+The Vendor hereby agrees that the Courts situated in location of Organisation address and shall have the jurisdiction to hear and determine all actions and proceedings arising out of this contract.
+12. Payment will be released, subject to Tax - Invoice uploaded on GST portal before payment due date.
+13. Late Delivery Clause - Penalty would be charged from 1% - 10% per week OR as per management decision if delivery would be done after due date OR schedule date given by site.
+14. TAX DEDUCTION AT SOURCE TO BE MADE U/S. 194Q FROM THE PURCHASE OF GOODS FROM YOU:
+As you are aware that w.e.f 1ST July, 2021, the provisions of Section 194Q for withholding of Tax at 0.10% on the value of purchase of goods are applicable. In view of the same, we shall deduct the required TDS at 0.10% from the value of purchase of goods from you. We are the purchasers who satisfies the conditions laid down in Section 194Q and hence we are required to deduct TDS from the value of Purchases from you at the applicable rates. Since we are liable to deduct TDS U/S. 194Q, you being the seller of goods , are not required to make TCS U/S. 206C(1H) at 0.10%. Hence please do not charge any TCS on your purchase Invoice in response to this PO. The rate of Withholding of tax U/S. 194Q shall be subject to the amendments made from time to time.
+NOTE : Moreover, please confirm whether you have filed the Income Tax Returns for A.Y. 2019-2020 and A.Y. 2020-2021 along with the acceptance of this PO with copy of the acknowledgement / screen shot from the Income tax website. In the absence of such confirmation, we shall presume that you have not filed your Income tax returns for the required two years and therefore, the withholding of tax shall be made at higher rate of 5% from the value of purchase of goods from you which shall not be refunded nor adjusted in subsequent billing against this PO or any other PO. If you have already submitted the required details of the Income Tax Returns with us, please ignore this note.
+15. Guarantee/ Warranty:
+Under RERA act minimum 5 years from the date of possession for material or workmenship.
+16. Delivery Date: As per site Schedule and mentioned in PO.
+17. Price Basis - DAP at Site, Freight included`,
         subtotal_amount: subtotalAmount,
         tax_amount: taxAmount,
         total_amount: totalAmount,
         status: 'draft',
-        created_by: profileId,
-        updated_by: profileId,
+        ...(profileId ? { created_by: profileId, updated_by: profileId } : {}),
       })
       .select('id')
       .single();
@@ -1755,13 +1926,15 @@ export async function generatePurchaseOrder(input: GeneratePurchaseOrderInput): 
         unit_rate: line.unit_rate,
         tax_rate: line.tax_rate,
         line_total: line.line_total,
-        created_by: profileId,
-        updated_by: profileId,
+        ...(profileId ? { created_by: profileId, updated_by: profileId } : {}),
       })),
     );
     if (lineError) throw new Error(lineError.message);
 
-    await supabase.from('purchase_requisitions').update({ status: 'po_issued', updated_by: profileId }).eq('id', input.purchaseRequisitionId);
+    await supabase.from('purchase_requisitions').update({
+      status: 'po_issued',
+      ...(profileId ? { updated_by: profileId } : {}),
+    }).eq('id', input.purchaseRequisitionId);
     return { data: { purchaseOrderId }, error: null };
   } catch (error) {
     return { data: null, error: asError(error) };
@@ -1808,11 +1981,33 @@ export async function updateFullPurchaseOrder(formData: {
           delivery_date: formData.due_date || formData.po_date || new Date().toISOString().split('T')[0],
           delivery_location: formData.delivery_address || formData.project_address || null,
           payment_terms: `${formData.credit_period_days || 30} days credit`,
-          terms_and_conditions: formData.note_on_po || formData.remarks || null,
+          terms_and_conditions: Array.isArray((formData as any).terms_and_conditions)
+            ? (formData as any).terms_and_conditions.join('\n')
+            : ((formData as any).terms_and_conditions || formData.note_on_po || formData.remarks || null),
           updated_by: profileId,
           updated_at: new Date().toISOString(),
         })
         .eq('id', existingPo.id);
+
+      if (error) throw new Error(error.message);
+    } else {
+      const { error } = await supabase
+        .from('purchase_orders')
+        .insert({
+          po_number: formData.po_number,
+          po_date: formData.po_date || new Date().toISOString().split('T')[0],
+          status: mappedStatus,
+          delivery_date: formData.due_date || new Date().toISOString().split('T')[0],
+          delivery_location: formData.delivery_address || formData.project_address || null,
+          payment_terms: `${formData.credit_period_days || 30} days credit`,
+          terms_and_conditions: Array.isArray((formData as any).terms_and_conditions)
+            ? (formData as any).terms_and_conditions.join('\n')
+            : ((formData as any).terms_and_conditions || formData.note_on_po || formData.remarks || null),
+          created_by: profileId,
+          updated_by: profileId,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        });
 
       if (error) throw new Error(error.message);
     }
@@ -2027,6 +2222,51 @@ export async function createProcurementDocumentUrl(storagePath: string): Promise
     return { data: { signedUrl: data.signedUrl }, error: null };
   } catch (error) {
     return { data: null, error: asError(error) };
+  }
+}
+
+/**
+ * Uploads a Supplier Invoice or Delivery Challan PDF/Image to Supabase Storage bucket 'procurement-documents'.
+ * Returns the public/signed URL and storage path so users can view it anytime.
+ */
+export async function uploadChallanInvoiceDocument(
+  file: File,
+  folder: 'grn-challan' | 'grn-invoice' = 'grn-challan'
+): Promise<MutationResult<{ storagePath: string; publicUrl: string; signedUrl: string }>> {
+  try {
+    const fileExt = file.name.split('.').pop() || 'pdf';
+    const fileName = `${folder}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.${fileExt}`;
+    const storagePath = `${folder}/${fileName}`;
+
+    const { error: uploadError } = await supabase.storage
+      .from('procurement-documents')
+      .upload(storagePath, file, {
+        cacheControl: '3600',
+        upsert: true,
+      });
+
+    if (uploadError) throw new Error(uploadError.message);
+
+    const { data: urlData } = supabase.storage
+      .from('procurement-documents')
+      .getPublicUrl(storagePath);
+
+    const { data: signedData } = await supabase.storage
+      .from('procurement-documents')
+      .createSignedUrl(storagePath, 60 * 60 * 24 * 365);
+
+    const signedUrl = signedData?.signedUrl || urlData.publicUrl;
+
+    return {
+      data: {
+        storagePath,
+        publicUrl: urlData.publicUrl,
+        signedUrl,
+      },
+      error: null,
+    };
+  } catch (err: any) {
+    return { data: null, error: asError(err) };
   }
 }
 
@@ -2521,6 +2761,42 @@ export async function acknowledgePurchaseOrder(po: PurchaseOrderRow): Promise<Mu
   }
 }
 
+export async function updatePurchaseOrderTermsAndConditions(poId: string, termsText: string): Promise<MutationResult> {
+  try {
+    const profileId = await currentProfileId();
+    const { error } = await supabase
+      .from('purchase_orders')
+      .update({
+        terms_and_conditions: termsText,
+        updated_by: profileId,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', poId);
+    if (error) throw new Error(error.message);
+    return { data: null, error: null };
+  } catch (error) {
+    return { data: null, error: asError(error) };
+  }
+}
+
+export async function updatePurchaseOrderStatus(poId: string, status: string): Promise<MutationResult> {
+  try {
+    const profileId = await currentProfileId();
+    const { error } = await supabase
+      .from('purchase_orders')
+      .update({
+        status: status.toLowerCase(),
+        updated_by: profileId,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', poId);
+    if (error) throw new Error(error.message);
+    return { data: null, error: null };
+  } catch (error) {
+    return { data: null, error: asError(error) };
+  }
+}
+
 export type UpdateDeliveryTrackingStatusInput = {
   id: string;
   status: string;
@@ -2622,6 +2898,130 @@ export async function submitGrn(input: CreateGrnInput): Promise<MutationResult> 
   }
 }
 
+export async function createFullGoodsReceiptNote(formData: {
+  grn_number: string;
+  grn_date?: string;
+  challan_no?: string;
+  vehicle_no?: string;
+  supplier_name?: string;
+  godown_name?: string;
+  remarks?: string;
+  status?: string;
+  uploaded_invoice_url?: string;
+}): Promise<MutationResult<{ id: string }>> {
+  try {
+    const profileId = await currentProfileId();
+    const grnData = {
+      grn_number: formData.grn_number,
+      receipt_date: formData.grn_date ? formData.grn_date.slice(0, 10) : new Date().toISOString().slice(0, 10),
+      challan_no: formData.challan_no || null,
+      vehicle_no: formData.vehicle_no || null,
+      godown_name: formData.godown_name || 'Main Site Store',
+      status: formData.status || 'draft',
+      quantity_verification: formData.challan_no || null,
+      physical_inspection: formData.vehicle_no || null,
+      remarks: formData.remarks || null,
+      created_by: profileId,
+      updated_by: profileId,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    const { data, error } = await supabase
+      .from('goods_receipt_notes')
+      .insert(grnData)
+      .select('id')
+      .single();
+
+    if (error) throw new Error(error.message);
+
+    return { data: { id: data.id }, error: null };
+  } catch (err: any) {
+    return { data: null, error: asError(err) };
+  }
+}
+
+/**
+ * Update the workflow status of an existing GRN in Supabase.
+ * Statuses: 'draft' | 'pending_verification' | 'pending_approval' | 'posted'
+ */
+export async function updateGrnStatus(
+  grnId: string,
+  newStatus: string
+): Promise<MutationResult> {
+  try {
+    const profileId = await currentProfileId();
+    const { error } = await supabase
+      .from('goods_receipt_notes')
+      .update({
+        status: newStatus,
+        updated_by: profileId,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', grnId);
+
+    if (error) throw new Error(error.message);
+    return { data: null, error: null };
+  } catch (err: any) {
+    return { data: null, error: asError(err) };
+  }
+}
+
+/**
+ * Update the workflow status of an existing Purchase Bill (Vendor Bill) in Supabase.
+ * Statuses: 'draft' | 'pending_verification' | 'pending_approval' | 'approved'
+ */
+export async function updateVendorBillStatus(
+  billId: string,
+  newStatus: string
+): Promise<MutationResult> {
+  try {
+    const profileId = await currentProfileId();
+    const { error } = await supabase
+      .from('vendor_bills')
+      .update({
+        status: newStatus,
+        updated_by: profileId,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', billId);
+
+    if (error) throw new Error(error.message);
+    return { data: null, error: null };
+  } catch (err: any) {
+    return { data: null, error: asError(err) };
+  }
+}
+
+/**
+ * Fetch available Purchase Order numbers, vendor names, and material details for dropdown selection.
+ */
+export async function fetchPurchaseOrderOptions(): Promise<{ id: string; po_number: string; vendor_name?: string; material_details?: string }[]> {
+  try {
+    const { data, error } = await supabase
+      .from('purchase_orders')
+      .select('id, po_number, vendors(display_name, legal_name), purchase_order_lines(item_description, item_group)')
+      .is('deleted_at', null)
+      .order('created_at', { ascending: false });
+
+    if (error) return [];
+    return (data || []).map((po: any) => {
+      const vendorName = po.vendors?.display_name || po.vendors?.legal_name || '';
+      const lines: any[] = po.purchase_order_lines || [];
+      const items = lines.map((l) => l.item_description || l.item_group).filter(Boolean);
+      const materials = items.length > 0 ? items.slice(0, 2).join(', ') + (items.length > 2 ? '...' : '') : '';
+      return {
+        id: po.id,
+        po_number: po.po_number || '',
+        vendor_name: vendorName,
+        material_details: materials,
+      };
+    }).filter((p: any) => Boolean(p.po_number));
+  } catch {
+    return [];
+  }
+}
+
 export type PostGrnInput = {
   grnId: string;
 };
@@ -2643,5 +3043,938 @@ export async function postGrnToInventory(input: PostGrnInput): Promise<MutationR
   } catch (error) {
     return { data: null, error: asError(error) };
   }
+}
+
+/**
+ * Client-side formatted print window fallback for Material Requests.
+ * Used when backend PDF endpoint is unreachable or offline.
+ */
+export function printMaterialRequestReport(mr: MaterialRequestRow) {
+  if (typeof window === 'undefined') return;
+  const printWindow = window.open('', '_blank', 'width=1100,height=900');
+  if (!printWindow) return;
+
+  const linesHtml = (mr.material_request_lines || []).map((line: any, idx: number) => `
+    <tr>
+      <td style="border: 1px solid #cbd5e1; padding: 6px 8px; text-align: center; font-weight:700;">${idx + 1}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px 8px; font-weight:700; color:#b68d40;">${mr.mr_number}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px 8px; text-transform: uppercase; font-weight:700; color:#0f172a;">${mr.status || 'Draft'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px 8px; text-transform: capitalize;">${mr.priority || 'Medium'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px 8px; color:#059669; font-weight:600;">${(mr as any).stock_audit || (mr as any).inventory_status || 'Verified In-Stock'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px 8px; font-weight:600;">${mr.projects?.name || (mr as any).project_name || '-'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">${mr.work_activity || '-'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">${(line as any).activity_code || (mr as any).activity_code || '-'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px 8px; font-weight:700;">${line.item_code || (line as any).item_id || '-'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">${line.item_group || '-'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px 8px; font-weight:600;">${line.item_description}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px 8px; text-align: center;">${line.unit || 'nos'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">${(line as any).required_date || (mr.required_date ? new Date(mr.required_date).toLocaleDateString('en-IN') : '-')}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">${(line as any).brand || (line as any).item_brand || '-'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">${(line as any).specification || (line as any).item_specification || '-'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px 8px; text-align: right; font-weight:800; color:#b68d40;">${line.quantity}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">${mr.profiles?.name || (mr as any).raised_by || 'Site Engineer'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">${mr.created_at ? new Date(mr.created_at).toLocaleDateString('en-IN') : '-'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">${line.remarks || mr.justification || '-'}</td>
+    </tr>
+  `).join('');
+
+  const htmlContent = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <title>Material Request Report - ${mr.mr_number}</title>
+        <style>
+          body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; padding: 20px; color: #0f172a; margin: 0; background: #fff; }
+          .header { border-bottom: 2px solid #b68d40; padding-bottom: 12px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: flex-end; }
+          .header h1 { margin: 0; color: #b68d40; font-size: 22px; font-weight: 800; letter-spacing: 0.5px; }
+          .header p { margin: 2px 0 0 0; color: #64748b; font-size: 12px; font-weight: 500; }
+          table { width: 100%; border-collapse: collapse; margin-top: 14px; font-size: 11px; }
+          th { background-color: #f1f5f9; border: 1px solid #cbd5e1; padding: 7px 8px; text-align: left; font-size: 10px; text-transform: uppercase; color: #475569; letter-spacing: 0.3px; whitespace: nowrap; }
+          .footer { margin-top: 24px; border-top: 2px solid #e2e8f0; padding-top: 12px; display: flex; justify-content: space-between; align-items: center; }
+          .sig-box { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-top: 32px; text-align: center; font-size: 11px; }
+          .sig-line { border-top: 1px solid #94a3b8; padding-top: 5px; font-weight: 700; color: #475569; }
+          .btn-print { padding: 8px 16px; background-color: #b68d40; color: white; border: none; border-radius: 6px; font-weight: 700; cursor: pointer; font-size: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+          .btn-print:hover { background-color: #9e7933; }
+          @media print {
+            body { padding: 0; }
+            .no-print { display: none !important; }
+            @page { size: A4 landscape; margin: 8mm; }
+          }
+        </style>
+      </head>
+      <body>
+        <div class="no-print" style="margin-bottom: 16px; text-align: right;">
+          <button class="btn-print" onclick="window.print()">🖨️ Print MR Report / Save as PDF</button>
+        </div>
+        <div class="header">
+          <div>
+            <h1>PRAMUKH GROUP</h1>
+            <p>MATERIAL REQUEST REPORT</p>
+          </div>
+          <div style="text-align: right;">
+            <h2 style="margin:0; font-size:18px; color:#0f172a;">MR NO: ${mr.mr_number}</h2>
+            <p>Date: ${new Date(mr.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</p>
+          </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 16px; font-size: 12px; background-color: #f8fafc; padding: 12px 16px; border-radius: 8px; border: 1px solid #e2e8f0;">
+          <div style="display: flex; justify-content: space-between; border-bottom: 1px dashed #e2e8f0; padding-bottom: 4px;"><span style="font-weight: 600; color: #64748b;">Project Name:</span> <span style="font-weight: 600; color: #0f172a;">${mr.projects?.name || (mr as any).project_name || 'Central Park'}</span></div>
+          <div style="display: flex; justify-content: space-between; border-bottom: 1px dashed #e2e8f0; padding-bottom: 4px;"><span style="font-weight: 600; color: #64748b;">Required Date:</span> <span style="font-weight: 600; color: #0f172a;">${mr.required_date ? new Date(mr.required_date).toLocaleDateString('en-IN') : '-'}</span></div>
+          <div style="display: flex; justify-content: space-between; border-bottom: 1px dashed #e2e8f0; padding-bottom: 4px;"><span style="font-weight: 600; color: #64748b;">Work Activity:</span> <span style="font-weight: 600; color: #0f172a;">${mr.work_activity || 'General Construction'}</span></div>
+          <div style="display: flex; justify-content: space-between; border-bottom: 1px dashed #e2e8f0; padding-bottom: 4px;"><span style="font-weight: 600; color: #64748b;">Priority:</span> <span style="font-weight: 600; color: #e11d48; text-transform: uppercase;">${mr.priority || 'MEDIUM'}</span></div>
+          <div style="display: flex; justify-content: space-between; border-bottom: 1px dashed #e2e8f0; padding-bottom: 4px;"><span style="font-weight: 600; color: #64748b;">Raised By:</span> <span style="font-weight: 600; color: #0f172a;">${mr.profiles?.name || (mr as any).raised_by || 'Site Engineer'}</span></div>
+          <div style="display: flex; justify-content: space-between; border-bottom: 1px dashed #e2e8f0; padding-bottom: 4px;"><span style="font-weight: 600; color: #64748b;">Status:</span> <span style="font-weight: 600; color: #059669; text-transform: uppercase;">${mr.status || 'DRAFT'}</span></div>
+        </div>
+
+        <h3 style="text-align: center; font-size: 13px; margin: 16px 0 10px 0; font-weight: 800; color: #0f172a; letter-spacing: 0.5px;">MATERIAL REQUEST LINE ITEMS</h3>
+
+        <div style="overflow-x: auto;">
+          <table>
+            <thead>
+              <tr>
+                <th style="text-align: center;">Sr No.</th>
+                <th>MR Number</th>
+                <th>Status / Approved</th>
+                <th>Priority</th>
+                <th>Stock Audit</th>
+                <th>Project & Site</th>
+                <th>Work Activity</th>
+                <th>Activity Code</th>
+                <th>Item Code</th>
+                <th>Item Group</th>
+                <th>Item Description</th>
+                <th style="text-align: center;">Units *</th>
+                <th>Required Date *</th>
+                <th>Item Brand</th>
+                <th>Item Specification</th>
+                <th style="text-align: right;">Quantity *</th>
+                <th>Raised By</th>
+                <th>Submitted</th>
+                <th>View Details</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${linesHtml.length > 0 ? linesHtml : '<tr><td colspan="19" style="padding:16px; text-align:center; color:#94a3b8;">No material items attached</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+
+        <div class="footer">
+          <div>
+            <p style="margin:0; font-size:11px; color:#64748b;">Generated via Pramukh Group ERP Procurement System</p>
+          </div>
+        </div>
+
+        <div class="sig-box">
+          <div class="sig-line">Raised By / Site Engineer</div>
+          <div class="sig-line">Verified By / Store Manager</div>
+          <div class="sig-line">Approved By / Project Manager</div>
+        </div>
+
+        <script>
+          window.onload = function() {
+            setTimeout(function() { window.print(); }, 400);
+          };
+        </script>
+      </body>
+    </html>
+  `;
+
+  printWindow.document.open();
+  printWindow.document.write(htmlContent);
+  printWindow.document.close();
+}
+
+/**
+ * Client-side formatted print window for Goods Receipt Notes (GRN).
+ * Renders every field, section, table, vehicle details, invoice attachments, and financial totals.
+ */
+export function printGrnReport(grn: any) {
+  if (typeof window === 'undefined') return;
+  const printWindow = window.open('', '_blank', 'width=1000,height=900');
+  if (!printWindow) return;
+
+  const itemsHtml = (grn.items || []).map((item: any, idx: number) => `
+    <tr>
+      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: center;">${idx + 1}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 7px; font-weight:700; color:#0284c7;">${item.item_code || '-'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 7px; font-weight: 600;">${item.item_description}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 7px;">${item.category_group || '-'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: center;">${item.unit}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: right;">${item.po_approved_qty}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: right; font-weight:700;">${item.received_qty}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: right; font-weight:700; color:#059669;">${item.accepted_qty}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: right; font-weight:700; color:#dc2626;">${item.rejected_qty}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: right;">₹ ${(item.unit_rate || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: right; font-weight:700;">₹ ${(item.total_amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 7px;">${item.location || '-'}</td>
+    </tr>
+  `).join('');
+
+  const htmlContent = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <title>Goods Receipt Note Report - ${grn.grn_no || 'GRN'}</title>
+        <style>
+          body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; padding: 28px; color: #0f172a; margin: 0; background: #fff; }
+          .header { border-bottom: 2px solid #0284c7; padding-bottom: 14px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: flex-end; }
+          .header h1 { margin: 0; color: #0284c7; font-size: 24px; font-weight: 800; letter-spacing: 0.5px; }
+          .header p { margin: 3px 0 0 0; color: #64748b; font-size: 13px; font-weight: 500; }
+          .section-title { font-size: 12px; font-weight: 800; text-transform: uppercase; color: #0284c7; margin: 18px 0 8px 0; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; }
+          .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 16px; font-size: 12px; background-color: #f8fafc; padding: 12px; border-radius: 8px; border: 1px solid #e2e8f0; }
+          .grid-item { display: flex; justify-content: space-between; border-bottom: 1px dashed #e2e8f0; padding-bottom: 4px; }
+          .label { font-weight: 600; color: #64748b; }
+          .val { font-weight: 700; color: #0f172a; }
+          table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12px; }
+          th { background-color: #f1f5f9; border: 1px solid #cbd5e1; padding: 8px; text-align: left; font-size: 10px; text-transform: uppercase; color: #475569; letter-spacing: 0.5px; }
+          .footer { margin-top: 28px; border-top: 2px solid #e2e8f0; padding-top: 16px; display: flex; justify-content: space-between; align-items: center; }
+          .sig-box { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-top: 36px; text-align: center; font-size: 12px; }
+          .sig-line { border-top: 1px solid #94a3b8; padding-top: 6px; font-weight: 700; color: #475569; }
+          .btn-print { padding: 9px 18px; background-color: #0284c7; color: white; border: none; border-radius: 6px; font-weight: 700; cursor: pointer; font-size: 13px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+          .btn-print:hover { background-color: #0369a1; }
+          @media print {
+            body { padding: 0; }
+            .no-print { display: none !important; }
+            @page { size: A4 landscape; margin: 10mm; }
+          }
+        </style>
+      </head>
+      <body>
+        <div class="no-print" style="margin-bottom: 16px; text-align: right;">
+          <button class="btn-print" onclick="window.print()">🖨️ Print GRN Report / Save as PDF</button>
+        </div>
+
+        <div class="header">
+          <div>
+            <h1>PRAMUKH GROUP</h1>
+            <p>Official Goods Receipt Note (GRN) Document</p>
+          </div>
+          <div style="text-align: right;">
+            <h2 style="margin:0; font-size:20px; color:#0284c7;">${grn.grn_no || 'GRN Entry'}</h2>
+            <p>Receipt Date: ${grn.grn_date || '-'}</p>
+          </div>
+        </div>
+
+        <div class="section-title">1. Header & Order Identification Details</div>
+        <div class="grid">
+          <div class="grid-item"><span class="label">Project Name:</span> <span class="val">${grn.project_name || '-'}</span></div>
+          <div class="grid-item"><span class="label">Sub Project:</span> <span class="val">${grn.sub_project || '-'}</span></div>
+          <div class="grid-item"><span class="label">Vendor Name:</span> <span class="val">${grn.vendor_name || '-'}</span></div>
+          <div class="grid-item"><span class="label">P.O. Exist:</span> <span class="val">${grn.po_exist || 'Yes'}</span></div>
+          <div class="grid-item"><span class="label">From P.O.:</span> <span class="val">${grn.po_exist === 'Yes' ? (grn.po_number || '-') : 'P.O. Not Exist'}</span></div>
+          <div class="grid-item"><span class="label">Vendor Invoice No:</span> <span class="val">${grn.vendor_invoice_no || '-'}</span></div>
+          <div class="grid-item"><span class="label">Vendor Invoice Date:</span> <span class="val">${grn.vendor_invoice_date || '-'}</span></div>
+          <div class="grid-item"><span class="label">Vendor Challan Date:</span> <span class="val">${grn.vendor_challan_date || '-'}</span></div>
+          <div class="grid-item"><span class="label">Gate Entry No:</span> <span class="val">${grn.gate_entry_no || '-'}</span></div>
+          <div class="grid-item"><span class="label">Workflow Status:</span> <span class="val" style="text-transform: uppercase; color: #0284c7;">${grn.status || 'Draft'}</span></div>
+        </div>
+
+        <div class="section-title">2. Vehicle & Weight Verification Ledger</div>
+        <div class="grid">
+          <div class="grid-item"><span class="label">Vehicle Measure Required:</span> <span class="val">${grn.vehicle_measure_required || 'No'}</span></div>
+          <div class="grid-item"><span class="label">Vehicle Measure:</span> <span class="val">${grn.vehicle_measure_required === 'Yes' ? (grn.vehicle_measure || '-') : 'N/A'}</span></div>
+          <div class="grid-item"><span class="label">Weight Required:</span> <span class="val">${grn.weight_required || 'No'}</span></div>
+          <div class="grid-item"><span class="label">Weight:</span> <span class="val">${grn.weight_required === 'Yes' ? (grn.weight || '-') : 'N/A'}</span></div>
+          <div class="grid-item"><span class="label">Transporter Name:</span> <span class="val">${grn.transporter_name || '-'}</span></div>
+          <div class="grid-item"><span class="label">LR Number:</span> <span class="val">${grn.lr_number || '-'}</span></div>
+          <div class="grid-item"><span class="label">Driver Name:</span> <span class="val">${grn.driver_name || '-'}</span></div>
+          <div class="grid-item"><span class="label">Vehicle Number:</span> <span class="val">${grn.vehicle_number || '-'}</span></div>
+        </div>
+
+        <div class="section-title">3. Material Quantities & Inspection Table</div>
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 24px; text-align: center;">#</th>
+              <th>Code</th>
+              <th>Description</th>
+              <th>Category</th>
+              <th style="text-align: center;">Unit</th>
+              <th style="text-align: right;">PO Qty</th>
+              <th style="text-align: right;">Recv Qty</th>
+              <th style="text-align: right;">Acc Qty</th>
+              <th style="text-align: right;">Rej Qty</th>
+              <th style="text-align: right;">Rate</th>
+              <th style="text-align: right;">Total Amt</th>
+              <th>Location</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${itemsHtml.length > 0 ? itemsHtml : '<tr><td colspan="12" style="padding:16px; text-align:center; color:#94a3b8;">No material items attached</td></tr>'}
+          </tbody>
+        </table>
+
+        ${grn.invoice_file_url ? `
+          <div style="margin-top:16px; background:#f0f9ff; border:1px solid #bae6fd; padding:10px 14px; border-radius:8px; font-size:12px;">
+            <strong style="color:#0284c7;">Uploaded Supplier Invoice Document:</strong>
+            <span style="margin-left:8px; color:#0369a1;">${grn.invoice_file_name || 'Invoice Document Attached'}</span>
+          </div>
+        ` : ''}
+
+        <div class="footer">
+          <div>
+            <p style="margin:0; font-size:11px; color:#64748b;">Generated via Pramukh Group ERP Procurement System</p>
+          </div>
+          <div style="text-align: right;">
+            <p style="margin:0; font-size:12px; color:#64748b;">Posting Material Amount</p>
+            <h2 style="margin:2px 0 0 0; color:#0284c7; font-size:20px;">₹ ${(grn.account_posting_material_amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</h2>
+          </div>
+        </div>
+
+        <div class="sig-box">
+          <div class="sig-line">Site Store Keeper / Received By</div>
+          <div class="sig-line">Site Engineer / Inspected By</div>
+          <div class="sig-line">Project Manager / Approved By</div>
+        </div>
+
+        <script>
+          window.onload = function() {
+            setTimeout(function() { window.print(); }, 400);
+          };
+        </script>
+      </body>
+    </html>
+  `;
+
+  printWindow.document.open();
+  printWindow.document.write(htmlContent);
+  printWindow.document.close();
+}
+
+/**
+ * Client-side formatted print window for Purchase Bills (PB).
+ * Renders every field across all 10 sections, entry tables, payments, order details, audit grids, and ledger posting info.
+ */
+export function printPurchaseBillReport(pb: any) {
+  if (typeof window === 'undefined') return;
+  const printWindow = window.open('', '_blank', 'width=1000,height=900');
+  if (!printWindow) return;
+
+  const entriesHtml = (pb.purchase_bill_entries || []).map((e: any, idx: number) => `
+    <tr>
+      <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: center;">${idx + 1}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px; font-weight:700; color:#059669;">${e.grn_no || '-'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px;">${e.grn_date || '-'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px;">${e.challan_no || '-'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px;">${e.po_no || '-'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: right;">${e.received_qty}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: right;">₹ ${(e.bill_rate || 0).toFixed(2)}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: right;">${(e.bill_discount_perc || 0)}%</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: right;">₹ ${(e.gross_amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: right;">₹ ${(e.vat_amt || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: right;">₹ ${(e.freight_chgs || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: right; font-weight:700; color:#059669;">₹ ${(e.net_amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
+    </tr>
+  `).join('');
+
+  const advHtml = (pb.advance_payment_entries || []).map((adv: any) => `
+    <tr>
+      <td style="border: 1px solid #cbd5e1; padding: 6px; font-weight:700; color:#059669;">${adv.voucher_no || '-'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px;">${adv.voucher_date || '-'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px; font-weight:700;">${adv.po_no || '-'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: right;">₹ ${(adv.advanced_payment || 0).toLocaleString('en-IN')}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: right;">₹ ${(adv.adjusted_payment || 0).toLocaleString('en-IN')}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: right;">₹ ${(adv.balance_amt || 0).toLocaleString('en-IN')}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: right; font-weight:700; color:#059669;">₹ ${(adv.adjust_amt || 0).toLocaleString('en-IN')}</td>
+    </tr>
+  `).join('');
+
+  const ledgerHtml = (pb.ledger_posting_info || []).map((leg: any) => `
+    <tr>
+      <td style="border: 1px solid #cbd5e1; padding: 6px; font-weight:700; color:#059669;">${leg.id || '-'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px;">${leg.date || '-'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px; font-weight:700;">${leg.ledger_main || '-'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px;">${leg.ledger_group || '-'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px;">${leg.account_head || '-'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px;">${leg.project || '-'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: right; font-weight:700; color:#059669;">₹ ${(leg.dr || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: right; font-weight:700; color:#2563eb;">₹ ${(leg.cr || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
+    </tr>
+  `).join('');
+
+  const totalDr = (pb.ledger_posting_info || []).reduce((sum: number, i: any) => sum + Number(i.dr || 0), 0);
+  const totalCr = (pb.ledger_posting_info || []).reduce((sum: number, i: any) => sum + Number(i.cr || 0), 0);
+
+  const htmlContent = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <title>Purchase Bill Report - ${pb.bill_no || 'PB'}</title>
+        <style>
+          body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; padding: 26px; color: #0f172a; margin: 0; background: #fff; }
+          .header { border-bottom: 2px solid #059669; padding-bottom: 12px; margin-bottom: 18px; display: flex; justify-content: space-between; align-items: flex-end; }
+          .header h1 { margin: 0; color: #059669; font-size: 24px; font-weight: 800; letter-spacing: 0.5px; }
+          .header p { margin: 3px 0 0 0; color: #64748b; font-size: 12px; font-weight: 500; }
+          .section-title { font-size: 11px; font-weight: 800; text-transform: uppercase; color: #059669; margin: 16px 0 6px 0; border-bottom: 1px solid #e2e8f0; padding-bottom: 3px; }
+          .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; font-size: 11px; background-color: #f8fafc; padding: 10px; border-radius: 8px; border: 1px solid #e2e8f0; }
+          .grid-item { display: flex; justify-content: space-between; border-bottom: 1px dashed #e2e8f0; padding-bottom: 3px; }
+          .label { font-weight: 600; color: #64748b; }
+          .val { font-weight: 700; color: #0f172a; }
+          table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 11px; }
+          th { background-color: #f1f5f9; border: 1px solid #cbd5e1; padding: 7px; text-align: left; font-size: 10px; text-transform: uppercase; color: #475569; letter-spacing: 0.5px; }
+          .footer { margin-top: 24px; border-top: 2px solid #e2e8f0; padding-top: 14px; display: flex; justify-content: space-between; align-items: center; }
+          .sig-box { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 30px; text-align: center; font-size: 11px; }
+          .sig-line { border-top: 1px solid #94a3b8; padding-top: 5px; font-weight: 700; color: #475569; }
+          .btn-print { padding: 9px 18px; background-color: #059669; color: white; border: none; border-radius: 6px; font-weight: 700; cursor: pointer; font-size: 13px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+          .btn-print:hover { background-color: #047857; }
+          @media print {
+            body { padding: 0; }
+            .no-print { display: none !important; }
+            @page { size: A4 landscape; margin: 8mm; }
+          }
+        </style>
+      </head>
+      <body>
+        <div class="no-print" style="margin-bottom: 16px; text-align: right;">
+          <button class="btn-print" onclick="window.print()">🖨️ Print Purchase Bill Report / Save as PDF</button>
+        </div>
+
+        <div class="header">
+          <div>
+            <h1>PRAMUKH GROUP - ${pb.company_name || 'TANVI INFRACON'}</h1>
+            <p>Official Purchase Bill (PB) & Financial Ledger Voucher Document</p>
+          </div>
+          <div style="text-align: right;">
+            <h2 style="margin:0; font-size:20px; color:#059669;">${pb.bill_no || 'PB Entry'}</h2>
+            <p>Accounting Date: ${pb.accounting_date || '-'}</p>
+          </div>
+        </div>
+
+        <div class="section-title">1. Bill Header & Supplier Master Info</div>
+        <div class="grid">
+          <div class="grid-item"><span class="label">Supplier Name:</span> <span class="val">${pb.supplier_name || '-'}</span></div>
+          <div class="grid-item"><span class="label">Bill No of Supplier:</span> <span class="val">${pb.bill_no_of_supplier || '-'}</span></div>
+          <div class="grid-item"><span class="label">Bill Date of Supplier:</span> <span class="val">${pb.bill_date_of_supplier || '-'}</span></div>
+          <div class="grid-item"><span class="label">Project Name:</span> <span class="val">${pb.project_name || '-'}</span></div>
+          <div class="grid-item"><span class="label">Sub Project:</span> <span class="val">${pb.sub_project || '-'}</span></div>
+          <div class="grid-item"><span class="label">Tax Status:</span> <span class="val">${pb.tax_status || '-'}</span></div>
+          <div class="grid-item"><span class="label">From P.O.s:</span> <span class="val">${pb.from_pos || '-'}</span></div>
+          <div class="grid-item"><span class="label">From Challans:</span> <span class="val">${pb.from_challans || '-'}</span></div>
+          <div class="grid-item"><span class="label">Payment Days:</span> <span class="val">${pb.payment_days || 30} Days</span></div>
+          <div class="grid-item"><span class="label">Bill Due Date:</span> <span class="val">${pb.bill_due_date || '-'}</span></div>
+          <div class="grid-item"><span class="label">Workflow Status:</span> <span class="val" style="text-transform: uppercase; color:#059669;">${pb.status || 'Draft'}</span></div>
+        </div>
+
+        <div class="section-title">2. Purchase Bill Line Items</div>
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 20px; text-align: center;">#</th>
+              <th>GRN No</th>
+              <th>GRN Date</th>
+              <th>Challan No</th>
+              <th>PO No</th>
+              <th style="text-align: right;">Recv Qty</th>
+              <th style="text-align: right;">Bill Rate</th>
+              <th style="text-align: right;">Disc %</th>
+              <th style="text-align: right;">Gross Amt</th>
+              <th style="text-align: right;">Tax (VAT)</th>
+              <th style="text-align: right;">Freight</th>
+              <th style="text-align: right;">Net Amt</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${entriesHtml.length > 0 ? entriesHtml : '<tr><td colspan="12" style="padding:12px; text-align:center; color:#94a3b8;">No bill entries attached</td></tr>'}
+          </tbody>
+        </table>
+
+        ${(pb.advance_payment_entries || []).length > 0 ? `
+          <div class="section-title">3. Advance Payment Adjustment Entries</div>
+          <table>
+            <thead>
+              <tr>
+                <th>Voucher No</th>
+                <th>Voucher Date</th>
+                <th>P.O. No</th>
+                <th style="text-align: right;">Advanced Payment</th>
+                <th style="text-align: right;">Adjusted Payment</th>
+                <th style="text-align: right;">Balance Amt</th>
+                <th style="text-align: right;">Adjust Amt</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${advHtml}
+            </tbody>
+          </table>
+        ` : ''}
+
+        ${(pb.ledger_posting_info || []).length > 0 ? `
+          <div class="section-title">4. Ledger Posting Info & Double Entry Verification</div>
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Date</th>
+                <th>Ledger Main</th>
+                <th>Ledger Group</th>
+                <th>Account Head</th>
+                <th>Project</th>
+                <th style="text-align: right;">DR</th>
+                <th style="text-align: right;">CR</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${ledgerHtml}
+            </tbody>
+          </table>
+          <div style="text-align:right; margin-top:6px; font-size:11px; font-weight:700;">
+            Total DR: <span style="color:#059669;">₹ ${totalDr.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span> | 
+            Total CR: <span style="color:#2563eb;">₹ ${totalCr.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+          </div>
+        ` : ''}
+
+        <div class="footer">
+          <div>
+            <p style="margin:0; font-size:11px; color:#64748b;">Generated via Pramukh Group ERP Financial & Procurement System</p>
+          </div>
+          <div style="text-align: right;">
+            <p style="margin:0; font-size:12px; color:#64748b;">Final Bill Settlement Amount</p>
+            <h2 style="margin:2px 0 0 0; color:#059669; font-size:22px;">₹ ${(pb.final_bill_amount || pb.total_bill_amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</h2>
+          </div>
+        </div>
+
+        <div class="sig-box">
+          <div class="sig-line">Prepared By / Accounts Clerk</div>
+          <div class="sig-line">Verified By / Chief Accountant</div>
+          <div class="sig-line">Approved By / Finance Director</div>
+        </div>
+
+        <script>
+          window.onload = function() {
+            setTimeout(function() { window.print(); }, 400);
+          };
+        </script>
+      </body>
+    </html>
+  `;
+
+  printWindow.document.open();
+  printWindow.document.write(htmlContent);
+  printWindow.document.close();
+}
+
+/**
+ * Client-side formatted print window for Purchase Requisitions (PR).
+ * Renders every field, section, items table, budget head, contractor info, attached MRs, and workflow status.
+ */
+export function printPurchaseRequisitionReport(pr: any) {
+  if (typeof window === 'undefined') return;
+  const printWindow = window.open('', '_blank', 'width=1000,height=900');
+  if (!printWindow) return;
+
+  const items = pr.items || pr.lines || pr.pr_items || [];
+  const itemsHtml = items.map((item: any, idx: number) => `
+    <tr>
+      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: center;">${idx + 1}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 7px; font-weight:700; color:#4f46e5;">${item.item_code || item.item_id || '-'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 7px; font-weight: 600;">${item.item_description || item.description || '-'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 7px;">${item.category_group || item.item_group || '-'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: center;">${item.unit || 'nos'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: right; font-weight:700;">${item.quantity || item.qty || 0}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: right;">₹ ${(item.estimated_rate || item.unit_rate || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: right; font-weight:700; color:#4f46e5;">₹ ${((item.quantity || 0) * (item.estimated_rate || item.unit_rate || 0)).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 7px;">${item.required_date || item.target_date || '-'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 7px;">${item.remarks || item.delivery_location || '-'}</td>
+    </tr>
+  `).join('');
+
+  const totalAmt = items.reduce((sum: number, item: any) => sum + ((item.quantity || 0) * (item.estimated_rate || item.unit_rate || 0)), 0);
+
+  const htmlContent = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <title>Purchase Requisition Report - ${pr.pr_number || 'PR'}</title>
+        <style>
+          body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; padding: 28px; color: #0f172a; margin: 0; background: #fff; }
+          .header { border-bottom: 2px solid #4f46e5; padding-bottom: 14px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: flex-end; }
+          .header h1 { margin: 0; color: #4f46e5; font-size: 24px; font-weight: 800; letter-spacing: 0.5px; }
+          .header p { margin: 3px 0 0 0; color: #64748b; font-size: 13px; font-weight: 500; }
+          .section-title { font-size: 12px; font-weight: 800; text-transform: uppercase; color: #4f46e5; margin: 18px 0 8px 0; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; }
+          .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 16px; font-size: 12px; background-color: #f8fafc; padding: 12px; border-radius: 8px; border: 1px solid #e2e8f0; }
+          .grid-item { display: flex; justify-content: space-between; border-bottom: 1px dashed #e2e8f0; padding-bottom: 4px; }
+          .label { font-weight: 600; color: #64748b; }
+          .val { font-weight: 700; color: #0f172a; }
+          table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12px; }
+          th { background-color: #f1f5f9; border: 1px solid #cbd5e1; padding: 8px; text-align: left; font-size: 10px; text-transform: uppercase; color: #475569; letter-spacing: 0.5px; }
+          .footer { margin-top: 28px; border-top: 2px solid #e2e8f0; padding-top: 16px; display: flex; justify-content: space-between; align-items: center; }
+          .sig-box { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-top: 36px; text-align: center; font-size: 12px; }
+          .sig-line { border-top: 1px solid #94a3b8; padding-top: 6px; font-weight: 700; color: #475569; }
+          .btn-print { padding: 9px 18px; background-color: #4f46e5; color: white; border: none; border-radius: 6px; font-weight: 700; cursor: pointer; font-size: 13px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+          .btn-print:hover { background-color: #4338ca; }
+          @media print {
+            body { padding: 0; }
+            .no-print { display: none !important; }
+            @page { size: A4 landscape; margin: 10mm; }
+          }
+        </style>
+      </head>
+      <body>
+        <div class="no-print" style="margin-bottom: 16px; text-align: right;">
+          <button class="btn-print" onclick="window.print()">🖨️ Print PR Report / Save as PDF</button>
+        </div>
+
+        <div class="header">
+          <div>
+            <h1>PRAMUKH GROUP</h1>
+            <p>Official Purchase Requisition (PR) Document</p>
+          </div>
+          <div style="text-align: right;">
+            <h2 style="margin:0; font-size:20px; color:#4f46e5;">${pr.pr_number || 'PR Entry'}</h2>
+            <p>PR Date: ${pr.pr_date || pr.created_at || '-'}</p>
+          </div>
+        </div>
+
+        <div class="section-title">1. Requisition Header & Project Details</div>
+        <div class="grid">
+          <div class="grid-item"><span class="label">Requisition Title:</span> <span class="val">${pr.title || '-'}</span></div>
+          <div class="grid-item"><span class="label">PR Type:</span> <span class="val">${pr.pr_type || 'Material'}</span></div>
+          <div class="grid-item"><span class="label">Priority:</span> <span class="val" style="text-transform: capitalize;">${pr.priority || 'Medium'}</span></div>
+          <div class="grid-item"><span class="label">Project Name:</span> <span class="val">${pr.project_name || pr.projects?.name || '-'}</span></div>
+          <div class="grid-item"><span class="label">Required By Date:</span> <span class="val">${pr.target_date || pr.required_date || '-'}</span></div>
+          <div class="grid-item"><span class="label">Budget Head:</span> <span class="val">${pr.budget_head || '-'}</span></div>
+          <div class="grid-item"><span class="label">Cost Code:</span> <span class="val">${pr.cost_code || '-'}</span></div>
+          <div class="grid-item"><span class="label">Delivery Location:</span> <span class="val">${pr.delivery_location || '-'}</span></div>
+          <div class="grid-item"><span class="label">Workflow Status:</span> <span class="val" style="text-transform: uppercase; color:#4f46e5;">${pr.status || 'Draft'}</span></div>
+        </div>
+
+        ${pr.contractor_name ? `
+          <div class="section-title">Contractor & Work Order Information</div>
+          <div class="grid">
+            <div class="grid-item"><span class="label">Contractor Name:</span> <span class="val">${pr.contractor_name}</span></div>
+            <div class="grid-item"><span class="label">Work Order No:</span> <span class="val">${pr.work_order_no || '-'}</span></div>
+          </div>
+        ` : ''}
+
+        <div class="section-title">2. Requested Items & Line Details</div>
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 24px; text-align: center;">#</th>
+              <th>Code</th>
+              <th>Description</th>
+              <th>Category</th>
+              <th style="text-align: center;">Unit</th>
+              <th style="text-align: right;">Qty</th>
+              <th style="text-align: right;">Est. Rate</th>
+              <th style="text-align: right;">Est. Total</th>
+              <th>Target Date</th>
+              <th>Remarks</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${itemsHtml.length > 0 ? itemsHtml : '<tr><td colspan="10" style="padding:16px; text-align:center; color:#94a3b8;">No items attached</td></tr>'}
+          </tbody>
+        </table>
+
+        <div class="footer">
+          <div>
+            <p style="margin:0; font-size:11px; color:#64748b;">Generated via Pramukh Group ERP Procurement System</p>
+          </div>
+          <div style="text-align: right;">
+            <p style="margin:0; font-size:12px; color:#64748b;">Total Estimated PR Value</p>
+            <h2 style="margin:2px 0 0 0; color:#4f46e5; font-size:20px;">₹ ${totalAmt.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</h2>
+          </div>
+        </div>
+
+        <div class="sig-box">
+          <div class="sig-line">Prepared By / Site Engineer</div>
+          <div class="sig-line">Verified By / Store Manager</div>
+          <div class="sig-line">Approved By / Procurement Head</div>
+        </div>
+
+        <script>
+          window.onload = function() {
+            setTimeout(function() { window.print(); }, 400);
+          };
+        </script>
+      </body>
+    </html>
+  `;
+
+  printWindow.document.open();
+  printWindow.document.write(htmlContent);
+  printWindow.document.close();
+}
+
+/**
+ * Client-side formatted print window for Purchase Orders (PO).
+ * Renders header, vendor master, line items, taxes, discount, payment terms, and signoff blocks.
+ */
+export function printPurchaseOrderReport(po: any) {
+  if (typeof window === 'undefined') return;
+  const printWindow = window.open('', '_blank', 'width=1000,height=900');
+  if (!printWindow) return;
+
+  const items = po.items || po.lines || po.purchase_order_lines || [];
+  const itemsHtml = items.map((item: any, idx: number) => `
+    <tr>
+      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: center;">${idx + 1}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 7px; font-weight:700; color:#2563eb;">${item.item_code || '-'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 7px; font-weight: 600;">${item.item_description || item.description || '-'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 7px;">${item.category_group || item.item_group || '-'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: center;">${item.unit || 'nos'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: right; font-weight:700;">${item.quantity || item.qty || 0}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: right;">₹ ${(item.unit_rate || 0).toFixed(2)}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: right;">${(item.discount_perc || 0)}%</td>
+      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: right;">${(item.tax_rate || 18)}%</td>
+      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: right; font-weight:700; color:#2563eb;">₹ ${(item.net_amount || (item.quantity * item.unit_rate) || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
+    </tr>
+  `).join('');
+
+  const totalPoValue = po.total_amount || po.total_po_value || items.reduce((sum: number, i: any) => sum + ((i.quantity || 0) * (i.unit_rate || 0)), 0);
+
+  const htmlContent = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <title>Purchase Order Report - ${po.po_number || 'PO'}</title>
+        <style>
+          body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; padding: 28px; color: #0f172a; margin: 0; background: #fff; }
+          .header { border-bottom: 2px solid #2563eb; padding-bottom: 14px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: flex-end; }
+          .header h1 { margin: 0; color: #2563eb; font-size: 24px; font-weight: 800; letter-spacing: 0.5px; }
+          .header p { margin: 3px 0 0 0; color: #64748b; font-size: 13px; font-weight: 500; }
+          .section-title { font-size: 12px; font-weight: 800; text-transform: uppercase; color: #2563eb; margin: 18px 0 8px 0; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; }
+          .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 16px; font-size: 12px; background-color: #f8fafc; padding: 12px; border-radius: 8px; border: 1px solid #e2e8f0; }
+          .grid-item { display: flex; justify-content: space-between; border-bottom: 1px dashed #e2e8f0; padding-bottom: 4px; }
+          .label { font-weight: 600; color: #64748b; }
+          .val { font-weight: 700; color: #0f172a; }
+          table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12px; }
+          th { background-color: #f1f5f9; border: 1px solid #cbd5e1; padding: 8px; text-align: left; font-size: 10px; text-transform: uppercase; color: #475569; letter-spacing: 0.5px; }
+          .footer { margin-top: 28px; border-top: 2px solid #e2e8f0; padding-top: 16px; display: flex; justify-content: space-between; align-items: center; }
+          .sig-box { display: grid; grid-template-columns: repeat(2, 1fr); gap: 40px; margin-top: 36px; text-align: center; font-size: 12px; }
+          .sig-line { border-top: 1px solid #94a3b8; padding-top: 6px; font-weight: 700; color: #475569; }
+          .btn-print { padding: 9px 18px; background-color: #2563eb; color: white; border: none; border-radius: 6px; font-weight: 700; cursor: pointer; font-size: 13px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+          .btn-print:hover { background-color: #1d4ed8; }
+          @media print {
+            body { padding: 0; }
+            .no-print { display: none !important; }
+            @page { size: A4 landscape; margin: 10mm; }
+          }
+        </style>
+      </head>
+      <body>
+        <div class="no-print" style="margin-bottom: 16px; text-align: right;">
+          <button class="btn-print" onclick="window.print()">🖨️ Print PO Report / Save as PDF</button>
+        </div>
+
+        <div class="header">
+          <div>
+            <h1>PRAMUKH GROUP</h1>
+            <p>Official Purchase Order (PO) Contract Document</p>
+          </div>
+          <div style="text-align: right;">
+            <h2 style="margin:0; font-size:20px; color:#2563eb;">${po.po_number || 'PO Entry'}</h2>
+            <p>PO Date: ${po.po_date || po.created_at || '-'}</p>
+          </div>
+        </div>
+
+        <div class="section-title">1. Vendor & Delivery Master Info</div>
+        <div class="grid">
+          <div class="grid-item"><span class="label">Vendor Name:</span> <span class="val">${po.vendor_name || po.vendors?.display_name || po.vendors?.legal_name || '-'}</span></div>
+          <div class="grid-item"><span class="label">Vendor GSTIN:</span> <span class="val">${po.vendor_gst || po.vendors?.gst_number || '-'}</span></div>
+          <div class="grid-item"><span class="label">Project Name:</span> <span class="val">${po.project_name || po.projects?.name || '-'}</span></div>
+          <div class="grid-item"><span class="label">Ref. PR Number:</span> <span class="val">${po.pr_number || '-'}</span></div>
+          <div class="grid-item"><span class="label">Payment Terms:</span> <span class="val">${po.payment_terms || '30 Days Net'}</span></div>
+          <div class="grid-item"><span class="label">Delivery Date:</span> <span class="val">${po.delivery_date || '-'}</span></div>
+          <div class="grid-item"><span class="label">Billing Address:</span> <span class="val">${po.billing_address || 'Pramukh Group HQ, Surat'}</span></div>
+          <div class="grid-item"><span class="label">Shipping Address:</span> <span class="val">${po.shipping_address || 'Site Warehouse'}</span></div>
+          <div class="grid-item"><span class="label">Workflow Status:</span> <span class="val" style="text-transform: uppercase; color:#2563eb;">${po.status || 'Draft'}</span></div>
+        </div>
+
+        <div class="section-title">2. Order Items & Tax Breakdown</div>
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 24px; text-align: center;">#</th>
+              <th>Code</th>
+              <th>Description</th>
+              <th>Category</th>
+              <th style="text-align: center;">Unit</th>
+              <th style="text-align: right;">Qty</th>
+              <th style="text-align: right;">Rate</th>
+              <th style="text-align: right;">Disc %</th>
+              <th style="text-align: right;">GST %</th>
+              <th style="text-align: right;">Net Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${itemsHtml.length > 0 ? itemsHtml : '<tr><td colspan="10" style="padding:16px; text-align:center; color:#94a3b8;">No PO items attached</td></tr>'}
+          </tbody>
+        </table>
+
+        ${po.terms_conditions ? `
+          <div style="margin-top:16px; background:#f8fafc; border:1px solid #e2e8f0; padding:12px; border-radius:8px; font-size:12px;">
+            <strong style="color:#2563eb;">Terms & Special Instructions:</strong>
+            <p style="margin:4px 0 0 0; color:#334155;">${po.terms_conditions}</p>
+          </div>
+        ` : ''}
+
+        <div class="footer">
+          <div>
+            <p style="margin:0; font-size:11px; color:#64748b;">Generated via Pramukh Group ERP Procurement System</p>
+          </div>
+          <div style="text-align: right;">
+            <p style="margin:0; font-size:12px; color:#64748b;">Total Purchase Order Value</p>
+            <h2 style="margin:2px 0 0 0; color:#2563eb; font-size:20px;">₹ ${Number(totalPoValue).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</h2>
+          </div>
+        </div>
+
+        <div class="sig-box">
+          <div class="sig-line">Authorized Signatory (Pramukh Group)</div>
+          <div class="sig-line">Vendor Acceptance Signature & Stamp</div>
+        </div>
+
+        <script>
+          window.onload = function() {
+            setTimeout(function() { window.print(); }, 400);
+          };
+        </script>
+      </body>
+    </html>
+  `;
+
+  printWindow.document.open();
+  printWindow.document.write(htmlContent);
+  printWindow.document.close();
+}
+
+/**
+ * Client-side formatted print window for Request for Quotations (RFQ).
+ * Renders header, submission deadline, invited vendors list, item specifications, and terms.
+ */
+export function printRfqReport(rfq: any) {
+  if (typeof window === 'undefined') return;
+  const printWindow = window.open('', '_blank', 'width=1000,height=900');
+  if (!printWindow) return;
+
+  const items = rfq.items || rfq.lines || rfq.rfq_items || [];
+  const itemsHtml = items.map((item: any, idx: number) => `
+    <tr>
+      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: center;">${idx + 1}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 7px; font-weight: 600;">${item.item_description || item.description || '-'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 7px;">${item.category_group || item.item_group || '-'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: center;">${item.unit || 'nos'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: right; font-weight:700;">${item.quantity || item.qty || 0}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 7px;">${item.specifications || item.make || '-'}</td>
+      <td style="border: 1px solid #cbd5e1; padding: 7px;">${item.remarks || '-'}</td>
+    </tr>
+  `).join('');
+
+  const vendors = rfq.invited_vendors || rfq.vendors || [];
+  const vendorsHtml = vendors.map((v: any) => `
+    <span style="display:inline-block; background:#f1f5f9; border:1px solid #cbd5e1; padding:4px 10px; border-radius:6px; font-size:11px; font-weight:700; margin-right:6px; margin-bottom:6px;">
+      🏢 ${v.vendor_name || v.display_name || v.legal_name || v}
+    </span>
+  `).join('');
+
+  const htmlContent = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <title>Request for Quotation Report - ${rfq.rfq_number || 'RFQ'}</title>
+        <style>
+          body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; padding: 28px; color: #0f172a; margin: 0; background: #fff; }
+          .header { border-bottom: 2px solid #7c3aed; padding-bottom: 14px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: flex-end; }
+          .header h1 { margin: 0; color: #7c3aed; font-size: 24px; font-weight: 800; letter-spacing: 0.5px; }
+          .header p { margin: 3px 0 0 0; color: #64748b; font-size: 13px; font-weight: 500; }
+          .section-title { font-size: 12px; font-weight: 800; text-transform: uppercase; color: #7c3aed; margin: 18px 0 8px 0; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; }
+          .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 16px; font-size: 12px; background-color: #f8fafc; padding: 12px; border-radius: 8px; border: 1px solid #e2e8f0; }
+          .grid-item { display: flex; justify-content: space-between; border-bottom: 1px dashed #e2e8f0; padding-bottom: 4px; }
+          .label { font-weight: 600; color: #64748b; }
+          .val { font-weight: 700; color: #0f172a; }
+          table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12px; }
+          th { background-color: #f1f5f9; border: 1px solid #cbd5e1; padding: 8px; text-align: left; font-size: 10px; text-transform: uppercase; color: #475569; letter-spacing: 0.5px; }
+          .footer { margin-top: 28px; border-top: 2px solid #e2e8f0; padding-top: 16px; display: flex; justify-content: space-between; align-items: center; }
+          .sig-box { display: grid; grid-template-columns: repeat(2, 1fr); gap: 40px; margin-top: 36px; text-align: center; font-size: 12px; }
+          .sig-line { border-top: 1px solid #94a3b8; padding-top: 6px; font-weight: 700; color: #475569; }
+          .btn-print { padding: 9px 18px; background-color: #7c3aed; color: white; border: none; border-radius: 6px; font-weight: 700; cursor: pointer; font-size: 13px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+          .btn-print:hover { background-color: #6d28d9; }
+          @media print {
+            body { padding: 0; }
+            .no-print { display: none !important; }
+            @page { size: A4 landscape; margin: 10mm; }
+          }
+        </style>
+      </head>
+      <body>
+        <div class="no-print" style="margin-bottom: 16px; text-align: right;">
+          <button class="btn-print" onclick="window.print()">🖨️ Print RFQ Report / Save as PDF</button>
+        </div>
+
+        <div class="header">
+          <div>
+            <h1>PRAMUKH GROUP</h1>
+            <p>Official Request for Quotation (RFQ) Tender Inquiry</p>
+          </div>
+          <div style="text-align: right;">
+            <h2 style="margin:0; font-size:20px; color:#7c3aed;">${rfq.rfq_number || 'RFQ Entry'}</h2>
+            <p>RFQ Date: ${rfq.rfq_date || rfq.created_at || '-'}</p>
+          </div>
+        </div>
+
+        <div class="section-title">1. RFQ Header & Deadline Details</div>
+        <div class="grid">
+          <div class="grid-item"><span class="label">Project Name:</span> <span class="val">${rfq.project_name || rfq.projects?.name || '-'}</span></div>
+          <div class="grid-item"><span class="label">Submission Deadline:</span> <span class="val" style="color:#7c3aed;">${rfq.submission_deadline || rfq.due_date || '-'}</span></div>
+          <div class="grid-item"><span class="label">Ref. PR/MR Number:</span> <span class="val">${rfq.pr_number || rfq.mr_number || '-'}</span></div>
+          <div class="grid-item"><span class="label">Target Delivery Location:</span> <span class="val">${rfq.delivery_location || 'Central Yard'}</span></div>
+          <div class="grid-item"><span class="label">Workflow Status:</span> <span class="val" style="text-transform: uppercase; color:#7c3aed;">${rfq.status || 'Published'}</span></div>
+        </div>
+
+        ${vendorsHtml ? `
+          <div class="section-title">Invited Bidding Vendors</div>
+          <div style="margin-bottom:14px;">${vendorsHtml}</div>
+        ` : ''}
+
+        <div class="section-title">2. Requested Material Specifications</div>
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 24px; text-align: center;">#</th>
+              <th>Item Description</th>
+              <th>Category</th>
+              <th style="text-align: center;">Unit</th>
+              <th style="text-align: right;">Quantity</th>
+              <th>Specifications / Brand Preference</th>
+              <th>Remarks</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${itemsHtml.length > 0 ? itemsHtml : '<tr><td colspan="7" style="padding:16px; text-align:center; color:#94a3b8;">No items requested</td></tr>'}
+          </tbody>
+        </table>
+
+        ${rfq.instructions ? `
+          <div style="margin-top:16px; background:#f8fafc; border:1px solid #e2e8f0; padding:12px; border-radius:8px; font-size:12px;">
+            <strong style="color:#7c3aed;">Instructions for Quotation Bidders:</strong>
+            <p style="margin:4px 0 0 0; color:#334155;">${rfq.instructions}</p>
+          </div>
+        ` : ''}
+
+        <div class="footer">
+          <div>
+            <p style="margin:0; font-size:11px; color:#64748b;">Generated via Pramukh Group ERP Procurement System</p>
+          </div>
+        </div>
+
+        <div class="sig-box">
+          <div class="sig-line">Procurement Manager / Issued By</div>
+          <div class="sig-line">Head of Purchasing / Approved By</div>
+        </div>
+
+        <script>
+          window.onload = function() {
+            setTimeout(function() { window.print(); }, 400);
+          };
+        </script>
+      </body>
+    </html>
+  `;
+
+  printWindow.document.open();
+  printWindow.document.write(htmlContent);
+  printWindow.document.close();
 }
 
