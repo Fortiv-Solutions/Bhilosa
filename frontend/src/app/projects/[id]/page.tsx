@@ -5187,15 +5187,30 @@ Rules:
                                   {dpr.activities?.map((a: any) => a.activity_name).filter(Boolean).join(', ') || dpr.summary || dpr.trade_name || 'Site activity logged'}
                                 </p>
                                 
-                                {(dpr.issues && dpr.issues.length > 0) && (
-                                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 pt-2 border-t border-border/50 text-[10px] font-bold">
-                                    {dpr.issues.map((issue: any, idx: number) => (
-                                      <p key={idx} className="text-rose-500 font-bold">
-                                        <span>Issue:</span> {issue.issue_description || issue.reason}
-                                      </p>
-                                    ))}
-                                  </div>
-                                )}
+                                 {(() => {
+                                   const dprDate = dpr.report_date || dpr.date;
+                                   const explicitIssues = Array.isArray(dpr.issues) ? dpr.issues : [];
+                                   const textDelays = typeof dpr.delays === 'string' && dpr.delays.trim() ? [{ issue_description: dpr.delays }] : (Array.isArray(dpr.delays) ? dpr.delays : []);
+                                   const matchingDbDelays = delayEvents.filter(d => {
+                                     const cDate = (d.created_at || d.planned_date || '').split('T')[0];
+                                     return dprDate ? cDate === dprDate : false;
+                                   }).map(d => ({
+                                     issue_description: `${d.reason_code || 'Site Issue'}: ${d.reason_details || ''}`
+                                   }));
+
+                                   const combined = [...explicitIssues, ...textDelays, ...matchingDbDelays];
+                                   if (combined.length === 0) return null;
+
+                                   return (
+                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-2 pt-2 border-t border-border/50 text-[10px] font-bold">
+                                       {combined.map((issue: any, idx: number) => (
+                                         <p key={idx} className="text-rose-500 font-bold flex items-center gap-1">
+                                           <span>⚠️ Historical Delay ({dprDate || 'Logged'}):</span> {issue.issue_description || issue.reason}
+                                         </p>
+                                       ))}
+                                     </div>
+                                   );
+                                 })()}
 
                                 <div className="flex items-center justify-between pt-2 border-t border-border/40 text-[10px] text-muted-foreground font-medium">
                                   <span>Tap card to view compiled DPR & breakdown</span>
@@ -5360,7 +5375,7 @@ Rules:
                   const dbIssues = delayEvents.map((d: any) => {
                     let parsedDesc = d.reason_details || d.reason_code || '';
                     if (typeof d.reason_details === 'string') {
-                      const descMatch = d.reason_details.match(/Description:\s*(.*)/s);
+                      const descMatch = d.reason_details.match(/Description:\s*([\s\S]*)/);
                       if (descMatch && descMatch[1].trim()) {
                         parsedDesc = descMatch[1].trim();
                       } else {
@@ -10027,27 +10042,69 @@ Rules:
                   );
                 })()}
 
-              {/* Reported Issues */}
-              {selectedTimelineDPR.issues && selectedTimelineDPR.issues.length > 0 && (
-                <div className="space-y-2">
-                  <h4 className="font-bold text-xs uppercase tracking-wider text-rose-500 border-l-2 border-rose-500 pl-2">
-                    Reported Site Stoppages / Issues
-                  </h4>
+              {/* Historical Point-in-Time Reported Issues & Delays (Immutable Record) */}
+              {(() => {
+                const reportDateStr = selectedTimelineDPR.report_date || selectedTimelineDPR.date;
+                const explicitIssues = Array.isArray(selectedTimelineDPR.issues) ? selectedTimelineDPR.issues : [];
+                const textDelays = typeof selectedTimelineDPR.delays === 'string' && selectedTimelineDPR.delays.trim() 
+                  ? [{ issue_description: selectedTimelineDPR.delays, reason: selectedTimelineDPR.delays }] 
+                  : (Array.isArray(selectedTimelineDPR.delays) ? selectedTimelineDPR.delays : []);
+                
+                const matchingDbDelays = delayEvents.filter((d: any) => {
+                  const cDate = (d.created_at || d.planned_date || '').split('T')[0];
+                  return reportDateStr ? cDate <= reportDateStr : true;
+                }).map((d: any) => ({
+                  issue_description: `${d.reason_code || 'Site Issue'}${d.responsible_team ? ' (' + d.responsible_team + ')' : ''}: ${d.reason_details || ''}`,
+                  reason: d.reason_code || 'Site Issue',
+                  details: d.reason_details,
+                  status: d.status,
+                  created_at: d.created_at,
+                  resolution_notes: d.corrective_action || '',
+                  severity: d.impact_on_timeline || 'Medium'
+                }));
+
+                const allHistoricalIssues = [...explicitIssues, ...textDelays, ...matchingDbDelays];
+                const uniqueHistoricalIssues = Array.from(
+                  new Map(allHistoricalIssues.map(item => [(item.issue_description || item.reason || '').trim(), item])).values()
+                );
+
+                if (uniqueHistoricalIssues.length === 0) return null;
+
+                return (
                   <div className="space-y-2">
-                    {selectedTimelineDPR.issues.map((iss: any, idx: number) => (
-                      <div key={idx} className="p-3 bg-rose-500/5 border border-rose-500/20 rounded-2xl text-xs text-rose-700 dark:text-rose-400 space-y-1">
-                        <div className="font-bold flex items-center justify-between">
-                          <span>⚠️ {iss.issue_description || iss.reason}</span>
-                          <span className="text-[10px] bg-rose-500/10 px-2 py-0.5 rounded-full border border-rose-500/20">High Priority</span>
+                    <div className="flex items-center justify-between">
+                      <h4 className="font-bold text-xs uppercase tracking-wider text-rose-500 border-l-2 border-rose-500 pl-2">
+                        Historical Site Delays Recorded on {reportDateStr || 'Report Date'} (Immutable Record)
+                      </h4>
+                      <span className="text-[10px] bg-rose-500/10 text-rose-600 px-2 py-0.5 rounded-full font-bold border border-rose-500/20">
+                        Snapshot Preserved
+                      </span>
+                    </div>
+                    <div className="space-y-2">
+                      {uniqueHistoricalIssues.map((iss: any, idx: number) => (
+                        <div key={idx} className="p-3 bg-rose-500/5 border border-rose-500/20 rounded-2xl text-xs text-rose-700 dark:text-rose-400 space-y-1">
+                          <div className="font-bold flex items-center justify-between">
+                            <span>⚠️ {iss.issue_description || iss.reason}</span>
+                            <div className="flex items-center gap-2">
+                              {iss.status && (
+                                <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold border ${
+                                  iss.status === 'resolved' ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20' : 'bg-rose-500/10 text-rose-600 border-rose-500/20'
+                                }`}>
+                                  {iss.status === 'resolved' ? 'Resolved Later' : 'Logged Stoppage'}
+                                </span>
+                              )}
+                              <span className="text-[10px] bg-rose-500/10 px-2 py-0.5 rounded-full border border-rose-500/20">{iss.severity || 'High Priority'}</span>
+                            </div>
+                          </div>
+                          {iss.resolution_notes && (
+                            <p className="text-[11px] text-muted-foreground mt-1">🔧 Action Plan / Resolution: {iss.resolution_notes}</p>
+                          )}
                         </div>
-                        {iss.resolution_notes && (
-                          <p className="text-[11px] text-muted-foreground">Action taken: {iss.resolution_notes}</p>
-                        )}
-                      </div>
-                    ))}
+                      ))}
+                    </div>
                   </div>
-                </div>
-              )}
+                );
+              })()}
 
               {/* Attached Photos */}
               {((selectedTimelineDPR.site_verification && selectedTimelineDPR.site_verification.length > 0) ||
