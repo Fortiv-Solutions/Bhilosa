@@ -951,19 +951,26 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
       )}
 
       {activeTab === 'rfq' && (
-        <RfqWorkbench
-          rfqs={data.rfqs}
+        <RFQWorkspace
           prs={data.purchaseRequisitions}
+          rfqs={data.rfqs}
           quotations={data.quotations}
           selections={data.vendorSelections}
           purchaseOrders={data.purchaseOrders}
+          vendors={data.vendors}
+          projectOptions={projectOptions as any}
+          activeRole={activeRole as any}
           selectedRfqId={selectedRfqId}
           onSelectRfq={setSelectedRfqId}
+          onCreateRfq={(pr) => handleOpenRfqModal(pr)}
           onRecordQuote={(rfq) => handleOpenQuoteModal(rfq)}
           onRecommend={(quote) => handleOpenRecommendModal(quote)}
           onApproveSelection={(selection) => handleApproveSelection(selection.id)}
           onGeneratePo={(pr, quotation, selection) => handleOpenPoModal(pr, quotation, selection.id)}
-          canApprove={canApprove}
+          onPrintRfq={(rfqId) => {
+            const rfq = data.rfqs.find((r) => r.id === rfqId);
+            if (rfq) printRfqReport(rfq);
+          }}
         />
       )}
 

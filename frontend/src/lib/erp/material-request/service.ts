@@ -6,7 +6,7 @@
 // Includes offline mock fallback when Supabase is disconnected.
 // ============================================================================
 
-import { supabase } from '@/utils/supabase-client';
+import { supabase, getDbSiteId } from '@/utils/supabase-client';
 import { isLiveSupabase } from '@/lib/erp/supabase-modules';
 import { mockMaterialRequestsStore, type MaterialRequestRow } from '@/lib/procurement';
 
@@ -48,9 +48,11 @@ const ZERO_STATS: MrStats = {
 };
 
 export async function listMaterialRequestsPaged(params: MrPagedParams): Promise<MrPagedResult> {
+  const dbProjectId = params.projectId && params.projectId !== 'all' ? getDbSiteId(params.projectId) : null;
+
   try {
     const { data, error } = await supabase.rpc('search_material_requests', {
-      p_project_id: params.projectId || null,
+      p_project_id: dbProjectId,
       p_status: params.status || null,
       p_priority: params.priority || null,
       p_assigned_reviewer: params.reviewerId || null,
@@ -78,8 +80,8 @@ export async function listMaterialRequestsPaged(params: MrPagedParams): Promise<
     .is('deleted_at', null)
     .order('created_at', { ascending: false });
 
-  if (params.projectId && params.projectId !== 'all') {
-    query = query.eq('project_id', params.projectId);
+  if (dbProjectId) {
+    query = query.eq('project_id', dbProjectId);
   }
   if (params.status && params.status !== 'all') {
     query = query.eq('status', params.status);
@@ -98,7 +100,8 @@ export async function getMaterialRequestStats(projectId?: string | null): Promis
     return ZERO_STATS;
   }
 
-  const { data, error } = await supabase.rpc('material_request_stats', { p_project_id: projectId || null });
+  const dbProjectId = projectId && projectId !== 'all' ? getDbSiteId(projectId) : null;
+  const { data, error } = await supabase.rpc('material_request_stats', { p_project_id: dbProjectId });
   if (error) return ZERO_STATS;
   return { ...ZERO_STATS, ...(data as Partial<MrStats>) };
 }
