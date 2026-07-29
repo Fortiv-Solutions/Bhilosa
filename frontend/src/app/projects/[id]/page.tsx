@@ -5194,16 +5194,23 @@ Rules:
                                    const matchingDbDelays = delayEvents.filter(d => {
                                      const cDate = (d.created_at || d.planned_date || '').split('T')[0];
                                      return dprDate ? cDate === dprDate : false;
-                                   }).map(d => ({
-                                     issue_description: `${d.reason_code || 'Site Issue'}: ${d.reason_details || ''}`
-                                   }));
+                                   }).map(d => {
+                                     let cleanDesc = d.reason_code || 'Site Issue';
+                                     if (typeof d.reason_details === 'string') {
+                                       const descMatch = d.reason_details.match(/Description:\s*([\s\S]*)/);
+                                       if (descMatch && descMatch[1].trim()) cleanDesc = `${d.reason_code}: ${descMatch[1].trim()}`;
+                                       else cleanDesc = `${d.reason_code}: ${d.reason_details.replace(/Location:.*$/gm, '').replace(/Agency:.*$/gm, '').replace(/Severity:.*$/gm, '').trim()}`;
+                                     }
+                                     return { issue_description: cleanDesc };
+                                   });
 
                                    const combined = [...explicitIssues, ...textDelays, ...matchingDbDelays];
-                                   if (combined.length === 0) return null;
+                                   const uniqueCombined = Array.from(new Map(combined.map(i => [(i.issue_description || i.reason || '').trim(), i])).values());
+                                   if (uniqueCombined.length === 0) return null;
 
                                    return (
                                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2 pt-2 border-t border-border/50 text-[10px] font-bold">
-                                       {combined.map((issue: any, idx: number) => (
+                                       {uniqueCombined.map((issue: any, idx: number) => (
                                          <p key={idx} className="text-rose-500 font-bold flex items-center gap-1">
                                            <span>⚠️ Historical Delay ({dprDate || 'Logged'}):</span> {issue.issue_description || issue.reason}
                                          </p>
@@ -6016,120 +6023,84 @@ Rules:
                           )}
                         </div>
                         
-                        {dpr.delays && dpr.delays.length > 0 ? (
-                          <div className="space-y-2">
-                            {dpr.delays.map((d: any, idx: number) => (
-                              <div key={idx} className="p-3.5 bg-rose-500/5 dark:bg-rose-950/10 border border-rose-500/20 rounded-2xl flex flex-col gap-1.5 text-xs">
-                                <div className="flex justify-between items-center flex-wrap gap-2">
-                                  <span className="font-bold text-rose-600 dark:text-rose-400 uppercase tracking-wider flex items-center gap-1.5 w-full sm:w-auto">
-                                    {isEditingDPR ? (
-                                      <>
-                                        <input
-                                          type="text"
-                                          placeholder="Trade"
-                                          value={d.trade}
-                                          onChange={(e) => {
-                                            const updated = [...d.delays];
-                                            updated[idx].trade = e.target.value;
-                                            setEditedDPR({ ...dpr, delays: updated });
-                                          }}
-                                          className="text-xs p-1 rounded border border-border bg-white dark:bg-gray-950 font-bold text-foreground"
-                                        />
-                                        <span>·</span>
-                                        <input
-                                          type="text"
-                                          placeholder="Location"
-                                          value={d.location}
-                                          onChange={(e) => {
-                                            const updated = [...d.delays];
-                                            updated[idx].location = e.target.value;
-                                            setEditedDPR({ ...dpr, delays: updated });
-                                          }}
-                                          className="text-xs p-1 rounded border border-border bg-white dark:bg-gray-950 font-bold text-foreground"
-                                        />
-                                      </>
-                                    ) : (
-                                      `${d.trade} · ${d.location}`
-                                    )}
-                                  </span>
-                                  
-                                  <div className="flex items-center gap-2 ml-auto">
-                                    <span className="text-[10px] bg-rose-500/10 text-rose-500 font-bold px-2 py-0.5 rounded border border-rose-500/25">Delay Flag</span>
-                                    {isEditingDPR && (
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          const updated = d.delays.filter((_: any, rIdx: number) => rIdx !== idx);
-                                          setEditedDPR({ ...dpr, delays: updated });
-                                        }}
-                                        className="text-rose-500 hover:text-rose-700 font-bold cursor-pointer ml-1"
-                                      >
-                                        Delete
-                                      </button>
-                                    )}
-                                  </div>
-                                </div>
-                                <div className="text-muted-foreground leading-relaxed space-y-1 mt-1">
-                                  <div>
-                                    <span className="font-bold text-foreground">Planned:</span>{' '}
-                                    {isEditingDPR ? (
-                                      <input
-                                        type="text"
-                                        value={d.planned}
-                                        onChange={(e) => {
-                                          const updated = [...d.delays];
-                                          updated[idx].planned = e.target.value;
-                                          setEditedDPR({ ...dpr, delays: updated });
-                                        }}
-                                        className="text-xs p-1 w-full rounded border border-border bg-white dark:bg-gray-950 text-foreground mt-0.5"
-                                      />
-                                    ) : (
-                                      d.planned
-                                    )}
-                                  </div>
-                                  <div>
-                                    <span className="font-bold text-foreground">Actual:</span>{' '}
-                                    {isEditingDPR ? (
-                                      <input
-                                        type="text"
-                                        value={d.actual}
-                                        onChange={(e) => {
-                                          const updated = [...d.delays];
-                                          updated[idx].actual = e.target.value;
-                                          setEditedDPR({ ...dpr, delays: updated });
-                                        }}
-                                        className="text-xs p-1 w-full rounded border border-border bg-white dark:bg-gray-950 text-foreground mt-0.5"
-                                      />
-                                    ) : (
-                                      d.actual
-                                    )}
-                                  </div>
-                                </div>
-                                <p className="text-rose-600 dark:text-rose-400 font-semibold bg-rose-500/5 p-2 rounded-lg border border-rose-500/10 mt-1 flex flex-col">
-                                  <span className="font-bold text-foreground mb-0.5">⚠️ Reason:</span>
-                                  {isEditingDPR ? (
-                                    <textarea
-                                      value={d.reason}
-                                      rows={2}
-                                      onChange={(e) => {
-                                        const updated = [...d.delays];
-                                        updated[idx].reason = e.target.value;
-                                        setEditedDPR({ ...dpr, delays: updated });
-                                      }}
-                                      className="text-xs p-1 w-full rounded border border-border bg-white dark:bg-gray-950 text-rose-600 mt-0.5"
-                                    />
-                                  ) : (
-                                    d.reason
-                                  )}
-                                </p>
+                        {(() => {
+                          const targetDateStr = dpr.date || selectedDPRDate;
+                          const rawReportDelays = Array.isArray(dpr.delays) ? dpr.delays : [];
+                          
+                          const dbDelaysForDate = delayEvents.filter((d: any) => {
+                            const cDate = (d.created_at || d.planned_date || '').split('T')[0];
+                            return targetDateStr ? cDate <= targetDateStr : true;
+                          }).map((d: any) => {
+                            let parsedDesc = d.reason_details || d.reason_code || '';
+                            if (typeof d.reason_details === 'string') {
+                              const descMatch = d.reason_details.match(/Description:\s*([\s\S]*)/);
+                              if (descMatch && descMatch[1].trim()) {
+                                parsedDesc = descMatch[1].trim();
+                              } else {
+                                parsedDesc = d.reason_details
+                                  .replace(/Location:.*$/gm, '')
+                                  .replace(/Agency:.*$/gm, '')
+                                  .replace(/Severity:.*$/gm, '')
+                                  .trim();
+                              }
+                            }
+                            return {
+                              trade: d.reason_code || 'Site Issue',
+                              location: d.responsible_team || 'Site Field',
+                              planned: d.planned_date ? new Date(d.planned_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : targetDateStr,
+                              actual: 'Work Blocked / Delayed',
+                              reason: parsedDesc || d.reason_details || 'Stoppage logged',
+                              corrective_action: d.corrective_action || '',
+                              status: d.status || 'open'
+                            };
+                          });
+
+                          const activeReportDelays = rawReportDelays.length > 0 
+                            ? rawReportDelays 
+                            : dbDelaysForDate;
+
+                          if (!activeReportDelays || activeReportDelays.length === 0) {
+                            return (
+                              <div className="py-4 text-center border border-dashed border-border rounded-2xl bg-muted/5 text-muted-foreground text-xs italic">
+                                No delays reported.
                               </div>
-                            ))}
-                          </div>
-                        ) : (
-                          <div className="py-4 text-center border border-dashed border-border rounded-2xl bg-muted/5 text-muted-foreground text-xs italic">
-                            No delays reported.
-                          </div>
-                        )}
+                            );
+                          }
+
+                          return (
+                            <div className="space-y-2">
+                              {activeReportDelays.map((d: any, idx: number) => (
+                                <div key={idx} className="p-3.5 bg-rose-500/5 dark:bg-rose-950/10 border border-rose-500/20 rounded-2xl flex flex-col gap-1.5 text-xs">
+                                  <div className="flex justify-between items-center flex-wrap gap-2">
+                                    <span className="font-bold text-rose-600 dark:text-rose-400 uppercase tracking-wider flex items-center gap-1.5 w-full sm:w-auto">
+                                      {d.trade} · {d.location}
+                                    </span>
+                                    <div className="flex items-center gap-2 ml-auto">
+                                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${
+                                        d.status === 'resolved' ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20' : 'bg-rose-500/10 text-rose-600 border-rose-500/20'
+                                      }`}>
+                                        {d.status === 'resolved' ? 'Resolved Later' : 'Delay Flag'}
+                                      </span>
+                                    </div>
+                                  </div>
+                                  <div className="text-muted-foreground leading-relaxed space-y-1 mt-1">
+                                    <div><span className="font-bold text-foreground">Target Date:</span> {d.planned}</div>
+                                    <div><span className="font-bold text-foreground">Impact:</span> {d.actual}</div>
+                                  </div>
+                                  <p className="text-rose-600 dark:text-rose-400 font-semibold bg-rose-500/5 p-2 rounded-lg border border-rose-500/10 mt-1 flex flex-col">
+                                    <span className="font-bold text-foreground mb-0.5">⚠️ Delay Reason / Stoppage:</span>
+                                    {d.reason}
+                                  </p>
+                                  {d.corrective_action && (
+                                    <p className="text-[11px] bg-amber-500/10 text-amber-700 dark:text-amber-400 p-2 rounded-lg border border-amber-500/20 font-medium">
+                                      🔧 Action Plan: {d.corrective_action}
+                                    </p>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          );
+                        })()}
                       </div>
 
                       {/* Site Verification Section */}
@@ -6445,14 +6416,14 @@ Rules:
                                     {parsedReport.status?.replace('_', ' ')}
                                   </span>
                                 </div>
-                                <div className="font-bold text-foreground">
-                                  {parsedReport.total_manpower} workers · {parsedReport.overall_progress_pct}% complete
-                                </div>
                                 <button
                                   type="button"
                                   onClick={() => {
                                     setSelectedDPRDate(dateStr);
-                                    setClientDPRReport(parsedReport);
+                                    const baseReport = parsedReport || getDefaultClientDPR(project?.name || 'Construction Site', dateStr);
+                                    // Ensure historical delay events recorded on/before dateStr are reflected
+                                    const reportDelays = (baseReport.delays && baseReport.delays.length > 0) ? baseReport.delays : [];
+                                    setClientDPRReport({ ...baseReport, delays: reportDelays });
                                     setOperationsSubTab('client-report');
                                   }}
                                   className="text-xs text-primary font-extrabold hover:underline cursor-pointer border border-transparent bg-transparent"
