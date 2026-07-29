@@ -2226,6 +2226,165 @@ export async function createProcurementDocumentUrl(storagePath: string): Promise
 }
 
 /**
+ * Runs deterministic OCR over a supplier invoice and returns the extraction plus
+ * a GRN patch. No AI/LLM is involved — see src/lib/ocr for the pipeline.
+ *
+ * OCR is CPU-bound and takes tens of seconds per scanned page, so callers should
+ * show progress rather than blocking silently.
+ */
+export async function extractInvoiceForGrn(
+  file: File,
+  opts: { includeImages?: boolean } = {},
+): Promise<MutationResult<InvoiceExtractionResponse> & { diagnostics?: unknown }> {
+  try {
+    const body = new FormData();
+    body.append('file', file);
+    if (opts.includeImages) body.append('includeImages', 'true');
+
+    const res = await fetch('/api/ocr/extract-invoice', { method: 'POST', body });
+    const json = await res.json().catch(() => null);
+
+    if (!res.ok || !json?.success) {
+      // Carry the diagnostics out with the error: an empty extraction is only
+      // actionable if the caller can see whether OCR read any words at all.
+      return {
+        data: null,
+        error: asError(new Error(json?.error || `Invoice extraction failed (HTTP ${res.status}).`)),
+        diagnostics: json?.diagnostics,
+      };
+    }
+    return { data: json as InvoiceExtractionResponse, error: null };
+  } catch (err) {
+    return { data: null, error: asError(err) };
+  }
+}
+
+export type InvoiceExtractionResponse = {
+  success: true;
+  fileName: string;
+  fileHash: string;
+  fileSizeBytes: number;
+  processingMs: number;
+  invoiceCount: number;
+  invoice: Record<string, any>;
+  invoices: Array<Record<string, any>>;
+  grnPatch: {
+    header: Record<string, any>;
+    purchaseEntries: Array<Record<string, any>>;
+    extraItems: Array<Record<string, any>>;
+    invoiceRecord: Record<string, any>;
+    reviewFields: Array<{ field: string; reason: string; severity: 'info' | 'warn' | 'error' }>;
+    confidence: number;
+  };
+  pageImages?: string[];
+  engine: string;
+  cached?: boolean;
+  /** Per-page OCR telemetry: word counts, rotation, confidence, recipe used. */
+  diagnostics?: Array<{
+    pageNumber: number;
+    rotation: number;
+    width: number;
+    height: number;
+    wordCount: number;
+    usableWordCount: number;
+    meanConfidence: number;
+    recipe: string;
+    textSample: string;
+  }>;
+  tessdataPath?: string | null;
+};
+
+/**
+ * Persists an OCR extraction record for a GRN.
+ *
+ * Kept separate from the GRN row because these are invoice facts, not receipt
+ * facts, and because the table carries the duplicate-invoice guards (unique IRN,
+ * unique vendor GSTIN + invoice number).
+ */
+export async function saveGrnInvoiceExtraction(
+  record: Record<string, any>,
+  opts: { grnId?: string | null; storagePath?: string | null } = {},
+): Promise<MutationResult<{ id: string }>> {
+  try {
+    const profileId = await currentProfileId();
+    const payload = {
+      ...record,
+      grn_id: opts.grnId ?? null,
+      storage_path: opts.storagePath ?? null,
+      created_by: profileId,
+      updated_by: profileId,
+    };
+
+    const { data, error } = await supabase
+      .from('grn_invoice_extractions')
+      .insert(payload)
+      .select('id')
+      .single();
+
+    if (error) {
+      // A unique-index violation means this invoice has already been received.
+      if (error.code === '23505' || /duplicate key/i.test(error.message)) {
+        throw new Error(
+          `This invoice appears to have been received already (${
+            record.invoice_number ?? 'unknown number'
+          } from ${record.vendor_name ?? 'this vendor'}). Check existing GRNs before booking it again.`,
+        );
+      }
+      throw new Error(error.message);
+    }
+    return { data: { id: data.id }, error: null };
+  } catch (err) {
+    return { data: null, error: asError(err) };
+  }
+}
+
+/**
+ * Looks for an existing extraction that matches this invoice, so a duplicate can
+ * be caught before the user fills in a whole GRN.
+ */
+export async function findDuplicateInvoice(params: {
+  irn?: string | null;
+  vendorGstin?: string | null;
+  invoiceNumber?: string | null;
+  fileHash?: string | null;
+}): Promise<MutationResult<{ id: string; grn_id: string | null; invoice_number: string | null } | null>> {
+  try {
+    const select = 'id, grn_id, invoice_number';
+    if (params.irn) {
+      const { data, error } = await supabase
+        .from('grn_invoice_extractions')
+        .select(select)
+        .eq('irn', params.irn)
+        .maybeSingle();
+      if (error) throw new Error(error.message);
+      if (data) return { data, error: null };
+    }
+    if (params.vendorGstin && params.invoiceNumber) {
+      const { data, error } = await supabase
+        .from('grn_invoice_extractions')
+        .select(select)
+        .eq('vendor_gstin', params.vendorGstin)
+        .eq('invoice_number', params.invoiceNumber)
+        .maybeSingle();
+      if (error) throw new Error(error.message);
+      if (data) return { data, error: null };
+    }
+    if (params.fileHash) {
+      const { data, error } = await supabase
+        .from('grn_invoice_extractions')
+        .select(select)
+        .eq('source_file_hash', params.fileHash)
+        .limit(1);
+      if (error) throw new Error(error.message);
+      if (data?.length) return { data: data[0], error: null };
+    }
+    return { data: null, error: null };
+  } catch (err) {
+    return { data: null, error: asError(err) };
+  }
+}
+
+/**
  * Uploads a Supplier Invoice or Delivery Challan PDF/Image to Supabase Storage bucket 'procurement-documents'.
  * Returns the public/signed URL and storage path so users can view it anytime.
  */
@@ -2905,9 +3064,18 @@ export async function createFullGoodsReceiptNote(formData: {
   vehicle_no?: string;
   supplier_name?: string;
   godown_name?: string;
+  transporter_name?: string;
+  dealer_name?: string;
+  qc_no?: string;
   remarks?: string;
   status?: string;
+  account_posting_amount?: number;
   uploaded_invoice_url?: string;
+  uploaded_invoice_path?: string;
+  uploaded_invoice_name?: string;
+  uploaded_challan_url?: string;
+  uploaded_challan_path?: string;
+  uploaded_challan_name?: string;
 }): Promise<MutationResult<{ id: string }>> {
   try {
     const profileId = await currentProfileId();
@@ -2917,10 +3085,22 @@ export async function createFullGoodsReceiptNote(formData: {
       challan_no: formData.challan_no || null,
       vehicle_no: formData.vehicle_no || null,
       godown_name: formData.godown_name || 'Main Site Store',
+      transporter_name: formData.transporter_name || null,
+      dealer_name: formData.dealer_name || null,
+      qc_no: formData.qc_no || null,
       status: formData.status || 'draft',
       quantity_verification: formData.challan_no || null,
       physical_inspection: formData.vehicle_no || null,
       remarks: formData.remarks || null,
+      account_posting_amount: formData.account_posting_amount ?? null,
+      // These were previously accepted as arguments and then silently dropped,
+      // so an uploaded invoice was stored in the bucket but never linked to the GRN.
+      uploaded_invoice_url: formData.uploaded_invoice_url || null,
+      uploaded_invoice_path: formData.uploaded_invoice_path || null,
+      uploaded_invoice_name: formData.uploaded_invoice_name || null,
+      uploaded_challan_url: formData.uploaded_challan_url || null,
+      uploaded_challan_path: formData.uploaded_challan_path || null,
+      uploaded_challan_name: formData.uploaded_challan_name || null,
       created_by: profileId,
       updated_by: profileId,
       created_at: new Date().toISOString(),
@@ -3051,125 +3231,173 @@ export async function postGrnToInventory(input: PostGrnInput): Promise<MutationR
  */
 export function printMaterialRequestReport(mr: MaterialRequestRow) {
   if (typeof window === 'undefined') return;
-  const printWindow = window.open('', '_blank', 'width=1100,height=900');
+  const printWindow = window.open('', '_blank', 'width=1000,height=900');
   if (!printWindow) return;
 
-  const linesHtml = (mr.material_request_lines || []).map((line: any, idx: number) => `
-    <tr>
-      <td style="border: 1px solid #cbd5e1; padding: 6px 8px; text-align: center; font-weight:700;">${idx + 1}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px 8px; font-weight:700; color:#b68d40;">${mr.mr_number}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px 8px; text-transform: uppercase; font-weight:700; color:#0f172a;">${mr.status || 'Draft'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px 8px; text-transform: capitalize;">${mr.priority || 'Medium'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px 8px; color:#059669; font-weight:600;">${(mr as any).stock_audit || (mr as any).inventory_status || 'Verified In-Stock'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px 8px; font-weight:600;">${mr.projects?.name || (mr as any).project_name || '-'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">${mr.work_activity || '-'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">${(line as any).activity_code || (mr as any).activity_code || '-'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px 8px; font-weight:700;">${line.item_code || (line as any).item_id || '-'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">${line.item_group || '-'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px 8px; font-weight:600;">${line.item_description}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px 8px; text-align: center;">${line.unit || 'nos'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">${(line as any).required_date || (mr.required_date ? new Date(mr.required_date).toLocaleDateString('en-IN') : '-')}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">${(line as any).brand || (line as any).item_brand || '-'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">${(line as any).specification || (line as any).item_specification || '-'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px 8px; text-align: right; font-weight:800; color:#b68d40;">${line.quantity}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">${mr.profiles?.name || (mr as any).raised_by || 'Site Engineer'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">${mr.created_at ? new Date(mr.created_at).toLocaleDateString('en-IN') : '-'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px 8px;">${line.remarks || mr.justification || '-'}</td>
-    </tr>
-  `).join('');
+  const now = new Date();
+  const printDateStr = now.toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }) + ' ' + now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false });
+  const mrDateStr = mr.created_at ? new Date(mr.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '';
+  const reqDateHeaderStr = mr.required_date ? new Date(mr.required_date).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '';
+  const raisedByName = mr.profiles?.name || (mr as any).raised_by || '';
+  const projectName = mr.projects?.name || (mr as any).project_name || '';
+  const contractorName = (mr as any).contractor_name || (mr as any).company_name || (mr as any).contractor || '';
+  const workActivity = mr.work_activity || '';
+
+  const linesHtml = (mr.material_request_lines || []).map((line: any, idx: number) => {
+    const itemReqDate = line.required_date ? new Date(line.required_date).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }) : reqDateHeaderStr;
+    return `
+      <tr>
+        <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${idx + 1}</td>
+        <td style="border: 1px solid #000; padding: 6px 8px;">${line.item_group || ''}</td>
+        <td style="border: 1px solid #000; padding: 6px 8px; font-weight: 600;">${line.item_description || ''}</td>
+        <td style="border: 1px solid #000; padding: 6px 8px;">${line.brand || line.item_brand || ''}</td>
+        <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${line.unit || ''}</td>
+        <td style="border: 1px solid #000; padding: 6px 8px; text-align: right; font-weight: 700;">${line.quantity ?? ''}</td>
+        <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${itemReqDate}</td>
+      </tr>
+    `;
+  }).join('');
+
+  const remarksText = mr.justification || (mr as any).remarks || '';
+
+  const historyEntries = (mr as any).history && Array.isArray((mr as any).history) ? (mr as any).history : [];
+
+  const historyHtml = historyEntries.length > 0
+    ? historyEntries.map((h: any) => `
+        <tr>
+          <td style="border: 1px solid #000; padding: 6px 8px;">${h.from || ''}</td>
+          <td style="border: 1px solid #000; padding: 6px 8px;">${h.to || ''}</td>
+          <td style="border: 1px solid #000; padding: 6px 8px; font-weight: 600;">${h.by || ''}</td>
+          <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${h.at || ''}</td>
+          <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${h.daysSince ?? ''}</td>
+          <td style="border: 1px solid #000; padding: 6px 8px;">${h.remarks || ''}</td>
+        </tr>
+      `).join('')
+    : `<tr><td colspan="6" style="border: 1px solid #000; padding: 10px; text-align: center; color: #444;">No history logs recorded</td></tr>`;
 
   const htmlContent = `
     <!DOCTYPE html>
     <html>
       <head>
-        <title>Material Request Report - ${mr.mr_number}</title>
+        <title>Material Request Report - ${mr.mr_number || ''}</title>
         <style>
-          body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; padding: 20px; color: #0f172a; margin: 0; background: #fff; }
-          .header { border-bottom: 2px solid #b68d40; padding-bottom: 12px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: flex-end; }
-          .header h1 { margin: 0; color: #b68d40; font-size: 22px; font-weight: 800; letter-spacing: 0.5px; }
-          .header p { margin: 2px 0 0 0; color: #64748b; font-size: 12px; font-weight: 500; }
-          table { width: 100%; border-collapse: collapse; margin-top: 14px; font-size: 11px; }
-          th { background-color: #f1f5f9; border: 1px solid #cbd5e1; padding: 7px 8px; text-align: left; font-size: 10px; text-transform: uppercase; color: #475569; letter-spacing: 0.3px; whitespace: nowrap; }
-          .footer { margin-top: 24px; border-top: 2px solid #e2e8f0; padding-top: 12px; display: flex; justify-content: space-between; align-items: center; }
-          .sig-box { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-top: 32px; text-align: center; font-size: 11px; }
-          .sig-line { border-top: 1px solid #94a3b8; padding-top: 5px; font-weight: 700; color: #475569; }
-          .btn-print { padding: 8px 16px; background-color: #b68d40; color: white; border: none; border-radius: 6px; font-weight: 700; cursor: pointer; font-size: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-          .btn-print:hover { background-color: #9e7933; }
+          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; padding: 24px; color: #000; margin: 0; background: #fff; line-height: 1.3; }
+          h1, h2, h3 { color: #000; margin: 0; padding: 0; }
+          .header-container { text-align: center; margin-bottom: 16px; border-bottom: 2px solid #000; padding-bottom: 8px; }
+          .header-title { font-size: 22px; font-weight: 900; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 4px; }
+          .header-subtitle { font-size: 11px; font-weight: 600; text-transform: uppercase; }
+          
+          .meta-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 12px; }
+          .meta-table td { border: 1px solid #000; padding: 6px 10px; vertical-align: middle; }
+          .meta-label { font-weight: 800; text-transform: uppercase; width: 22%; background: #fff; }
+          .meta-val { font-weight: 600; width: 28%; }
+
+          .section-heading { font-size: 13px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.5px; margin: 18px 0 8px 0; border-bottom: 1.5px solid #000; padding-bottom: 4px; }
+          .center-heading { text-align: center; border-bottom: none; }
+
+          .data-table { width: 100%; border-collapse: collapse; margin-bottom: 0; font-size: 11px; }
+          .data-table th { border: 1px solid #000; padding: 7px 8px; text-align: left; font-size: 10px; font-weight: 900; text-transform: uppercase; background: #fff; }
+          .data-table td { border: 1px solid #000; padding: 6px 8px; }
+          
+          .summary-table { width: 100%; border-collapse: collapse; margin-top: -1px; margin-bottom: 20px; font-size: 11px; }
+          .summary-table td { border: 1px solid #000; padding: 6px 10px; }
+
+          .btn-print { padding: 8px 18px; background-color: #000; color: #fff; border: 1px solid #000; font-weight: 800; cursor: pointer; font-size: 12px; text-transform: uppercase; }
+          .btn-print:hover { background-color: #333; }
           @media print {
             body { padding: 0; }
             .no-print { display: none !important; }
-            @page { size: A4 landscape; margin: 8mm; }
+            @page { size: A4; margin: 10mm; }
           }
         </style>
       </head>
       <body>
         <div class="no-print" style="margin-bottom: 16px; text-align: right;">
-          <button class="btn-print" onclick="window.print()">🖨️ Print MR Report / Save as PDF</button>
-        </div>
-        <div class="header">
-          <div>
-            <h1>PRAMUKH GROUP</h1>
-            <p>MATERIAL REQUEST REPORT</p>
-          </div>
-          <div style="text-align: right;">
-            <h2 style="margin:0; font-size:18px; color:#0f172a;">MR NO: ${mr.mr_number}</h2>
-            <p>Date: ${new Date(mr.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</p>
-          </div>
+          <button class="btn-print" onclick="window.print()">🖨️ PRINT REPORT / SAVE AS PDF</button>
         </div>
 
-        <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 16px; font-size: 12px; background-color: #f8fafc; padding: 12px 16px; border-radius: 8px; border: 1px solid #e2e8f0;">
-          <div style="display: flex; justify-content: space-between; border-bottom: 1px dashed #e2e8f0; padding-bottom: 4px;"><span style="font-weight: 600; color: #64748b;">Project Name:</span> <span style="font-weight: 600; color: #0f172a;">${mr.projects?.name || (mr as any).project_name || 'Central Park'}</span></div>
-          <div style="display: flex; justify-content: space-between; border-bottom: 1px dashed #e2e8f0; padding-bottom: 4px;"><span style="font-weight: 600; color: #64748b;">Required Date:</span> <span style="font-weight: 600; color: #0f172a;">${mr.required_date ? new Date(mr.required_date).toLocaleDateString('en-IN') : '-'}</span></div>
-          <div style="display: flex; justify-content: space-between; border-bottom: 1px dashed #e2e8f0; padding-bottom: 4px;"><span style="font-weight: 600; color: #64748b;">Work Activity:</span> <span style="font-weight: 600; color: #0f172a;">${mr.work_activity || 'General Construction'}</span></div>
-          <div style="display: flex; justify-content: space-between; border-bottom: 1px dashed #e2e8f0; padding-bottom: 4px;"><span style="font-weight: 600; color: #64748b;">Priority:</span> <span style="font-weight: 600; color: #e11d48; text-transform: uppercase;">${mr.priority || 'MEDIUM'}</span></div>
-          <div style="display: flex; justify-content: space-between; border-bottom: 1px dashed #e2e8f0; padding-bottom: 4px;"><span style="font-weight: 600; color: #64748b;">Raised By:</span> <span style="font-weight: 600; color: #0f172a;">${mr.profiles?.name || (mr as any).raised_by || 'Site Engineer'}</span></div>
-          <div style="display: flex; justify-content: space-between; border-bottom: 1px dashed #e2e8f0; padding-bottom: 4px;"><span style="font-weight: 600; color: #64748b;">Status:</span> <span style="font-weight: 600; color: #059669; text-transform: uppercase;">${mr.status || 'DRAFT'}</span></div>
+        <!-- TOP CENTER HEADING -->
+        <div class="header-container">
+          <div class="header-title">Material Requests</div>
+          <div class="header-subtitle">Printed By: ${raisedByName} &nbsp;&nbsp; on Date: ${printDateStr}</div>
         </div>
 
-        <h3 style="text-align: center; font-size: 13px; margin: 16px 0 10px 0; font-weight: 800; color: #0f172a; letter-spacing: 0.5px;">MATERIAL REQUEST LINE ITEMS</h3>
+        <!-- METADATA TABULAR GRID -->
+        <table class="meta-table">
+          <tr>
+            <td class="meta-label">M.R. No.</td>
+            <td class="meta-val">${mr.mr_number || ''}</td>
+            <td class="meta-label">M.R. Date *</td>
+            <td class="meta-val">${mrDateStr}</td>
+          </tr>
+          <tr>
+            <td class="meta-label">Project & Site</td>
+            <td class="meta-val">${projectName}</td>
+            <td class="meta-label">Contractor Name</td>
+            <td class="meta-val">${contractorName}</td>
+          </tr>
+          <tr>
+            <td class="meta-label">Activity Names/Work Activity</td>
+            <td class="meta-val">${workActivity}</td>
+            <td class="meta-label">Raised By</td>
+            <td class="meta-val">${raisedByName}</td>
+          </tr>
+        </table>
 
-        <div style="overflow-x: auto;">
-          <table>
-            <thead>
-              <tr>
-                <th style="text-align: center;">Sr No.</th>
-                <th>MR Number</th>
-                <th>Status / Approved</th>
-                <th>Priority</th>
-                <th>Stock Audit</th>
-                <th>Project & Site</th>
-                <th>Work Activity</th>
-                <th>Activity Code</th>
-                <th>Item Code</th>
-                <th>Item Group</th>
-                <th>Item Description</th>
-                <th style="text-align: center;">Units *</th>
-                <th>Required Date *</th>
-                <th>Item Brand</th>
-                <th>Item Specification</th>
-                <th style="text-align: right;">Quantity *</th>
-                <th>Raised By</th>
-                <th>Submitted</th>
-                <th>View Details</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${linesHtml.length > 0 ? linesHtml : '<tr><td colspan="19" style="padding:16px; text-align:center; color:#94a3b8;">No material items attached</td></tr>'}
-            </tbody>
-          </table>
-        </div>
+        <!-- MATERIAL REQUEST ENTRIES SECTION -->
+        <div class="section-heading center-heading">Material Request Entries</div>
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th style="width: 40px; text-align: center;">Sr No.</th>
+              <th>Item Group</th>
+              <th>Item Description</th>
+              <th>Item Brand</th>
+              <th style="width: 60px; text-align: center;">Units *</th>
+              <th style="width: 70px; text-align: right;">Quantity *</th>
+              <th style="width: 90px; text-align: center;">Required Date *</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${linesHtml.length > 0 ? linesHtml : '<tr><td colspan="7" style="border: 1px solid #000; padding:12px; text-align:center;">No entries found</td></tr>'}
+          </tbody>
+        </table>
 
-        <div class="footer">
-          <div>
-            <p style="margin:0; font-size:11px; color:#64748b;">Generated via Pramukh Group ERP Procurement System</p>
-          </div>
-        </div>
+        <!-- SUMMARY ROWS IN SAME TABULAR SECTION -->
+        <table class="summary-table">
+          <tr>
+            <td style="width: 15%; font-weight: 900; text-transform: uppercase;">Remarks</td>
+            <td style="width: 85%; font-weight: 600;" colspan="3">${remarksText}</td>
+          </tr>
+          <tr>
+            <td style="width: 15%; font-weight: 900; text-transform: uppercase;">Priority</td>
+            <td style="width: 35%; font-weight: 700; text-transform: uppercase;">${mr.priority || ''}</td>
+            <td style="width: 15%; font-weight: 900; text-transform: uppercase;">Prepared by</td>
+            <td style="width: 35%; font-weight: 600;">${raisedByName}</td>
+          </tr>
+          <tr>
+            <td style="width: 15%; font-weight: 900; text-transform: uppercase;">Status</td>
+            <td style="width: 85%; font-weight: 700; text-transform: uppercase;" colspan="3">${mr.status || ''}</td>
+          </tr>
+        </table>
 
-        <div class="sig-box">
-          <div class="sig-line">Raised By / Site Engineer</div>
-          <div class="sig-line">Verified By / Store Manager</div>
-          <div class="sig-line">Approved By / Project Manager</div>
-        </div>
+        <!-- REPORT HISTORY SECTION -->
+        <div class="section-heading center-heading">REPORT HISTORY</div>
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th style="width: 15%;">FROM</th>
+              <th style="width: 15%;">TO</th>
+              <th style="width: 20%;">BY</th>
+              <th style="width: 18%; text-align: center;">AT</th>
+              <th style="width: 10%; text-align: center;">DAYS SINCE</th>
+              <th style="width: 22%;">REMARKS</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${historyHtml}
+          </tbody>
+        </table>
 
         <script>
           window.onload = function() {
@@ -3194,101 +3422,124 @@ export function printGrnReport(grn: any) {
   const printWindow = window.open('', '_blank', 'width=1000,height=900');
   if (!printWindow) return;
 
-  const itemsHtml = (grn.items || []).map((item: any, idx: number) => `
+  const now = new Date();
+  const printDateStr = now.toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }) + ' ' + now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false });
+  const grnDateStr = grn.grn_date || grn.receipt_date || (grn.created_at ? new Date(grn.created_at).toLocaleDateString('en-IN') : '');
+  const receivedBy = grn.profiles?.name || grn.created_by_name || grn.received_by || '';
+  const projectName = grn.project_name || grn.projects?.name || '';
+  const vendorName = grn.vendor_name || grn.vendors?.display_name || grn.vendors?.legal_name || '';
+
+  const itemsHtml = (grn.items || grn.lines || grn.goods_receipt_note_lines || []).map((item: any, idx: number) => `
     <tr>
-      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: center;">${idx + 1}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 7px; font-weight:700; color:#0284c7;">${item.item_code || '-'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 7px; font-weight: 600;">${item.item_description}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 7px;">${item.category_group || '-'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: center;">${item.unit}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: right;">${item.po_approved_qty}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: right; font-weight:700;">${item.received_qty}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: right; font-weight:700; color:#059669;">${item.accepted_qty}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: right; font-weight:700; color:#dc2626;">${item.rejected_qty}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: right;">₹ ${(item.unit_rate || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: right; font-weight:700;">₹ ${(item.total_amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 7px;">${item.location || '-'}</td>
+      <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${idx + 1}</td>
+      <td style="border: 1px solid #000; padding: 6px 8px; font-weight: 700;">${item.item_code || ''}</td>
+      <td style="border: 1px solid #000; padding: 6px 8px; font-weight: 600;">${item.item_description || ''}</td>
+      <td style="border: 1px solid #000; padding: 6px 8px;">${item.category_group || item.item_group || ''}</td>
+      <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${item.unit || ''}</td>
+      <td style="border: 1px solid #000; padding: 6px 8px; text-align: right;">${item.po_approved_qty ?? ''}</td>
+      <td style="border: 1px solid #000; padding: 6px 8px; text-align: right; font-weight: 700;">${item.received_qty ?? ''}</td>
+      <td style="border: 1px solid #000; padding: 6px 8px; text-align: right; font-weight: 700;">${item.accepted_qty ?? ''}</td>
+      <td style="border: 1px solid #000; padding: 6px 8px; text-align: right; font-weight: 700;">${item.rejected_qty ?? ''}</td>
+      <td style="border: 1px solid #000; padding: 6px 8px; text-align: right;">${item.unit_rate ? '₹ ' + item.unit_rate.toLocaleString('en-IN', { minimumFractionDigits: 2 }) : ''}</td>
+      <td style="border: 1px solid #000; padding: 6px 8px; text-align: right; font-weight: 700;">${item.total_amount ? '₹ ' + item.total_amount.toLocaleString('en-IN', { minimumFractionDigits: 2 }) : ''}</td>
+      <td style="border: 1px solid #000; padding: 6px 8px;">${item.location || ''}</td>
     </tr>
   `).join('');
+
+  const historyEntries = grn.history && Array.isArray(grn.history) ? grn.history : [];
+  const historyHtml = historyEntries.length > 0
+    ? historyEntries.map((h: any) => `
+        <tr>
+          <td style="border: 1px solid #000; padding: 6px 8px;">${h.from || ''}</td>
+          <td style="border: 1px solid #000; padding: 6px 8px;">${h.to || ''}</td>
+          <td style="border: 1px solid #000; padding: 6px 8px; font-weight: 600;">${h.by || ''}</td>
+          <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${h.at || ''}</td>
+          <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${h.daysSince ?? ''}</td>
+          <td style="border: 1px solid #000; padding: 6px 8px;">${h.remarks || ''}</td>
+        </tr>
+      `).join('')
+    : `<tr><td colspan="6" style="border: 1px solid #000; padding: 10px; text-align: center; color: #444;">No history logs recorded</td></tr>`;
 
   const htmlContent = `
     <!DOCTYPE html>
     <html>
       <head>
-        <title>Goods Receipt Note Report - ${grn.grn_no || 'GRN'}</title>
+        <title>Goods Receipt Note Report - ${grn.grn_no || grn.grn_number || ''}</title>
         <style>
-          body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; padding: 28px; color: #0f172a; margin: 0; background: #fff; }
-          .header { border-bottom: 2px solid #0284c7; padding-bottom: 14px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: flex-end; }
-          .header h1 { margin: 0; color: #0284c7; font-size: 24px; font-weight: 800; letter-spacing: 0.5px; }
-          .header p { margin: 3px 0 0 0; color: #64748b; font-size: 13px; font-weight: 500; }
-          .section-title { font-size: 12px; font-weight: 800; text-transform: uppercase; color: #0284c7; margin: 18px 0 8px 0; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; }
-          .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 16px; font-size: 12px; background-color: #f8fafc; padding: 12px; border-radius: 8px; border: 1px solid #e2e8f0; }
-          .grid-item { display: flex; justify-content: space-between; border-bottom: 1px dashed #e2e8f0; padding-bottom: 4px; }
-          .label { font-weight: 600; color: #64748b; }
-          .val { font-weight: 700; color: #0f172a; }
-          table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12px; }
-          th { background-color: #f1f5f9; border: 1px solid #cbd5e1; padding: 8px; text-align: left; font-size: 10px; text-transform: uppercase; color: #475569; letter-spacing: 0.5px; }
-          .footer { margin-top: 28px; border-top: 2px solid #e2e8f0; padding-top: 16px; display: flex; justify-content: space-between; align-items: center; }
-          .sig-box { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-top: 36px; text-align: center; font-size: 12px; }
-          .sig-line { border-top: 1px solid #94a3b8; padding-top: 6px; font-weight: 700; color: #475569; }
-          .btn-print { padding: 9px 18px; background-color: #0284c7; color: white; border: none; border-radius: 6px; font-weight: 700; cursor: pointer; font-size: 13px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-          .btn-print:hover { background-color: #0369a1; }
+          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; padding: 24px; color: #000; margin: 0; background: #fff; line-height: 1.3; }
+          h1, h2, h3 { color: #000; margin: 0; padding: 0; }
+          .header-container { text-align: center; margin-bottom: 16px; border-bottom: 2px solid #000; padding-bottom: 8px; }
+          .header-title { font-size: 22px; font-weight: 900; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 4px; }
+          .header-subtitle { font-size: 11px; font-weight: 600; text-transform: uppercase; }
+          
+          .meta-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 12px; }
+          .meta-table td { border: 1px solid #000; padding: 6px 10px; vertical-align: middle; }
+          .meta-label { font-weight: 800; text-transform: uppercase; width: 22%; background: #fff; }
+          .meta-val { font-weight: 600; width: 28%; }
+
+          .section-heading { font-size: 13px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.5px; margin: 18px 0 8px 0; border-bottom: 1.5px solid #000; padding-bottom: 4px; }
+          .center-heading { text-align: center; border-bottom: none; }
+
+          .data-table { width: 100%; border-collapse: collapse; margin-bottom: 0; font-size: 11px; }
+          .data-table th { border: 1px solid #000; padding: 7px 8px; text-align: left; font-size: 10px; font-weight: 900; text-transform: uppercase; background: #fff; }
+          .data-table td { border: 1px solid #000; padding: 6px 8px; }
+          
+          .summary-table { width: 100%; border-collapse: collapse; margin-top: -1px; margin-bottom: 20px; font-size: 11px; }
+          .summary-table td { border: 1px solid #000; padding: 6px 10px; }
+
+          .btn-print { padding: 8px 18px; background-color: #000; color: #fff; border: 1px solid #000; font-weight: 800; cursor: pointer; font-size: 12px; text-transform: uppercase; }
+          .btn-print:hover { background-color: #333; }
           @media print {
             body { padding: 0; }
             .no-print { display: none !important; }
-            @page { size: A4 landscape; margin: 10mm; }
+            @page { size: A4 landscape; margin: 8mm; }
           }
         </style>
       </head>
       <body>
         <div class="no-print" style="margin-bottom: 16px; text-align: right;">
-          <button class="btn-print" onclick="window.print()">🖨️ Print GRN Report / Save as PDF</button>
+          <button class="btn-print" onclick="window.print()">🖨️ PRINT REPORT / SAVE AS PDF</button>
         </div>
 
-        <div class="header">
-          <div>
-            <h1>PRAMUKH GROUP</h1>
-            <p>Official Goods Receipt Note (GRN) Document</p>
-          </div>
-          <div style="text-align: right;">
-            <h2 style="margin:0; font-size:20px; color:#0284c7;">${grn.grn_no || 'GRN Entry'}</h2>
-            <p>Receipt Date: ${grn.grn_date || '-'}</p>
-          </div>
+        <div class="header-container">
+          <div class="header-title">Goods Receipt Notes</div>
+          <div class="header-subtitle">Printed By: ${receivedBy} &nbsp;&nbsp; on Date: ${printDateStr}</div>
         </div>
 
-        <div class="section-title">1. Header & Order Identification Details</div>
-        <div class="grid">
-          <div class="grid-item"><span class="label">Project Name:</span> <span class="val">${grn.project_name || '-'}</span></div>
-          <div class="grid-item"><span class="label">Sub Project:</span> <span class="val">${grn.sub_project || '-'}</span></div>
-          <div class="grid-item"><span class="label">Vendor Name:</span> <span class="val">${grn.vendor_name || '-'}</span></div>
-          <div class="grid-item"><span class="label">P.O. Exist:</span> <span class="val">${grn.po_exist || 'Yes'}</span></div>
-          <div class="grid-item"><span class="label">From P.O.:</span> <span class="val">${grn.po_exist === 'Yes' ? (grn.po_number || '-') : 'P.O. Not Exist'}</span></div>
-          <div class="grid-item"><span class="label">Vendor Invoice No:</span> <span class="val">${grn.vendor_invoice_no || '-'}</span></div>
-          <div class="grid-item"><span class="label">Vendor Invoice Date:</span> <span class="val">${grn.vendor_invoice_date || '-'}</span></div>
-          <div class="grid-item"><span class="label">Vendor Challan Date:</span> <span class="val">${grn.vendor_challan_date || '-'}</span></div>
-          <div class="grid-item"><span class="label">Gate Entry No:</span> <span class="val">${grn.gate_entry_no || '-'}</span></div>
-          <div class="grid-item"><span class="label">Workflow Status:</span> <span class="val" style="text-transform: uppercase; color: #0284c7;">${grn.status || 'Draft'}</span></div>
-        </div>
+        <table class="meta-table">
+          <tr>
+            <td class="meta-label">G.R.N. No.</td>
+            <td class="meta-val">${grn.grn_no || grn.grn_number || ''}</td>
+            <td class="meta-label">Receipt Date *</td>
+            <td class="meta-val">${grnDateStr}</td>
+          </tr>
+          <tr>
+            <td class="meta-label">Project & Site</td>
+            <td class="meta-val">${projectName}</td>
+            <td class="meta-label">Vendor Name</td>
+            <td class="meta-val">${vendorName}</td>
+          </tr>
+          <tr>
+            <td class="meta-label">P.O. Number</td>
+            <td class="meta-val">${grn.po_number || ''}</td>
+            <td class="meta-label">Vendor Invoice / Challan</td>
+            <td class="meta-val">${grn.vendor_invoice_no || grn.challan_no || ''}</td>
+          </tr>
+          <tr>
+            <td class="meta-label">Vehicle & Transporter</td>
+            <td class="meta-label">${grn.vehicle_number || grn.vehicle_no || ''} ${grn.transporter_name ? '(' + grn.transporter_name + ')' : ''}</td>
+            <td class="meta-label">Status</td>
+            <td class="meta-val" style="text-transform: uppercase;">${grn.status || ''}</td>
+          </tr>
+        </table>
 
-        <div class="section-title">2. Vehicle & Weight Verification Ledger</div>
-        <div class="grid">
-          <div class="grid-item"><span class="label">Vehicle Measure Required:</span> <span class="val">${grn.vehicle_measure_required || 'No'}</span></div>
-          <div class="grid-item"><span class="label">Vehicle Measure:</span> <span class="val">${grn.vehicle_measure_required === 'Yes' ? (grn.vehicle_measure || '-') : 'N/A'}</span></div>
-          <div class="grid-item"><span class="label">Weight Required:</span> <span class="val">${grn.weight_required || 'No'}</span></div>
-          <div class="grid-item"><span class="label">Weight:</span> <span class="val">${grn.weight_required === 'Yes' ? (grn.weight || '-') : 'N/A'}</span></div>
-          <div class="grid-item"><span class="label">Transporter Name:</span> <span class="val">${grn.transporter_name || '-'}</span></div>
-          <div class="grid-item"><span class="label">LR Number:</span> <span class="val">${grn.lr_number || '-'}</span></div>
-          <div class="grid-item"><span class="label">Driver Name:</span> <span class="val">${grn.driver_name || '-'}</span></div>
-          <div class="grid-item"><span class="label">Vehicle Number:</span> <span class="val">${grn.vehicle_number || '-'}</span></div>
-        </div>
-
-        <div class="section-title">3. Material Quantities & Inspection Table</div>
-        <table>
+        <div class="section-heading center-heading">Goods Receipt Line Items</div>
+        <table class="data-table">
           <thead>
             <tr>
-              <th style="width: 24px; text-align: center;">#</th>
+              <th style="width: 30px; text-align: center;">Sr No.</th>
               <th>Code</th>
-              <th>Description</th>
+              <th>Item Description</th>
               <th>Category</th>
               <th style="text-align: center;">Unit</th>
               <th style="text-align: right;">PO Qty</th>
@@ -3296,37 +3547,44 @@ export function printGrnReport(grn: any) {
               <th style="text-align: right;">Acc Qty</th>
               <th style="text-align: right;">Rej Qty</th>
               <th style="text-align: right;">Rate</th>
-              <th style="text-align: right;">Total Amt</th>
+              <th style="text-align: right;">Total Amount</th>
               <th>Location</th>
             </tr>
           </thead>
           <tbody>
-            ${itemsHtml.length > 0 ? itemsHtml : '<tr><td colspan="12" style="padding:16px; text-align:center; color:#94a3b8;">No material items attached</td></tr>'}
+            ${itemsHtml.length > 0 ? itemsHtml : '<tr><td colspan="12" style="border: 1px solid #000; padding:12px; text-align:center;">No material items attached</td></tr>'}
           </tbody>
         </table>
 
-        ${grn.invoice_file_url ? `
-          <div style="margin-top:16px; background:#f0f9ff; border:1px solid #bae6fd; padding:10px 14px; border-radius:8px; font-size:12px;">
-            <strong style="color:#0284c7;">Uploaded Supplier Invoice Document:</strong>
-            <span style="margin-left:8px; color:#0369a1;">${grn.invoice_file_name || 'Invoice Document Attached'}</span>
-          </div>
-        ` : ''}
+        <table class="summary-table">
+          <tr>
+            <td style="width: 15%; font-weight: 900; text-transform: uppercase;">Inspection Remarks</td>
+            <td style="width: 85%; font-weight: 600;" colspan="3">${grn.remarks || ''}</td>
+          </tr>
+          <tr>
+            <td style="width: 15%; font-weight: 900; text-transform: uppercase;">Posting Material Amount</td>
+            <td style="width: 35%; font-weight: 700;">${grn.account_posting_material_amount ? '₹ ' + Number(grn.account_posting_material_amount).toLocaleString('en-IN', { minimumFractionDigits: 2 }) : ''}</td>
+            <td style="width: 15%; font-weight: 900; text-transform: uppercase;">Received By</td>
+            <td style="width: 35%; font-weight: 600;">${receivedBy}</td>
+          </tr>
+        </table>
 
-        <div class="footer">
-          <div>
-            <p style="margin:0; font-size:11px; color:#64748b;">Generated via Pramukh Group ERP Procurement System</p>
-          </div>
-          <div style="text-align: right;">
-            <p style="margin:0; font-size:12px; color:#64748b;">Posting Material Amount</p>
-            <h2 style="margin:2px 0 0 0; color:#0284c7; font-size:20px;">₹ ${(grn.account_posting_material_amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</h2>
-          </div>
-        </div>
-
-        <div class="sig-box">
-          <div class="sig-line">Site Store Keeper / Received By</div>
-          <div class="sig-line">Site Engineer / Inspected By</div>
-          <div class="sig-line">Project Manager / Approved By</div>
-        </div>
+        <div class="section-heading center-heading">REPORT HISTORY</div>
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th style="width: 15%;">FROM</th>
+              <th style="width: 15%;">TO</th>
+              <th style="width: 20%;">BY</th>
+              <th style="width: 18%; text-align: center;">AT</th>
+              <th style="width: 10%; text-align: center;">DAYS SINCE</th>
+              <th style="width: 22%;">REMARKS</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${historyHtml}
+          </tbody>
+        </table>
 
         <script>
           window.onload = function() {
@@ -3351,73 +3609,67 @@ export function printPurchaseBillReport(pb: any) {
   const printWindow = window.open('', '_blank', 'width=1000,height=900');
   if (!printWindow) return;
 
-  const entriesHtml = (pb.purchase_bill_entries || []).map((e: any, idx: number) => `
+  const now = new Date();
+  const printDateStr = now.toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }) + ' ' + now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false });
+  const billDateStr = pb.bill_date_of_supplier || pb.bill_date || pb.accounting_date || '';
+  const preparedBy = pb.profiles?.name || pb.created_by_name || '';
+
+  const entriesHtml = (pb.purchase_bill_entries || pb.vendor_bill_lines || pb.items || []).map((e: any, idx: number) => `
     <tr>
-      <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: center;">${idx + 1}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px; font-weight:700; color:#059669;">${e.grn_no || '-'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px;">${e.grn_date || '-'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px;">${e.challan_no || '-'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px;">${e.po_no || '-'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: right;">${e.received_qty}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: right;">₹ ${(e.bill_rate || 0).toFixed(2)}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: right;">${(e.bill_discount_perc || 0)}%</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: right;">₹ ${(e.gross_amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: right;">₹ ${(e.vat_amt || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: right;">₹ ${(e.freight_chgs || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: right; font-weight:700; color:#059669;">₹ ${(e.net_amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
+      <td style="border: 1px solid #000; padding: 6px; text-align: center;">${idx + 1}</td>
+      <td style="border: 1px solid #000; padding: 6px; font-weight:700;">${e.grn_no || e.item_code || ''}</td>
+      <td style="border: 1px solid #000; padding: 6px;">${e.item_description || e.description || ''}</td>
+      <td style="border: 1px solid #000; padding: 6px;">${e.po_no || ''}</td>
+      <td style="border: 1px solid #000; padding: 6px; text-align: right;">${e.received_qty ?? e.quantity ?? ''}</td>
+      <td style="border: 1px solid #000; padding: 6px; text-align: right;">${e.bill_rate ? '₹ ' + Number(e.bill_rate).toFixed(2) : ''}</td>
+      <td style="border: 1px solid #000; padding: 6px; text-align: right;">${e.bill_discount_perc ? e.bill_discount_perc + '%' : ''}</td>
+      <td style="border: 1px solid #000; padding: 6px; text-align: right; font-weight:700;">${e.net_amount ? '₹ ' + Number(e.net_amount).toLocaleString('en-IN', { minimumFractionDigits: 2 }) : ''}</td>
     </tr>
   `).join('');
 
-  const advHtml = (pb.advance_payment_entries || []).map((adv: any) => `
-    <tr>
-      <td style="border: 1px solid #cbd5e1; padding: 6px; font-weight:700; color:#059669;">${adv.voucher_no || '-'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px;">${adv.voucher_date || '-'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px; font-weight:700;">${adv.po_no || '-'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: right;">₹ ${(adv.advanced_payment || 0).toLocaleString('en-IN')}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: right;">₹ ${(adv.adjusted_payment || 0).toLocaleString('en-IN')}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: right;">₹ ${(adv.balance_amt || 0).toLocaleString('en-IN')}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: right; font-weight:700; color:#059669;">₹ ${(adv.adjust_amt || 0).toLocaleString('en-IN')}</td>
-    </tr>
-  `).join('');
-
-  const ledgerHtml = (pb.ledger_posting_info || []).map((leg: any) => `
-    <tr>
-      <td style="border: 1px solid #cbd5e1; padding: 6px; font-weight:700; color:#059669;">${leg.id || '-'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px;">${leg.date || '-'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px; font-weight:700;">${leg.ledger_main || '-'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px;">${leg.ledger_group || '-'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px;">${leg.account_head || '-'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px;">${leg.project || '-'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: right; font-weight:700; color:#059669;">₹ ${(leg.dr || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 6px; text-align: right; font-weight:700; color:#2563eb;">₹ ${(leg.cr || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
-    </tr>
-  `).join('');
-
-  const totalDr = (pb.ledger_posting_info || []).reduce((sum: number, i: any) => sum + Number(i.dr || 0), 0);
-  const totalCr = (pb.ledger_posting_info || []).reduce((sum: number, i: any) => sum + Number(i.cr || 0), 0);
+  const historyEntries = pb.history && Array.isArray(pb.history) ? pb.history : [];
+  const historyHtml = historyEntries.length > 0
+    ? historyEntries.map((h: any) => `
+        <tr>
+          <td style="border: 1px solid #000; padding: 6px 8px;">${h.from || ''}</td>
+          <td style="border: 1px solid #000; padding: 6px 8px;">${h.to || ''}</td>
+          <td style="border: 1px solid #000; padding: 6px 8px; font-weight: 600;">${h.by || ''}</td>
+          <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${h.at || ''}</td>
+          <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${h.daysSince ?? ''}</td>
+          <td style="border: 1px solid #000; padding: 6px 8px;">${h.remarks || ''}</td>
+        </tr>
+      `).join('')
+    : `<tr><td colspan="6" style="border: 1px solid #000; padding: 10px; text-align: center; color: #444;">No history logs recorded</td></tr>`;
 
   const htmlContent = `
     <!DOCTYPE html>
     <html>
       <head>
-        <title>Purchase Bill Report - ${pb.bill_no || 'PB'}</title>
+        <title>Purchase Bill Report - ${pb.bill_no || pb.bill_number || ''}</title>
         <style>
-          body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; padding: 26px; color: #0f172a; margin: 0; background: #fff; }
-          .header { border-bottom: 2px solid #059669; padding-bottom: 12px; margin-bottom: 18px; display: flex; justify-content: space-between; align-items: flex-end; }
-          .header h1 { margin: 0; color: #059669; font-size: 24px; font-weight: 800; letter-spacing: 0.5px; }
-          .header p { margin: 3px 0 0 0; color: #64748b; font-size: 12px; font-weight: 500; }
-          .section-title { font-size: 11px; font-weight: 800; text-transform: uppercase; color: #059669; margin: 16px 0 6px 0; border-bottom: 1px solid #e2e8f0; padding-bottom: 3px; }
-          .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; font-size: 11px; background-color: #f8fafc; padding: 10px; border-radius: 8px; border: 1px solid #e2e8f0; }
-          .grid-item { display: flex; justify-content: space-between; border-bottom: 1px dashed #e2e8f0; padding-bottom: 3px; }
-          .label { font-weight: 600; color: #64748b; }
-          .val { font-weight: 700; color: #0f172a; }
-          table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 11px; }
-          th { background-color: #f1f5f9; border: 1px solid #cbd5e1; padding: 7px; text-align: left; font-size: 10px; text-transform: uppercase; color: #475569; letter-spacing: 0.5px; }
-          .footer { margin-top: 24px; border-top: 2px solid #e2e8f0; padding-top: 14px; display: flex; justify-content: space-between; align-items: center; }
-          .sig-box { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 30px; text-align: center; font-size: 11px; }
-          .sig-line { border-top: 1px solid #94a3b8; padding-top: 5px; font-weight: 700; color: #475569; }
-          .btn-print { padding: 9px 18px; background-color: #059669; color: white; border: none; border-radius: 6px; font-weight: 700; cursor: pointer; font-size: 13px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-          .btn-print:hover { background-color: #047857; }
+          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; padding: 24px; color: #000; margin: 0; background: #fff; line-height: 1.3; }
+          h1, h2, h3 { color: #000; margin: 0; padding: 0; }
+          .header-container { text-align: center; margin-bottom: 16px; border-bottom: 2px solid #000; padding-bottom: 8px; }
+          .header-title { font-size: 22px; font-weight: 900; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 4px; }
+          .header-subtitle { font-size: 11px; font-weight: 600; text-transform: uppercase; }
+          
+          .meta-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 12px; }
+          .meta-table td { border: 1px solid #000; padding: 6px 10px; vertical-align: middle; }
+          .meta-label { font-weight: 800; text-transform: uppercase; width: 22%; background: #fff; }
+          .meta-val { font-weight: 600; width: 28%; }
+
+          .section-heading { font-size: 13px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.5px; margin: 18px 0 8px 0; border-bottom: 1.5px solid #000; padding-bottom: 4px; }
+          .center-heading { text-align: center; border-bottom: none; }
+
+          .data-table { width: 100%; border-collapse: collapse; margin-bottom: 0; font-size: 11px; }
+          .data-table th { border: 1px solid #000; padding: 7px 8px; text-align: left; font-size: 10px; font-weight: 900; text-transform: uppercase; background: #fff; }
+          .data-table td { border: 1px solid #000; padding: 6px 8px; }
+          
+          .summary-table { width: 100%; border-collapse: collapse; margin-top: -1px; margin-bottom: 20px; font-size: 11px; }
+          .summary-table td { border: 1px solid #000; padding: 6px 10px; }
+
+          .btn-print { padding: 8px 18px; background-color: #000; color: #fff; border: 1px solid #000; font-weight: 800; cursor: pointer; font-size: 12px; text-transform: uppercase; }
+          .btn-print:hover { background-color: #333; }
           @media print {
             body { padding: 0; }
             .no-print { display: none !important; }
@@ -3427,118 +3679,85 @@ export function printPurchaseBillReport(pb: any) {
       </head>
       <body>
         <div class="no-print" style="margin-bottom: 16px; text-align: right;">
-          <button class="btn-print" onclick="window.print()">🖨️ Print Purchase Bill Report / Save as PDF</button>
+          <button class="btn-print" onclick="window.print()">🖨️ PRINT REPORT / SAVE AS PDF</button>
         </div>
 
-        <div class="header">
-          <div>
-            <h1>PRAMUKH GROUP - ${pb.company_name || 'TANVI INFRACON'}</h1>
-            <p>Official Purchase Bill (PB) & Financial Ledger Voucher Document</p>
-          </div>
-          <div style="text-align: right;">
-            <h2 style="margin:0; font-size:20px; color:#059669;">${pb.bill_no || 'PB Entry'}</h2>
-            <p>Accounting Date: ${pb.accounting_date || '-'}</p>
-          </div>
+        <div class="header-container">
+          <div class="header-title">Purchase Bills</div>
+          <div class="header-subtitle">Printed By: ${preparedBy} &nbsp;&nbsp; on Date: ${printDateStr}</div>
         </div>
 
-        <div class="section-title">1. Bill Header & Supplier Master Info</div>
-        <div class="grid">
-          <div class="grid-item"><span class="label">Supplier Name:</span> <span class="val">${pb.supplier_name || '-'}</span></div>
-          <div class="grid-item"><span class="label">Bill No of Supplier:</span> <span class="val">${pb.bill_no_of_supplier || '-'}</span></div>
-          <div class="grid-item"><span class="label">Bill Date of Supplier:</span> <span class="val">${pb.bill_date_of_supplier || '-'}</span></div>
-          <div class="grid-item"><span class="label">Project Name:</span> <span class="val">${pb.project_name || '-'}</span></div>
-          <div class="grid-item"><span class="label">Sub Project:</span> <span class="val">${pb.sub_project || '-'}</span></div>
-          <div class="grid-item"><span class="label">Tax Status:</span> <span class="val">${pb.tax_status || '-'}</span></div>
-          <div class="grid-item"><span class="label">From P.O.s:</span> <span class="val">${pb.from_pos || '-'}</span></div>
-          <div class="grid-item"><span class="label">From Challans:</span> <span class="val">${pb.from_challans || '-'}</span></div>
-          <div class="grid-item"><span class="label">Payment Days:</span> <span class="val">${pb.payment_days || 30} Days</span></div>
-          <div class="grid-item"><span class="label">Bill Due Date:</span> <span class="val">${pb.bill_due_date || '-'}</span></div>
-          <div class="grid-item"><span class="label">Workflow Status:</span> <span class="val" style="text-transform: uppercase; color:#059669;">${pb.status || 'Draft'}</span></div>
-        </div>
+        <table class="meta-table">
+          <tr>
+            <td class="meta-label">Bill No.</td>
+            <td class="meta-val">${pb.bill_no || pb.bill_number || ''}</td>
+            <td class="meta-label">Bill Date *</td>
+            <td class="meta-val">${billDateStr}</td>
+          </tr>
+          <tr>
+            <td class="meta-label">Project & Site</td>
+            <td class="meta-val">${pb.project_name || pb.projects?.name || ''}</td>
+            <td class="meta-label">Supplier / Vendor</td>
+            <td class="meta-val">${pb.supplier_name || pb.vendors?.display_name || pb.vendors?.legal_name || ''}</td>
+          </tr>
+          <tr>
+            <td class="meta-label">GRN & PO Ref</td>
+            <td class="meta-val">${pb.grn_no || pb.from_pos || ''}</td>
+            <td class="meta-label">3-Way Match Status</td>
+            <td class="meta-val" style="text-transform: uppercase;">${pb.match_status || pb.match_remarks || ''}</td>
+          </tr>
+          <tr>
+            <td class="meta-label">Total Amount</td>
+            <td class="meta-val" style="font-weight:900;">${pb.total_amount ? '₹ ' + Number(pb.total_amount).toLocaleString('en-IN', { minimumFractionDigits: 2 }) : ''}</td>
+            <td class="meta-label">Status</td>
+            <td class="meta-val" style="text-transform: uppercase;">${pb.status || ''}</td>
+          </tr>
+        </table>
 
-        <div class="section-title">2. Purchase Bill Line Items</div>
-        <table>
+        <div class="section-heading center-heading">Purchase Bill Line Items</div>
+        <table class="data-table">
           <thead>
             <tr>
-              <th style="width: 20px; text-align: center;">#</th>
-              <th>GRN No</th>
-              <th>GRN Date</th>
-              <th>Challan No</th>
-              <th>PO No</th>
-              <th style="text-align: right;">Recv Qty</th>
-              <th style="text-align: right;">Bill Rate</th>
+              <th style="width: 30px; text-align: center;">Sr No.</th>
+              <th>Code / GRN</th>
+              <th>Description</th>
+              <th>PO Ref</th>
+              <th style="text-align: right;">Billed Qty</th>
+              <th style="text-align: right;">Rate</th>
               <th style="text-align: right;">Disc %</th>
-              <th style="text-align: right;">Gross Amt</th>
-              <th style="text-align: right;">Tax (VAT)</th>
-              <th style="text-align: right;">Freight</th>
-              <th style="text-align: right;">Net Amt</th>
+              <th style="text-align: right;">Net Amount</th>
             </tr>
           </thead>
           <tbody>
-            ${entriesHtml.length > 0 ? entriesHtml : '<tr><td colspan="12" style="padding:12px; text-align:center; color:#94a3b8;">No bill entries attached</td></tr>'}
+            ${entriesHtml.length > 0 ? entriesHtml : '<tr><td colspan="8" style="border: 1px solid #000; padding:12px; text-align:center;">No bill entries attached</td></tr>'}
           </tbody>
         </table>
 
-        ${(pb.advance_payment_entries || []).length > 0 ? `
-          <div class="section-title">3. Advance Payment Adjustment Entries</div>
-          <table>
-            <thead>
-              <tr>
-                <th>Voucher No</th>
-                <th>Voucher Date</th>
-                <th>P.O. No</th>
-                <th style="text-align: right;">Advanced Payment</th>
-                <th style="text-align: right;">Adjusted Payment</th>
-                <th style="text-align: right;">Balance Amt</th>
-                <th style="text-align: right;">Adjust Amt</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${advHtml}
-            </tbody>
-          </table>
-        ` : ''}
+        <table class="summary-table">
+          <tr>
+            <td style="width: 15%; font-weight: 900; text-transform: uppercase;">Prepared By</td>
+            <td style="width: 35%; font-weight: 600;">${preparedBy}</td>
+            <td style="width: 15%; font-weight: 900; text-transform: uppercase;">Workflow Status</td>
+            <td style="width: 35%; font-weight: 700; text-transform: uppercase;">${pb.status || ''}</td>
+          </tr>
+        </table>
 
-        ${(pb.ledger_posting_info || []).length > 0 ? `
-          <div class="section-title">4. Ledger Posting Info & Double Entry Verification</div>
-          <table>
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>Date</th>
-                <th>Ledger Main</th>
-                <th>Ledger Group</th>
-                <th>Account Head</th>
-                <th>Project</th>
-                <th style="text-align: right;">DR</th>
-                <th style="text-align: right;">CR</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${ledgerHtml}
-            </tbody>
-          </table>
-          <div style="text-align:right; margin-top:6px; font-size:11px; font-weight:700;">
-            Total DR: <span style="color:#059669;">₹ ${totalDr.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span> | 
-            Total CR: <span style="color:#2563eb;">₹ ${totalCr.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
-          </div>
-        ` : ''}
-
-        <div class="footer">
-          <div>
-            <p style="margin:0; font-size:11px; color:#64748b;">Generated via Pramukh Group ERP Financial & Procurement System</p>
-          </div>
-          <div style="text-align: right;">
-            <p style="margin:0; font-size:12px; color:#64748b;">Final Bill Settlement Amount</p>
-            <h2 style="margin:2px 0 0 0; color:#059669; font-size:22px;">₹ ${(pb.final_bill_amount || pb.total_bill_amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</h2>
-          </div>
-        </div>
-
-        <div class="sig-box">
-          <div class="sig-line">Prepared By / Accounts Clerk</div>
-          <div class="sig-line">Verified By / Chief Accountant</div>
-          <div class="sig-line">Approved By / Finance Director</div>
-        </div>
+        <div class="section-heading center-heading">REPORT HISTORY</div>
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th style="width: 15%;">FROM</th>
+              <th style="width: 15%;">TO</th>
+              <th style="width: 20%;">BY</th>
+              <th style="width: 18%; text-align: center;">AT</th>
+              <th style="width: 10%; text-align: center;">DAYS SINCE</th>
+              <th style="width: 22%;">REMARKS</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${historyHtml}
+          </tbody>
+        </table>
 
         <script>
           window.onload = function() {
@@ -3563,126 +3782,201 @@ export function printPurchaseRequisitionReport(pr: any) {
   const printWindow = window.open('', '_blank', 'width=1000,height=900');
   if (!printWindow) return;
 
-  const items = pr.items || pr.lines || pr.pr_items || [];
+  const now = new Date();
+  const printDateStr = now.toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  const printedByName = pr.printed_by || pr.profiles?.name || pr.created_by_name || pr.raised_by || 'Karan Shah';
+  const prDateStr = pr.pr_date || (pr.created_at ? new Date(pr.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '');
+  const reqDateStr = pr.target_date || pr.required_date ? new Date(pr.target_date || pr.required_date).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '';
+  const projectName = pr.project_name || pr.projects?.name || '';
+  const companyName = pr.company_name || '';
+  const subProject = pr.site_name || pr.sub_project || '';
+  const contractorName = pr.contractor_name || pr.contractor || '';
+  const costCenter = pr.cost_code || pr.budget_head || pr.cost_center || '';
+  const activityNames = pr.activity_name || pr.work_activity || '';
+  const deliveryAddress = pr.delivery_address || '';
+  const remarks = pr.general_remarks || pr.remarks || pr.justification || '';
+  const unlockedProject = pr.unlocked_project ?? '1.00';
+  const preparedBy = pr.prepared_by || pr.profiles?.name || pr.created_by_name || pr.raised_by || '';
+  const prReleaseDate = pr.pr_release_date || (pr.created_at ? new Date(pr.created_at).toLocaleString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }) : '');
+  const status = pr.status || 'Approved';
+
+  const items = pr.items || pr.lines || pr.pr_items || pr.purchase_requisition_lines || [];
   const itemsHtml = items.map((item: any, idx: number) => `
     <tr>
-      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: center;">${idx + 1}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 7px; font-weight:700; color:#4f46e5;">${item.item_code || item.item_id || '-'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 7px; font-weight: 600;">${item.item_description || item.description || '-'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 7px;">${item.category_group || item.item_group || '-'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: center;">${item.unit || 'nos'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: right; font-weight:700;">${item.quantity || item.qty || 0}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: right;">₹ ${(item.estimated_rate || item.unit_rate || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: right; font-weight:700; color:#4f46e5;">₹ ${((item.quantity || 0) * (item.estimated_rate || item.unit_rate || 0)).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 7px;">${item.required_date || item.target_date || '-'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 7px;">${item.remarks || item.delivery_location || '-'}</td>
+      <td style="border: 1px solid #000; padding: 6px 6px; text-align: center;">${idx + 1}</td>
+      <td style="border: 1px solid #000; padding: 6px 6px;">${item.category_group || item.item_group || ''}</td>
+      <td style="border: 1px solid #000; padding: 6px 6px; font-weight: 600;">${item.item_description || item.description || ''}</td>
+      <td style="border: 1px solid #000; padding: 6px 6px; text-align: center;">${item.unit || ''}</td>
+      <td style="border: 1px solid #000; padding: 6px 6px;">${item.brand || item.item_brand || '-'}</td>
+      <td style="border: 1px solid #000; padding: 6px 6px; text-align: right;">${Number(item.est_qty ?? 0).toFixed(3)}</td>
+      <td style="border: 1px solid #000; padding: 6px 6px; text-align: right;">${Number(item.iss_qty ?? 0).toFixed(3)}</td>
+      <td style="border: 1px solid #000; padding: 6px 6px; text-align: right; font-weight: 700;">${Number(item.quantity ?? item.qty ?? 0).toFixed(2)}</td>
+      <td style="border: 1px solid #000; padding: 6px 6px; text-align: right;">${Number(item.bal_qty ?? item.quantity ?? 0).toFixed(2)}</td>
+      <td style="border: 1px solid #000; padding: 6px 6px; text-align: right;">${Number(item.pending_pr ?? 0).toFixed(2)}</td>
+      <td style="border: 1px solid #000; padding: 6px 6px; text-align: right;">${item.lead_period ? Number(item.lead_period).toFixed(2) : ''}</td>
+      <td style="border: 1px solid #000; padding: 6px 6px; text-align: center;">${item.lead_period_date || item.required_date || reqDateStr}</td>
+      <td style="border: 1px solid #000; padding: 6px 6px; text-align: center;">${item.required_date || item.target_date || reqDateStr}</td>
+      <td style="border: 1px solid #000; padding: 6px 6px; text-align: right;">${item.stock_qty ? Number(item.stock_qty).toFixed(3) : ''}</td>
     </tr>
   `).join('');
 
-  const totalAmt = items.reduce((sum: number, item: any) => sum + ((item.quantity || 0) * (item.estimated_rate || item.unit_rate || 0)), 0);
+  const historyEntries = pr.history && Array.isArray(pr.history) ? pr.history : [];
+  const historyHtml = historyEntries.length > 0
+    ? historyEntries.map((h: any) => `
+        <tr>
+          <td style="border: 1px solid #000; padding: 6px 8px;">${h.from || ''}</td>
+          <td style="border: 1px solid #000; padding: 6px 8px;">${h.to || ''}</td>
+          <td style="border: 1px solid #000; padding: 6px 8px; font-weight: 600;">${h.by || ''}</td>
+          <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${h.at || ''}</td>
+          <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${h.daysSince ?? ''}</td>
+          <td style="border: 1px solid #000; padding: 6px 8px;">${h.remarks || ''}</td>
+        </tr>
+      `).join('')
+    : `<tr><td colspan="6" style="border: 1px solid #000; padding: 10px; text-align: center; color: #444;">No history logs recorded</td></tr>`;
 
   const htmlContent = `
     <!DOCTYPE html>
     <html>
       <head>
-        <title>Purchase Requisition Report - ${pr.pr_number || 'PR'}</title>
+        <title>Purchase Requisition Report - ${pr.pr_number || ''}</title>
         <style>
-          body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; padding: 28px; color: #0f172a; margin: 0; background: #fff; }
-          .header { border-bottom: 2px solid #4f46e5; padding-bottom: 14px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: flex-end; }
-          .header h1 { margin: 0; color: #4f46e5; font-size: 24px; font-weight: 800; letter-spacing: 0.5px; }
-          .header p { margin: 3px 0 0 0; color: #64748b; font-size: 13px; font-weight: 500; }
-          .section-title { font-size: 12px; font-weight: 800; text-transform: uppercase; color: #4f46e5; margin: 18px 0 8px 0; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; }
-          .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 16px; font-size: 12px; background-color: #f8fafc; padding: 12px; border-radius: 8px; border: 1px solid #e2e8f0; }
-          .grid-item { display: flex; justify-content: space-between; border-bottom: 1px dashed #e2e8f0; padding-bottom: 4px; }
-          .label { font-weight: 600; color: #64748b; }
-          .val { font-weight: 700; color: #0f172a; }
-          table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12px; }
-          th { background-color: #f1f5f9; border: 1px solid #cbd5e1; padding: 8px; text-align: left; font-size: 10px; text-transform: uppercase; color: #475569; letter-spacing: 0.5px; }
-          .footer { margin-top: 28px; border-top: 2px solid #e2e8f0; padding-top: 16px; display: flex; justify-content: space-between; align-items: center; }
-          .sig-box { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-top: 36px; text-align: center; font-size: 12px; }
-          .sig-line { border-top: 1px solid #94a3b8; padding-top: 6px; font-weight: 700; color: #475569; }
-          .btn-print { padding: 9px 18px; background-color: #4f46e5; color: white; border: none; border-radius: 6px; font-weight: 700; cursor: pointer; font-size: 13px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-          .btn-print:hover { background-color: #4338ca; }
+          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; padding: 18px; color: #000; margin: 0; background: #fff; line-height: 1.3; }
+          h1, h2, h3 { color: #000; margin: 0; padding: 0; }
+          .header-container { text-align: center; margin-bottom: 12px; border-bottom: 2px solid #000; padding-bottom: 6px; }
+          .header-title { font-size: 18px; font-weight: 900; letter-spacing: 0.5px; text-transform: uppercase; margin-bottom: 2px; }
+          .header-subtitle { font-size: 10px; font-weight: 600; }
+          
+          .meta-table { width: 100%; border-collapse: collapse; margin-bottom: 14px; font-size: 10px; table-layout: fixed; }
+          .meta-table td { border: 1px solid #000; padding: 4px 6px; vertical-align: middle; word-wrap: break-word; }
+          .meta-label { font-weight: 800; width: 16%; background: #fff; }
+          .meta-val { font-weight: 600; width: 34%; }
+
+          .section-heading { font-size: 11px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.5px; margin: 12px 0 5px 0; border-bottom: 1.5px solid #000; padding-bottom: 2px; }
+          .center-heading { text-align: center; border-bottom: none; }
+
+          .data-table { width: 100%; border-collapse: collapse; margin-bottom: 0; font-size: 9px; table-layout: fixed; }
+          .data-table th { border: 1px solid #000; padding: 5px 3px; text-align: left; font-size: 8.5px; font-weight: 900; background: #fff; word-wrap: break-word; }
+          .data-table td { border: 1px solid #000; padding: 4px 3px; word-wrap: break-word; }
+          
+          .summary-table { width: 100%; border-collapse: collapse; margin-top: -1px; margin-bottom: 14px; font-size: 9.5px; table-layout: fixed; }
+          .summary-table td { border: 1px solid #000; padding: 4px 6px; word-wrap: break-word; }
+
+          .btn-print { padding: 8px 18px; background-color: #000; color: #fff; border: 1px solid #000; font-weight: 800; cursor: pointer; font-size: 12px; text-transform: uppercase; }
+          .btn-print:hover { background-color: #333; }
           @media print {
             body { padding: 0; }
             .no-print { display: none !important; }
-            @page { size: A4 landscape; margin: 10mm; }
+            @page { size: A4 landscape; margin: 6mm; }
           }
         </style>
       </head>
       <body>
         <div class="no-print" style="margin-bottom: 16px; text-align: right;">
-          <button class="btn-print" onclick="window.print()">🖨️ Print PR Report / Save as PDF</button>
+          <button class="btn-print" onclick="window.print()">🖨️ PRINT REPORT / SAVE AS PDF</button>
         </div>
 
-        <div class="header">
-          <div>
-            <h1>PRAMUKH GROUP</h1>
-            <p>Official Purchase Requisition (PR) Document</p>
-          </div>
-          <div style="text-align: right;">
-            <h2 style="margin:0; font-size:20px; color:#4f46e5;">${pr.pr_number || 'PR Entry'}</h2>
-            <p>PR Date: ${pr.pr_date || pr.created_at || '-'}</p>
-          </div>
+        <div class="header-container">
+          <div class="header-title">Purchase Requisition</div>
+          <div class="header-subtitle">Printed By: ${printedByName} on Date: ${printDateStr}</div>
         </div>
 
-        <div class="section-title">1. Requisition Header & Project Details</div>
-        <div class="grid">
-          <div class="grid-item"><span class="label">Requisition Title:</span> <span class="val">${pr.title || '-'}</span></div>
-          <div class="grid-item"><span class="label">PR Type:</span> <span class="val">${pr.pr_type || 'Material'}</span></div>
-          <div class="grid-item"><span class="label">Priority:</span> <span class="val" style="text-transform: capitalize;">${pr.priority || 'Medium'}</span></div>
-          <div class="grid-item"><span class="label">Project Name:</span> <span class="val">${pr.project_name || pr.projects?.name || '-'}</span></div>
-          <div class="grid-item"><span class="label">Required By Date:</span> <span class="val">${pr.target_date || pr.required_date || '-'}</span></div>
-          <div class="grid-item"><span class="label">Budget Head:</span> <span class="val">${pr.budget_head || '-'}</span></div>
-          <div class="grid-item"><span class="label">Cost Code:</span> <span class="val">${pr.cost_code || '-'}</span></div>
-          <div class="grid-item"><span class="label">Delivery Location:</span> <span class="val">${pr.delivery_location || '-'}</span></div>
-          <div class="grid-item"><span class="label">Workflow Status:</span> <span class="val" style="text-transform: uppercase; color:#4f46e5;">${pr.status || 'Draft'}</span></div>
-        </div>
+        <table class="meta-table">
+          <tr>
+            <td class="meta-label">P.R. No.</td>
+            <td class="meta-val">${pr.pr_number || ''}</td>
+            <td class="meta-label">P.R.Date*</td>
+            <td class="meta-val">${prDateStr}</td>
+          </tr>
+          <tr>
+            <td class="meta-label">Project Name*</td>
+            <td class="meta-val">${projectName}</td>
+            <td class="meta-label">Name of Company</td>
+            <td class="meta-val">${companyName}</td>
+          </tr>
+          <tr>
+            <td class="meta-label">Sub Project*</td>
+            <td class="meta-val">${subProject}</td>
+            <td class="meta-label">Contractor Name</td>
+            <td class="meta-val">${contractorName}</td>
+          </tr>
+          <tr>
+            <td class="meta-label">Cost Center</td>
+            <td class="meta-val">${costCenter}</td>
+            <td class="meta-label"></td>
+            <td class="meta-val"></td>
+          </tr>
+          <tr>
+            <td class="meta-label">Activity Names</td>
+            <td class="meta-val">${activityNames}</td>
+            <td class="meta-label"></td>
+            <td class="meta-val"></td>
+          </tr>
+        </table>
 
-        ${pr.contractor_name ? `
-          <div class="section-title">Contractor & Work Order Information</div>
-          <div class="grid">
-            <div class="grid-item"><span class="label">Contractor Name:</span> <span class="val">${pr.contractor_name}</span></div>
-            <div class="grid-item"><span class="label">Work Order No:</span> <span class="val">${pr.work_order_no || '-'}</span></div>
-          </div>
-        ` : ''}
-
-        <div class="section-title">2. Requested Items & Line Details</div>
-        <table>
+        <div class="section-heading center-heading">Material Request Entries*</div>
+        <table class="data-table">
           <thead>
             <tr>
-              <th style="width: 24px; text-align: center;">#</th>
-              <th>Code</th>
-              <th>Description</th>
-              <th>Category</th>
-              <th style="text-align: center;">Unit</th>
-              <th style="text-align: right;">Qty</th>
-              <th style="text-align: right;">Est. Rate</th>
-              <th style="text-align: right;">Est. Total</th>
-              <th>Target Date</th>
-              <th>Remarks</th>
+              <th style="width: 25px; text-align: center;">Sr</th>
+              <th style="width: 75px;">Item Group*</th>
+              <th style="width: 120px;">Item Desc*</th>
+              <th style="width: 35px; text-align: center;">Unit*</th>
+              <th style="width: 55px;">Item Brand</th>
+              <th style="width: 45px; text-align: right;">Est Qty</th>
+              <th style="width: 45px; text-align: right;">Iss Qty</th>
+              <th style="width: 50px; text-align: right;">Quantity*</th>
+              <th style="width: 45px; text-align: right;">Bal Qty</th>
+              <th style="width: 50px; text-align: right;">Pending PR</th>
+              <th style="width: 45px; text-align: center;">Lead Period</th>
+              <th style="width: 65px; text-align: center;">Lead Period Date</th>
+              <th style="width: 65px; text-align: center;">Required Date*</th>
+              <th style="width: 50px; text-align: right;">Stock Qty</th>
             </tr>
           </thead>
           <tbody>
-            ${itemsHtml.length > 0 ? itemsHtml : '<tr><td colspan="10" style="padding:16px; text-align:center; color:#94a3b8;">No items attached</td></tr>'}
+            ${itemsHtml.length > 0 ? itemsHtml : '<tr><td colspan="14" style="border: 1px solid #000; padding:10px; text-align:center;">No entries found</td></tr>'}
           </tbody>
         </table>
 
-        <div class="footer">
-          <div>
-            <p style="margin:0; font-size:11px; color:#64748b;">Generated via Pramukh Group ERP Procurement System</p>
-          </div>
-          <div style="text-align: right;">
-            <p style="margin:0; font-size:12px; color:#64748b;">Total Estimated PR Value</p>
-            <h2 style="margin:2px 0 0 0; color:#4f46e5; font-size:20px;">₹ ${totalAmt.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</h2>
-          </div>
-        </div>
+        <table class="summary-table">
+          <tr>
+            <td style="width: 15%; font-weight: 800;">Delivery Address</td>
+            <td style="width: 85%; font-weight: 600;" colspan="13">${deliveryAddress}</td>
+          </tr>
+          <tr>
+            <td style="width: 15%; font-weight: 800;">Remarks</td>
+            <td style="width: 85%; font-weight: 600;" colspan="13">${remarks}</td>
+          </tr>
+          <tr>
+            <td style="width: 15%; font-weight: 800;">Unlocked Project</td>
+            <td style="width: 35%; font-weight: 600;" colspan="5">${unlockedProject}</td>
+            <td style="width: 15%; font-weight: 800;" colspan="2">Prepared By</td>
+            <td style="width: 35%; font-weight: 600;" colspan="6">${preparedBy}</td>
+          </tr>
+          <tr>
+            <td style="width: 15%; font-weight: 800;">PR Release Date</td>
+            <td style="width: 35%; font-weight: 600;" colspan="5">${prReleaseDate}</td>
+            <td style="width: 15%; font-weight: 800;" colspan="2">Status</td>
+            <td style="width: 35%; font-weight: 700;" colspan="6">${status}</td>
+          </tr>
+        </table>
 
-        <div class="sig-box">
-          <div class="sig-line">Prepared By / Site Engineer</div>
-          <div class="sig-line">Verified By / Store Manager</div>
-          <div class="sig-line">Approved By / Procurement Head</div>
-        </div>
+        <div class="section-heading center-heading">REPORT HISTORY</div>
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th style="width: 15%;">FROM</th>
+              <th style="width: 15%;">TO</th>
+              <th style="width: 20%;">BY</th>
+              <th style="width: 18%; text-align: center;">AT</th>
+              <th style="width: 10%; text-align: center;">DAYS SINCE</th>
+              <th style="width: 22%;">REMARKS</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${historyHtml}
+          </tbody>
+        </table>
 
         <script>
           window.onload = function() {
@@ -3698,96 +3992,126 @@ export function printPurchaseRequisitionReport(pr: any) {
   printWindow.document.close();
 }
 
-/**
- * Client-side formatted print window for Purchase Orders (PO).
- * Renders header, vendor master, line items, taxes, discount, payment terms, and signoff blocks.
- */
 export function printPurchaseOrderReport(po: any) {
   if (typeof window === 'undefined') return;
   const printWindow = window.open('', '_blank', 'width=1000,height=900');
   if (!printWindow) return;
 
+  const now = new Date();
+  const printDateStr = now.toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }) + ' ' + now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false });
+  const poDateStr = po.po_date || (po.created_at ? new Date(po.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '');
+  const issuedByName = po.profiles?.name || po.created_by_name || '';
+  const vendorName = po.vendor_name || po.vendors?.display_name || po.vendors?.legal_name || '';
+  const projectName = po.project_name || po.projects?.name || '';
+
   const items = po.items || po.lines || po.purchase_order_lines || [];
   const itemsHtml = items.map((item: any, idx: number) => `
     <tr>
-      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: center;">${idx + 1}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 7px; font-weight:700; color:#2563eb;">${item.item_code || '-'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 7px; font-weight: 600;">${item.item_description || item.description || '-'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 7px;">${item.category_group || item.item_group || '-'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: center;">${item.unit || 'nos'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: right; font-weight:700;">${item.quantity || item.qty || 0}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: right;">₹ ${(item.unit_rate || 0).toFixed(2)}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: right;">${(item.discount_perc || 0)}%</td>
-      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: right;">${(item.tax_rate || 18)}%</td>
-      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: right; font-weight:700; color:#2563eb;">₹ ${(item.net_amount || (item.quantity * item.unit_rate) || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
+      <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${idx + 1}</td>
+      <td style="border: 1px solid #000; padding: 6px 8px; font-weight: 700;">${item.item_code || ''}</td>
+      <td style="border: 1px solid #000; padding: 6px 8px; font-weight: 600;">${item.item_description || item.description || ''}</td>
+      <td style="border: 1px solid #000; padding: 6px 8px;">${item.category_group || item.item_group || ''}</td>
+      <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${item.unit || ''}</td>
+      <td style="border: 1px solid #000; padding: 6px 8px; text-align: right; font-weight: 700;">${item.quantity ?? item.qty ?? ''}</td>
+      <td style="border: 1px solid #000; padding: 6px 8px; text-align: right;">${item.unit_rate ? '₹ ' + Number(item.unit_rate).toFixed(2) : ''}</td>
+      <td style="border: 1px solid #000; padding: 6px 8px; text-align: right;">${item.discount_perc ? item.discount_perc + '%' : ''}</td>
+      <td style="border: 1px solid #000; padding: 6px 8px; text-align: right;">${item.tax_rate ? item.tax_rate + '%' : ''}</td>
+      <td style="border: 1px solid #000; padding: 6px 8px; text-align: right; font-weight: 700;">${item.net_amount ? '₹ ' + Number(item.net_amount).toLocaleString('en-IN', { minimumFractionDigits: 2 }) : ''}</td>
     </tr>
   `).join('');
 
-  const totalPoValue = po.total_amount || po.total_po_value || items.reduce((sum: number, i: any) => sum + ((i.quantity || 0) * (i.unit_rate || 0)), 0);
+  const historyEntries = po.history && Array.isArray(po.history) ? po.history : [];
+  const historyHtml = historyEntries.length > 0
+    ? historyEntries.map((h: any) => `
+        <tr>
+          <td style="border: 1px solid #000; padding: 6px 8px;">${h.from || ''}</td>
+          <td style="border: 1px solid #000; padding: 6px 8px;">${h.to || ''}</td>
+          <td style="border: 1px solid #000; padding: 6px 8px; font-weight: 600;">${h.by || ''}</td>
+          <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${h.at || ''}</td>
+          <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${h.daysSince ?? ''}</td>
+          <td style="border: 1px solid #000; padding: 6px 8px;">${h.remarks || ''}</td>
+        </tr>
+      `).join('')
+    : `<tr><td colspan="6" style="border: 1px solid #000; padding: 10px; text-align: center; color: #444;">No history logs recorded</td></tr>`;
 
   const htmlContent = `
     <!DOCTYPE html>
     <html>
       <head>
-        <title>Purchase Order Report - ${po.po_number || 'PO'}</title>
+        <title>Purchase Order Report - ${po.po_number || ''}</title>
         <style>
-          body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; padding: 28px; color: #0f172a; margin: 0; background: #fff; }
-          .header { border-bottom: 2px solid #2563eb; padding-bottom: 14px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: flex-end; }
-          .header h1 { margin: 0; color: #2563eb; font-size: 24px; font-weight: 800; letter-spacing: 0.5px; }
-          .header p { margin: 3px 0 0 0; color: #64748b; font-size: 13px; font-weight: 500; }
-          .section-title { font-size: 12px; font-weight: 800; text-transform: uppercase; color: #2563eb; margin: 18px 0 8px 0; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; }
-          .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 16px; font-size: 12px; background-color: #f8fafc; padding: 12px; border-radius: 8px; border: 1px solid #e2e8f0; }
-          .grid-item { display: flex; justify-content: space-between; border-bottom: 1px dashed #e2e8f0; padding-bottom: 4px; }
-          .label { font-weight: 600; color: #64748b; }
-          .val { font-weight: 700; color: #0f172a; }
-          table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12px; }
-          th { background-color: #f1f5f9; border: 1px solid #cbd5e1; padding: 8px; text-align: left; font-size: 10px; text-transform: uppercase; color: #475569; letter-spacing: 0.5px; }
-          .footer { margin-top: 28px; border-top: 2px solid #e2e8f0; padding-top: 16px; display: flex; justify-content: space-between; align-items: center; }
-          .sig-box { display: grid; grid-template-columns: repeat(2, 1fr); gap: 40px; margin-top: 36px; text-align: center; font-size: 12px; }
-          .sig-line { border-top: 1px solid #94a3b8; padding-top: 6px; font-weight: 700; color: #475569; }
-          .btn-print { padding: 9px 18px; background-color: #2563eb; color: white; border: none; border-radius: 6px; font-weight: 700; cursor: pointer; font-size: 13px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-          .btn-print:hover { background-color: #1d4ed8; }
+          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; padding: 24px; color: #000; margin: 0; background: #fff; line-height: 1.3; }
+          h1, h2, h3 { color: #000; margin: 0; padding: 0; }
+          .header-container { text-align: center; margin-bottom: 16px; border-bottom: 2px solid #000; padding-bottom: 8px; }
+          .header-title { font-size: 22px; font-weight: 900; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 4px; }
+          .header-subtitle { font-size: 11px; font-weight: 600; text-transform: uppercase; }
+          
+          .meta-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 12px; }
+          .meta-table td { border: 1px solid #000; padding: 6px 10px; vertical-align: middle; }
+          .meta-label { font-weight: 800; text-transform: uppercase; width: 22%; background: #fff; }
+          .meta-val { font-weight: 600; width: 28%; }
+
+          .section-heading { font-size: 13px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.5px; margin: 18px 0 8px 0; border-bottom: 1.5px solid #000; padding-bottom: 4px; }
+          .center-heading { text-align: center; border-bottom: none; }
+
+          .data-table { width: 100%; border-collapse: collapse; margin-bottom: 0; font-size: 11px; }
+          .data-table th { border: 1px solid #000; padding: 7px 8px; text-align: left; font-size: 10px; font-weight: 900; text-transform: uppercase; background: #fff; }
+          .data-table td { border: 1px solid #000; padding: 6px 8px; }
+          
+          .summary-table { width: 100%; border-collapse: collapse; margin-top: -1px; margin-bottom: 20px; font-size: 11px; }
+          .summary-table td { border: 1px solid #000; padding: 6px 10px; }
+
+          .btn-print { padding: 8px 18px; background-color: #000; color: #fff; border: 1px solid #000; font-weight: 800; cursor: pointer; font-size: 12px; text-transform: uppercase; }
+          .btn-print:hover { background-color: #333; }
           @media print {
             body { padding: 0; }
             .no-print { display: none !important; }
-            @page { size: A4 landscape; margin: 10mm; }
+            @page { size: A4 landscape; margin: 8mm; }
           }
         </style>
       </head>
       <body>
         <div class="no-print" style="margin-bottom: 16px; text-align: right;">
-          <button class="btn-print" onclick="window.print()">🖨️ Print PO Report / Save as PDF</button>
+          <button class="btn-print" onclick="window.print()">🖨️ PRINT REPORT / SAVE AS PDF</button>
         </div>
 
-        <div class="header">
-          <div>
-            <h1>PRAMUKH GROUP</h1>
-            <p>Official Purchase Order (PO) Contract Document</p>
-          </div>
-          <div style="text-align: right;">
-            <h2 style="margin:0; font-size:20px; color:#2563eb;">${po.po_number || 'PO Entry'}</h2>
-            <p>PO Date: ${po.po_date || po.created_at || '-'}</p>
-          </div>
+        <div class="header-container">
+          <div class="header-title">Purchase Orders</div>
+          <div class="header-subtitle">Printed By: ${issuedByName} &nbsp;&nbsp; on Date: ${printDateStr}</div>
         </div>
 
-        <div class="section-title">1. Vendor & Delivery Master Info</div>
-        <div class="grid">
-          <div class="grid-item"><span class="label">Vendor Name:</span> <span class="val">${po.vendor_name || po.vendors?.display_name || po.vendors?.legal_name || '-'}</span></div>
-          <div class="grid-item"><span class="label">Vendor GSTIN:</span> <span class="val">${po.vendor_gst || po.vendors?.gst_number || '-'}</span></div>
-          <div class="grid-item"><span class="label">Project Name:</span> <span class="val">${po.project_name || po.projects?.name || '-'}</span></div>
-          <div class="grid-item"><span class="label">Ref. PR Number:</span> <span class="val">${po.pr_number || '-'}</span></div>
-          <div class="grid-item"><span class="label">Payment Terms:</span> <span class="val">${po.payment_terms || '30 Days Net'}</span></div>
-          <div class="grid-item"><span class="label">Delivery Date:</span> <span class="val">${po.delivery_date || '-'}</span></div>
-          <div class="grid-item"><span class="label">Billing Address:</span> <span class="val">${po.billing_address || 'Pramukh Group HQ, Surat'}</span></div>
-          <div class="grid-item"><span class="label">Shipping Address:</span> <span class="val">${po.shipping_address || 'Site Warehouse'}</span></div>
-          <div class="grid-item"><span class="label">Workflow Status:</span> <span class="val" style="text-transform: uppercase; color:#2563eb;">${po.status || 'Draft'}</span></div>
-        </div>
+        <table class="meta-table">
+          <tr>
+            <td class="meta-label">P.O. No.</td>
+            <td class="meta-val">${po.po_number || ''}</td>
+            <td class="meta-label">P.O. Date *</td>
+            <td class="meta-val">${poDateStr}</td>
+          </tr>
+          <tr>
+            <td class="meta-label">Project & Site</td>
+            <td class="meta-val">${projectName}</td>
+            <td class="meta-label">Vendor Name</td>
+            <td class="meta-val">${vendorName}</td>
+          </tr>
+          <tr>
+            <td class="meta-label">Payment Terms</td>
+            <td class="meta-val">${po.payment_terms || ''}</td>
+            <td class="meta-label">Delivery Date</td>
+            <td class="meta-val">${po.delivery_date || ''}</td>
+          </tr>
+          <tr>
+            <td class="meta-label">Total PO Amount</td>
+            <td class="meta-val" style="font-weight:900;">${po.total_amount || po.total_po_value ? '₹ ' + Number(po.total_amount || po.total_po_value).toLocaleString('en-IN', { minimumFractionDigits: 2 }) : ''}</td>
+            <td class="meta-label">Status</td>
+            <td class="meta-val" style="text-transform: uppercase;">${po.status || ''}</td>
+          </tr>
+        </table>
 
-        <div class="section-title">2. Order Items & Tax Breakdown</div>
-        <table>
+        <div class="section-heading center-heading">Purchase Order Line Items</div>
+        <table class="data-table">
           <thead>
             <tr>
-              <th style="width: 24px; text-align: center;">#</th>
+              <th style="width: 30px; text-align: center;">Sr No.</th>
               <th>Code</th>
               <th>Description</th>
               <th>Category</th>
@@ -3800,31 +4124,35 @@ export function printPurchaseOrderReport(po: any) {
             </tr>
           </thead>
           <tbody>
-            ${itemsHtml.length > 0 ? itemsHtml : '<tr><td colspan="10" style="padding:16px; text-align:center; color:#94a3b8;">No PO items attached</td></tr>'}
+            ${itemsHtml.length > 0 ? itemsHtml : '<tr><td colspan="10" style="border: 1px solid #000; padding:12px; text-align:center;">No PO items attached</td></tr>'}
           </tbody>
         </table>
 
-        ${po.terms_conditions ? `
-          <div style="margin-top:16px; background:#f8fafc; border:1px solid #e2e8f0; padding:12px; border-radius:8px; font-size:12px;">
-            <strong style="color:#2563eb;">Terms & Special Instructions:</strong>
-            <p style="margin:4px 0 0 0; color:#334155;">${po.terms_conditions}</p>
-          </div>
-        ` : ''}
+        <table class="summary-table">
+          <tr>
+            <td style="width: 15%; font-weight: 900; text-transform: uppercase;">Issued By</td>
+            <td style="width: 35%; font-weight: 600;">${issuedByName}</td>
+            <td style="width: 15%; font-weight: 900; text-transform: uppercase;">Status</td>
+            <td style="width: 35%; font-weight: 700; text-transform: uppercase;">${po.status || ''}</td>
+          </tr>
+        </table>
 
-        <div class="footer">
-          <div>
-            <p style="margin:0; font-size:11px; color:#64748b;">Generated via Pramukh Group ERP Procurement System</p>
-          </div>
-          <div style="text-align: right;">
-            <p style="margin:0; font-size:12px; color:#64748b;">Total Purchase Order Value</p>
-            <h2 style="margin:2px 0 0 0; color:#2563eb; font-size:20px;">₹ ${Number(totalPoValue).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</h2>
-          </div>
-        </div>
-
-        <div class="sig-box">
-          <div class="sig-line">Authorized Signatory (Pramukh Group)</div>
-          <div class="sig-line">Vendor Acceptance Signature & Stamp</div>
-        </div>
+        <div class="section-heading center-heading">REPORT HISTORY</div>
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th style="width: 15%;">FROM</th>
+              <th style="width: 15%;">TO</th>
+              <th style="width: 20%;">BY</th>
+              <th style="width: 18%; text-align: center;">AT</th>
+              <th style="width: 10%; text-align: center;">DAYS SINCE</th>
+              <th style="width: 22%;">REMARKS</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${historyHtml}
+          </tbody>
+        </table>
 
         <script>
           window.onload = function() {
@@ -3840,129 +4168,153 @@ export function printPurchaseOrderReport(po: any) {
   printWindow.document.close();
 }
 
-/**
- * Client-side formatted print window for Request for Quotations (RFQ).
- * Renders header, submission deadline, invited vendors list, item specifications, and terms.
- */
 export function printRfqReport(rfq: any) {
   if (typeof window === 'undefined') return;
   const printWindow = window.open('', '_blank', 'width=1000,height=900');
   if (!printWindow) return;
 
+  const now = new Date();
+  const printDateStr = now.toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }) + ' ' + now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false });
+  const rfqDateStr = rfq.rfq_date || (rfq.created_at ? new Date(rfq.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '');
+  const issuedByName = rfq.profiles?.name || rfq.created_by_name || '';
+
   const items = rfq.items || rfq.lines || rfq.rfq_items || [];
   const itemsHtml = items.map((item: any, idx: number) => `
     <tr>
-      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: center;">${idx + 1}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 7px; font-weight: 600;">${item.item_description || item.description || '-'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 7px;">${item.category_group || item.item_group || '-'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: center;">${item.unit || 'nos'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 7px; text-align: right; font-weight:700;">${item.quantity || item.qty || 0}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 7px;">${item.specifications || item.make || '-'}</td>
-      <td style="border: 1px solid #cbd5e1; padding: 7px;">${item.remarks || '-'}</td>
+      <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${idx + 1}</td>
+      <td style="border: 1px solid #000; padding: 6px 8px; font-weight: 600;">${item.item_description || item.description || ''}</td>
+      <td style="border: 1px solid #000; padding: 6px 8px;">${item.category_group || item.item_group || ''}</td>
+      <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${item.unit || ''}</td>
+      <td style="border: 1px solid #000; padding: 6px 8px; text-align: right; font-weight: 700;">${item.quantity ?? item.qty ?? ''}</td>
+      <td style="border: 1px solid #000; padding: 6px 8px;">${item.specifications || item.make || ''}</td>
+      <td style="border: 1px solid #000; padding: 6px 8px;">${item.remarks || ''}</td>
     </tr>
   `).join('');
 
-  const vendors = rfq.invited_vendors || rfq.vendors || [];
-  const vendorsHtml = vendors.map((v: any) => `
-    <span style="display:inline-block; background:#f1f5f9; border:1px solid #cbd5e1; padding:4px 10px; border-radius:6px; font-size:11px; font-weight:700; margin-right:6px; margin-bottom:6px;">
-      🏢 ${v.vendor_name || v.display_name || v.legal_name || v}
-    </span>
-  `).join('');
+  const historyEntries = rfq.history && Array.isArray(rfq.history) ? rfq.history : [];
+  const historyHtml = historyEntries.length > 0
+    ? historyEntries.map((h: any) => `
+        <tr>
+          <td style="border: 1px solid #000; padding: 6px 8px;">${h.from || ''}</td>
+          <td style="border: 1px solid #000; padding: 6px 8px;">${h.to || ''}</td>
+          <td style="border: 1px solid #000; padding: 6px 8px; font-weight: 600;">${h.by || ''}</td>
+          <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${h.at || ''}</td>
+          <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${h.daysSince ?? ''}</td>
+          <td style="border: 1px solid #000; padding: 6px 8px;">${h.remarks || ''}</td>
+        </tr>
+      `).join('')
+    : `<tr><td colspan="6" style="border: 1px solid #000; padding: 10px; text-align: center; color: #444;">No history logs recorded</td></tr>`;
 
   const htmlContent = `
     <!DOCTYPE html>
     <html>
       <head>
-        <title>Request for Quotation Report - ${rfq.rfq_number || 'RFQ'}</title>
+        <title>Request for Quotation Report - ${rfq.rfq_number || ''}</title>
         <style>
-          body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; padding: 28px; color: #0f172a; margin: 0; background: #fff; }
-          .header { border-bottom: 2px solid #7c3aed; padding-bottom: 14px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: flex-end; }
-          .header h1 { margin: 0; color: #7c3aed; font-size: 24px; font-weight: 800; letter-spacing: 0.5px; }
-          .header p { margin: 3px 0 0 0; color: #64748b; font-size: 13px; font-weight: 500; }
-          .section-title { font-size: 12px; font-weight: 800; text-transform: uppercase; color: #7c3aed; margin: 18px 0 8px 0; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; }
-          .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 16px; font-size: 12px; background-color: #f8fafc; padding: 12px; border-radius: 8px; border: 1px solid #e2e8f0; }
-          .grid-item { display: flex; justify-content: space-between; border-bottom: 1px dashed #e2e8f0; padding-bottom: 4px; }
-          .label { font-weight: 600; color: #64748b; }
-          .val { font-weight: 700; color: #0f172a; }
-          table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12px; }
-          th { background-color: #f1f5f9; border: 1px solid #cbd5e1; padding: 8px; text-align: left; font-size: 10px; text-transform: uppercase; color: #475569; letter-spacing: 0.5px; }
-          .footer { margin-top: 28px; border-top: 2px solid #e2e8f0; padding-top: 16px; display: flex; justify-content: space-between; align-items: center; }
-          .sig-box { display: grid; grid-template-columns: repeat(2, 1fr); gap: 40px; margin-top: 36px; text-align: center; font-size: 12px; }
-          .sig-line { border-top: 1px solid #94a3b8; padding-top: 6px; font-weight: 700; color: #475569; }
-          .btn-print { padding: 9px 18px; background-color: #7c3aed; color: white; border: none; border-radius: 6px; font-weight: 700; cursor: pointer; font-size: 13px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-          .btn-print:hover { background-color: #6d28d9; }
+          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; padding: 24px; color: #000; margin: 0; background: #fff; line-height: 1.3; }
+          h1, h2, h3 { color: #000; margin: 0; padding: 0; }
+          .header-container { text-align: center; margin-bottom: 16px; border-bottom: 2px solid #000; padding-bottom: 8px; }
+          .header-title { font-size: 22px; font-weight: 900; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 4px; }
+          .header-subtitle { font-size: 11px; font-weight: 600; text-transform: uppercase; }
+          
+          .meta-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 12px; }
+          .meta-table td { border: 1px solid #000; padding: 6px 10px; vertical-align: middle; }
+          .meta-label { font-weight: 800; text-transform: uppercase; width: 22%; background: #fff; }
+          .meta-val { font-weight: 600; width: 28%; }
+
+          .section-heading { font-size: 13px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.5px; margin: 18px 0 8px 0; border-bottom: 1.5px solid #000; padding-bottom: 4px; }
+          .center-heading { text-align: center; border-bottom: none; }
+
+          .data-table { width: 100%; border-collapse: collapse; margin-bottom: 0; font-size: 11px; }
+          .data-table th { border: 1px solid #000; padding: 7px 8px; text-align: left; font-size: 10px; font-weight: 900; text-transform: uppercase; background: #fff; }
+          .data-table td { border: 1px solid #000; padding: 6px 8px; }
+          
+          .summary-table { width: 100%; border-collapse: collapse; margin-top: -1px; margin-bottom: 20px; font-size: 11px; }
+          .summary-table td { border: 1px solid #000; padding: 6px 10px; }
+
+          .btn-print { padding: 8px 18px; background-color: #000; color: #fff; border: 1px solid #000; font-weight: 800; cursor: pointer; font-size: 12px; text-transform: uppercase; }
+          .btn-print:hover { background-color: #333; }
           @media print {
             body { padding: 0; }
             .no-print { display: none !important; }
-            @page { size: A4 landscape; margin: 10mm; }
+            @page { size: A4 landscape; margin: 8mm; }
           }
         </style>
       </head>
       <body>
         <div class="no-print" style="margin-bottom: 16px; text-align: right;">
-          <button class="btn-print" onclick="window.print()">🖨️ Print RFQ Report / Save as PDF</button>
+          <button class="btn-print" onclick="window.print()">🖨️ PRINT REPORT / SAVE AS PDF</button>
         </div>
 
-        <div class="header">
-          <div>
-            <h1>PRAMUKH GROUP</h1>
-            <p>Official Request for Quotation (RFQ) Tender Inquiry</p>
-          </div>
-          <div style="text-align: right;">
-            <h2 style="margin:0; font-size:20px; color:#7c3aed;">${rfq.rfq_number || 'RFQ Entry'}</h2>
-            <p>RFQ Date: ${rfq.rfq_date || rfq.created_at || '-'}</p>
-          </div>
+        <div class="header-container">
+          <div class="header-title">Request For Quotations</div>
+          <div class="header-subtitle">Printed By: ${issuedByName} &nbsp;&nbsp; on Date: ${printDateStr}</div>
         </div>
 
-        <div class="section-title">1. RFQ Header & Deadline Details</div>
-        <div class="grid">
-          <div class="grid-item"><span class="label">Project Name:</span> <span class="val">${rfq.project_name || rfq.projects?.name || '-'}</span></div>
-          <div class="grid-item"><span class="label">Submission Deadline:</span> <span class="val" style="color:#7c3aed;">${rfq.submission_deadline || rfq.due_date || '-'}</span></div>
-          <div class="grid-item"><span class="label">Ref. PR/MR Number:</span> <span class="val">${rfq.pr_number || rfq.mr_number || '-'}</span></div>
-          <div class="grid-item"><span class="label">Target Delivery Location:</span> <span class="val">${rfq.delivery_location || 'Central Yard'}</span></div>
-          <div class="grid-item"><span class="label">Workflow Status:</span> <span class="val" style="text-transform: uppercase; color:#7c3aed;">${rfq.status || 'Published'}</span></div>
-        </div>
+        <table class="meta-table">
+          <tr>
+            <td class="meta-label">R.F.Q. No.</td>
+            <td class="meta-val">${rfq.rfq_number || ''}</td>
+            <td class="meta-label">R.F.Q. Date *</td>
+            <td class="meta-val">${rfqDateStr}</td>
+          </tr>
+          <tr>
+            <td class="meta-label">Project & Site</td>
+            <td class="meta-val">${rfq.project_name || rfq.projects?.name || ''}</td>
+            <td class="meta-label">Submission Deadline</td>
+            <td class="meta-val">${rfq.submission_deadline || rfq.due_date || ''}</td>
+          </tr>
+          <tr>
+            <td class="meta-label">Ref PR/MR No.</td>
+            <td class="meta-val">${rfq.pr_number || rfq.mr_number || ''}</td>
+            <td class="meta-label">Status</td>
+            <td class="meta-val" style="text-transform: uppercase;">${rfq.status || ''}</td>
+          </tr>
+        </table>
 
-        ${vendorsHtml ? `
-          <div class="section-title">Invited Bidding Vendors</div>
-          <div style="margin-bottom:14px;">${vendorsHtml}</div>
-        ` : ''}
-
-        <div class="section-title">2. Requested Material Specifications</div>
-        <table>
+        <div class="section-heading center-heading">Requested Material Specifications</div>
+        <table class="data-table">
           <thead>
             <tr>
-              <th style="width: 24px; text-align: center;">#</th>
+              <th style="width: 30px; text-align: center;">Sr No.</th>
               <th>Item Description</th>
               <th>Category</th>
               <th style="text-align: center;">Unit</th>
               <th style="text-align: right;">Quantity</th>
-              <th>Specifications / Brand Preference</th>
+              <th>Specifications / Brand</th>
               <th>Remarks</th>
             </tr>
           </thead>
           <tbody>
-            ${itemsHtml.length > 0 ? itemsHtml : '<tr><td colspan="7" style="padding:16px; text-align:center; color:#94a3b8;">No items requested</td></tr>'}
+            ${itemsHtml.length > 0 ? itemsHtml : '<tr><td colspan="7" style="border: 1px solid #000; padding:12px; text-align:center;">No items requested</td></tr>'}
           </tbody>
         </table>
 
-        ${rfq.instructions ? `
-          <div style="margin-top:16px; background:#f8fafc; border:1px solid #e2e8f0; padding:12px; border-radius:8px; font-size:12px;">
-            <strong style="color:#7c3aed;">Instructions for Quotation Bidders:</strong>
-            <p style="margin:4px 0 0 0; color:#334155;">${rfq.instructions}</p>
-          </div>
-        ` : ''}
+        <table class="summary-table">
+          <tr>
+            <td style="width: 15%; font-weight: 900; text-transform: uppercase;">Issued By</td>
+            <td style="width: 35%; font-weight: 600;">${issuedByName}</td>
+            <td style="width: 15%; font-weight: 900; text-transform: uppercase;">Status</td>
+            <td style="width: 35%; font-weight: 700; text-transform: uppercase;">${rfq.status || ''}</td>
+          </tr>
+        </table>
 
-        <div class="footer">
-          <div>
-            <p style="margin:0; font-size:11px; color:#64748b;">Generated via Pramukh Group ERP Procurement System</p>
-          </div>
-        </div>
-
-        <div class="sig-box">
-          <div class="sig-line">Procurement Manager / Issued By</div>
-          <div class="sig-line">Head of Purchasing / Approved By</div>
-        </div>
+        <div class="section-heading center-heading">REPORT HISTORY</div>
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th style="width: 15%;">FROM</th>
+              <th style="width: 15%;">TO</th>
+              <th style="width: 20%;">BY</th>
+              <th style="width: 18%; text-align: center;">AT</th>
+              <th style="width: 10%; text-align: center;">DAYS SINCE</th>
+              <th style="width: 22%;">REMARKS</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${historyHtml}
+          </tbody>
+        </table>
 
         <script>
           window.onload = function() {
@@ -3977,4 +4329,3 @@ export function printRfqReport(rfq: any) {
   printWindow.document.write(htmlContent);
   printWindow.document.close();
 }
-

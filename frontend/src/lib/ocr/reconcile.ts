@@ -172,6 +172,32 @@ export function reconcile(invoice: ExtractedInvoice): ValidationReport {
         fieldConfidence[`${path}.unitRate`] = 0.9;
         return;
       }
+
+      /**
+       * A discount was applied but its cell could not be read — common when a
+       * cascade like "65.00 + 15.25" straddles a column boundary and only part
+       * survives. The effective discount is recoverable from the figures that DID
+       * read: gross minus printed taxable. Recording it as a single derived
+       * percentage keeps the line self-consistent (and is arithmetically identical
+       * for the amount) instead of raising a mismatch on values that are correct.
+       */
+      if (undiscounted && item.unitRate !== null && item.unitRate > 0) {
+        const gross = item.quantity * item.unitRate;
+        if (gross > item.taxableValue && item.taxableValue > 0) {
+          const effective = round2((1 - item.taxableValue / gross) * 100);
+          if (effective > 0 && effective < 100) {
+            item.discountPercents = [effective];
+            repairs.push({
+              field: `${path}.discountPercents`,
+              from: null,
+              to: effective,
+              reason: `derived from ${gross} gross vs ${item.taxableValue} printed taxable`,
+            });
+            fieldConfidence[`${path}.discountPercents`] = 0.6;
+            return;
+          }
+        }
+      }
     }
 
     lineMathOk = false;
@@ -450,6 +476,37 @@ export function reconcile(invoice: ExtractedInvoice): ValidationReport {
       field: 'lineItems',
       severity: 'error',
       message: 'No line items could be read from this invoice. Enter the received items manually.',
+    });
+  }
+
+  /**
+   * Flag a read that is untrustworthy because the SOURCE was too low-resolution,
+   * as opposed to a layout the extractor mishandled.
+   *
+   * There is a hard floor below which no OCR can recover 8pt invoice print. A full
+   * A4 page photographed or downscaled to ~1200px is roughly 100 dpi, and at that
+   * point Tesseract still returns confident-looking words with wrong characters —
+   * measured on a synthetic test, "2026" read as "2028" and "GJ05CV4633" as
+   * "GA05CV4544". Silently accepting those is worse than reporting them, because a
+   * wrong date or vehicle number looks perfectly plausible in the form.
+   */
+  const missingRequired = required.filter(([, v]) => v === null || v === undefined || v === '').length;
+  /**
+   * Raised on mean character confidence ALONE, not only when fields are missing.
+   * A degraded image does not usually leave blanks — it returns confident-looking
+   * wrong digits, so the fields all appear populated. Measured on a 1200px photo:
+   * every required field was present and every one contained an error, and gating
+   * the warning on missing fields let that pass silently.
+   */
+  if (invoice.meta.ocrMeanConfidence < 80) {
+    warn({
+      code: 'low_source_quality',
+      severity: missingRequired > 0 || !lineMathOk ? 'error' : 'warn',
+      message:
+        `The image quality is too low for reliable reading (average character confidence ` +
+        `${invoice.meta.ocrMeanConfidence.toFixed(0)}%). Values that were extracted may contain wrong digits. ` +
+        'For a photograph: lay the invoice flat, fill the frame with it, avoid shadow, and let the camera focus — ' +
+        'a full A4 page needs at least about 2000 pixels across. A PDF or a flatbed scan is always better.',
     });
   }
 

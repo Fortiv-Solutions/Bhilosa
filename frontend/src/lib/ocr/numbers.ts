@@ -453,10 +453,39 @@ export function normaliseHsn(raw: string | null | undefined): string | null {
 
 export const IRN_RE = /^[0-9a-f]{64}$/;
 
+/**
+ * Normalise an e-invoice IRN (64 lower-case hex characters).
+ *
+ * Non-hex letters that OCR commonly substitutes for hex digits are mapped back
+ * first, since a 64-character hex run has no internal redundancy to repair from.
+ * An IRN is only returned when it lands on exactly 64 hex characters — anything
+ * else is rejected rather than guessed, because a WRONG IRN is worse than none:
+ * it is used as the duplicate-detection key, so a corrupted value could either
+ * mask a genuine duplicate or falsely match an unrelated invoice.
+ */
 export function normaliseIrn(raw: string | null | undefined): string | null {
   if (isBlankish(raw)) return null;
-  const s = String(raw).toLowerCase().replace(/[^0-9a-f]/g, '');
-  return IRN_RE.test(s) ? s : null;
+  const mapped = String(raw)
+    .toLowerCase()
+    .replace(/[^0-9a-z]/g, '')
+    // Letters outside a-f that are visually hex digits.
+    .replace(/[ol]/g, (c) => (c === 'o' ? '0' : '1'))
+    .replace(/i/g, '1')
+    .replace(/s/g, '5')
+    .replace(/g/g, '6')
+    .replace(/z/g, '2')
+    .replace(/[^0-9a-f]/g, '');
+  return IRN_RE.test(mapped) ? mapped : null;
+}
+
+/** Longest plausible IRN-shaped run in a page's text, for reporting purposes. */
+export function findIrnCandidate(text: string): string | null {
+  const compact = text.replace(/\s+/g, '');
+  let best: string | null = null;
+  for (const m of compact.matchAll(/[0-9a-fA-F]{40,80}/g)) {
+    if (!best || m[0].length > best.length) best = m[0];
+  }
+  return best;
 }
 
 /** Indian vehicle registration, e.g. GJ05CV4633 / GJ19Z3519. */

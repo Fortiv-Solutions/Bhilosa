@@ -25,14 +25,14 @@ import {
 } from './geometry';
 import {
   checkGstin, checkPan, extractEmails, extractIfsc, extractPhones, extractPincode,
-  extractWebsite, isBlankish, normaliseIrn, parseAmount, parseCreditDays,
+  extractWebsite, findIrnCandidate, isBlankish, normaliseIrn, parseAmount, parseCreditDays,
   parseInvoiceDate, parseInvoiceDateTime, parseNumber, repairGstin,
   repairVehicleNumber, wordsToNumberIndian,
 } from './numbers';
 import {
   type BBox, type BankAccount, type DispatchFrom, type ExtractionWarning,
-  type InvoiceDocumentInfo, type InvoiceTotals, type OcrWord, type PartyInfo,
-  type PaymentInfo, type PoNumberSource, type TransportInfo,
+  type InvoiceDocumentInfo, type InvoiceLineItem, type InvoiceTotals, type OcrWord,
+  type PartyInfo, type PaymentInfo, type PoNumberSource, type TransportInfo,
   emptyDocumentInfo, emptyParty, emptyTotals, emptyTransport,
 } from './types';
 
@@ -278,6 +278,29 @@ function stripLabelPrefix(line: string, labelText: string): string {
 const NOT_A_NAME =
   /(?:place\s+of\s+supply|challan|invoice|p\.?o\.?\s*no|transport|details?|shipped\s*to|billed\s*to|ship\s*to|bill\s*to|consignee|receiver|supervisor|owner\b|account\b|finance\b|\bsite\b|state\s*:|vehicle|driver|l\.?r\.?\s*no|due\s*date|contact\s+person|terms|bank)/i;
 
+/**
+ * Tidy a party name read off a scan.
+ *
+ * Trailing one- and two-character tokens are speckle from box rules and logos
+ * sitting on the same row, not part of the name — the BHAGAVAT scan yields
+ * "AMAYA CORPORATION TY". Real names do not end in a stray two-letter fragment,
+ * whereas legitimate short suffixes ("CO", "LLP", "LTD") are kept explicitly.
+ */
+const KEEPABLE_SHORT_SUFFIX = /^(?:co|llp|ltd|pvt|inc|plc|llc|hu[fF]|and|sons|bros)$/i;
+
+function cleanPartyName(line: string): string {
+  const tokens = line.replace(/[,:;.]+$/, '').trim().split(/\s+/);
+  while (tokens.length > 1) {
+    const last = tokens[tokens.length - 1];
+    if (last.length <= 2 && !KEEPABLE_SHORT_SUFFIX.test(last) && !/^\d+$/.test(last)) {
+      tokens.pop();
+      continue;
+    }
+    break;
+  }
+  return tokens.join(' ').replace(/[,:;.]+$/, '').trim();
+}
+
 /** Is this line plausibly an organisation name rather than an address line? */
 function looksLikeOrgName(line: string): boolean {
   const t = line.trim();
@@ -317,7 +340,7 @@ export function readPartyBlock(
     if (/\bgstin\b|\bgst\s*no\b/i.test(line) && gst.value) continue;
     if (/\bpan\b/i.test(line)) continue;
     if (!party.name && looksLikeOrgName(line)) {
-      party.name = line.replace(/[,:]$/, '').trim();
+      party.name = cleanPartyName(line);
       continue;
     }
     body.push(line);
@@ -371,7 +394,13 @@ export function extractVendor(ctx: FieldContext, excludeGstins: Set<string>): Pa
   for (const row of rows) {
     // Drop low-confidence speckle: logos decode as junk tokens that would
     // otherwise be glued onto the name ("NN R Rie BHAGAVAT ENTERPRISE").
-    const clean = row.filter((w) => w.confidence >= 55 && /[A-Za-z0-9&.]/.test(w.text));
+    const clean = row.filter(
+      (w) =>
+        w.confidence >= 55 &&
+        /[A-Za-z0-9&.]/.test(w.text) &&
+        // The scanner's own watermark sits in the masthead band on these scans.
+        !/^(?:oken|scanner|scanned|with)$/i.test(w.text.trim()),
+    );
     if (!clean.length) continue;
     const text = squash(clean.map((w) => w.text).join(' '));
     if (text.length < 5 || isNoise(text) || DISQUALIFY.test(text)) continue;
@@ -390,7 +419,7 @@ export function extractVendor(ctx: FieldContext, excludeGstins: Set<string>): Pa
     }
   }
   if (bestRow) {
-    party.name = squash(bestRow.map((w) => w.text).join(' ')).replace(/[,:.]+$/, '');
+    party.name = cleanPartyName(squash(bestRow.map((w) => w.text).join(" ")));
     ctx.confidence('vendor.name', bestRow.reduce((s, w) => s + w.confidence, 0) / bestRow.length / 100);
   }
 
@@ -499,6 +528,31 @@ export function extractBuyerAndShipTo(ctx: FieldContext): {
   assignGstin(buyerRegion, buyer, 'buyer.gstin');
   // A shared GSTIN (same legal entity, two addresses) is legitimate.
   if (!buyer.gstin && shipClaimed) buyer.gstin = shipClaimed;
+  if (!shipTo.gstin && buyer.gstin) shipTo.gstin = buyer.gstin;
+
+  /**
+   * Positional fallback. On Indian invoices the vendor's GSTIN is printed in the
+   * masthead and the customer's below it, so when block geometry fails to capture
+   * one — party blocks vary enormously in height and nesting — the first GSTIN
+   * below the masthead is the buyer's. Applied only after the geometric attempt.
+   */
+  if (!buyer.gstin && gstins.length >= 2) {
+    const below = gstins.filter((g) => g.bbox.y0 > gstins[0].bbox.y0 + idx.lineHeight);
+    if (below.length) {
+      buyer.gstin = below[0].value;
+      claimed.add(below[0].value);
+      const pan = checkGstin(below[0].value).pan;
+      if (pan && !buyer.pan) buyer.pan = pan;
+      if (below[0].repaired) {
+        ctx.warn({
+          code: 'gstin_repaired',
+          field: 'buyer.gstin',
+          severity: 'info',
+          message: `Buyer GSTIN corrected by checksum (${below[0].edits} character(s)): ${below[0].value}`,
+        });
+      }
+    }
+  }
   if (!shipTo.gstin && buyer.gstin) shipTo.gstin = buyer.gstin;
 
   if (!buyer.name && shipTo.name) buyer.name = shipTo.name;
@@ -627,9 +681,24 @@ export function extractDocumentInfo(ctx: FieldContext): InvoiceDocumentInfo {
   // --- e-invoice ---
   const irnField = idx.readField([...LABELS.irn], { maxRightGap: idx.width, allowBelow: true });
   doc.irn = normaliseIrn(squash(irnField.text).replace(/\s+/g, ''));
+  if (!doc.irn) doc.irn = normaliseIrn(findIrnCandidate(text) ?? '');
   if (!doc.irn) {
-    const m = text.replace(/\s+/g, '').match(/\b[0-9a-f]{64}\b/i);
-    if (m) doc.irn = normaliseIrn(m[0]);
+    /**
+     * An IRN was clearly printed but could not be recovered to exactly 64 hex
+     * characters. It is deliberately left null: the IRN is the duplicate-detection
+     * key, so a corrupted value is more dangerous than a missing one.
+     */
+    const seen = findIrnCandidate(text);
+    if (seen) {
+      ctx.warn({
+        code: 'irn_unreadable',
+        field: 'document.irn',
+        severity: 'warn',
+        message:
+          `This is an e-invoice but its IRN could not be read reliably (got ${seen.length} usable characters, 64 required). ` +
+          'Duplicate checking will fall back to vendor GSTIN + invoice number. Enter the IRN manually if it is needed.',
+      });
+    }
   }
   const ackNo = readOne([...LABELS.ackNo], { maxRightGap: lh * 14, allowBelow: false });
   const ackDigits = ackNo.replace(/[^\d]/g, '');
@@ -798,7 +867,11 @@ function readAmountFor(idx: PageIndex, hit: LabelHit): number | null {
   return null;
 }
 
-export function extractTotals(ctx: FieldContext, lineTaxableSum: number | null): InvoiceTotals {
+export function extractTotals(
+  ctx: FieldContext,
+  lineTaxableSum: number | null,
+  lineItems: InvoiceLineItem[] = [],
+): InvoiceTotals {
   const { idx, text } = ctx;
   const totals = emptyTotals();
 
@@ -823,21 +896,76 @@ export function extractTotals(ctx: FieldContext, lineTaxableSum: number | null):
    * 42062.92 (actually a tax figure) on the AJIT page. Returning null instead lets
    * reconcile() derive the value from the line items, which is correct.
    */
-  const readLabelled = (aliases: string[]): number | null => {
+  /**
+   * ALL labelled amounts for a field, not just the first.
+   *
+   * The totals region also contains the HSN summary table, whose headings reuse
+   * the very same words ("Taxable Value", "C.Gst", "Total"). Returning every
+   * candidate lets the caller choose using the invoice's own arithmetic — using
+   * the document's redundancy to FILTER reads rather than only to repair them
+   * afterwards. Picking the first match instead produced a CGST total of 701 on
+   * the AJIT page and a taxable value of 1 on BHAGAVAT.
+   */
+  const readLabelledAll = (aliases: string[]): number[] => {
+    const out: number[] = [];
     const ordered = [...aliases].sort((a, b) => b.length - a.length);
     for (const alias of ordered) {
       for (const hit of idx.findLabels(alias, { region: totalsRegion })) {
         const v = readAmountFor(idx, hit);
-        if (v !== null) return v;
+        if (v !== null) out.push(v);
       }
     }
-    return null;
+    return out;
+  };
+  const readLabelled = (aliases: string[]): number | null => readLabelledAll(aliases)[0] ?? null;
+
+  /** Candidate closest to `target` within tolerance; null when none qualifies. */
+  const pickNear = (candidates: number[], target: number | null, tol: number): number | null => {
+    if (target === null || !candidates.length) return null;
+    const within = candidates
+      .filter((c) => Math.abs(c - target) <= Math.max(tol, Math.abs(target) * 0.002))
+      .sort((a, b) => Math.abs(a - target) - Math.abs(b - target));
+    return within[0] ?? null;
   };
 
-  totals.taxableAmount = readLabelled([...TOTAL_LABELS.taxableAmount]);
-  totals.cgstAmount = readLabelled([...TOTAL_LABELS.cgst]);
-  totals.sgstAmount = readLabelled([...TOTAL_LABELS.sgst]);
-  totals.igstAmount = readLabelled([...TOTAL_LABELS.igst]);
+  // --- taxable value: must agree with the line items ------------------------
+  const taxableCandidates = readLabelledAll([...TOTAL_LABELS.taxableAmount]);
+  totals.taxableAmount =
+    pickNear(taxableCandidates, lineTaxableSum, 1) ?? lineTaxableSum ?? taxableCandidates[0] ?? null;
+
+  // --- tax heads: must equal taxable x rate ---------------------------------
+  const perLineRate = (pick: (i: InvoiceLineItem) => number | null): number | null => {
+    for (const item of lineItems) {
+      const r = pick(item);
+      if (r !== null && r > 0) return r;
+    }
+    // A combined per-line slab (BHAGAVAT prints "18%") splits evenly intra-state.
+    const combined = lineItems.map((i) => i.combinedTaxRate).find((r) => r !== null && r > 0);
+    return combined ? combined / 2 : null;
+  };
+
+  const taxBase = totals.taxableAmount;
+  /**
+   * Accept a labelled tax amount only when it agrees with taxable x rate.
+   *
+   * When the rate is unknown, nothing is returned rather than the first
+   * candidate: on the ARCHIT page the tax-summary block has an IGST column
+   * holding 0, and taking a nearby number gave an IGST of 22,100 that broke the
+   * grand-total check and raised a spurious "IGST on an intra-state invoice"
+   * warning. reconcile() derives any genuinely missing head from the rates it can
+   * see, which is both safer and more accurate.
+   */
+  const takeTax = (aliases: string[], rate: number | null): number | null => {
+    if (taxBase === null || rate === null) return null;
+    const candidates = readLabelledAll(aliases);
+    if (!candidates.length) return null;
+    return pickNear(candidates, (taxBase * rate) / 100, 1);
+  };
+
+  totals.cgstAmount = takeTax([...TOTAL_LABELS.cgst], perLineRate((i) => i.cgstRate));
+  totals.sgstAmount = takeTax([...TOTAL_LABELS.sgst], perLineRate((i) => i.sgstRate));
+  totals.igstAmount = takeTax([...TOTAL_LABELS.igst], perLineRate((i) => i.igstRate));
+
   totals.cessAmount = readLabelled([...TOTAL_LABELS.cess]);
   totals.roundOff = readLabelled([...TOTAL_LABELS.roundOff]);
   totals.freight = readLabelled([...TOTAL_LABELS.freight]);
@@ -846,7 +974,9 @@ export function extractTotals(ctx: FieldContext, lineTaxableSum: number | null):
   totals.loadingUnloading = readLabelled([...TOTAL_LABELS.loadingUnloading]);
   totals.otherCharges = readLabelled([...TOTAL_LABELS.otherCharges]);
   totals.tcsAmount = readLabelled([...TOTAL_LABELS.tcs]);
-  if (totals.taxableAmount === null && lineTaxableSum !== null) totals.taxableAmount = lineTaxableSum;
+
+  // A round-off is by definition under a rupee; larger means a mis-read neighbour.
+  if (totals.roundOff !== null && Math.abs(totals.roundOff) >= 1) totals.roundOff = null;
 
   // --- amount in words: an independent read on the grand total ---
   for (const alias of TOTAL_LABELS.amountInWords) {

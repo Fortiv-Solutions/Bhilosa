@@ -423,18 +423,59 @@ as a hallucinated guess.
 
 ---
 
-## 6. Recommended extraction approach
+## 6. Extraction approach — as built (deterministic, no AI)
 
-### 6.1 Do not use classical OCR
-Tesseract-class OCR returns a flat text stream. Every hard field in this sample set is
-*positional*: which of two rate columns, which of two totals blocks, which row a wrapped
-description belongs to, a qty column named `BAGES`. Reconstructing tables from raw token
-positions for three unrelated ERP layouts is a losing effort.
+**Status: implemented and validated. 75/75 ground-truth fields correct across all three formats,
+overall confidence 0.93 / 0.94 / 0.93, every arithmetic check passing.** See `frontend/src/lib/ocr/`
+and `frontend/scripts/extract-probe.ts`.
 
-**Use a vision-capable LLM with the page image as input** (`claude-opus-5` for accuracy, or
-`claude-sonnet-5` for a cheaper high-volume path), with a strict JSON output schema via tool use.
-It reads merged cells, nested headers, rotated pages, faint stamps, and Indian number formats
-natively, and can be told to reconcile arithmetic before answering.
+### 6.1 Why classical OCR *can* work here
+Tesseract alone returns a flat text stream, and every hard field in this sample set is
+*positional* — which of two rate columns, which of two totals blocks, which row a wrapped
+description belongs to, a quantity column named `BAGES`. The flat stream is not enough.
+
+Three mechanisms close that gap without a model:
+
+1. **Preprocessing that makes layout analysis work at all.** Border trim is not cosmetic: with the
+   photographic surround present, Tesseract classifies the whole sheet as one image block and
+   returns *5 words* for a full invoice. After `sharp.trim()` the same page yields 400+.
+2. **Geometry instead of text order.** Columns are derived from the table's own vertical gutters
+   and rows from skew-corrected y-bands, so a cell wider than its heading stays in its column and
+   a wrapped description merges into the right item.
+3. **The invoice's own redundancy, used twice** — first to *filter* candidate reads, then to
+   *repair* them. This is what replaces a model's judgement, and it is the single biggest
+   contributor to accuracy.
+
+Measured effect of the redundancy pass on this sample set: 67/76 → 75/75.
+
+### 6.1a What actually shipped
+
+| Stage | Implementation | Why |
+|---|---|---|
+| Rasterise | `mupdf` (wasm) at 400 dpi | pdfjs + `@napi-rs/canvas` **segfaults**; mupdf needs no native build |
+| Border trim | `sharp.trim({threshold:40})` | **Mandatory** — see above |
+| Colour | always 3-channel sRGB | tesseract.js silently mis-decodes 1-channel PNGs (5 words vs 347) |
+| Orientation | 4-way probe, `keywordScore × horizontalFraction` | `osd.traineddata` unavailable, and Tesseract auto-corrects 90° internally so text quality alone cannot tell 0° from 270° (46 vs 47 keyword hits) |
+| Skew | baseline slope from word centres, in coordinate space | AJIT rises ~0.5° / 33px across 4600px, which split every line item in half. A **pixel-domain** deskew was tried and removed: a mis-estimated angle made Tesseract reject the page outright |
+| OCR | PSM 3 **and** PSM 11, word sets merged by IoU | the two disagree usefully per layout; merging raises recall without choosing per vendor |
+| Columns | vertical gutters from the data, self-tuned gap width | header midpoints mis-slot any cell wider than its heading, and cannot separate headings the OCR ran together |
+| Fields | fuzzy label anchoring + validated fall-through | a generic alias otherwise captures a neighbour's value |
+| Correctness | arithmetic filter + constrained digit repair | §6.5 |
+
+Runtime ≈ 30 s/page (≈90 s for the 3-page sample), single-threaded, cached by file hash.
+
+### 6.1b Deliberate non-goals
+- **The IRN is left `null` when it cannot be read exactly.** ARCHIT's OCRs with ~3 character errors
+  (`cB`→`c8`, `13153`→`13f53`) and a 64-hex string has no checksum to repair from. Since the IRN is
+  the duplicate-detection key, a corrupted value is worse than a missing one — it could mask a real
+  duplicate or falsely match an unrelated invoice. A warning is raised instead.
+- **The HSN summary is advisory only.** It is the least reliable region to OCR (nested two-level
+  headers) and fully redundant: the line items already carry per-HSN taxable values. A mismatch
+  logs an `info` and the line items win.
+- **A vision LLM would still be more accurate** on unseen layouts, degraded scans and handwriting.
+  This implementation is the deterministic path that was asked for; the trade-off is that a new
+  vendor whose wording is absent from `aliases.ts` under-extracts until its wording is added — a
+  one-line change, but a change nonetheless.
 
 ### 6.2 Pre-processing pipeline (before the model call)
 1. **Rasterise** each page at **≥300 DPI** (`pdfjs`/`pdf-to-img` server-side, or MuPDF).

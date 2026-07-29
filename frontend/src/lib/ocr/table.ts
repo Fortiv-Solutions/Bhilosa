@@ -13,7 +13,7 @@
 
 import { COLUMN_ALIASES, NUMERIC_COLUMNS, type LineColumn, isNoise } from './aliases';
 import {
-  type ColumnSpec, PageIndex, bboxCenterY, bboxHeight, buildColumns, cellConfidence, cellText,
+  type ColumnSpec, PageIndex, bboxCenterX, bboxCenterY, bboxHeight, buildColumns, cellConfidence, cellText,
   columnsFromGutters, findColumnGutters, labelKey, labelMatches, slotRowIntoColumns,
   stripRuleTokens, unionAll,
 } from './geometry';
@@ -70,6 +70,16 @@ export interface DetectedTable {
   dataBottom: number;
   /** Unit inferred from a unit-named quantity header, e.g. "BAGES" -> BAGS. */
   headerUnit: string | null;
+  /**
+   * The exact words that formed the heading.
+   *
+   * Data rows are separated from the heading by EXCLUDING these words, not by a
+   * y-coordinate cutoff. A cutoff is unsafe: when a data row sits tight against
+   * the heading, cell contents at slightly different baselines straddle it. On a
+   * photographed invoice this silently dropped the description text — leaving the
+   * row with numbers but no identity, so the item was discarded entirely.
+   */
+  headerWords: OcrWord[];
 }
 
 /**
@@ -271,6 +281,39 @@ export function detectTable(idx: PageIndex, opts: DetectTableOptions = {}): Dete
     columns = buildColumns(hdrs, 0, idx.width);
   }
 
+  /**
+   * Recover a value column whose heading the OCR lost.
+   *
+   * The rightmost column of an invoice table is always the line amount, and it is
+   * also the heading most often destroyed — it sits at the page edge where photos
+   * blur and scans clip. If nothing was named as the amount but an unnamed column
+   * to the right of the named ones holds numbers, that column is the amount.
+   * Measured on a photographed invoice this recovered a 7,050.00 line total that
+   * was otherwise discarded.
+   */
+  const hasValueColumn = columns.some((c) => c.name === 'amount' || c.name === 'taxableValue');
+  if (!hasValueColumn && vocab === LINE_ITEM_VOCAB) {
+    const namedRight = columns.reduce(
+      (max, c) => (!/^col\d+$/.test(c.name) ? Math.max(max, c.x1) : max),
+      -Infinity,
+    );
+    for (let i = columns.length - 1; i >= 0; i--) {
+      const col = columns[i];
+      if (!/^col\d+$/.test(col.name)) continue;
+      if (col.x0 < namedRight - (col.x1 - col.x0)) continue;
+      // Does this column actually hold amounts in the data rows?
+      const cellWords = dataWords.filter((w) => {
+        const cx = (w.bbox.x0 + w.bbox.x1) / 2;
+        return cx >= col.x0 && cx < col.x1;
+      });
+      const numeric = cellWords.filter((w) => parseAmount(w.text) !== null);
+      if (cellWords.length && numeric.length >= Math.max(1, cellWords.length * 0.6)) {
+        col.name = 'amount';
+        break;
+      }
+    }
+  }
+
   const headers: DetectedHeader[] = columns
     .filter((c) => !/^col\d+$/.test(c.name))
     .map((c) => ({ column: c.name, bbox: c.headerBBox, headerText: c.headerText }));
@@ -294,12 +337,20 @@ export function detectTable(idx: PageIndex, opts: DetectTableOptions = {}): Dete
     headerUnit = normaliseUnit(qtyHeader.headerText);
   }
 
-  return { columns, headers, headerBBox: band.bbox, dataTop, dataBottom, headerUnit };
+  return {
+    columns,
+    headers,
+    headerBBox: band.bbox,
+    dataTop,
+    dataBottom,
+    headerUnit,
+    headerWords: band.headerWords,
+  };
 }
 
 /** Detect the line-item table: must have an identity column and a numeric one. */
 export function detectLineItemTable(idx: PageIndex, opts: { searchTop?: number } = {}): DetectedTable | null {
-  return detectTable(idx, {
+  const byHeader = detectTable(idx, {
     vocabulary: LINE_ITEM_VOCAB,
     searchTop: opts.searchTop,
     minColumns: 3,
@@ -308,6 +359,128 @@ export function detectLineItemTable(idx: PageIndex, opts: { searchTop?: number }
       [...NUMERIC_COLUMNS],
     ],
   });
+  if (byHeader) return byHeader;
+  // Last resort for a vendor whose column headings are not in the vocabulary.
+  return inferTableWithoutHeaders(idx, opts.searchTop);
+}
+
+/**
+ * Infer a line-item table from its DATA when no heading could be recognised.
+ *
+ * A vendor whose column titles are absent from the vocabulary would otherwise
+ * yield no items at all. But line-item rows have a recognisable shape regardless
+ * of what the headings say: an HSN/SAC code (4, 6 or 8 digits) sitting alongside
+ * two or more other numbers, repeated on consecutive rows with consistent column
+ * positions.
+ *
+ * Columns are then named by POSITION using the near-universal Indian invoice
+ * ordering — description, HSN, quantity, rate, amount — reading right to left
+ * from the amount, which is the most reliable anchor because it is the widest
+ * number and always last.
+ *
+ * Confidence is necessarily lower than a header-driven read, so callers should
+ * treat these items as needing review.
+ */
+export function inferTableWithoutHeaders(idx: PageIndex, searchTop?: number): DetectedTable | null {
+  const lh = idx.lineHeight;
+  const words = stripRuleTokens(idx.words.filter((w) => !isNoise(w.text)));
+  const rows = idx.rows(words);
+
+  interface Candidate {
+    row: OcrWord[];
+    hsn: OcrWord;
+    numbers: OcrWord[];
+    y: number;
+  }
+  const candidates: Candidate[] = [];
+
+  for (const row of rows) {
+    const text = row.map((w) => w.text).join(' ');
+    if (searchTop !== undefined && Math.min(...row.map((w) => w.bbox.y0)) < searchTop) continue;
+    if (TABLE_END_RE.test(text) || isTotalsRow(text)) continue;
+
+    const hsnWord = row.find((w) => normaliseHsn(w.text) !== null && /^\d{4,8}$/.test(w.text.replace(/\D/g, '')));
+    if (!hsnWord) continue;
+    const numbers = row.filter((w) => w !== hsnWord && parseAmount(w.text) !== null);
+    if (numbers.length < 2) continue;
+    // Needs some words that are not numeric, i.e. a description.
+    const hasText = row.some((w) => /[A-Za-z]{3,}/.test(w.text));
+    if (!hasText) continue;
+    candidates.push({ row, hsn: hsnWord, numbers, y: Math.min(...row.map((w) => w.bbox.y0)) });
+  }
+
+  if (!candidates.length) return null;
+
+  // Build columns from the gutters of the candidate rows themselves.
+  const dataWords = candidates.flatMap((c) => c.row);
+  let boundaries: number[] = [];
+  let bestCount = 0;
+  for (const mult of [0.8, 1.1, 1.5, 2.0]) {
+    const b = findColumnGutters(dataWords, { minGutter: Math.max(6, lh * mult) });
+    if (b.length - 1 > bestCount && b.length >= 4) {
+      bestCount = b.length - 1;
+      boundaries = b;
+    }
+  }
+  if (boundaries.length < 4) return null;
+
+  const hsnCenter = bboxCenterX(candidates[0].hsn.bbox);
+  const columns: ColumnSpec[] = [];
+  for (let i = 0; i < boundaries.length - 1; i++) {
+    columns.push({
+      name: `col${i}`,
+      headerText: '',
+      x0: boundaries[i],
+      x1: boundaries[i + 1],
+      headerBBox: { x0: boundaries[i], y0: 0, x1: boundaries[i + 1], y1: 0 },
+    });
+  }
+
+  // Name by position: HSN where the code sits, description everything left of it,
+  // then quantity / rate / amount left-to-right across the numeric columns.
+  const hsnIdx = columns.findIndex((c) => hsnCenter >= c.x0 && hsnCenter < c.x1);
+  if (hsnIdx < 0) return null;
+  columns[hsnIdx].name = 'hsn';
+
+  // Widest column left of the HSN is the description.
+  let descIdx = -1;
+  let descWidth = 0;
+  for (let i = 0; i < hsnIdx; i++) {
+    const w = columns[i].x1 - columns[i].x0;
+    if (w > descWidth) {
+      descWidth = w;
+      descIdx = i;
+    }
+  }
+  if (descIdx >= 0) columns[descIdx].name = 'description';
+
+  const rightOfHsn = columns.slice(hsnIdx + 1);
+  // The last numeric column is the amount; before it, rate; before that, quantity.
+  const order = ['quantity', 'rate', 'amount'];
+  if (rightOfHsn.length >= 3) {
+    rightOfHsn[0].name = order[0];
+    rightOfHsn[rightOfHsn.length - 2].name = order[1];
+    rightOfHsn[rightOfHsn.length - 1].name = order[2];
+  } else if (rightOfHsn.length === 2) {
+    rightOfHsn[0].name = 'quantity';
+    rightOfHsn[1].name = 'amount';
+  } else if (rightOfHsn.length === 1) {
+    rightOfHsn[0].name = 'amount';
+  }
+
+  const top = Math.min(...candidates.map((c) => c.y)) - lh * 0.5;
+  return {
+    columns,
+    headers: columns
+      .filter((c) => !/^col\d+$/.test(c.name))
+      .map((c) => ({ column: c.name, bbox: c.headerBBox, headerText: c.headerText })),
+    headerBBox: { x0: 0, y0: Math.max(0, top - lh), x1: idx.width, y1: top },
+    dataTop: top,
+    dataBottom: idx.height,
+    headerUnit: null,
+    // No heading was recognised, so there are no heading words to exclude.
+    headerWords: [],
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -346,8 +519,19 @@ function hasSubstance(text: string): boolean {
  */
 export function extractRawRows(idx: PageIndex, table: DetectedTable): RawRow[] {
   const lh = idx.lineHeight;
+  /**
+   * Heading words are removed by IDENTITY. Using a y cutoff instead drops cell
+   * contents that sit slightly higher than their row's numbers — on a photographed
+   * invoice that silently removed the description, leaving a row with no identity
+   * which was then discarded, producing zero line items from a perfectly readable
+   * table. The coarse guard below only keeps rows from above the heading out.
+   */
+  const headerSet = new Set<OcrWord>(table.headerWords);
+  const headerTop = table.headerBBox.y0;
   const words = stripRuleTokens(
-    idx.words.filter((w) => bboxCenterY(w.bbox) > table.dataTop && !isNoise(w.text)),
+    idx.words.filter(
+      (w) => !headerSet.has(w) && bboxCenterY(w.bbox) > headerTop && !isNoise(w.text),
+    ),
   );
   const rows = idx.rows(words);
   const out: RawRow[] = [];
@@ -541,9 +725,14 @@ export function extractLineItems(idx: PageIndex, table: DetectedTable): LineItem
       lineTotal: parseAmount(get('lineTotal')),
     };
 
-    // An item needs a description or code, plus some numeric substance.
-    const hasIdentity = hasSubstance(description) || item.itemCode !== null;
-    const hasValue = item.taxableValue !== null || item.quantity !== null || item.hsnSac !== null;
+    /**
+     * An item needs identity plus substance. A recognised HSN/SAC code counts as
+     * identity in its own right: it is a government-assigned classification, so a
+     * row carrying one alongside a quantity or amount is unambiguously a line item
+     * even when its description was too degraded to read.
+     */
+    const hasIdentity = hasSubstance(description) || item.itemCode !== null || item.hsnSac !== null;
+    const hasValue = item.taxableValue !== null || item.quantity !== null;
     if (!hasIdentity || !hasValue) return;
 
     items.push(item);
@@ -572,8 +761,14 @@ export function extractTableTotalRow(
   table: DetectedTable,
 ): { totalQuantity: number | null; totalTaxable: number | null } {
   const lh = idx.lineHeight;
+  /**
+   * Any row below the data carrying the word "total" qualifies — not just a bare
+   * totals row. Vendors share that row with unrelated text: AJIT prints
+   * "PAYMENT DUE IN 30 DAYS ON 10/08/2026    Total : 188.00    467365.74" on one
+   * line, so requiring the row to contain nothing else lost the 188 quantity.
+   */
   const candidates = idx.lines
-    .filter((l) => l.bbox.y0 >= table.dataBottom - lh && isTotalsRow(l.text))
+    .filter((l) => l.bbox.y0 >= table.dataBottom - lh && /\btotal\b/i.test(l.text))
     .sort((a, b) => a.bbox.y0 - b.bbox.y0);
 
   for (const line of candidates) {

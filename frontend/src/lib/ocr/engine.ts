@@ -17,6 +17,7 @@
  *    (O/0, l/1, S/5, B/8) at source.
  */
 
+import fs from 'node:fs';
 import path from 'node:path';
 import type { BBox, OcrLine, OcrPage, OcrWord } from './types';
 import { bboxCenterY, estimateBaselineSlope, groupIntoRows } from './geometry';
@@ -28,8 +29,11 @@ import {
   type Rotation,
   cropRegion,
   horizontalFraction,
+  IMAGE_RECIPES,
   keywordScore,
+  prepareImageUpload,
   renderAndPreprocess,
+  renderPdfPage,
   scoreOrientation,
 } from './render';
 
@@ -43,11 +47,57 @@ export const IDENT_WHITELIST = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/-. ';
 const LANG = 'eng';
 
 /**
- * Where eng.traineddata lives. Vendored into the repo at frontend/tessdata so
- * the pipeline works offline and in containers; override with TESSDATA_PATH.
+ * Locate eng.traineddata.
+ *
+ * It is vendored at frontend/tessdata so OCR works offline and in containers, but
+ * a single `process.cwd()/tessdata` guess is not enough: the server's working
+ * directory differs between `next dev` run from frontend/, run from the repo
+ * root, and a standalone build. When the path is wrong tesseract.js silently
+ * falls back to downloading from a CDN, and on an offline host that yields a
+ * worker that returns NO text — which surfaced as an invoice where every single
+ * field came back empty, with nothing pointing at the real cause.
+ *
+ * So the directory is resolved against several candidates and verified to
+ * actually contain the file. If none does, the caller throws with instructions
+ * rather than producing a silent empty read.
  */
-function langPath(): string {
-  return process.env.TESSDATA_PATH || path.join(process.cwd(), 'tessdata');
+let cachedLangPath: string | null | undefined;
+
+export function resolveLangPath(): string | null {
+  if (cachedLangPath !== undefined) return cachedLangPath;
+
+  const cwd = process.cwd();
+  const candidates = [
+    process.env.TESSDATA_PATH,
+    path.join(cwd, 'tessdata'),
+    path.join(cwd, 'frontend', 'tessdata'),
+    // Standalone output keeps the traced files beside the server bundle.
+    path.join(cwd, '.next', 'standalone', 'tessdata'),
+    path.join(cwd, '..', 'tessdata'),
+    path.join(cwd, '..', 'frontend', 'tessdata'),
+  ].filter((p): p is string => Boolean(p));
+
+  for (const dir of candidates) {
+    try {
+      if (fs.existsSync(path.join(dir, `${LANG}.traineddata`))) {
+        cachedLangPath = dir;
+        return dir;
+      }
+    } catch {
+      /* keep looking */
+    }
+  }
+  cachedLangPath = null;
+  return null;
+}
+
+/** Human-readable diagnostic for a missing language file. */
+function missingTessdataMessage(): string {
+  return (
+    `OCR language data (${LANG}.traineddata) could not be found. Looked relative to ` +
+    `"${process.cwd()}". Expected it at frontend/tessdata/${LANG}.traineddata — ` +
+    'restore that file, or set the TESSDATA_PATH environment variable to the directory that holds it.'
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -58,16 +108,33 @@ let workerPromise: Promise<Worker> | null = null;
 /** Serialises recognize() calls: a Tesseract worker is single-threaded. */
 let queue: Promise<unknown> = Promise.resolve();
 
+/** Errors reported by the worker, surfaced instead of swallowed. */
+let lastWorkerError: string | null = null;
+
+export function getLastEngineError(): string | null {
+  return lastWorkerError;
+}
+
 async function getWorker(): Promise<Worker> {
   if (!workerPromise) {
     workerPromise = (async () => {
+      const dir = resolveLangPath();
+      // Fail loudly and early. Previously a missing language file produced a
+      // worker that returned empty text for every page, which looked like an
+      // unreadable invoice rather than a misconfigured install.
+      if (!dir) throw new Error(missingTessdataMessage());
+
       const { createWorker } = await import('tesseract.js');
       return createWorker(LANG, 1, {
-        langPath: langPath(),
+        langPath: dir,
         gzip: false,
-        cachePath: process.env.TESSERACT_CACHE_PATH || langPath(),
+        cachePath: process.env.TESSERACT_CACHE_PATH || dir,
         logger: () => {},
-        errorHandler: () => {},
+        // Record rather than discard: swallowing this hid the root cause of a
+        // total extraction failure.
+        errorHandler: (err: unknown) => {
+          lastWorkerError = err instanceof Error ? err.message : String(err);
+        },
       });
     })().catch((err) => {
       workerPromise = null;
@@ -307,6 +374,41 @@ export async function ocrRenderedPage(rendered: RenderedPage): Promise<OcrPage> 
   };
 }
 
+/**
+ * Determine the upright orientation of a standalone image upload.
+ *
+ * Photographs of invoices are routinely sideways or upside down, and unlike a PDF
+ * there is no page box to hint at it. Same two-signal scoring as PDF pages: the
+ * keyword count rejects upside-down candidates, the fraction of wide word boxes
+ * rejects sideways ones.
+ */
+export async function detectImageRotation(
+  bytes: Buffer,
+): Promise<{ rotation: Rotation; candidates: Array<{ rotation: Rotation; keyword: number; horiz: number; score: number }> }> {
+  const candidates: Array<{ rotation: Rotation; keyword: number; horiz: number; score: number }> = [];
+
+  for (const rotation of ROTATIONS) {
+    try {
+      const page = await prepareImageUpload(bytes, rotation, { recipe: 'plain', maxWidth: 1500 });
+      const res = await recognize(page.png, {
+        tessedit_pageseg_mode: '3',
+        preserve_interword_spaces: '1',
+      });
+      const keyword = keywordScore(res.text);
+      const horiz = horizontalFraction(res.words);
+      candidates.push({ rotation, keyword, horiz, score: scoreOrientation(keyword, horiz) });
+    } catch {
+      candidates.push({ rotation, keyword: 0, horiz: 0, score: 0 });
+    }
+    // Most uploads are already upright; a decisive first result ends the probe.
+    if (rotation === 0 && candidates[0].keyword >= 25 && candidates[0].horiz >= 0.9) {
+      return { rotation: 0, candidates };
+    }
+  }
+  candidates.sort((a, b) => b.score - a.score);
+  return { rotation: candidates[0]?.rotation ?? 0, candidates };
+}
+
 /** Render, orient and OCR a single PDF page. */
 export async function ocrPdfPage(
   pdfBytes: Uint8Array,
@@ -316,6 +418,149 @@ export async function ocrPdfPage(
   const rotation = opts.rotation ?? (await detectRotation(pdfBytes, pageIndex)).rotation;
   const rendered = await renderAndPreprocess(pdfBytes, pageIndex, opts.dpi ?? OCR_DPI, rotation);
   return ocrRenderedPage(rendered);
+}
+
+/** A page yielding fewer confident words than this is treated as a failed read. */
+const MIN_USABLE_WORDS = 40;
+
+/** How many words on a page carry real content? */
+export function usableWordCount(page: OcrPage): number {
+  return page.words.filter((w) => w.confidence >= 60 && /[A-Za-z0-9]{2,}/.test(w.text)).length;
+}
+
+/**
+ * OCR a page, escalating through alternative preprocessing recipes until the
+ * result is usable.
+ *
+ * The default recipe (border trim, 400 dpi, sRGB) is right for the scans measured
+ * here, but every preprocessing choice that helps one document can hurt another:
+ * trimming assumes a flat surround exists, and binarisation helps faint dot-matrix
+ * print while destroying thin anti-aliased type. Rather than betting the whole
+ * extraction on one recipe, a poor read is retried with the assumptions relaxed
+ * and the best attempt wins.
+ *
+ * This is what turns "every field came back empty" into a usable read on document
+ * types that were never in the sample set.
+ */
+export async function ocrPdfPageRobust(
+  pdfBytes: Uint8Array,
+  pageIndex: number,
+  opts: { rotation?: Rotation; dpi?: number } = {},
+): Promise<{ page: OcrPage; attempts: Array<{ recipe: string; words: number; confidence: number }> }> {
+  const rotation = opts.rotation ?? (await detectRotation(pdfBytes, pageIndex)).rotation;
+  const baseDpi = opts.dpi ?? OCR_DPI;
+
+  const recipes: Array<{ label: string; dpi: number; trim: boolean; binarize: boolean }> = [
+    { label: 'trim', dpi: baseDpi, trim: true, binarize: false },
+    // No trim: the page may have no flat border, or content may touch the edge.
+    { label: 'notrim', dpi: baseDpi, trim: false, binarize: false },
+    // Binarised: recovers faint or low-contrast print.
+    { label: 'trim+binarize', dpi: baseDpi, trim: true, binarize: true },
+    // Lower dpi: helps very large renders where glyphs blur at high scale.
+    { label: 'trim@300', dpi: 300, trim: true, binarize: false },
+  ];
+
+  const attempts: Array<{ recipe: string; words: number; confidence: number }> = [];
+  let best: OcrPage | null = null;
+  let bestWords = -1;
+
+  for (const recipe of recipes) {
+    try {
+      const rendered = await renderAndPreprocess(pdfBytes, pageIndex, recipe.dpi, rotation);
+      const page = await ocrRenderedPage(rendered);
+      const words = usableWordCount(page);
+      attempts.push({ recipe: recipe.label, words, confidence: page.meanConfidence });
+
+      if (words > bestWords) {
+        bestWords = words;
+        best = page;
+      }
+      // Good enough — stop escalating.
+      if (words >= MIN_USABLE_WORDS) break;
+    } catch (err) {
+      attempts.push({
+        recipe: recipe.label,
+        words: -1,
+        confidence: 0,
+      });
+      void err;
+    }
+  }
+
+  /**
+   * Still nothing usable. The PDF is very likely a wrapper around a PHOTOGRAPH —
+   * a phone picture saved or printed to PDF — which needs the photo treatment
+   * (crop to the document, local contrast, scale normalisation) rather than the
+   * flat-scan treatment above. Rasterise the page and run the image ladder.
+   */
+  if (bestWords < MIN_USABLE_WORDS) {
+    try {
+      const raw = await renderPdfPage(pdfBytes, pageIndex, baseDpi, rotation);
+      const photo = await ocrImageRobust(raw, { rotation, pageNumber: pageIndex + 1 });
+      attempts.push(...photo.attempts.map((a) => ({ ...a, recipe: `photo:${a.recipe}` })));
+      const photoWords = usableWordCount(photo.page);
+      if (photoWords > bestWords) {
+        bestWords = photoWords;
+        best = photo.page;
+      }
+    } catch {
+      /* keep whatever the scan ladder produced */
+    }
+  }
+
+  if (!best) {
+    throw new Error(
+      lastWorkerError
+        ? `OCR failed on page ${pageIndex + 1}: ${lastWorkerError}`
+        : `OCR produced no result for page ${pageIndex + 1}.`,
+    );
+  }
+  return { page: best, attempts };
+}
+
+/**
+ * OCR an image upload, escalating through the photograph recipes.
+ *
+ * Images previously got a SINGLE attempt using settings tuned for flat scans,
+ * with no retry and no safety net — which is why a photograph could come back
+ * with one usable word and no explanation. Each recipe changes a different
+ * assumption (is there background to crop away? is the lighting uneven? is the
+ * print faint?), and the best attempt wins.
+ */
+export async function ocrImageRobust(
+  bytes: Buffer,
+  opts: { rotation?: Rotation; pageNumber?: number } = {},
+): Promise<{ page: OcrPage; attempts: Array<{ recipe: string; words: number; confidence: number }> }> {
+  const rotation = opts.rotation ?? (await detectImageRotation(bytes)).rotation;
+  const attempts: Array<{ recipe: string; words: number; confidence: number }> = [];
+  let best: OcrPage | null = null;
+  let bestWords = -1;
+
+  for (const recipe of IMAGE_RECIPES) {
+    try {
+      const rendered = await prepareImageUpload(bytes, rotation, { recipe });
+      const page = await ocrRenderedPage(rendered);
+      if (opts.pageNumber) page.pageNumber = opts.pageNumber;
+      const words = usableWordCount(page);
+      attempts.push({ recipe, words, confidence: page.meanConfidence });
+      if (words > bestWords) {
+        bestWords = words;
+        best = page;
+      }
+      if (words >= MIN_USABLE_WORDS) break;
+    } catch {
+      attempts.push({ recipe, words: -1, confidence: 0 });
+    }
+  }
+
+  if (!best) {
+    throw new Error(
+      lastWorkerError
+        ? `OCR failed on this image: ${lastWorkerError}`
+        : 'OCR produced no result for this image.',
+    );
+  }
+  return { page: best, attempts };
 }
 
 // ---------------------------------------------------------------------------

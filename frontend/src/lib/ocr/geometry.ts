@@ -248,6 +248,21 @@ export class PageIndex {
    */
   findAnyLabel(targets: string[], opts: { maxEdits?: number; region?: BBox } = {}): LabelHit | null {
     const ordered = [...targets].sort((a, b) => labelKey(b).length - labelKey(a).length);
+    /**
+     * Exact matches across ALL aliases are tried before any fuzzy match.
+     *
+     * Otherwise a longer alias wins fuzzily by absorbing the start of the value:
+     * on the ARCHIT scan "Transport : P N CORPORATION" matched the alias
+     * "Transporter", because "Transport"+":"+"P" is two edits from it, and the
+     * value came back as "N CORPORATION". Letting the exact alias "Transport"
+     * claim the label first keeps the value intact.
+     */
+    if (opts.maxEdits === undefined) {
+      for (const t of ordered) {
+        const hit = this.findLabel(t, { ...opts, maxEdits: 0 });
+        if (hit) return hit;
+      }
+    }
     for (const t of ordered) {
       const hit = this.findLabel(t, opts);
       if (hit) return hit;
@@ -264,12 +279,16 @@ export class PageIndex {
     const ordered = [...targets].sort((a, b) => labelKey(b).length - labelKey(a).length);
     const out: LabelHit[] = [];
     const seen = new Set<string>();
-    for (const t of ordered) {
-      for (const hit of this.findLabels(t, opts)) {
-        const key = `${Math.round(hit.bbox.x0)}:${Math.round(hit.bbox.y0)}:${hit.words.length}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        out.push(hit);
+    // Exact matches first, for the reason given in findAnyLabel.
+    const passes: Array<number | undefined> = opts.maxEdits === undefined ? [0, undefined] : [opts.maxEdits];
+    for (const maxEdits of passes) {
+      for (const t of ordered) {
+        for (const hit of this.findLabels(t, { ...opts, maxEdits })) {
+          const key = `${Math.round(hit.bbox.x0)}:${Math.round(hit.bbox.y0)}:${hit.words.length}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          out.push(hit);
+        }
       }
     }
     return out;
@@ -454,7 +473,18 @@ export function joinWordsReadingOrder(words: OcrWord[], lineHeight: number): str
  * into a single bin. Bin geometry is fixed across candidates so scores compare
  * directly.
  */
-export function estimateBaselineSlope(words: OcrWord[], maxSlope = 0.04): number {
+/**
+ * Widest slope searched, as rise/run. 0.09 is about 5 degrees.
+ *
+ * The original 0.04 (~2.3 degrees) was sized for flat scans and is far too tight
+ * for a hand-held photograph: a 3.5 degree camera tilt is slope 0.061, outside the
+ * search, so no correction was found and row banding shredded every table row.
+ * Measured on a synthetic 2600px photo this was the difference between 0/12 and a
+ * full read.
+ */
+const MAX_BASELINE_SLOPE = 0.09;
+
+export function estimateBaselineSlope(words: OcrWord[], maxSlope = MAX_BASELINE_SLOPE): number {
   const solid = words.filter((w) => w.confidence >= 60 && /[A-Za-z0-9]/.test(w.text));
   if (solid.length < 25) return 0;
 

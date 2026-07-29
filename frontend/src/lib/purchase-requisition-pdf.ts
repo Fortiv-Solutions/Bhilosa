@@ -1,5 +1,4 @@
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
-import type { PurchaseRequisitionRow } from './procurement';
 
 /**
  * Sanitizes text strings for pdf-lib standard WinAnsi Helvetica encoding.
@@ -14,193 +13,302 @@ function sanitizeWinAnsi(str: string | null | undefined): string {
 }
 
 /**
- * Generates an official, standard PDF document binary for a Purchase Requisition.
+ * Generates an official, standard PDF document binary for a Purchase Requisition in A4 Portrait B&W format.
  * Returns a Blob with mime type 'application/pdf'.
  */
-export async function generatePurchaseRequisitionPdfBlob(pr: PurchaseRequisitionRow): Promise<Blob> {
+export async function generatePurchaseRequisitionPdfBlob(pr: any): Promise<Blob> {
   const pdfDoc = await PDFDocument.create();
-  const page = pdfDoc.addPage([595.28, 841.89]); // A4 dimensions in points
+  // Landscape for 14 columns
+  const page = pdfDoc.addPage([841.89, 595.28]);
   const fontHelvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const fontHelveticaBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
   const { width, height } = page.getSize();
 
-  // 1. Top Header Banner
+  const preparedBy = sanitizeWinAnsi(pr.prepared_by || pr.profiles?.name || pr.created_by_name || pr.raised_by || '');
+  const printedByName = sanitizeWinAnsi(pr.printed_by || pr.profiles?.name || pr.created_by_name || 'Karan Shah');
+  const now = new Date();
+  const printDateStr = now.toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  const prDateStr = pr.pr_date || (pr.created_at ? new Date(pr.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '');
+  const reqDateStr = pr.target_date || pr.required_date ? new Date(pr.target_date || pr.required_date).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '';
+  const companyName = sanitizeWinAnsi(pr.company_name || '');
+  const projectName = sanitizeWinAnsi(pr.project_name || pr.projects?.name || '');
+  const siteName = sanitizeWinAnsi(pr.site_name || pr.sub_project || '');
+  const contractorName = sanitizeWinAnsi(pr.contractor_name || pr.contractor || '');
+  const costCenter = sanitizeWinAnsi(pr.cost_code || pr.budget_head || pr.cost_center || '');
+  const activityNames = sanitizeWinAnsi(pr.activity_name || pr.work_activity || '');
+  const deliveryAddress = sanitizeWinAnsi(pr.delivery_address || '');
+  const remarks = sanitizeWinAnsi(pr.general_remarks || pr.remarks || pr.justification || '');
+  const unlockedProject = sanitizeWinAnsi(String(pr.unlocked_project ?? '1.00'));
+  const prReleaseDate = sanitizeWinAnsi(pr.pr_release_date || (pr.created_at ? new Date(pr.created_at).toLocaleString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }) : ''));
+  const status = sanitizeWinAnsi(pr.status || 'Approved');
+
+  // 1. Top Center Heading
+  let y = height - 36;
+  const headerTitle = 'Purchase Requisition';
+  const titleWidth = fontHelveticaBold.widthOfTextAtSize(headerTitle, 16);
+  page.drawText(headerTitle, { x: (width - titleWidth) / 2, y, size: 16, font: fontHelveticaBold, color: rgb(0, 0, 0) });
+
+  y -= 14;
+  const subtitleText = `Printed By: ${printedByName} on Date: ${printDateStr}`;
+  const subtitleWidth = fontHelvetica.widthOfTextAtSize(subtitleText, 8.5);
+  page.drawText(subtitleText, { x: (width - subtitleWidth) / 2, y, size: 8.5, font: fontHelvetica, color: rgb(0, 0, 0) });
+
+  y -= 10;
+  page.drawLine({ start: { x: 25, y }, end: { x: width - 25, y }, thickness: 1.5, color: rgb(0, 0, 0) });
+
+  // 2. Metadata Tabular Grid (5 rows)
+  y -= 10;
+  const metaBoxHeight = 90;
+  const tableWidth = width - 50;
   page.drawRectangle({
-    x: 30,
-    y: height - 75,
-    width: width - 60,
-    height: 48,
-    color: rgb(0.15, 0.35, 0.6), // Pramukh Corporate Blue #265999
-  });
-
-  page.drawText('PRAMUKH GROUP', {
-    x: 42,
-    y: height - 52,
-    size: 16,
-    font: fontHelveticaBold,
-    color: rgb(1, 1, 1),
-  });
-
-  page.drawText('PURCHASE REQUISITION REPORT', {
-    x: 42,
-    y: height - 66,
-    size: 9,
-    font: fontHelvetica,
-    color: rgb(0.95, 0.95, 0.95),
-  });
-
-  const prNum = sanitizeWinAnsi(pr.pr_number || 'PR-DRAFT');
-  page.drawText(`PR NO: ${prNum}`, {
-    x: width - 210,
-    y: height - 52,
-    size: 12,
-    font: fontHelveticaBold,
-    color: rgb(1, 1, 1),
-  });
-
-  const createdDateStr = pr.created_at ? new Date(pr.created_at).toLocaleDateString('en-IN') : 'Today';
-  page.drawText(`Date: ${createdDateStr}`, {
-    x: width - 210,
-    y: height - 66,
-    size: 9,
-    font: fontHelvetica,
-    color: rgb(0.95, 0.95, 0.95),
-  });
-
-  // 2. Metadata Key-Value Box
-  let y = height - 95;
-  const gridHeight = 85;
-  page.drawRectangle({
-    x: 30,
-    y: y - gridHeight,
-    width: width - 60,
-    height: gridHeight,
-    borderColor: rgb(0.85, 0.85, 0.85),
+    x: 25,
+    y: y - metaBoxHeight,
+    width: tableWidth,
+    height: metaBoxHeight,
+    borderColor: rgb(0, 0, 0),
     borderWidth: 1,
-    color: rgb(0.97, 0.98, 0.99),
+    color: rgb(1, 1, 1),
   });
 
-  const row1Y = y - 22;
-  page.drawText('Requisition Title:', { x: 42, y: row1Y, size: 10, font: fontHelveticaBold, color: rgb(0.3, 0.3, 0.3) });
-  const cleanTitle = sanitizeWinAnsi(pr.title || 'Material Purchase Requisition');
-  page.drawText(cleanTitle.length > 30 ? cleanTitle.substring(0, 27) + '...' : cleanTitle, { x: 140, y: row1Y, size: 10, font: fontHelvetica, color: rgb(0.1, 0.1, 0.1) });
-
-  page.drawText('Required Date:', { x: 310, y: row1Y, size: 10, font: fontHelveticaBold, color: rgb(0.3, 0.3, 0.3) });
-  const reqDateStr = pr.required_date ? new Date(pr.required_date).toLocaleDateString('en-IN') : '-';
-  page.drawText(reqDateStr, { x: 410, y: row1Y, size: 10, font: fontHelvetica, color: rgb(0.1, 0.1, 0.1) });
-
-  const row2Y = y - 44;
-  page.drawText('Activity / Site:', { x: 42, y: row2Y, size: 10, font: fontHelveticaBold, color: rgb(0.3, 0.3, 0.3) });
-  page.drawText(sanitizeWinAnsi(pr.activity_name || pr.delivery_address || 'Central Park Main Site'), { x: 140, y: row2Y, size: 10, font: fontHelvetica, color: rgb(0.1, 0.1, 0.1) });
-
-  page.drawText('Priority:', { x: 310, y: row2Y, size: 10, font: fontHelveticaBold, color: rgb(0.3, 0.3, 0.3) });
-  page.drawText(sanitizeWinAnsi((pr.priority || 'Normal').toUpperCase()), { x: 410, y: row2Y, size: 10, font: fontHelveticaBold, color: rgb(0.8, 0.2, 0.2) });
-
-  const row3Y = y - 66;
-  page.drawText('Prepared By:', { x: 42, y: row3Y, size: 10, font: fontHelveticaBold, color: rgb(0.3, 0.3, 0.3) });
-  page.drawText(sanitizeWinAnsi(pr.contractor_name || pr.department || 'PR Procurement Team'), { x: 140, y: row3Y, size: 10, font: fontHelvetica, color: rgb(0.1, 0.1, 0.1) });
-
-  page.drawText('Status:', { x: 310, y: row3Y, size: 10, font: fontHelveticaBold, color: rgb(0.3, 0.3, 0.3) });
-  page.drawText(sanitizeWinAnsi((pr.status || 'Draft').toUpperCase()), { x: 410, y: row3Y, size: 10, font: fontHelveticaBold, color: rgb(0.15, 0.35, 0.6) });
-
-  // 3. Remarks / Notes
-  y = y - gridHeight - 15;
-  const remarksText = pr.assigned_team_notes || pr.general_remarks || pr.internal_notes;
-  if (remarksText) {
-    page.drawRectangle({
-      x: 30,
-      y: y - 35,
-      width: width - 60,
-      height: 35,
-      color: rgb(0.95, 0.97, 1),
-      borderColor: rgb(0.75, 0.85, 0.95),
-      borderWidth: 1,
-    });
-    page.drawText('Requisition Notes & Remarks:', { x: 40, y: y - 14, size: 9, font: fontHelveticaBold, color: rgb(0.15, 0.35, 0.6) });
-    const cleanRemarks = sanitizeWinAnsi(remarksText).substring(0, 100);
-    page.drawText(`"${cleanRemarks}"`, { x: 40, y: y - 27, size: 9, font: fontHelvetica, color: rgb(0.2, 0.2, 0.2) });
-    y = y - 45;
+  const rowH = metaBoxHeight / 5;
+  page.drawLine({ start: { x: 25 + tableWidth / 2, y }, end: { x: 25 + tableWidth / 2, y: y - metaBoxHeight }, thickness: 1, color: rgb(0, 0, 0) });
+  for (let i = 1; i < 5; i++) {
+    page.drawLine({ start: { x: 25, y: y - rowH * i }, end: { x: width - 25, y: y - rowH * i }, thickness: 1, color: rgb(0, 0, 0) });
   }
 
-  // 4. Line Items Table Header
-  page.drawText('PURCHASE REQUISITION LINE ITEMS', { x: 30, y, size: 10, font: fontHelveticaBold, color: rgb(0.2, 0.2, 0.2) });
-  y = y - 16;
+  const fields = [
+    { label1: 'P.R. No.', val1: pr.pr_number || '', label2: 'P.R.Date*', val2: prDateStr },
+    { label1: 'Project Name*', val1: projectName, label2: 'Name of Company', val2: companyName },
+    { label1: 'Sub Project*', val1: siteName, label2: 'Contractor Name', val2: contractorName },
+    { label1: 'Cost Center', val1: costCenter, label2: '', val2: '' },
+    { label1: 'Activity Names', val1: activityNames, label2: '', val2: '' },
+  ];
+
+  fields.forEach((f, idx) => {
+    const rowY = y - 12 - (idx * rowH);
+    page.drawText(f.label1, { x: 32, y: rowY, size: 8, font: fontHelveticaBold, color: rgb(0, 0, 0) });
+    page.drawText(f.val1, { x: 155, y: rowY, size: 8, font: fontHelvetica, color: rgb(0, 0, 0) });
+
+    if (f.label2) {
+      page.drawText(f.label2, { x: 25 + tableWidth / 2 + 10, y: rowY, size: 8, font: fontHelveticaBold, color: rgb(0, 0, 0) });
+      page.drawText(f.val2, { x: 25 + tableWidth / 2 + 145, y: rowY, size: 8, font: fontHelvetica, color: rgb(0, 0, 0) });
+    }
+  });
+
+  y -= (metaBoxHeight + 16);
+
+  // 3. Section Heading: Material Request Entries*
+  const entryHeading = 'Material Request Entries*';
+  const entryHeadingWidth = fontHelveticaBold.widthOfTextAtSize(entryHeading, 10);
+  page.drawText(entryHeading, { x: (width - entryHeadingWidth) / 2, y, size: 10, font: fontHelveticaBold, color: rgb(0, 0, 0) });
+  y -= 14;
+
+  // 4. Data Table Columns (14 columns)
+  const columns = [
+    { name: 'Sr', width: 25 },
+    { name: 'Item Group*', width: 85 },
+    { name: 'Item Desc*', width: 110 },
+    { name: 'Unit*', width: 40 },
+    { name: 'Item Brand', width: 60 },
+    { name: 'Est Qty', width: 45 },
+    { name: 'Iss Qty', width: 45 },
+    { name: 'Quantity*', width: 55 },
+    { name: 'Bal Qty', width: 45 },
+    { name: 'Pending PR', width: 55 },
+    { name: 'Lead Period', width: 55 },
+    { name: 'Lead Period Date', width: 75 },
+    { name: 'Required Date*', width: 75 },
+    { name: 'Stock Qty', width: 61 },
+  ];
 
   page.drawRectangle({
-    x: 30,
-    y: y - 20,
-    width: width - 60,
-    height: 20,
-    color: rgb(0.91, 0.94, 0.96),
-    borderColor: rgb(0.8, 0.85, 0.9),
+    x: 25,
+    y: y - 18,
+    width: tableWidth,
+    height: 18,
+    color: rgb(1, 1, 1),
+    borderColor: rgb(0, 0, 0),
     borderWidth: 1,
   });
 
-  page.drawText('#', { x: 38, y: y - 14, size: 9, font: fontHelveticaBold, color: rgb(0.2, 0.25, 0.3) });
-  page.drawText('ITEM DESCRIPTION', { x: 65, y: y - 14, size: 9, font: fontHelveticaBold, color: rgb(0.2, 0.25, 0.3) });
-  page.drawText('UNIT', { x: 270, y: y - 14, size: 9, font: fontHelveticaBold, color: rgb(0.2, 0.25, 0.3) });
-  page.drawText('QTY', { x: 330, y: y - 14, size: 9, font: fontHelveticaBold, color: rgb(0.2, 0.25, 0.3) });
-  page.drawText('EST. RATE', { x: 390, y: y - 14, size: 9, font: fontHelveticaBold, color: rgb(0.2, 0.25, 0.3) });
-  page.drawText('EST. TOTAL', { x: 475, y: y - 14, size: 9, font: fontHelveticaBold, color: rgb(0.2, 0.25, 0.3) });
+  let curX = 25;
+  columns.forEach((col, idx) => {
+    page.drawText(col.name, { x: curX + 3, y: y - 13, size: 7, font: fontHelveticaBold, color: rgb(0, 0, 0) });
+    curX += col.width;
+    if (idx < columns.length - 1) {
+      page.drawLine({ start: { x: curX, y }, end: { x: curX, y: y - 18 }, thickness: 1, color: rgb(0, 0, 0) });
+    }
+  });
 
-  y = y - 20;
+  y -= 18;
 
   // 5. Line Rows
-  const lines = pr.purchase_requisition_lines || [];
-  let grandTotal = 0;
-
-  lines.forEach((line, idx) => {
-    const rowY = y - 16;
-    const estRate = line.estimated_rate || 0;
-    const lineTotal = line.line_total || (line.quantity * estRate);
-    grandTotal += lineTotal;
-
+  const lines = pr.items || pr.lines || pr.pr_items || pr.purchase_requisition_lines || [];
+  lines.forEach((line: any, idx: number) => {
+    const rowY = y - 13;
     page.drawRectangle({
-      x: 30,
-      y: y - 22,
-      width: width - 60,
-      height: 22,
-      borderColor: rgb(0.9, 0.9, 0.9),
+      x: 25,
+      y: y - 18,
+      width: tableWidth,
+      height: 18,
+      borderColor: rgb(0, 0, 0),
       borderWidth: 1,
-      color: idx % 2 === 0 ? rgb(1, 1, 1) : rgb(0.98, 0.98, 0.98),
+      color: rgb(1, 1, 1),
     });
 
-    page.drawText(String(idx + 1), { x: 38, y: rowY, size: 9, font: fontHelvetica, color: rgb(0.3, 0.3, 0.3) });
+    const itemReqDate = line.required_date || line.target_date ? new Date(line.required_date || line.target_date).toLocaleDateString('en-IN') : reqDateStr;
+    const vals = [
+      String(idx + 1),
+      sanitizeWinAnsi(line.category_group || line.item_group || ''),
+      sanitizeWinAnsi(line.item_description || line.description || '').substring(0, 22),
+      sanitizeWinAnsi(line.unit || ''),
+      sanitizeWinAnsi(line.brand || line.item_brand || '-'),
+      Number(line.est_qty ?? 0).toFixed(3),
+      Number(line.iss_qty ?? 0).toFixed(3),
+      Number(line.quantity ?? line.qty ?? 0).toFixed(2),
+      Number(line.bal_qty ?? line.quantity ?? 0).toFixed(2),
+      Number(line.pending_pr ?? 0).toFixed(2),
+      line.lead_period ? Number(line.lead_period).toFixed(2) : '',
+      sanitizeWinAnsi(line.lead_period_date || itemReqDate),
+      itemReqDate,
+      line.stock_qty ? Number(line.stock_qty).toFixed(3) : '',
+    ];
 
-    const cleanDesc = sanitizeWinAnsi(line.item_description);
-    const descText = cleanDesc.length > 36 ? cleanDesc.substring(0, 33) + '...' : cleanDesc;
-    page.drawText(descText, { x: 65, y: rowY, size: 9, font: fontHelveticaBold, color: rgb(0.1, 0.1, 0.1) });
-    page.drawText(sanitizeWinAnsi(line.unit || 'nos'), { x: 270, y: rowY, size: 9, font: fontHelvetica, color: rgb(0.3, 0.3, 0.3) });
-    page.drawText(String(line.quantity), { x: 330, y: rowY, size: 9, font: fontHelveticaBold, color: rgb(0.1, 0.1, 0.1) });
-    page.drawText(`INR ${estRate.toLocaleString('en-IN')}`, { x: 390, y: rowY, size: 9, font: fontHelvetica, color: rgb(0.3, 0.3, 0.3) });
-    page.drawText(`INR ${lineTotal.toLocaleString('en-IN')}`, { x: 475, y: rowY, size: 9, font: fontHelveticaBold, color: rgb(0.15, 0.35, 0.6) });
+    let rX = 25;
+    vals.forEach((v, cIdx) => {
+      page.drawText(v, { x: rX + 3, y: rowY, size: 7, font: fontHelvetica, color: rgb(0, 0, 0) });
+      rX += columns[cIdx].width;
+      if (cIdx < columns.length - 1) {
+        page.drawLine({ start: { x: rX, y }, end: { x: rX, y: y - 18 }, thickness: 1, color: rgb(0, 0, 0) });
+      }
+    });
 
-    y = y - 22;
+    y -= 18;
   });
 
-  // 6. Grand Total Footer
-  y = y - 15;
-  const totalCost = pr.estimated_cost || pr.total_amount || grandTotal;
+  // 6. Summary Rows Box (Attached to table bottom)
+  const summaryBoxHeight = 56;
   page.drawRectangle({
-    x: 30,
-    y: y - 25,
-    width: width - 60,
-    height: 25,
-    color: rgb(0.95, 0.95, 0.95),
-    borderColor: rgb(0.85, 0.85, 0.85),
+    x: 25,
+    y: y - summaryBoxHeight,
+    width: tableWidth,
+    height: summaryBoxHeight,
+    borderColor: rgb(0, 0, 0),
+    borderWidth: 1,
+    color: rgb(1, 1, 1),
+  });
+
+  const sRowH = summaryBoxHeight / 4;
+  for (let i = 1; i < 4; i++) {
+    page.drawLine({ start: { x: 25, y: y - sRowH * i }, end: { x: width - 25, y: y - sRowH * i }, thickness: 1, color: rgb(0, 0, 0) });
+  }
+
+  // Row 1 & 2 full-width labels
+  page.drawText('Delivery Address', { x: 32, y: y - 10, size: 7.5, font: fontHelveticaBold, color: rgb(0, 0, 0) });
+  page.drawText(deliveryAddress.substring(0, 110), { x: 140, y: y - 10, size: 7.5, font: fontHelvetica, color: rgb(0, 0, 0) });
+
+  page.drawText('Remarks', { x: 32, y: y - 10 - sRowH, size: 7.5, font: fontHelveticaBold, color: rgb(0, 0, 0) });
+  page.drawText(remarks.substring(0, 110), { x: 140, y: y - 10 - sRowH, size: 7.5, font: fontHelvetica, color: rgb(0, 0, 0) });
+
+  // Row 3 & 4 split vertical divider
+  page.drawLine({ start: { x: 25 + tableWidth / 2, y: y - sRowH * 2 }, end: { x: 25 + tableWidth / 2, y: y - summaryBoxHeight }, thickness: 1, color: rgb(0, 0, 0) });
+
+  page.drawText('Unlocked Project', { x: 32, y: y - 10 - sRowH * 2, size: 7.5, font: fontHelveticaBold, color: rgb(0, 0, 0) });
+  page.drawText(unlockedProject, { x: 140, y: y - 10 - sRowH * 2, size: 7.5, font: fontHelvetica, color: rgb(0, 0, 0) });
+
+  page.drawText('Prepared By', { x: 25 + tableWidth / 2 + 10, y: y - 10 - sRowH * 2, size: 7.5, font: fontHelveticaBold, color: rgb(0, 0, 0) });
+  page.drawText(preparedBy, { x: 25 + tableWidth / 2 + 145, y: y - 10 - sRowH * 2, size: 7.5, font: fontHelvetica, color: rgb(0, 0, 0) });
+
+  page.drawText('PR Release Date', { x: 32, y: y - 10 - sRowH * 3, size: 7.5, font: fontHelveticaBold, color: rgb(0, 0, 0) });
+  page.drawText(prReleaseDate, { x: 140, y: y - 10 - sRowH * 3, size: 7.5, font: fontHelvetica, color: rgb(0, 0, 0) });
+
+  page.drawText('Status', { x: 25 + tableWidth / 2 + 10, y: y - 10 - sRowH * 3, size: 7.5, font: fontHelveticaBold, color: rgb(0, 0, 0) });
+  page.drawText(status, { x: 25 + tableWidth / 2 + 145, y: y - 10 - sRowH * 3, size: 7.5, font: fontHelveticaBold, color: rgb(0, 0, 0) });
+
+  y -= (summaryBoxHeight + 16);
+
+  // 7. Report History Section
+  const historyHeading = 'REPORT HISTORY';
+  const histHeadingWidth = fontHelveticaBold.widthOfTextAtSize(historyHeading, 10);
+  page.drawText(historyHeading, { x: (width - histHeadingWidth) / 2, y, size: 10, font: fontHelveticaBold, color: rgb(0, 0, 0) });
+  y -= 14;
+
+  const hCols = [
+    { name: 'FROM', width: 90 },
+    { name: 'TO', width: 90 },
+    { name: 'BY', width: 140 },
+    { name: 'AT', width: 130 },
+    { name: 'DAYS SINCE', width: 80 },
+    { name: 'REMARKS', width: 256 },
+  ];
+
+  page.drawRectangle({
+    x: 25,
+    y: y - 18,
+    width: tableWidth,
+    height: 18,
+    color: rgb(1, 1, 1),
+    borderColor: rgb(0, 0, 0),
     borderWidth: 1,
   });
 
-  page.drawText('TOTAL REQUISITION ESTIMATE:', { x: 190, y: y - 16, size: 10, font: fontHelveticaBold, color: rgb(0.2, 0.2, 0.2) });
-  page.drawText(`INR ${totalCost.toLocaleString('en-IN')}`, { x: 450, y: y - 16, size: 11, font: fontHelveticaBold, color: rgb(0.15, 0.35, 0.6) });
+  let hX = 25;
+  hCols.forEach((col, idx) => {
+    page.drawText(col.name, { x: hX + 5, y: y - 13, size: 7.5, font: fontHelveticaBold, color: rgb(0, 0, 0) });
+    hX += col.width;
+    if (idx < hCols.length - 1) {
+      page.drawLine({ start: { x: hX, y }, end: { x: hX, y: y - 18 }, thickness: 1, color: rgb(0, 0, 0) });
+    }
+  });
 
-  // 7. Signature Block
-  const sigY = 65;
-  page.drawLine({ start: { x: 50, y: sigY }, end: { x: 180, y: sigY }, thickness: 1, color: rgb(0.6, 0.6, 0.6) });
-  page.drawText('Prepared By (PR Processor)', { x: 55, y: sigY - 14, size: 9, font: fontHelvetica, color: rgb(0.4, 0.4, 0.4) });
+  y -= 18;
 
-  page.drawLine({ start: { x: width - 180, y: sigY }, end: { x: width - 50, y: sigY }, thickness: 1, color: rgb(0.6, 0.6, 0.6) });
-  page.drawText('Approved By (Procurement Head)', { x: width - 185, y: sigY - 14, size: 9, font: fontHelvetica, color: rgb(0.4, 0.4, 0.4) });
+  const historyLogs = pr.history && Array.isArray(pr.history) ? pr.history : [];
+  if (historyLogs.length === 0) {
+    page.drawRectangle({
+      x: 25,
+      y: y - 18,
+      width: tableWidth,
+      height: 18,
+      borderColor: rgb(0, 0, 0),
+      borderWidth: 1,
+      color: rgb(1, 1, 1),
+    });
+    page.drawText('No history logs recorded', { x: width / 2 - 50, y: y - 13, size: 7.5, font: fontHelvetica, color: rgb(0, 0, 0) });
+  } else {
+    historyLogs.forEach((log: any) => {
+      const rowY = y - 13;
+      page.drawRectangle({
+        x: 25,
+        y: y - 18,
+        width: tableWidth,
+        height: 18,
+        borderColor: rgb(0, 0, 0),
+        borderWidth: 1,
+        color: rgb(1, 1, 1),
+      });
+
+      const hVals = [
+        sanitizeWinAnsi(log.from || ''),
+        sanitizeWinAnsi(log.to || ''),
+        sanitizeWinAnsi(log.by || ''),
+        sanitizeWinAnsi(log.at || ''),
+        String(log.daysSince ?? ''),
+        sanitizeWinAnsi(log.remarks || ''),
+      ];
+
+      let curHX = 25;
+      hVals.forEach((hv, cIdx) => {
+        page.drawText(hv.substring(0, 35), { x: curHX + 5, y: rowY, size: 7, font: fontHelvetica, color: rgb(0, 0, 0) });
+        curHX += hCols[cIdx].width;
+        if (cIdx < hCols.length - 1) {
+          page.drawLine({ start: { x: curHX, y }, end: { x: curHX, y: y - 18 }, thickness: 1, color: rgb(0, 0, 0) });
+        }
+      });
+
+      y -= 18;
+    });
+  }
 
   const pdfBytes = await pdfDoc.save();
   return new Blob([pdfBytes as any], { type: 'application/pdf' });
@@ -209,7 +317,7 @@ export async function generatePurchaseRequisitionPdfBlob(pr: PurchaseRequisition
 /**
  * Triggers a direct browser download of the generated PR PDF file.
  */
-export function downloadPurchaseRequisitionPdfFile(pr: PurchaseRequisitionRow, pdfBlob: Blob) {
+export function downloadPurchaseRequisitionPdfFile(pr: any, pdfBlob: Blob) {
   if (typeof window === 'undefined') return;
   const url = URL.createObjectURL(pdfBlob);
   const a = document.createElement('a');

@@ -24,7 +24,14 @@ import {
   ArrowLeft,
 } from 'lucide-react';
 import type { GrnRow } from './grn-stats-bar';
-import { uploadChallanInvoiceDocument, fetchPurchaseOrderOptions, printGrnReport } from '@/lib/procurement';
+import {
+  uploadChallanInvoiceDocument,
+  fetchPurchaseOrderOptions,
+  printGrnReport,
+  extractInvoiceForGrn,
+  findDuplicateInvoice,
+  saveGrnInvoiceExtraction,
+} from '@/lib/procurement';
 
 export interface GrnPurchaseEntry {
   po_no: string;
@@ -130,6 +137,41 @@ export interface FullGrnFormState {
   assigned_approval_role?: string;
 }
 
+/** Per-page OCR telemetry returned by the extraction endpoint. */
+interface PageDiagnosticSummary {
+  pageNumber: number;
+  rotation: number;
+  width: number;
+  height: number;
+  wordCount: number;
+  usableWordCount: number;
+  meanConfidence: number;
+}
+
+/** A warning emitted by the OCR pipeline's reconciliation pass. */
+export interface ExtractionNotice {
+  code: string;
+  message: string;
+  severity: 'info' | 'warn' | 'error';
+  field?: string;
+}
+
+/** What the UI shows about the most recent invoice read. */
+interface ExtractionSummary {
+  confidence: number;
+  reviewFields: Array<{ field: string; reason: string; severity: 'info' | 'warn' | 'error' }>;
+  invoiceNumber: string | null;
+  invoiceDate: string | null;
+  grandTotal: number | null;
+  vendorName: string | null;
+  itemCount: number;
+  processingMs: number;
+  invoiceCount: number;
+  record: Record<string, any>;
+  warnings: ExtractionNotice[];
+  duplicateOf: { id: string; grn_id: string | null; invoice_number: string | null } | null;
+}
+
 interface GrnFormProps {
   grn: GrnRow;
   onSubmit: (formData: FullGrnFormState) => void;
@@ -145,6 +187,13 @@ export function GrnForm({ grn, onSubmit, onPrint, onCancel }: GrnFormProps) {
   // Local File states (deferred upload until form submit)
   const [invoiceFile, setInvoiceFile] = useState<File | null>(null);
   const [isInvoiceDirty, setIsInvoiceDirty] = useState(false);
+
+  // Deterministic OCR extraction state.
+  const [extracting, setExtracting] = useState(false);
+  const [extractError, setExtractError] = useState<string | null>(null);
+  const [extraction, setExtraction] = useState<ExtractionSummary | null>(null);
+  /** Per-page OCR telemetry, shown when a read fails so the cause is visible. */
+  const [extractDiagnostics, setExtractDiagnostics] = useState<PageDiagnosticSummary[] | null>(null);
 
   // Supabase fetched Purchase Orders
   const [poOptions, setPoOptions] = useState<{ id: string; po_number: string; vendor_name?: string; material_details?: string }[]>([]);
@@ -243,36 +292,90 @@ export function GrnForm({ grn, onSubmit, onPrint, onCancel }: GrnFormProps) {
     };
   });
 
-  // Handle local file selection without uploading immediately
-  const handleFileSelect = (
-    e: React.ChangeEvent<HTMLInputElement>
-  ) => {
+  /**
+   * Reads the uploaded invoice with the deterministic OCR pipeline and merges the
+   * result into the form.
+   *
+   * Only fields the invoice actually supplied are written, so anything the user
+   * has already typed is preserved. Quantities owned by the purchase order
+   * (approved, balance, current stock) are never touched, and the status is left
+   * at Pending QC — an OCR read must not approve a receipt.
+   */
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const filenameClean = file.name.toUpperCase();
-
     setInvoiceFile(file);
     setIsInvoiceDirty(true);
-    const extractedVendor = filenameClean.includes('PIDILITE')
-      ? 'Pidilite Industries Ltd.'
-      : filenameClean.includes('SIKA')
-      ? 'Sika India Pvt Ltd'
-      : filenameClean.includes('ULTRATECH')
-      ? 'UltraTech Cement Ltd.'
-      : form.supplier_name || 'MODERN ENGINEERING CO.';
+    setForm((prev) => ({ ...prev, uploaded_invoice_name: file.name }));
 
-    setForm((prev) => ({
-      ...prev,
-      supplier_name: extractedVendor,
-      uploaded_invoice_name: file.name,
-    }));
+    setExtracting(true);
+    setExtractError(null);
+    setExtraction(null);
+    setExtractDiagnostics(null);
+    try {
+      const res = await extractInvoiceForGrn(file);
+      if (res.error || !res.data) {
+        setExtractError(res.error?.message || 'Could not read this invoice.');
+        setExtractDiagnostics((res.diagnostics as PageDiagnosticSummary[] | undefined) ?? null);
+        return;
+      }
+      setExtractDiagnostics((res.data.diagnostics as PageDiagnosticSummary[] | undefined) ?? null);
+      const { grnPatch, invoice, processingMs, invoiceCount } = res.data;
+
+      // Warn early if this invoice has already been booked.
+      const dup = await findDuplicateInvoice({
+        irn: grnPatch.invoiceRecord.irn,
+        vendorGstin: grnPatch.invoiceRecord.vendor_gstin,
+        invoiceNumber: grnPatch.invoiceRecord.invoice_number,
+        fileHash: res.data.fileHash,
+      });
+      const duplicateOf = dup.data ?? null;
+
+      setForm((prev) => {
+        const next = { ...prev } as unknown as Record<string, unknown>;
+        // Header: only overwrite what the invoice supplied, so anything the user
+        // has already typed survives.
+        for (const [key, value] of Object.entries(grnPatch.header)) {
+          if (value === null || value === undefined || value === '') continue;
+          next[key] = value;
+        }
+        const merged = next as unknown as FullGrnFormState;
+        // Replace the line table only when the invoice yielded items.
+        if (grnPatch.purchaseEntries.length) {
+          merged.purchase_entries = grnPatch.purchaseEntries as unknown as GrnPurchaseEntry[];
+        }
+        merged.uploaded_invoice_name = file.name;
+        return merged;
+      });
+
+      setExtraction({
+        confidence: grnPatch.confidence,
+        reviewFields: grnPatch.reviewFields,
+        invoiceNumber: grnPatch.invoiceRecord.invoice_number,
+        invoiceDate: grnPatch.invoiceRecord.invoice_date,
+        grandTotal: grnPatch.invoiceRecord.grand_total,
+        vendorName: grnPatch.invoiceRecord.vendor_name,
+        itemCount: grnPatch.purchaseEntries.length,
+        processingMs,
+        invoiceCount,
+        record: grnPatch.invoiceRecord,
+        warnings: (invoice?.validation?.warnings ?? []) as ExtractionNotice[],
+        duplicateOf,
+      });
+    } catch (err: any) {
+      setExtractError(err?.message || 'Invoice extraction failed.');
+    } finally {
+      setExtracting(false);
+    }
   };
 
   // Remove attached document
   const handleRemoveDocument = () => {
     setInvoiceFile(null);
     setIsInvoiceDirty(true);
+    setExtraction(null);
+    setExtractError(null);
     setForm((prev) => ({
       ...prev,
       uploaded_invoice_name: '',
@@ -403,12 +506,34 @@ export function GrnForm({ grn, onSubmit, onPrint, onCancel }: GrnFormProps) {
       setUploadingInvoice(true);
       try {
         const uploadRes = await uploadChallanInvoiceDocument(invoiceFile, 'grn-invoice');
+        if (uploadRes.error) throw uploadRes.error;
         if (uploadRes.data) {
           updatedInvoiceUrl = uploadRes.data.signedUrl || uploadRes.data.publicUrl;
           updatedInvoicePath = uploadRes.data.storagePath;
         }
+
+        /**
+         * Persist the OCR extraction alongside the document. This is what makes
+         * the invoice's own facts (IRN, invoice number and date, tax breakup,
+         * bank details) available for the three-way match and duplicate checks —
+         * none of them fit in the GRN row itself.
+         */
+        if (extraction?.record) {
+          const saved = await saveGrnInvoiceExtraction(extraction.record, {
+            grnId: grn.id || null,
+            storagePath: updatedInvoicePath || null,
+          });
+          if (saved.error) {
+            // A duplicate invoice must stop the save, not be swallowed.
+            alert(saved.error.message);
+            setUploadingInvoice(false);
+            return;
+          }
+        }
       } catch (err: any) {
         alert(`Invoice upload failed: ${err?.message || 'Error'}`);
+        setUploadingInvoice(false);
+        return;
       } finally {
         setUploadingInvoice(false);
       }
@@ -418,6 +543,7 @@ export function GrnForm({ grn, onSubmit, onPrint, onCancel }: GrnFormProps) {
       ...form,
       uploaded_invoice_url: updatedInvoiceUrl,
       uploaded_invoice_path: updatedInvoicePath,
+      uploaded_invoice_name: form.uploaded_invoice_name || invoiceFile?.name || '',
     };
 
     onSubmit(finalFormState);
@@ -522,6 +648,131 @@ export function GrnForm({ grn, onSubmit, onPrint, onCancel }: GrnFormProps) {
                   </span>
                 )}
               </label>
+
+              {/* --- OCR progress ------------------------------------------- */}
+              {extracting && (
+                <div className="flex items-center gap-2 rounded-lg border border-blue-500/40 bg-blue-500/10 px-3 py-2 text-[11px] font-semibold text-blue-700 dark:text-blue-300">
+                  <Upload className="h-3.5 w-3.5 animate-spin shrink-0" />
+                  <span>
+                    Reading the invoice&hellip; scanned pages take around 30&ndash;60 seconds each. Fields will fill in
+                    automatically when it finishes.
+                  </span>
+                </div>
+              )}
+
+              {extractError && (
+                <div className="space-y-1.5 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-[11px] font-medium text-red-700 dark:text-red-300">
+                  <div className="flex items-start gap-2">
+                    <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                    <span>
+                      <strong>Could not read this invoice.</strong> {extractError} You can still fill the GRN in
+                      manually.
+                    </span>
+                  </div>
+                  {/* Word counts make an empty result diagnosable instead of mysterious. */}
+                  {extractDiagnostics && extractDiagnostics.length > 0 && (
+                    <div className="rounded border border-red-500/30 bg-background/50 px-2 py-1 font-mono text-[10px] text-muted-foreground">
+                      {extractDiagnostics.map((d) => (
+                        <div key={d.pageNumber}>
+                          page {d.pageNumber}: {d.width}×{d.height} rot={d.rotation} words={d.wordCount} usable=
+                          {d.usableWordCount} conf={d.meanConfidence}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* --- OCR result summary ------------------------------------- */}
+              {extraction && !extracting && (
+                <div className="space-y-2 rounded-lg border border-border bg-background/70 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <ShieldCheck
+                        className={`h-4 w-4 shrink-0 ${
+                          extraction.confidence >= 0.9
+                            ? 'text-emerald-500'
+                            : extraction.confidence >= 0.6
+                            ? 'text-amber-500'
+                            : 'text-red-500'
+                        }`}
+                      />
+                      <span className="text-[11px] font-bold text-foreground">
+                        Invoice read without AI &mdash; {Math.round(extraction.confidence * 100)}% confidence
+                      </span>
+                      <span className="font-mono text-[10px] text-muted-foreground">
+                        {(extraction.processingMs / 1000).toFixed(1)}s
+                      </span>
+                    </div>
+                    {extraction.invoiceCount > 1 && (
+                      <span className="rounded-full bg-blue-500/15 px-2 py-0.5 text-[10px] font-bold text-blue-600 dark:text-blue-400">
+                        {extraction.invoiceCount} invoices in this file &mdash; first one applied
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 text-[11px] sm:grid-cols-4">
+                    {[
+                      ['Vendor', extraction.vendorName],
+                      ['Invoice No.', extraction.invoiceNumber],
+                      ['Invoice Date', extraction.invoiceDate],
+                      [
+                        'Invoice Value',
+                        extraction.grandTotal === null
+                          ? null
+                          : `₹${extraction.grandTotal.toLocaleString('en-IN')}`,
+                      ],
+                    ].map(([label, value]) => (
+                      <div key={label as string} className="rounded-md border border-border/60 bg-muted/40 px-2 py-1">
+                        <div className="text-[9px] font-bold uppercase tracking-wide text-muted-foreground">{label}</div>
+                        <div className="truncate font-semibold text-foreground">{(value as string) || '—'}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <p className="text-[11px] text-muted-foreground">
+                    {extraction.itemCount} line item(s) filled in. Approved and balance quantities come from the
+                    purchase order and were deliberately left blank.
+                  </p>
+
+                  {/* A duplicate is the single most important thing to surface. */}
+                  {extraction.duplicateOf && (
+                    <div className="flex items-start gap-2 rounded-md border border-red-500/50 bg-red-500/10 px-2.5 py-2 text-[11px] font-semibold text-red-700 dark:text-red-300">
+                      <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                      <span>
+                        Invoice {extraction.duplicateOf.invoice_number ?? ''} has already been recorded against
+                        {extraction.duplicateOf.grn_id ? ' another GRN' : ' an earlier extraction'}. Verify before
+                        saving &mdash; saving will be blocked if it is a true duplicate.
+                      </span>
+                    </div>
+                  )}
+
+                  {extraction.reviewFields.length > 0 && (
+                    <div className="space-y-1">
+                      <div className="text-[10px] font-bold uppercase tracking-wide text-amber-600 dark:text-amber-400">
+                        Please check {extraction.reviewFields.length} item(s) before saving
+                      </div>
+                      <ul className="space-y-1">
+                        {extraction.reviewFields.slice(0, 6).map((r, i) => (
+                          <li
+                            key={`${r.field}-${i}`}
+                            className={`flex items-start gap-1.5 rounded-md border px-2 py-1 text-[11px] ${
+                              r.severity === 'error'
+                                ? 'border-red-500/40 bg-red-500/5 text-red-700 dark:text-red-300'
+                                : 'border-amber-500/40 bg-amber-500/5 text-amber-700 dark:text-amber-300'
+                            }`}
+                          >
+                            <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />
+                            <span>
+                              <span className="font-mono font-bold">{r.field}</span> &mdash; {r.reason}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </div>

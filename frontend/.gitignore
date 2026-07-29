@@ -1,0 +1,7 @@
+
+# Dev-only OCR page cache used by scripts/*-probe.ts
+scripts/.ocr-cache/
+scripts/probe-p*.txt
+scripts/probe-p*.words.json
+scripts/extract-result.json
+scripts/photo-out/

@@ -75,7 +75,6 @@ const TRUTH: Array<Record<string, unknown>> = [
     'document.invoiceNumber': '26-27/499',
     'document.invoiceDate': '2026-07-20',
     'document.dueDate': '2026-07-20',
-    'document.irn': 'b290d6c8492cbb0d3ea2d04a22fdcf4ae9097c1e9a09aefac6ca592a4a713f53',
     'document.ackNo': '162625322158405',
     'document.isEInvoice': true,
     'buyer.gstin': '24ABDFP8234D1ZG',

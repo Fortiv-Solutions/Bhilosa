@@ -215,120 +215,115 @@ export function AiPdfQuotationComparison({
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [acceptedPoStatus, setAcceptedPoStatus] = useState<boolean>(false);
 
-  // Bulk Upload & Neural OCR Processing via Backend
+  const [uploadErrors, setUploadErrors] = useState<string[]>([]);
+
+  /**
+   * Reads uploaded quotation PDFs with the deterministic OCR pipeline
+   * (/api/ocr/extract-invoice — see src/lib/ocr). A quotation is structurally the
+   * same document as an invoice: vendor block, line-item table, tax summary and
+   * totals, so the same extractor reads both.
+   *
+   * Nothing is fabricated. A field the document does not state comes back empty or
+   * zero, and a file that cannot be read is reported rather than replaced with
+   * plausible-looking numbers.
+   */
   const handleBulkFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
     setIsProcessing(true);
     setAcceptedPoStatus(false);
+    setUploadErrors([]);
+
+    const newQuotes: ExtractedPdfQuotation[] = [];
+    const errors: string[] = [];
 
     try {
-      const newQuotes: ExtractedPdfQuotation[] = [];
-
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         const formData = new FormData();
         formData.append('file', file);
 
         try {
-          const res = await fetch('/api/ai/parse-quotation-pdf', {
-            method: 'POST',
-            body: formData,
-          });
+          const res = await fetch('/api/ocr/extract-invoice', { method: 'POST', body: formData });
+          const data = await res.json().catch(() => null);
 
-          if (res.ok) {
-            const data = await res.json();
-            if (data?.extracted_quotation) {
-              const eq = data.extracted_quotation;
-              newQuotes.push({
-                ...eq,
-                perksMap: {
-                  freeUnloading: i === 0 ? 'Included (Saved ₹2,500)' : null,
-                  mtcCertificates: 'MTC & Lab Test Certificate Included',
-                  siteSupervision: i === 1 ? 'Free Site Supervision Included' : null,
-                  expressDeliverySla: i === 0 ? '24-Hour SLA' : null,
-                  extendedCreditPerk: i === 1 ? '45 Days Extended Credit' : null,
-                  bulkRebate: '5% Bulk Rebate > ₹1 Lakh',
-                  freeSampleTesting: null,
-                },
-                aiScore: 90 - i * 5,
-                aiRecommendationReason: `Extracted via AI Neural OCR. Grand total: ${formatCurrency(
-                  eq.financials?.grandTotal || 150000
-                )}.`,
-              });
-            }
-          } else {
-            // Local fallback extraction
-            const fallbackQuote: ExtractedPdfQuotation = {
-              id: `pdf-quote-${Date.now()}-${i}`,
-              fileName: file.name,
-              fileSize: `${(file.size / 1024).toFixed(1)} KB`,
-              supplier: {
-                name: `Supplier (${file.name.replace('.pdf', '').replaceAll('_', ' ')})`,
-                gstin: `24AAACG${Math.floor(1000 + Math.random() * 9000)}A1Z9`,
-                contactPerson: 'Authorized Sales Manager',
-                email: `sales.${file.name.toLowerCase().slice(0, 5)}@vendor.com`,
-                phone: '+91 98250 88776',
-                quotationNo: `QT-AI-${Date.now().toString().slice(-4)}`,
-                quotationDate: new Date().toISOString().slice(0, 10),
-              },
-              financials: {
-                subtotal: 128000 + i * 5000,
-                gstRate: 18,
-                gstAmount: (128000 + i * 5000) * 0.18,
-                freightCharges: i === 0 ? 0 : 1200,
-                unloadingCharges: i === 0 ? 0 : 800,
-                discountAmount: 1000,
-                grandTotal: (128000 + i * 5000) * 1.18 + (i === 0 ? 0 : 2000),
-                paymentTerms: i === 0 ? '30 Days Net Credit' : '15 Days Credit',
-                creditDays: i === 0 ? 30 : 15,
-                deliveryDays: 2 + i,
-                validityDate: new Date(Date.now() + 10 * 86400000).toISOString().slice(0, 10),
-                moq: '500 Units',
-              },
-              items: [
-                {
-                  description: 'Dr. Fixit 101 LW+ Liquid Waterproofing',
-                  brand: 'Pidilite • Dr. Fixit',
-                  specification: 'IS 12269 Certified Grade 53 Standard Compound',
-                  quantity: 500,
-                  unit: 'LITERS',
-                  unitRate: 150 + i * 5,
-                  totalAmount: (150 + i * 5) * 500,
-                },
-                {
-                  description: 'Polyurethane Elastomeric Sealant SikaFlex',
-                  brand: 'Sika • SikaFlex',
-                  specification: 'High Elasticity Polyurethane Sealant',
-                  quantity: 120,
-                  unit: 'CARTRIDGES',
-                  unitRate: 420 + i * 15,
-                  totalAmount: (420 + i * 15) * 120,
-                },
-              ],
-              perksMap: {
-                freeUnloading: i === 0 ? 'Included (Saved ₹2,500)' : null,
-                mtcCertificates: 'MTC & Lab Test Reports Provided',
-                siteSupervision: null,
-                expressDeliverySla: '24-Hour Express Dispatch',
-                extendedCreditPerk: null,
-                bulkRebate: '5% Bulk Rebate > ₹1 Lakh',
-                freeSampleTesting: null,
-              },
-              aiScore: 92 - i * 4,
-              aiRecommendationReason: 'AI Extracted vendor bid details.',
-            };
-            newQuotes.push(fallbackQuote);
+          if (!res.ok || !data?.success || !data?.invoice) {
+            errors.push(`${file.name}: ${data?.error || `extraction failed (HTTP ${res.status})`}`);
+            continue;
           }
-        } catch {
-          // Fallback
+
+          const inv = data.invoice;
+          const totals = inv.totals ?? {};
+          const doc = inv.document ?? {};
+          const vendor = inv.vendor ?? {};
+          const taxable = Number(totals.taxableAmount ?? 0);
+          const taxAmount =
+            Number(totals.cgstAmount ?? 0) + Number(totals.sgstAmount ?? 0) + Number(totals.igstAmount ?? 0);
+          // Effective GST rate implied by the document, not assumed.
+          const gstRate = taxable > 0 ? Math.round((taxAmount / taxable) * 100) : 0;
+
+          newQuotes.push({
+            id: `pdf-quote-${data.fileHash?.slice(0, 12) ?? i}-${i}`,
+            fileName: data.fileName ?? file.name,
+            fileSize: `${(file.size / 1024).toFixed(1)} KB`,
+            supplier: {
+              name: vendor.name ?? file.name.replace(/\.pdf$/i, ''),
+              gstin: vendor.gstin ?? '',
+              contactPerson: '',
+              email: (vendor.emails ?? [])[0] ?? '',
+              phone: (vendor.phones ?? [])[0] ?? '',
+              quotationNo: doc.invoiceNumber ?? '',
+              quotationDate: doc.invoiceDate ?? '',
+            },
+            financials: {
+              subtotal: taxable,
+              gstRate,
+              gstAmount: taxAmount,
+              freightCharges: Number(totals.freight ?? 0),
+              unloadingCharges: Number(totals.loadingUnloading ?? 0),
+              discountAmount: 0,
+              grandTotal: Number(totals.grandTotal ?? 0),
+              paymentTerms: inv.payment?.paymentTermsText ?? '',
+              creditDays: Number(doc.creditDays ?? 0),
+              deliveryDays: 0,
+              validityDate: doc.dueDate ?? '',
+              moq: '',
+            },
+            items: (inv.lineItems ?? []).map((it: any) => ({
+              description: it.description ?? '',
+              brand: it.brandOrCompany ?? '',
+              specification: it.hsnSac ? `HSN ${it.hsnSac}` : '',
+              quantity: Number(it.quantity ?? 0),
+              unit: it.unit ?? '',
+              unitRate: Number(it.unitRate ?? 0),
+              totalAmount: Number(it.taxableValue ?? 0),
+            })),
+            // Commercial perks are not machine-readable from a scan; they are left
+            // empty rather than invented, and a buyer fills them in.
+            perksMap: {
+              freeUnloading: null,
+              mtcCertificates: null,
+              siteSupervision: null,
+              expressDeliverySla: null,
+              extendedCreditPerk: doc.creditDays ? `${doc.creditDays} days credit` : null,
+              bulkRebate: null,
+              freeSampleTesting: null,
+            },
+            // Confidence in the READ, not a commercial recommendation.
+            aiScore: Math.round((inv.validation?.overallConfidence ?? 0) * 100),
+            aiRecommendationReason:
+              `Read by deterministic OCR at ${Math.round((inv.validation?.overallConfidence ?? 0) * 100)}% confidence. ` +
+              `Total ${formatCurrency(Number(totals.grandTotal ?? 0))}. ` +
+              `${(inv.validation?.warnings ?? []).filter((w: any) => w.severity !== 'info').length} field(s) need checking.`,
+          });
+        } catch (err: any) {
+          errors.push(`${file.name}: ${err?.message ?? 'extraction failed'}`);
         }
       }
 
-      if (newQuotes.length > 0) {
-        setExtractedQuotes((prev) => [...prev, ...newQuotes]);
-      }
+      if (newQuotes.length > 0) setExtractedQuotes((prev) => [...prev, ...newQuotes]);
+      if (errors.length) setUploadErrors(errors);
     } finally {
       setIsProcessing(false);
     }

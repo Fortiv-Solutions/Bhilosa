@@ -6,6 +6,18 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: path.resolve(process.cwd()),
   },
+  /**
+   * The invoice OCR pipeline (src/lib/ocr) uses native and wasm modules. They must
+   * be loaded from node_modules at runtime rather than bundled: sharp ships
+   * platform-specific binaries, and mupdf/tesseract.js load .wasm and
+   * .traineddata files by path relative to their own package.
+   */
+  serverExternalPackages: ["sharp", "mupdf", "tesseract.js"],
+  outputFileTracingIncludes: {
+    // eng.traineddata is vendored at frontend/tessdata so OCR works offline and
+    // inside containers; the standalone build must copy it along.
+    "/api/ocr/extract-invoice": ["./tessdata/**"],
+  },
   async rewrites() {
     let supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://abxzyhgaityhgwbltjwu.supabase.co";
     supabaseUrl = supabaseUrl.replace(/\/$/, "");
