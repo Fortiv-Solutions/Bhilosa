@@ -1578,52 +1578,157 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   const [attachedPhotos, setAttachedPhotos] = useState<string[]>([]);
   const [qcTemplates, setQcTemplates] = useState<any[]>([
     {
-      id: 'qc-concrete',
-      category: 'Concrete Casting',
-      title: 'Concrete Casting Inspection',
+      id: 'qc-footing',
+      category: 'Civil Work',
+      title: 'RCC Footing Inspection Report',
       checkpoints: [
-        'Formwork alignment and shuttering oil check',
-        'Rebar layout, spacing, and binding checks',
-        'Reinforcement concrete cover block spacing check',
-        'Slump test value and water-cement ratio verification',
-        'Concrete pour vibrator usage check',
-        'Proper water curing scheduling check'
+        '[Pre-Casting] Line Out of Footing as per Centerline',
+        '[Pre-Casting] Length of Footing (Site Dimension check)',
+        '[Pre-Casting] Width of Footing (Site Dimension check)',
+        '[Pre-Casting] Height of Footing - Marking to be checked',
+        '[Pre-Casting] Diagonal Dimensions check',
+        '[Pre-Casting] Cleaning of Bottom PCC Surface',
+        '[Pre-Casting] Footing Steel Checking as per Drawing',
+        '[Pre-Casting] Cover placed as per Specified Sizes',
+        '[Pre-Casting] Formwork properly braced & Supported from all sides',
+        '[Post-Casting] Date of Footing casting to be logged',
+        '[Post-Casting] Cubes to be removed on next day and kept for curing',
+        '[Post-Casting] Curing of Footing to be done for min 15 days with wet Hessian cloth',
+        '[Post-Casting] Finishing of honey combing if any'
+      ]
+    },
+    {
+      id: 'qc-column',
+      category: 'Civil Work',
+      title: 'RCC Column Inspection Report',
+      checkpoints: [
+        'Column positioning as per centerline',
+        'Sizes as per drawing (Site Dimension check)',
+        'Diagonals check',
+        'Proper oiling on shuttering',
+        'Plumb level check',
+        'Level marking upto which concreting to be done',
+        'Form work properly braced from sides',
+        'Cover placed as per specified sizes',
+        'Reinforcement as per detail with sufficient lap length'
+      ]
+    },
+    {
+      id: 'qc-slab',
+      category: 'Civil Work',
+      title: 'RCC Slab Inspection Report',
+      checkpoints: [
+        'Line and Level of Beam Bottom as per Drawings',
+        'Height/Level of slab from Plinth/Slab level as per Drawings',
+        'Width of Beam Bottom Plank and Top (Kanda maap)',
+        'Depth of beam as per drawing',
+        'Beam sides properly fixed in line, level and plumb',
+        'Levels of each individual bay to be checked',
+        'Checking of bay sizes, diagonals and Out to Out dimensions of building',
+        'Column Reduction direction and Termination as per Drawings',
+        'Quality of shuttering material (Edges of Ply not broken / no bending)'
       ]
     },
     {
       id: 'qc-masonry',
-      category: 'Masonry & Plastering',
-      title: 'Brick Masonry & Plastering Check',
+      category: 'Civil Work',
+      title: 'Masonry Inspection Report',
       checkpoints: [
-        'Mortar mix ratio (e.g. 1:4 / 1:6) check',
-        'Plumb alignment and wall verticality checks',
-        'Joint thickness check (should be uniform 10mm)',
-        'Rough surface keying check before plastering',
-        'Plaster level thickness & curing check'
+        'Cleaning of entire floor before starting line out of masonry',
+        'Checking of dimensions & diagonals of room after first layer (rangat / perni / nondh)',
+        'First layer checked with beam bottom edge, offset, plumb',
+        'Opening provided for doors at first layer and for window & A.C. unit at sill level',
+        'Sand and cement screed applied on adjoining column surface',
+        'Water sprinkled over bricks before start of masonry work',
+        'Specific bond followed and avoid vertical perpend',
+        'Mortar applied properly on all block surfaces (no gaps)',
+        'Plumb checked at every layer',
+        'Water curing done for at least 7 days',
+        'Adjustment in brick laying such that last layer touches beam bottom (gap <= 10mm)',
+        'Junction of Last Layer of Brick and Beam Bottom fixed with Cement Mortar & Aggregate',
+        'Cleaning of rooms'
       ]
     },
     {
-      id: 'qc-plumbing',
-      category: 'Plumbing & Sanitary',
-      title: 'Plumbing Pressure & Leakage Check',
+      id: 'qc-plaster',
+      category: 'Finishing Work',
+      title: 'Internal Plaster Inspection Report',
       checkpoints: [
-        'Pipe pressure testing (e.g., 5 bar test)',
-        'Drainage pipe slope alignment verification',
-        'Leakage test at joints & connectors',
-        'Waterproofing of wet areas (bathrooms/balconies) check',
-        'Sanitary fixture testing'
+        '[Pre-Plastering] Masonry work completely finished',
+        '[Pre-Plastering] Watering of surface a day before plastering',
+        '[Pre-Plastering] All electrical conduiting chasing work completed',
+        '[Pre-Plastering] Height of Switch boards as per drawings',
+        '[Pre-Plastering] All chasing work filled and covered with Chicken mesh',
+        '[Pre-Plastering] All concrete and masonry junctions covered with chicken mesh',
+        '[Pre-Plastering] All concrete work properly hacked (tanchaa)',
+        '[Pre-Plastering] T.P. (Thiyaa) marked as per minimum plaster level (12mm-15mm)',
+        '[Pre-Plastering] Checking of Plumb and Right Angle for T.P. marked',
+        '[Pre-Plastering] All electrical boxes covered with dummy plates',
+        '[Pre-Plastering] Min. 5" as per decided plaster left from bottom floor for skirting',
+        '[Post-Plastering] Proper curing work for min. 10 days',
+        '[Post-Plastering] Checking plumb line, level and right angle of all plastered surfaces',
+        '[Post-Plastering] Cleaning of plastered surface',
+        '[Post-Plastering] Sill, column, beam edges properly dressed at right angle and in plumb'
       ]
     },
     {
-      id: 'qc-electrical',
-      category: 'Electrical Installation',
-      title: 'Conduiting & Wiring Continuity Check',
+      id: 'qc-granite',
+      category: 'Finishing Work',
+      title: 'Granite / Marble Frame Inspection Report',
       checkpoints: [
-        'Conduit pipe routing and joint checks',
-        'Continuity and insulation resistance test of cables',
-        'DB/MCB placement and wiring connection checks',
-        'Earthing and ground resistance measurement check',
-        'Fixing switchboards & fixtures check'
+        'Dimensions (Length and Width) as per drawings',
+        'Diagonal measurements check',
+        'Vertical Straightness (Plumb Line check)',
+        'Mortar applied evenly throughout length and width of stone',
+        'Stone edges properly shaped and not broken'
+      ]
+    },
+    {
+      id: 'qc-flooring',
+      category: 'Finishing Work',
+      title: 'Flooring Tile Inspection Report',
+      checkpoints: [
+        'Dimension of tiles (length and width) as per requirement',
+        'Diagonal dimensions check',
+        'Tiles soaked for 12 hours before commencement of work',
+        'Dry weight Vs Wet weight check',
+        'Cleaning of surface a day before flooring work',
+        'Common reference level marked on all walls of each room/bay',
+        'Benchmark flooring level (Thiya) made before maachan work',
+        'Flooring work started as per starting point and laying direction in drawing',
+        'Maachan work done as per Thiya marked & necessary slope given in bathroom/toilets',
+        'All vertical and horizontal lines in one line',
+        'Cement slurry evenly poured below tile over entire surface',
+        'No undulation observed at joints'
+      ]
+    },
+    {
+      id: 'qc-wall-tiles',
+      category: 'Finishing Work',
+      title: 'Wall Tiling Inspection Report',
+      checkpoints: [
+        'Dimension of tiles (length and width) as per requirement',
+        'Diagonal dimensions check',
+        'Tiles soaked for 12 hours before commencement of work',
+        'Dry weight Vs Wet weight check',
+        'Benchmark level (Thiya) made on all walls',
+        'Mortar applied evenly on entire surface of tile, no voids observed',
+        'All vertical and horizontal lines in one line',
+        'No undulation observed at joints',
+        'Height checked upto which Dado is to be done'
+      ]
+    },
+    {
+      id: 'qc-cube-test',
+      category: 'Lab & Testing',
+      title: 'Concrete Cube Strength Test Report',
+      checkpoints: [
+        'Concrete Grade & Slump test mm verification',
+        'Specimen Curing Start & Finish Date logging',
+        'Weight of 150mm Cube Specimen check',
+        '7 Days Compressive Strength Test (KN & N/mm² vs Required Avg)',
+        '28 Days Compressive Strength Test (KN & N/mm² vs Required Avg)',
+        'Pass / Fail Result Certification & Review Signoff'
       ]
     }
   ]);
