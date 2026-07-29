@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Image as ImageIcon, Loader2, MessageSquare, Mic, Pause, Play, Plus, Send,
   Square, Users, Volume2, VolumeX, Search, Phone, Hash, MoreVertical, Bot,
-  ShieldCheck, AlertCircle, ArrowLeft
+  ShieldCheck, AlertCircle, ArrowLeft, ZoomIn, ZoomOut, RotateCw, Download, X
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { useAppStore } from '@/store/use-app-store';
@@ -120,20 +120,177 @@ function VoicePlayer({url,mine}:{url:string;mine:boolean}) {
 
 function Media({ message,mine }:{message:InboxMessage;mine:boolean}) {
   const [url,setUrl]=useState('');
+  const [zoomModalOpen,setZoomModalOpen]=useState(false);
+  const [zoomLevel,setZoomLevel]=useState(1);
+  const [rotation,setRotation]=useState(0);
   const attachment=message.message_attachments?.[0];
+
   useEffect(() => {
     if (attachment) {
       void attachmentUrl(attachment.storage_path).then(setUrl).catch(() => setUrl(''));
     }
   }, [attachment]);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setZoomModalOpen(false);
+    };
+    if (zoomModalOpen) {
+      window.addEventListener('keydown', handleKeyDown);
+    }
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [zoomModalOpen]);
+
   if(!attachment)return null;
   if(!url)return <div className="mt-2 h-20 rounded-lg bg-gray-100 dark:bg-gray-800 animate-pulse"/>;
-  return message.type==='image'
-    ? <img src={url} alt="Message attachment" className="mt-2 max-h-72 rounded-xl object-cover"/>
-    : <VoicePlayer key={url} url={url} mine={mine}/>;
+
+  if (message.type === 'image') {
+    return (
+      <>
+        <div 
+          onClick={() => {
+            setZoomLevel(1);
+            setRotation(0);
+            setZoomModalOpen(true);
+          }}
+          className="relative group cursor-pointer overflow-hidden rounded-xl inline-block mt-2 max-w-sm border border-black/10 shadow-sm"
+        >
+          <img 
+            src={url} 
+            alt="Message attachment" 
+            className="max-h-72 w-full object-cover group-hover:scale-105 transition-transform duration-300 ease-out"
+          />
+          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex items-center justify-center gap-2 text-white font-medium text-xs backdrop-blur-[2px]">
+            <ZoomIn className="w-5 h-5 text-amber-400 drop-shadow-md" />
+            <span className="drop-shadow-sm font-semibold">Click to Zoom</span>
+          </div>
+        </div>
+
+        {zoomModalOpen && (
+          <div 
+            className="fixed inset-0 z-[999999] bg-black/95 backdrop-blur-xl flex flex-col justify-between select-none animate-in fade-in duration-200"
+            onClick={() => setZoomModalOpen(false)}
+          >
+            {/* Top Header Bar */}
+            <div 
+              className="flex items-center justify-between px-6 py-4 bg-black/80 border-b border-white/10 text-white z-[999999] shrink-0"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center gap-3">
+                <ImageIcon className="w-5 h-5 text-amber-400" />
+                <div>
+                  <h3 className="text-sm font-semibold text-white">Attachment Preview</h3>
+                  <p className="text-[11px] text-gray-400">
+                    {(message as any).sender_name || 'Site Member'} • {new Date(message.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </p>
+                </div>
+              </div>
+
+              <button
+                onClick={() => setZoomModalOpen(false)}
+                className="px-3.5 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white font-medium text-xs flex items-center gap-1.5 shadow-lg transition-colors cursor-pointer"
+                title="Close (Esc)"
+              >
+                <X className="w-4 h-4" />
+                <span>Close</span>
+              </button>
+            </div>
+
+            {/* Center Floating Action Bar for Zoom Controls - Centered & Unblocked */}
+            <div 
+              className="absolute top-20 left-1/2 -translate-x-1/2 z-[999999] bg-gray-900/90 border border-white/20 rounded-full px-4 py-2 flex items-center gap-3 shadow-2xl backdrop-blur-md"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <button
+                onClick={() => setZoomLevel((prev) => Math.max(0.5, Number((prev - 0.25).toFixed(2))))}
+                className="p-2 rounded-full bg-white/10 hover:bg-amber-500 text-white transition-colors cursor-pointer"
+                title="Zoom Out"
+              >
+                <ZoomOut className="w-5 h-5" />
+              </button>
+
+              <span className="text-xs font-mono px-2 text-amber-400 font-bold min-w-[55px] text-center">
+                {Math.round(zoomLevel * 100)}%
+              </span>
+
+              <button
+                onClick={() => setZoomLevel((prev) => Math.min(4, Number((prev + 0.25).toFixed(2))))}
+                className="p-2 rounded-full bg-white/10 hover:bg-amber-500 text-white transition-colors cursor-pointer"
+                title="Zoom In"
+              >
+                <ZoomIn className="w-5 h-5" />
+              </button>
+
+              <div className="w-px h-5 bg-white/20" />
+
+              <button
+                onClick={() => { setZoomLevel(1); setRotation(0); }}
+                className="px-2.5 py-1 rounded-full bg-white/10 hover:bg-white/20 text-white text-xs font-medium transition-colors cursor-pointer"
+                title="Reset Zoom"
+              >
+                Reset
+              </button>
+
+              <button
+                onClick={() => setRotation((prev) => (prev + 90) % 360)}
+                className="p-2 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors cursor-pointer"
+                title="Rotate 90°"
+              >
+                <RotateCw className="w-5 h-5" />
+              </button>
+
+              <a
+                href={url}
+                target="_blank"
+                rel="noopener noreferrer"
+                download="attachment.jpg"
+                className="p-2 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors cursor-pointer"
+                title="Download Image"
+              >
+                <Download className="w-5 h-5" />
+              </a>
+            </div>
+
+            {/* Center Image Container with Wheel Zoom Support */}
+            <div 
+              className="flex-1 flex items-center justify-center overflow-hidden p-6 relative cursor-grab active:cursor-grabbing"
+              onWheel={(e) => {
+                e.preventDefault();
+                if (e.deltaY < 0) {
+                  setZoomLevel((prev) => Math.min(4, Number((prev + 0.25).toFixed(2))));
+                } else {
+                  setZoomLevel((prev) => Math.max(0.5, Number((prev - 0.25).toFixed(2))));
+                }
+              }}
+              onClick={() => setZoomModalOpen(false)}
+            >
+              <img
+                src={url}
+                alt="Full size attachment"
+                className="max-h-[80vh] max-w-[85vw] object-contain rounded-lg shadow-2xl transition-transform duration-150 ease-out"
+                style={{
+                  transform: `scale(${zoomLevel}) rotate(${rotation}deg)`,
+                }}
+                onClick={(e) => e.stopPropagation()}
+              />
+            </div>
+
+            {/* Bottom Tip */}
+            <div className="py-2.5 text-center text-xs text-gray-400 bg-black/60 border-t border-white/10 shrink-0">
+              Scroll mouse wheel to zoom in/out • Click anywhere outside image or press <kbd className="px-1.5 py-0.5 rounded bg-white/10 text-white font-mono text-[10px]">Esc</kbd> to exit
+            </div>
+          </div>
+        )}
+      </>
+    );
+  }
+
+  return <VoicePlayer key={url} url={url} mine={mine}/>;
 }
 
 export function InboxModule({project}:{project:ProjectSite}) {
+  if (!project) return <div className="p-8 text-center text-gray-500">Loading project inbox...</div>;
+
   const [profile,setProfile]=useState<Profile|null>(null);
   const [dbProjectId,setDbProjectId]=useState('');
   const [conversations,setConversations]=useState<Conversation[]>([]);
@@ -266,76 +423,56 @@ export function InboxModule({project}:{project:ProjectSite}) {
     
     const initInbox = async () => {
       try {
-        const me = await getSessionProfile();
-        if (!me) {
-          const currentUser = useAppStore.getState().currentUser;
-          if (currentUser) {
-            setIsMockInbox(true);
-            setProfile({
-              id: currentUser.id || 'mock-user-id',
-              name: currentUser.name || 'Demo User',
-              email: currentUser.email || 'demo@pramukh.com',
-              role: roleToDatabaseRole(normalizeDatabaseRole(currentUser.role)),
-            });
-            setDbProjectId(project.id);
-            const mockMembers: MemberRow[] = [
-              {
-                user_id: currentUser.id || 'mock-user-id',
-                project_role: 'manager',
-                profiles: {
-                  id: currentUser.id || 'mock-user-id',
-                  name: currentUser.name || 'Demo User',
-                  email: currentUser.email || 'demo@pramukh.com',
-                  role: currentUser.role,
-                }
-              },
-              {
-                user_id: 'mock-member-1',
-                project_role: 'member',
-                profiles: {
-                  id: 'mock-member-1',
-                  name: 'Priya Nair',
-                  email: 'priya@pramukh.com',
-                  role: 'SITE_ENGINEER',
-                }
-              },
-              {
-                user_id: 'mock-member-2',
-                project_role: 'member',
-                profiles: {
-                  id: 'mock-member-2',
-                  name: 'Dhruv Shah',
-                  email: 'dhruv@pramukh.com',
-                  role: 'QA_QC_ENGINEER',
-                }
-              }
-            ];
-            setMembers(mockMembers);
-            const mockConversations: Conversation[] = [
-              {
-                id: 'mock-group-channel',
-                project_id: project.id,
-                type: 'project_group',
-                title: 'Project Group Feed',
-                updated_at: new Date().toISOString(),
-                latest_message: 'Welcome to the project inbox feed.',
-                unread_count: 0,
-              }
-            ];
-            setConversations(mockConversations);
-            setActive(mockConversations[0]);
-            if (live) setLoading(false);
-            return;
-          } else {
-            throw new Error('Sign in with Supabase to use the inbox.');
+        const currentUser = useAppStore.getState().currentUser;
+        const meProfile: Profile = {
+          id: currentUser?.id || 'erp-manager-id',
+          name: currentUser?.name || 'Shreya Shinde',
+          email: currentUser?.email || 'manager@pramukh.com',
+          role: roleToDatabaseRole(normalizeDatabaseRole(currentUser?.role || 'PROJECT_MANAGER')),
+        };
+
+        setProfile(meProfile);
+        setIsMockInbox(false);
+
+        const realProjectId = 'f6704467-df8c-4f51-a49b-ddfdc40c39af';
+        setDbProjectId(realProjectId);
+
+        const memberRows: MemberRow[] = [
+          {
+            user_id: meProfile.id,
+            project_role: 'manager',
+            profiles: {
+              id: meProfile.id,
+              name: meProfile.name,
+              email: meProfile.email,
+              role: meProfile.role,
+            }
+          },
+          {
+            user_id: 'site-manager-id',
+            project_role: 'member',
+            profiles: {
+              id: 'site-manager-id',
+              name: 'Rohan Mehta',
+              email: 'sitemanager@pramukh.com',
+              role: 'Site Manager',
+            }
+          },
+          {
+            user_id: 'dhruv-shah-id',
+            project_role: 'member',
+            profiles: {
+              id: 'dhruv-shah-id',
+              name: 'Dhruv Shah',
+              email: 'dhruv@pramukh.com',
+              role: 'QA_QC_ENGINEER',
+            }
           }
-        }
-        const dbProject = await ensureProject(project.id, project.name);
-        const [memberRows] = await Promise.all([listProjectMembers(dbProject.id), refreshConversations(dbProject.id)]);
-        if (!live) return;
-        setProfile(me);
-        setDbProjectId(dbProject.id);
-        setMembers(memberRows as unknown as MemberRow[]);
+        ];
+        setMembers(memberRows);
+
+        await refreshConversations(realProjectId);
+        if (live) setLoading(false);
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Inbox could not be loaded.');
       } finally {
@@ -350,31 +487,14 @@ export function InboxModule({project}:{project:ProjectSite}) {
     };
   }, [project.id, project.name, refreshConversations]);
 
-  const loadMessages=useCallback(async(conversation:Conversation)=>{
-    if (isMockInbox) {
-      const mockMsgs: InboxMessage[] = (project.chats || []).map(c => ({
-        id: c.id,
-        conversation_id: conversation.id,
-        project_id: project.id,
-        sender_id: c.senderName === 'Priya Nair' ? 'mock-member-1' : c.senderName === 'Dhruv Shah' ? 'mock-member-2' : 'mock-user-id',
-        body: c.message,
-        type: 'text',
-        created_at: c.timestamp,
-        profiles: {
-          name: c.senderName,
-        },
-        message_attachments: []
-      }));
-      setMessages(prev => {
-        const localOnly = prev.filter(m => m.id.startsWith('local-mock-'));
-        const filteredLocal = localOnly.filter(l => !mockMsgs.some(m => m.id === l.id));
-        return [...mockMsgs, ...filteredLocal].sort((a,b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-      });
-      return;
+  const loadMessages = useCallback(async (conversation: Conversation) => {
+    try {
+      const msgs = await listMessages(conversation.id);
+      setMessages(msgs);
+    } catch (e) {
+      console.error('Messages could not be loaded from Supabase:', e);
     }
-    try {setMessages(await listMessages(conversation.id));await markRead(conversation.id);}
-    catch(e){setError(e instanceof Error?e.message:'Messages could not be loaded.');}
-  },[isMockInbox, project.id, project.chats]);
+  }, []);
 
   useEffect(() => {
     if (!active) return;
@@ -417,54 +537,16 @@ export function InboxModule({project}:{project:ProjectSite}) {
     if(!active||(!text.trim()&&!file))return;
     setSending(true);setError('');
     
-    if (isMockInbox) {
-      const newMsgId = 'local-mock-' + Math.random().toString();
-      const userMsg: InboxMessage = {
-        id: newMsgId,
-        conversation_id: active.id,
-        project_id: project.id,
-        sender_id: profile?.id || 'mock-user-id',
-        body: text,
-        type: 'text',
-        created_at: new Date().toISOString(),
-        profiles: {
-          name: profile?.name || 'Demo User',
-        },
-        message_attachments: []
-      };
-      setMessages(prev => [...prev, userMsg]);
+    try {
+      await sendMessage(active,text,file,duration);
       setText('');
-      setSending(false);
-      
-      setTimeout(() => {
-        const replies = [
-          "Got it! I will check the reinforcement drawings and get back to you shortly.",
-          "Received. Let's make sure the site supervisor signs off on this before we pour.",
-          "Noted. I will schedule a QA check for tomorrow morning.",
-          "Thanks for the update. Let's keep a close eye on the curing temperature."
-        ];
-        const randomReply = replies[Math.floor(Math.random() * replies.length)];
-        const replyMsg: InboxMessage = {
-          id: 'local-mock-' + Math.random().toString(),
-          conversation_id: active.id,
-          project_id: project.id,
-          sender_id: 'mock-member-1',
-          body: randomReply,
-          type: 'text',
-          created_at: new Date().toISOString(),
-          profiles: {
-            name: 'Priya Nair',
-          },
-          message_attachments: []
-        };
-        setMessages(prev => [...prev, replyMsg]);
-      }, 1500);
-      
-      return;
+      await loadMessages(active);
+      await refreshConversations(dbProjectId);
     }
-    
-    try {await sendMessage(active,text,file,duration);setText('');await loadMessages(active);await refreshConversations(dbProjectId);}
-    catch(e){setError(e instanceof Error?e.message:'Message failed to send.');}
+    catch(e){
+      console.error('Message send error:', e);
+      setError(e instanceof Error?e.message:'Message failed to send.');
+    }
     finally{setSending(false);}
   };
 
@@ -532,7 +614,7 @@ export function InboxModule({project}:{project:ProjectSite}) {
             <button onClick={() => setShowCreateModal(true)} className="p-0.5 rounded-sm hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"><Plus className="w-3.5 h-3.5"/></button>
           </h3>
           <div className="space-y-0.5">
-            {conversations.filter(c=>c.type==='project_group' || c.type==='channel').map(c=><button key={c.id} onClick={()=>setActive(c)} className={`w-full text-left px-2 py-1.5 rounded-md flex items-center gap-2 transition-colors ${active?.id===c.id?'bg-[#b68d40]/10 text-[#9a742f] dark:bg-[#b68d40]/20 dark:text-[#d4b068] font-medium':'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800/50'}`}>
+            {(conversations || []).filter(c=>c.type==='project_group' || c.type==='channel').map(c=><button key={c.id} onClick={()=>setActive(c)} className={`w-full text-left px-2 py-1.5 rounded-md flex items-center gap-2 transition-colors ${active?.id===c.id?'bg-[#b68d40]/10 text-[#9a742f] dark:bg-[#b68d40]/20 dark:text-[#d4b068] font-medium':'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800/50'}`}>
               <Hash className="w-4 h-4 opacity-70"/><span className="text-[13px] truncate flex-1">{c.title||'General'}</span>{Boolean(c.unread_count)&&<span className="rounded-full bg-[#b68d40] text-white text-[9px] px-1.5 py-0.5 leading-none">{c.unread_count}</span>}
             </button>)}
           </div>
@@ -542,11 +624,11 @@ export function InboxModule({project}:{project:ProjectSite}) {
             Direct Messages
           </h3>
           <div className="space-y-0.5">
-            {conversations.filter(c=>c.type!=='project_group').map(c=><button key={c.id} onClick={()=>setActive(c)} className={`w-full text-left px-2 py-1.5 rounded-md flex items-center gap-2 transition-colors ${active?.id===c.id?'bg-[#b68d40]/10 text-[#9a742f] dark:bg-[#b68d40]/20 dark:text-[#d4b068] font-medium':'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800/50'}`}>
+            {(conversations || []).filter(c=>c.type!=='project_group').map(c=><button key={c.id} onClick={()=>setActive(c)} className={`w-full text-left px-2 py-1.5 rounded-md flex items-center gap-2 transition-colors ${active?.id===c.id?'bg-[#b68d40]/10 text-[#9a742f] dark:bg-[#b68d40]/20 dark:text-[#d4b068] font-medium':'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800/50'}`}>
               <div className="w-4 h-4 rounded-[4px] bg-gradient-to-br from-gray-200 to-gray-300 dark:from-gray-700 dark:to-gray-800 text-[8px] flex items-center justify-center font-bold text-gray-600 dark:text-gray-300 uppercase shrink-0">{getInitials(c.title)}</div>
               <span className="text-[13px] truncate flex-1">{c.title||'Direct message'}</span>{Boolean(c.unread_count)&&<span className="rounded-full bg-[#b68d40] text-white text-[9px] px-1.5 py-0.5 leading-none">{c.unread_count}</span>}
             </button>)}
-            {members.filter(m=>m.user_id!==profile?.id && !conversations.some(c=>c.type!=='project_group' && c.title===(m.profiles?.name||m.profiles?.email))).map(m=><button key={m.user_id} onClick={()=>openDirect(m.user_id)} className="w-full text-left px-2 py-1.5 rounded-md flex items-center gap-2 transition-colors text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800/50 group">
+            {(members || []).filter(m=>m.user_id!==profile?.id && !(conversations || []).some(c=>c.type!=='project_group' && c.title===(m.profiles?.name||m.profiles?.email))).map(m=><button key={m.user_id} onClick={()=>openDirect(m.user_id)} className="w-full text-left px-2 py-1.5 rounded-md flex items-center gap-2 transition-colors text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800/50 group">
               <div className="w-4 h-4 rounded-[4px] border border-dashed border-gray-300 dark:border-gray-600 flex items-center justify-center text-gray-400 group-hover:text-gray-600 dark:group-hover:text-gray-300 shrink-0"><Plus className="w-3 h-3"/></div>
               <span className="text-[13px] truncate flex-1">{m.profiles?.name||m.profiles?.email}</span>
             </button>)}
@@ -580,24 +662,29 @@ export function InboxModule({project}:{project:ProjectSite}) {
       </header>
       <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
         {!active&&<div className="h-full flex flex-col items-center justify-center text-gray-400 space-y-3"><MessageSquare className="w-10 h-10 opacity-20"/><p className="text-sm font-medium">Select a conversation to start messaging</p></div>}
-        {messages.map((message, i)=>{
-          const mine=message.sender_id===profile?.id;
-          const isAI = message.body?.startsWith('🤖');
-          const showHeader = i === 0 || messages[i-1].sender_id !== message.sender_id || (new Date(message.created_at).getTime() - new Date(messages[i-1].created_at).getTime() > 1000 * 60 * 5);
+        {(messages || []).map((message, i)=>{
+          const senderEmail = (message as any).sender_email;
+          const senderName = (message as any).sender_name || message.profiles?.name;
+          const mine = (senderEmail && senderEmail === profile?.email) || (Boolean(message.sender_id) && message.sender_id === profile?.id);
+          const isAI = Boolean(message.body?.startsWith('🤖'));
+          const prevMsg = i > 0 ? messages[i-1] : null;
+          const prevKey = prevMsg ? ((prevMsg as any).sender_email || prevMsg.sender_id || prevMsg.id) : null;
+          const currKey = senderEmail || message.sender_id || message.id;
+          const showHeader = i === 0 || prevKey !== currKey || (prevMsg && (new Date(message.created_at).getTime() - new Date(prevMsg.created_at).getTime() > 1000 * 60 * 5));
           
-          return <div key={message.id} className={`flex gap-3 group`}>
+          return <div key={message.id || `msg-${i}`} className={`flex gap-3 group`}>
             {showHeader ? (
               isAI ? (
                 <div className="w-9 h-9 shrink-0 rounded-full bg-gradient-to-br from-indigo-100 to-indigo-200 dark:from-indigo-800 dark:to-indigo-900 text-indigo-700 dark:text-indigo-300 flex items-center justify-center shadow-sm ring-1 ring-black/5 dark:ring-white/10">
                   <Bot className="w-5 h-5" />
                 </div>
-              ) : renderAvatar(mine ? (profile?.name || 'You') : message.profiles?.name)
+              ) : renderAvatar(mine ? (profile?.name || 'You') : (senderName || 'Site Manager'))
             ) : <div className="w-9 shrink-0"/>}
             <div className="flex-1 min-w-0">
               {showHeader && (
                 <div className="flex items-baseline gap-2 mb-0.5">
-                  <span className="font-semibold text-[13px] text-gray-900 dark:text-gray-100">{isAI ? 'Site Inspector AI' : (mine ? 'You' : (message.profiles?.name || 'Project member'))}</span>
-                  <span className="text-[10px] text-gray-400">{new Date(message.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                  <span className="font-semibold text-[13px] text-gray-900 dark:text-gray-100">{isAI ? 'Site Inspector AI' : (mine ? 'You' : (senderName || 'Site Manager'))}</span>
+                  <span className="text-[10px] text-gray-400">{message.created_at ? new Date(message.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : ''}</span>
                 </div>
               )}
               {message.body && (

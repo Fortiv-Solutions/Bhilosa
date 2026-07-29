@@ -37,6 +37,7 @@ import {
   BarChart3,
   ListTodo,
   ChevronDown,
+  ZoomIn,
   Search,
   ArrowUpRight,
   ArrowLeft,
@@ -694,7 +695,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
             .from('qc_inspection_items')
             .insert({
               id: newId,
-              qc_inspection_id: reqId,
+              inspection_id: reqId,
               description: cp.checkpoint,
               result: cp.result || 'Pending',
               remarks: cp.observation || ''
@@ -1103,7 +1104,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
             const { data: qItems, error: itemsError } = await supabase
               .from('qc_inspection_items')
               .select('*')
-              .in('qc_inspection_id', inspectionIds);
+              .in('inspection_id', inspectionIds);
 
             if (itemsError) throw itemsError;
             itemsData = qItems || [];
@@ -1131,7 +1132,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
               }
             } catch (e) {}
 
-            const checklistItems = itemsData.filter(item => item.qc_inspection_id === ins.id);
+            const checklistItems = itemsData.filter(item => item.inspection_id === ins.id);
             const checkpoints = checklistItems.map(item => ({
               id: item.id,
               checkpoint: item.description,
@@ -1243,12 +1244,12 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
     fetchQcData();
 
     // Set up Realtime listener for QC changes
-    const channelName = `qc-updates-\${dbSiteId}-\${Date.now()}`;
+    const channelName = `qc-updates-${dbSiteId}-${Date.now()}`;
     const qcChannel = supabase
       .channel(channelName)
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'qc_inspections', filter: `project_id=eq.\${dbSiteId}` },
+        { event: '*', schema: 'public', table: 'qc_inspections', filter: `project_id=eq.${dbSiteId}` },
         () => { fetchQcData(); }
       )
       .on(
@@ -1258,7 +1259,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
       )
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'daily_logs', filter: `project_id=eq.\${dbSiteId}` },
+        { event: '*', schema: 'public', table: 'daily_logs', filter: `project_id=eq.${dbSiteId}` },
         () => { fetchQcData(); }
       )
       .subscribe();
@@ -2475,6 +2476,33 @@ Rules:
     showQcAlert(`Work completion ${newWcId} recorded and QC Request ${newQcrId} generated!`);
   };
 
+  const handleSuspendInspectionCheck = () => {
+    if (!inspectingReqId) return;
+    const req = qcRequests.find(r => r.id === inspectingReqId);
+    if (!req) return;
+
+    const pointsChecked = req.checklist.checkpoints.filter((c: any) => c.result !== 'Pending').length;
+    const totalPoints = req.checklist.checkpoints.length;
+
+    const updatedReq = {
+      ...req,
+      photos: Array.from(new Set([...(req.photos || []), ...attachedPhotos])),
+      draftReworkDesc: reworkDesc,
+      draftReworkTargetDate: reworkTargetDate,
+      lastSuspendedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    };
+
+    setQcRequests(prev => prev.map(r => r.id === inspectingReqId ? updatedReq : r));
+    syncQcRequestToSupabase(updatedReq);
+
+    setInspectingReqId(null);
+    setAttachedPhotos([]);
+    setReworkTargetDate('');
+    setReworkDesc('');
+
+    showQcAlert(`⏸️ Inspection suspended for ${req.activityName}. Progress saved (${pointsChecked}/${totalPoints} points verified)!`, 'info');
+  };
+
   const handleAssignQCRequest = (requestId: string) => {
     const assignedEng = assigneeMap[requestId];
     const schedDate = scheduleDateMap[requestId];
@@ -3660,9 +3688,8 @@ Rules:
     { id: 'quality-control', label: 'Quality Control', icon: ShieldCheck },
     { id: 'site-operations', label: 'Site Operations', icon: Wrench },
     { id: 'budget', label: 'Budget', icon: Coins },
-    { id: 'billing', label: 'Billing', icon: FileSpreadsheet },
+    {id: 'billing', label: 'Billing', icon: FileSpreadsheet },
     { id: 'tasks', label: 'Tasks', icon: ListTodo },
-    { id: 'analytics', label: 'Analytics', icon: BarChart3 },
     { id: 'inbox', label: 'Inbox', icon: MessageSquare },
     { id: 'vendor-management', label: 'Vendor Scorecard', icon: Award },
     { id: 'document-control', label: 'Document Control', icon: FileText },
@@ -3709,7 +3736,6 @@ Rules:
             { id: 'document-control',   label: 'Documents',       Icon: FileText        },
             { id: 'budget',             label: 'Budget',          Icon: Coins           },
             { id: 'billing',            label: 'Billing',         Icon: FileSpreadsheet },
-            { id: 'analytics',          label: 'Analytics',       Icon: BarChart3       },
           ].map(({ id, label, Icon }) => {
             const isActive = activeTab === id;
             return (
@@ -4261,7 +4287,7 @@ Rules:
             )}
 
             {/* 0.5. INBOX MODULE */}
-            {activeTab === 'inbox' && (
+            {activeTab === 'inbox' && project && (
               <InboxModule project={project} />
             )}
 
@@ -7402,17 +7428,17 @@ Rules:
                           : 'text-muted-foreground hover:text-foreground'
                       }`}
                     >
-                      📜 Audit History ({qcRequests.filter(r => r.status === 'Approved' || r.status === 'Pass').length})
+                      📜 Audit History ({qcRequests.length})
                     </button>
                     <button
                       onClick={() => setQcSubTab('rework')}
                       className={`px-3 py-1.5 text-[11px] font-bold rounded-lg transition-all cursor-pointer ${
                         qcSubTab === 'rework'
-                          ? 'bg-[#b68d40] text-white shadow-xs'
-                          : 'text-muted-foreground hover:text-foreground'
+                          ? 'bg-red-600 text-white shadow-xs'
+                          : 'text-red-600 dark:text-red-400 hover:bg-red-500/10 font-black'
                       }`}
                     >
-                      ⚠️ Rework ({qcRequests.filter(r => r.status === 'Failed' || r.status === 'Fail').length})
+                      ⚠️ Snags & Rework ({qcRequests.filter(r => r.status === 'Failed' || r.status === 'Fail').length})
                     </button>
                   </div>
                 </div>
@@ -8139,15 +8165,10 @@ Rules:
                             <div className="flex gap-3 pt-4 border-t border-border/40">
                               <button
                                 type="button"
-                                onClick={() => {
-                                  setInspectingReqId(null);
-                                  setAttachedPhotos([]);
-                                  setReworkTargetDate('');
-                                  setReworkDesc('');
-                                }}
-                                className="flex-1 py-2.5 bg-secondary text-secondary-foreground hover:bg-gray-305 font-extrabold text-xs uppercase rounded-lg transition-all cursor-pointer border border-border"
+                                onClick={handleSuspendInspectionCheck}
+                                className="flex-1 py-2.5 bg-secondary text-secondary-foreground hover:bg-amber-500/10 hover:text-amber-600 font-extrabold text-xs uppercase rounded-lg transition-all cursor-pointer border border-border"
                               >
-                                Suspend Check
+                                ⏸️ Suspend Check
                               </button>
                               <button
                                 type="button"
@@ -8432,27 +8453,36 @@ Rules:
                           📜 QC Inspection Audit History
                         </h4>
                         <p className="text-[11px] text-muted-foreground mt-0.5 font-medium">
-                          Archived record of all approved and passed quality control inspections.
+                          Archived record of all quality control inspections and snag submissions.
                         </p>
                       </div>
-                      <span className="bg-emerald-500/10 text-emerald-650 px-2.5 py-1 rounded-full text-[10px] font-bold border border-emerald-500/25">
-                        {qcRequests.filter(r => r.status === 'Approved' || r.status === 'Pass').length} Passed
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className="bg-emerald-500/10 text-emerald-650 px-2.5 py-1 rounded-full text-[10px] font-bold border border-emerald-500/25">
+                          {qcRequests.filter(r => r.status === 'Approved' || r.status === 'Pass').length} Passed
+                        </span>
+                        <span className="bg-red-500/10 text-red-650 px-2.5 py-1 rounded-full text-[10px] font-bold border border-red-500/25">
+                          {qcRequests.filter(r => r.status === 'Failed' || r.status === 'Fail').length} Failed
+                        </span>
+                      </div>
                     </div>
 
                     <div className="space-y-4">
-                      {qcRequests.filter(r => r.status === 'Approved' || r.status === 'Pass').length === 0 ? (
+                      {qcRequests.length === 0 ? (
                         <div className="text-center py-12 border border-dashed border-border rounded-2xl bg-muted/5">
                           <CheckCircle2 className="w-10 h-10 text-muted-foreground/30 mx-auto mb-2" />
-                          <p className="text-xs font-bold text-foreground">No approved inspections yet</p>
-                          <p className="text-[10px] text-muted-foreground mt-0.5">Approved checklists will be logged here for audit tracking.</p>
+                          <p className="text-xs font-bold text-foreground">No inspection records found</p>
+                          <p className="text-[10px] text-muted-foreground mt-0.5">Checklists and snag reports submitted from mobile will be logged here for audit tracking.</p>
                         </div>
                       ) : (
-                        qcRequests.filter(r => r.status === 'Approved' || r.status === 'Pass').map(req => {
+                        qcRequests.map(req => {
                           const isExpanded = expandedAudits[req.id];
                           const isUuid = req.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.id);
+                          const isFailed = req.status === 'Failed' || req.status === 'Fail';
+
                           return (
-                            <div key={req.id} className="border border-border/40 rounded-xl bg-muted/5 overflow-hidden transition-all duration-200">
+                            <div key={req.id} className={`border rounded-xl overflow-hidden transition-all duration-200 ${
+                              isFailed ? 'bg-red-500/5 border-red-500/30' : 'bg-muted/5 border-border/40'
+                            }`}>
                               {/* Accordion Toggle Header */}
                               <button
                                 type="button"
@@ -8464,8 +8494,15 @@ Rules:
                                     {!isUuid && (
                                       <span className="font-extrabold text-[#b68d40] text-xs">{req.id}</span>
                                     )}
-                                    <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-650 border border-emerald-500/20 uppercase tracking-wider">
+                                    <span className={`text-[9px] font-black px-1.5 py-0.5 rounded border uppercase tracking-wider ${
+                                      isFailed ? 'bg-red-500/10 text-red-600 border-red-500/20' : 'bg-emerald-500/10 text-emerald-650 border-emerald-500/20'
+                                    }`}>
                                       {req.category || 'General'}
+                                    </span>
+                                    <span className={`text-[9px] font-black px-1.5 py-0.5 rounded uppercase ${
+                                      isFailed ? 'bg-red-500 text-white' : 'bg-emerald-600 text-white'
+                                    }`}>
+                                      {isFailed ? '🔴 QC FAILED / SNAG' : '🟢 PASSED'}
                                     </span>
                                   </div>
                                   <h5 className="font-heading font-extrabold text-foreground text-xs mt-1">{req.activityName}</h5>
@@ -8473,7 +8510,9 @@ Rules:
                                 </div>
                                 <div className="flex items-center gap-3 shrink-0">
                                   <div className="text-right hidden sm:block">
-                                    <span className="text-emerald-650 font-bold text-[10px] block">QC Passed</span>
+                                    <span className={`font-bold text-[10px] block ${isFailed ? 'text-red-600' : 'text-emerald-650'}`}>
+                                      {isFailed ? 'QC Failed' : 'QC Passed'}
+                                    </span>
                                     <span className="text-[9px] text-muted-foreground block mt-0.5">{req.approvedAt || req.scheduledDate || req.submittedDate}</span>
                                   </div>
                                   <span className="text-muted-foreground p-1">
@@ -8514,33 +8553,49 @@ Rules:
                                   </div>
 
                                   {/* Attached Photos */}
-                                      {req.photos && req.photos.length > 0 && (
-                                        <div className="space-y-1.5 pt-2 border-t border-border/20">
-                                          <p className="text-[10px] text-muted-foreground uppercase font-bold">Inspection Photo Proof:</p>
-                                          <div className="flex flex-wrap gap-2">
-                                            {req.photos.map((p: string, pIdx: number) => (
-                                              <div key={pIdx} className="relative w-16 h-16 rounded-lg overflow-hidden border border-border shadow-xs shrink-0 bg-muted/30">
-                                                <img
-                                                  src={resolvePhotoUrl(p)}
-                                                  className="w-full h-full object-cover cursor-pointer hover:scale-105 transition-transform duration-200"
-                                                  alt="proof"
-                                                  onClick={() => setActiveLightboxMedia({
-                                                    id: `proof_${pIdx}_${Date.now()}`,
-                                                    url: resolvePhotoUrl(p),
-                                                    type: 'image',
-                                                    name: `QC Inspection Photo Proof #${pIdx + 1}`,
-                                                    createdAt: new Date().toISOString(),
-                                                    caption: req.activityName || 'Quality Control Evidence'
-                                                  })}
-                                                  onError={(e) => {
-                                                    (e.target as HTMLImageElement).src = DEFAULT_CONSTRUCTION_PHOTO;
-                                                  }}
-                                                />
+                                  {req.photos && req.photos.length > 0 && (
+                                    <div className="space-y-1.5 pt-2 border-t border-border/20">
+                                      <p className="text-[10px] text-muted-foreground uppercase font-bold flex items-center gap-1.5">
+                                        <span>📷 Inspection Photo Proof ({req.photos.length}):</span>
+                                        <span className="text-[9px] text-[#b68d40] lowercase font-normal">(click photo to enlarge)</span>
+                                      </p>
+                                      <div className="flex flex-wrap gap-2">
+                                        {req.photos.map((p: string, pIdx: number) => {
+                                          const pUrl = resolvePhotoUrl(p);
+                                          return (
+                                            <div
+                                              key={pIdx}
+                                              className="relative w-20 h-20 rounded-xl overflow-hidden border-2 border-border/80 shadow-xs shrink-0 bg-muted/30 group cursor-pointer"
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                setActiveLightboxMedia({
+                                                  id: `proof_${pIdx}_${Date.now()}`,
+                                                  url: pUrl,
+                                                  type: 'image',
+                                                  name: `${req.activityName} - Photo Proof #${pIdx + 1}`,
+                                                  createdAt: req.submittedDate || new Date().toISOString(),
+                                                  caption: `Location: ${req.location || 'Site'}`
+                                                });
+                                              }}
+                                            >
+                                              <img
+                                                src={pUrl}
+                                                className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300"
+                                                alt="Inspection proof"
+                                                onError={(e) => {
+                                                  (e.target as HTMLImageElement).src = DEFAULT_CONSTRUCTION_PHOTO;
+                                                }}
+                                              />
+                                              <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center text-white">
+                                                <ZoomIn className="w-5 h-5 drop-shadow" />
+                                                <span className="text-[8px] font-bold mt-0.5 uppercase tracking-wider">Enlarge</span>
                                               </div>
-                                            ))}
-                                          </div>
-                                        </div>
-                                      )}
+                                            </div>
+                                          );
+                                        })}
+                                      </div>
+                                    </div>
+                                  )}
                                 </div>
                               )}
                             </div>
@@ -8553,21 +8608,41 @@ Rules:
 
                 {/* SUBTAB CONTENT: 4. REWORK TRACKING */}
                 {qcSubTab === 'rework' && (() => {
-                  const activeReworks = reworkItems.filter(rw => rw.status !== 'Closed');
+                  const failedQcItems = qcRequests
+                    .filter(r => r.status === 'Failed' || r.status === 'Fail')
+                    .map(r => ({
+                      id: r.id,
+                      qcRef: r.id,
+                      activityName: r.activityName,
+                      issueDescription: r.remarks || 'QC Inspection Failed / Logged as Snag',
+                      location: r.location || 'Site Location',
+                      responsiblePerson: r.contractorName || 'Contractor',
+                      targetDate: r.scheduledDate || r.submittedDate || new Date().toISOString().split('T')[0],
+                      status: 'Failed / Snag',
+                      remarks: r.remarks || '',
+                      correctionPhotos: r.photos || [],
+                      category: r.category || 'General',
+                      checklist: r.checklist
+                    }));
+
+                  const activeReworks = [
+                    ...failedQcItems,
+                    ...reworkItems.filter(rw => rw.status !== 'Closed' && !failedQcItems.some(f => f.id === rw.qcRef))
+                  ];
 
                   return (
                     <div className="bg-white dark:bg-gray-900 p-4.5 rounded-2xl border border-border/60 shadow-sm space-y-4 text-left">
                       <div className="border-b border-border/60 pb-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                         <div>
                           <h4 className="font-heading font-black text-foreground text-xs uppercase tracking-wider flex items-center gap-1.5">
-                            ⚠️ Rework & Corrective Actions Tracking
+                            ⚠️ Rework & Defect Snags Tracking
                           </h4>
                           <p className="text-[11px] text-muted-foreground mt-0.5 font-medium">
-                            Logs failed QC inspections, responsible parties, correction dates, and reinspection workflows.
+                            Logs failed QC inspections, mobile snag reports, responsible parties, and reinspection workflows.
                           </p>
                         </div>
                         <span className="bg-red-500/10 text-red-650 px-2.5 py-1 rounded-full text-[10px] font-bold border border-red-500/25 shrink-0 self-start sm:self-center">
-                          {activeReworks.length} Active Failed QC
+                          {activeReworks.length} Active Snags & Failed QC
                         </span>
                       </div>
 
@@ -8640,6 +8715,51 @@ Rules:
                                     {rw.remarks && (
                                       <div className="p-2.5 bg-amber-500/5 border border-amber-500/10 rounded-lg text-[10px] text-amber-700 dark:text-amber-400">
                                         <span className="font-bold">Latest Remarks: </span>{rw.remarks}
+                                      </div>
+                                    )}
+
+                                    {/* Attached Defect / Correction Photos */}
+                                    {((rw.correctionPhotos && rw.correctionPhotos.length > 0) || (req?.photos && req?.photos.length > 0)) && (
+                                      <div className="space-y-1.5 pt-2 border-t border-border/20">
+                                        <p className="text-[10px] text-muted-foreground uppercase font-bold flex items-center gap-1.5">
+                                          <span>📷 Defect Photo Evidence ({((rw.correctionPhotos && rw.correctionPhotos.length > 0 ? rw.correctionPhotos : req.photos) || []).length}):</span>
+                                          <span className="text-[9px] text-[#b68d40] lowercase font-normal">(click photo to enlarge)</span>
+                                        </p>
+                                        <div className="flex flex-wrap gap-2">
+                                          {(rw.correctionPhotos && rw.correctionPhotos.length > 0 ? rw.correctionPhotos : req.photos).map((p: string, pIdx: number) => {
+                                            const pUrl = resolvePhotoUrl(p);
+                                            return (
+                                              <div
+                                                key={pIdx}
+                                                className="relative w-20 h-20 rounded-xl overflow-hidden border-2 border-red-500/30 shadow-xs shrink-0 bg-muted/30 group cursor-pointer"
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  setActiveLightboxMedia({
+                                                    id: `rework_photo_${pIdx}_${Date.now()}`,
+                                                    url: pUrl,
+                                                    type: 'image',
+                                                    name: `${rw.activityName} - Defect Photo #${pIdx + 1}`,
+                                                    createdAt: new Date().toISOString(),
+                                                    caption: `Defect: ${rw.issueDescription || 'QC Snag'}`
+                                                  });
+                                                }}
+                                              >
+                                                <img
+                                                  src={pUrl}
+                                                  className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300"
+                                                  alt="Defect proof"
+                                                  onError={(e) => {
+                                                    (e.target as HTMLImageElement).src = DEFAULT_CONSTRUCTION_PHOTO;
+                                                  }}
+                                                />
+                                                <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center text-white">
+                                                  <ZoomIn className="w-5 h-5 drop-shadow" />
+                                                  <span className="text-[8px] font-bold mt-0.5 uppercase tracking-wider">Enlarge</span>
+                                                </div>
+                                              </div>
+                                            );
+                                          })}
+                                        </div>
                                       </div>
                                     )}
 

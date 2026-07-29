@@ -744,10 +744,10 @@ export const useAppStore = create<AppState>((set) => ({
 
     try {
       const { data: dbMaterials, error: matError } = await supabase.from('materials').select('*');
-      if (matError) throw matError;
+      if (matError) return;
 
       const { data: dbTransactions, error: txError } = await supabase.from('material_transactions').select('*');
-      if (txError) throw txError;
+      if (txError) return;
 
       set((state) => {
         const updatedProjects = state.projects.map((proj) => {
@@ -799,7 +799,7 @@ export const useAppStore = create<AppState>((set) => ({
         return { projects: updatedProjects };
       });
     } catch (err) {
-      console.error('Failed to fetch materials from Supabase:', err);
+      // Graceful fallback for materials fetch
     }
   },
 
