@@ -89,6 +89,14 @@ const nextConfig: NextConfig = {
         destination: `${pythonBackendUrl}/api/procurement/purchase-bills/:id/pdf`,
       },
       {
+        source: "/api/ocr/recognize",
+        destination: `${pythonBackendUrl}/api/ocr/recognize`,
+      },
+      {
+        source: "/api/ocr/health",
+        destination: `${pythonBackendUrl}/api/ocr/health`,
+      },
+      {
         source: "/api/check-license",
         destination: `${pythonBackendUrl}/api/check-license`,
       },

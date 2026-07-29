@@ -2,7 +2,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from .routers import ai, qc, users, procurement
+from .routers import ai, ocr, qc, users, procurement
 
 app = FastAPI(
     title="Pramukh ERP API",
@@ -37,6 +37,7 @@ app.include_router(ai.router, prefix="/api", tags=["AI"])
 app.include_router(qc.router, prefix="/api", tags=["QC"])
 app.include_router(users.router, prefix="/api", tags=["Users"])
 app.include_router(procurement.router, prefix="/api", tags=["Procurement"])
+app.include_router(ocr.router, prefix="/api", tags=["OCR"])
 
 # Create tables if using SQLite fallback (local development ease)
 from . import config

@@ -53,10 +53,9 @@ export default function SubNavBar() {
     },
     {
       name: 'Financials',
-      paths: ['/finance', '/budget', '/reports'],
+      paths: ['/budget', '/reports'],
       tabs: [
-        { label: 'Finance', path: '/finance' },
-        { label: 'Budget', path: '/budget' },
+        { label: 'Budget Control', path: '/budget' },
         { label: 'Reports', path: '/reports' }
       ]
     },

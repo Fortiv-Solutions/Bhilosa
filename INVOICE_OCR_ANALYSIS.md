@@ -741,3 +741,141 @@ detection: `irn`, `ack_no`, `invoice_number`, `invoice_date`, `due_date`, `grand
 - Store the page renders alongside the GRN so the side-by-side review UI works after the fact.
 - Suggested regression fixture: these 3 pages with the expected JSON checked in, asserted on every
   prompt change. The arithmetic in §2–§4 is fully verified and can serve as the golden output.
+
+---
+
+## 9. Recognition engine: PP-OCRv5 (PaddleOCR)
+
+### Why the engine was swapped
+
+The pipeline's remaining errors were **recognition** failures, not layout failures.
+Measured on a degraded photograph: `2026` read as `2028`, `GJ05CV4633` as
+`GA05CV4544`, `BE-2026-27-3343` as `BE-2026-27.3343`. The geometry and GST
+reconciliation were doing their job; the characters arriving were simply wrong.
+
+PP-OCRv5 was chosen against the alternatives on three hard constraints — **free
+forever, high accuracy, runs on the available hardware** (Intel Iris Xe, 7.8 GB
+RAM, no CUDA GPU):
+
+| Candidate | Verdict |
+|---|---|
+| `datalab-to/lift` 9B (schema→JSON, 90.2% field acc.) | **Rejected** — needs ~18 GB VRAM. Also a modified OpenRAIL-M licence: free only under $5M revenue, and "cannot be used competitively with our API". |
+| dots.ocr 1.7B / GLM-OCR 0.9B | **Rejected** — minutes per page on CPU, RAM-tight. |
+| Azure / Google invoice parsers | **Rejected** — per-page cost, and invoice data would leave the premises. |
+| **PaddleOCR PP-OCRv5** | **Chosen** — Apache-2.0, no per-page cost, CPU-optimised, ~+13% recognition accuracy over Tesseract. |
+
+### What was NOT replaced
+
+Only character recognition. Everything that encodes how Indian GST invoices behave
+is unchanged and still carries the extraction:
+
+- cascading discounts (`55.00 + 15.25` is sequential, not 70.25%)
+- the ledger-balance trap (`Total Amount Due: ₹21,08,663` on an ₹8,319 invoice)
+- buyer PO found by pattern anywhere, including `Remarks`
+- GSTIN mod-36 checksum repair, HSN/IRN validation
+- arithmetic reconciliation with the tolerances real invoices require
+
+No general-purpose model knows these rules. The boundary between the two layers is
+`OcrWord[]` — text plus a bounding box — which is why the recogniser is swappable
+without touching any of the above.
+
+### Architecture
+
+```
+Next.js  frontend/src/lib/ocr/providers.ts      selects engine, health-probes, falls back
+              |  POST /api/ocr/recognize  (PNG)
+              v
+FastAPI  backend/app/routers/ocr.py             PP-OCRv5 -> word-level boxes
+```
+
+`providers.ts` calls the Python service **directly** server-side (a Next.js rewrite
+cannot be used: a relative path has no origin in server code).
+
+**Word-level boxes.** PaddleOCR detects text *regions*, not words. Table columns are
+resolved by horizontal position, so a whole line returned as one box cannot be split
+into cells. The router therefore always emits word boxes — using the engine's own
+when the installed version can produce them, and subdividing a region proportionally
+by character width otherwise.
+
+### Setup
+
+```bash
+cd backend
+.venv/Scripts/python.exe -m pip install -r requirements.txt   # paddlepaddle + paddleocr
+.venv/Scripts/python.exe -m uvicorn app.main:app --reload     # serves /api/ocr/*
+```
+
+Model weights (~50-200 MB) download on first use and are cached by PaddleOCR.
+
+### Configuration
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `INVOICE_OCR_ENGINE` | `auto` | `auto` \| `paddle` \| `tesseract` |
+| `PYTHON_BACKEND_URL` | `http://127.0.0.1:8000` | where the OCR service lives |
+| `TESSDATA_PATH` | auto-resolved | fallback engine's language data |
+
+`auto` uses Paddle when `/api/ocr/health` reports ready, Tesseract otherwise. The
+health endpoint **constructs the engine**, so a backend that is running but missing
+the OCR dependencies reports `false` — that is the case that matters, being
+indistinguishable from "working" at the HTTP level. **The bundled Tesseract engine is
+never removed**, so a deployment without the Python service still extracts invoices.
+
+Tesseract also keeps one capability Paddle does not expose: a per-region character
+whitelist, used for digit-only re-reads of low-confidence numeric cells.
+
+### Verifying
+
+```bash
+cd frontend && npx tsx scripts/dump-pages.ts        # preprocessed page images
+cd backend  && .venv/Scripts/python.exe scripts/ocr_smoke.py ../frontend/scripts/pages
+cd frontend && npx tsx scripts/extract-probe.ts     # must stay 75/75
+cd frontend && npx tsx scripts/photo-test.ts        # photograph scenarios
+```
+
+### MEASURED RESULT: Tesseract remains the default
+
+`scripts/engine-benchmark.ts`, 3 sample formats, identical downstream pipeline, so
+the only variable is character recognition:
+
+| Engine | Fields correct | Time | Mean char confidence |
+|---|---|---|---|
+| **tesseract** | **41/41** | 94.9s | 80.4 / 83.6 / 81.3 |
+| paddle (PP-OCRv5 mobile) | 12/41 | 120.0s | **93.7 / 96.0 / 95.3** |
+
+PP-OCRv5 reads CHARACTERS substantially better — 47/48 hand-checked tokens, including
+ARCHIT's buyer GSTIN `24ABDFP8234D1ZG` that Tesseract only recovered via checksum
+repair. Yet end-to-end extraction collapsed, for two structural reasons:
+
+1. **Paddle emits text-LINE boxes, not word boxes.** Their median height is much
+   larger than a tight word box. `PageIndex.lineHeight` is that median, and it sets
+   the row-banding tolerance (`lineHeight * 0.6`). Bands therefore grow until a
+   table's header row merges with its first data row, and column resolution fails.
+2. **Paddle drops inter-word spaces inside a region** (`FILLER IVORY` ->
+   `FILLERIVORY`), so the proportional word-splitting fallback never fires and
+   multi-word cells arrive as single tokens.
+
+So `INVOICE_OCR_ENGINE` now defaults to **`tesseract`**, not `auto`. Shipping Paddle
+as the default would have taken a working 41/41 extraction to 12/41 — better
+characters, worse data.
+
+**To make Paddle win, two things must change (not yet done):**
+- Derive the row-banding tolerance from box *spacing* / inter-baseline distance
+  rather than box height, so line-height boxes stop widening the bands.
+- Obtain genuine word boxes from the recogniser (PaddleOCR word-box mode, or run
+  detection per table cell) instead of synthesising them by character proportion.
+
+Until then Paddle is opt-in: `INVOICE_OCR_ENGINE=paddle`.
+
+**Dependency note.** `paddleocr==3.0.1` pulls `paddlex`, which pulls langchain,
+langchain-community, langchain-openai, openai, tiktoken, huggingface-hub,
+scikit-learn, scipy, pandas — ~60 packages — and pins the backend's `openai`
+version. It also downgraded numpy 2.2.6 -> 1.24.4. `paddleocr==2.10.0` avoids all of
+that and the router already probes 2.x constructor signatures, so switching is a
+one-line requirements change. Worth doing before relying on Paddle in production.
+
+**Hardware constraints found the hard way:** PaddleOCR 3.x silently selects
+`PP-OCRv5_server_det/rec`, which SIGSEGV'd on a 3181x4614 page with 7.8 GB RAM. The
+router now pins `PP-OCRv5_mobile_*` and caps inference at 2200px on the long edge
+(`PADDLE_MAX_INFER_SIDE`), rescaling boxes by `1/scale` afterwards so they stay in
+the caller's coordinate space.

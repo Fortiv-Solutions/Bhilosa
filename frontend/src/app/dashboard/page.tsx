@@ -146,8 +146,8 @@ export default function DashboardPage() {
     switch (persona) {
       case 'DIRECTOR':
         return [
-          { label: 'Revenue Realized', value: '₹84.6 Cr', detail: '+8.5% vs. Q2 billing target', icon: CircleDollarSign, color: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400', link: '/finance', isPositive: true },
-          { label: 'Cash Position', value: '₹12.4 Cr', detail: '₹45L overdue AR follows up today', icon: TrendingUp, color: 'bg-amber-500/10 text-amber-600 dark:text-amber-455', link: '/finance', isPositive: false },
+          { label: 'Revenue Realized', value: '₹84.6 Cr', detail: '+8.5% vs. Q2 billing target', icon: CircleDollarSign, color: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400', link: '/budget', isPositive: true },
+          { label: 'Cash Position', value: '₹12.4 Cr', detail: '₹45L overdue AR follows up today', icon: TrendingUp, color: 'bg-amber-500/10 text-amber-600 dark:text-amber-455', link: '/budget', isPositive: false },
           { label: 'Schedule Adherence', value: `${adherenceRate}%`, detail: '2 critical path sites require review', icon: Clock3, color: 'bg-blue-500/10 text-blue-600 dark:text-blue-400', link: '/projects', isPositive: true },
           { label: 'Safety Incidents', value: '0', detail: '45 safe days; zero warnings', icon: HardHat, color: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400', link: '/safety-qc', isPositive: true },
           { label: 'PRs Pending', value: `${pendingPRsCount}`, detail: 'Awaiting director approval', icon: FileText, color: 'bg-amber-500/10 text-amber-600 dark:text-amber-455', link: '/procurement', isPositive: false }
@@ -791,7 +791,7 @@ export default function DashboardPage() {
                     <p className="mt-0.5 text-xs text-muted-foreground font-semibold">Real-time margin, realization and quality loss.</p>
                   </div>
                 </div>
-                <Link href="/finance" className="text-xs font-bold text-primary hover:text-primary/80 transition-colors">
+                <Link href="/budget" className="text-xs font-bold text-primary hover:text-primary/80 transition-colors">
                   Ledger →
                 </Link>
               </div>

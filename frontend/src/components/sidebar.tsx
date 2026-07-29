@@ -8,7 +8,7 @@ import {
   Building2,
   ShoppingCart,
   Users,
-  IndianRupee,
+  CircleDollarSign,
   FileText,
   Settings2,
 } from 'lucide-react';
@@ -45,9 +45,9 @@ export default function Sidebar() {
     },
     { 
       label: 'Financials', 
-      path: '/finance', 
-      icon: IndianRupee,
-      groupPaths: ['/finance', '/budget', '/reports']
+      path: '/budget', 
+      icon: CircleDollarSign,
+      groupPaths: ['/budget', '/reports']
     },
     { 
       label: 'Documents', 

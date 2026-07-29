@@ -36,6 +36,7 @@ import {
   renderPdfPage,
   scoreOrientation,
 } from './render';
+import { recognizeWithPaddle, selectEngine } from './providers';
 
 type Worker = import('tesseract.js').Worker;
 
@@ -343,6 +344,66 @@ export async function detectRotation(
 
 /** Run the merged multi-PSM page pass over an already-rendered page. */
 export async function ocrRenderedPage(rendered: RenderedPage): Promise<OcrPage> {
+  const selection = await selectEngine();
+
+  if (selection.engine === 'paddle') {
+    const page = await ocrRenderedPageWithPaddle(rendered, selection.reason);
+    // A thin result means the service answered but read almost nothing; the
+    // bundled engine is tried rather than accepting it.
+    if (page && page.words.filter((w) => /[A-Za-z0-9]{2,}/.test(w.text)).length >= 10) {
+      return page;
+    }
+  }
+  return ocrRenderedPageWithTesseract(rendered, selection.reason);
+}
+
+/**
+ * Page pass using PP-OCRv5 via the Python backend.
+ *
+ * Returns null when the service is unreachable or reports itself unavailable, so
+ * the caller falls back. Note the recogniser supplies words and boxes only — the
+ * reading-order text is reconstructed here from the row banding, because Paddle
+ * returns detections in detection order, not reading order.
+ */
+async function ocrRenderedPageWithPaddle(
+  rendered: RenderedPage,
+  reason: string,
+): Promise<OcrPage | null> {
+  const result = await recognizeWithPaddle(rendered.png);
+  if (!result) return null;
+
+  const asWords: OcrWord[] = result.words.map((w) => ({
+    text: w.text,
+    confidence: w.confidence,
+    bbox: w.bbox,
+    lineIndex: 0,
+  }));
+
+  const { lines, words } = rebuildLines(asWords);
+  const meanConfidence = words.length
+    ? words.reduce((s, w) => s + w.confidence, 0) / words.length
+    : 0;
+
+  return {
+    pageNumber: rendered.pageNumber,
+    rotation: rendered.rotation,
+    width: rendered.width,
+    height: rendered.height,
+    dpi: rendered.dpi,
+    text: lines.map((l) => l.text).join('\n'),
+    lines,
+    words,
+    meanConfidence,
+    image: rendered.png,
+    recipe: `${result.engine} @${rendered.dpi}dpi rot${rendered.rotation} (${reason}, ${result.ms}ms)`,
+  };
+}
+
+/** Page pass using the bundled wasm engine, merging two segmentation modes. */
+async function ocrRenderedPageWithTesseract(
+  rendered: RenderedPage,
+  reason: string,
+): Promise<OcrPage> {
   const base = {
     preserve_interword_spaces: '1',
     user_defined_dpi: String(rendered.dpi),
@@ -370,7 +431,7 @@ export async function ocrRenderedPage(rendered: RenderedPage): Promise<OcrPage> 
     words,
     meanConfidence,
     image: rendered.png,
-    recipe: `trim+srgb@${rendered.dpi}dpi rot${rendered.rotation} psm3+psm11`,
+    recipe: `tesseract trim+srgb@${rendered.dpi}dpi rot${rendered.rotation} psm3+psm11 (${reason})`,
   };
 }
 

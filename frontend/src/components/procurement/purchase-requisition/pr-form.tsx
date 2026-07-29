@@ -178,9 +178,13 @@ function SearchableApprovedMrDropdown({
   );
 }
 
+import VarianceResolutionDrawer from '@/components/budget/variance-resolution-drawer';
+import type { MasterBudgetItem } from '@/lib/budget';
+
 export function PrForm(props: PrFormProps) {
   const { form, update, sourceChips, approvedMrs, onSelectMrFromDropdown, onOpenAddMr, onRemoveMr, budgetSnapshot, projectOptions } = props;
   const [showValidation, setShowValidation] = useState(false);
+  const [isVarianceDrawerOpen, setIsVarianceDrawerOpen] = useState(false);
 
   const summary = useMemo(() => computeCostSummary(form), [form]);
   const budget = useMemo(
@@ -191,6 +195,19 @@ export function PrForm(props: PrFormProps) {
 
   const validation = useMemo(() => validatePrForm(form, isOverBudget), [form, isOverBudget]);
   const readOnly = Boolean(props.readOnly);
+
+  const sampleVarianceItem: MasterBudgetItem = {
+    id: 'pr-item-var',
+    srNo: 1,
+    category: form.activity_name || 'PR Scope Budget',
+    item: form.lines[0]?.item_description || 'PR Requested Items',
+    qtyTotal: form.lines[0]?.pr_quantity || 1,
+    unit: form.lines[0]?.unit || 'LS',
+    rate: form.lines[0]?.estimated_rate || 1000,
+    cost: summary.totalEstimatedCost,
+    costPerBua: Number((summary.totalEstimatedCost / 615000).toFixed(2)),
+    scopeTag: 'building_finishes',
+  };
 
   return (
     <>
@@ -206,9 +223,44 @@ export function PrForm(props: PrFormProps) {
             </div>
 
             <div className="flex items-center gap-3">
+              <BudgetStatusBadge status={budget.status} />
               <PrStatusBadge status={form.status} />
             </div>
           </div>
+
+          {/* Real-time Budget Status Banner */}
+          {form.budget_applicable && (
+            <div className={`rounded-xl border p-3.5 text-xs font-semibold flex flex-wrap items-center justify-between gap-3 ${
+              isOverBudget
+                ? 'border-red-300 bg-red-50 text-red-800 dark:border-red-900/40 dark:bg-red-950/30 dark:text-red-400'
+                : budget.status === 'near_limit'
+                ? 'border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-400'
+                : 'border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-900/40 dark:bg-emerald-950/30 dark:text-emerald-400'
+            }`}>
+              <div className="flex items-center gap-2">
+                <Wallet className="h-4 w-4 flex-shrink-0" />
+                <div>
+                  <span className="font-bold">Budget Availability Status: </span>
+                  <span>
+                    {isOverBudget
+                      ? `Requested PR amount (${formatCurrency(summary.totalEstimatedCost)}) exceeds remaining budget by ${formatCurrency(Math.abs(budget.remaining))}`
+                      : `Available Budget: ${formatCurrency(budgetSnapshot?.available ?? 0)} (Remaining after PR: ${formatCurrency(budget.remaining)})`}
+                  </span>
+                </div>
+              </div>
+
+              {isOverBudget && (
+                <button
+                  type="button"
+                  onClick={() => setIsVarianceDrawerOpen(true)}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-3 py-1.5 text-xs font-bold text-white shadow-xs hover:bg-red-700 transition-colors"
+                >
+                  <AlertTriangle className="h-3.5 w-3.5" />
+                  Resolve Budget Variance (3 Options)
+                </button>
+              )}
+            </div>
+          )}
 
           {/* Validation Summary Banner */}
           {showValidation && validation.length > 0 && (
@@ -465,6 +517,22 @@ export function PrForm(props: PrFormProps) {
           </div>
         </div>
       </div>
+
+      <VarianceResolutionDrawer
+        isOpen={isVarianceDrawerOpen}
+        onClose={() => setIsVarianceDrawerOpen(false)}
+        item={sampleVarianceItem}
+        actualRate={sampleVarianceItem.rate * 1.2}
+        actualQuantity={sampleVarianceItem.qtyTotal}
+        onSelectAction={(action, details) => {
+          if (action === 'revise_budget') {
+            update({ over_budget_justification: details.remarks || 'Budget revision requested' });
+          } else if (action === 'update_quantity' && details.newQuantity) {
+            update({ general_remarks: `Adjusted quantity to ${details.newQuantity} ${sampleVarianceItem.unit}` });
+          }
+          alert(`Selected resolution option: ${action.replaceAll('_', ' ')}.`);
+        }}
+      />
     </>
   );
 }
