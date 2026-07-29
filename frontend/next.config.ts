@@ -53,14 +53,6 @@ const nextConfig: NextConfig = {
         destination: `${pythonBackendUrl}/api/users/:id`,
       },
       {
-        source: "/api/procurement/purchase-orders/:id/pdf",
-        destination: `${pythonBackendUrl}/api/procurement/purchase-orders/:id/pdf`,
-      },
-      {
-        source: "/api/procurement/purchase-requisitions/:id/pdf",
-        destination: `${pythonBackendUrl}/api/procurement/purchase-requisitions/:id/pdf`,
-      },
-      {
         source: "/api/check-license",
         destination: `${pythonBackendUrl}/api/check-license`,
       },

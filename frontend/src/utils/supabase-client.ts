@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://uanazwednpluwllhfzlh.supabase.co';
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVhbmF6d2VkbnBsdXdsbGhmemxoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ2MjY0NDMsImV4cCI6MjEwMDIwMjQ0M30.eEbmPE6QQds7-WmS9YOKMb1lhlrG5PZy2ySUVY9bjZs';
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? '';
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '';
 
 export const isSupabaseConfigured = Boolean(
   supabaseUrl &&
@@ -10,10 +10,7 @@ export const isSupabaseConfigured = Boolean(
     supabaseAnonKey !== 'your-publishable-key',
 );
 
-export const supabase = createClient(
-  isSupabaseConfigured ? supabaseUrl : 'https://uanazwednpluwllhfzlh.supabase.co',
-  isSupabaseConfigured ? supabaseAnonKey : 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVhbmF6d2VkbnBsdXdsbGhmemxoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ2MjY0NDMsImV4cCI6MjEwMDIwMjQ0M30.eEbmPE6QQds7-WmS9YOKMb1lhlrG5PZy2ySUVY9bjZs',
-);
+export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 // Map frontend project IDs to Supabase site UUIDs
 const projectToSiteMap: Record<string, string> = {

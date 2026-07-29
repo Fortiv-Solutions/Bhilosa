@@ -65,142 +65,21 @@ import BudgetCashFlowChart from '@/components/budget-cash-flow-chart';
 
 type TabType = 'overview' | 'billing' | 'budget' | 'payments' | 'outstanding' | 'analytics' | 'alerts';
 
-// Premium mock data fallback when Supabase is not configured
-const initialMockOverview: FinanceOverviewData = {
-  totalBilled: 124500000,
-  approvedSpend: 98000000,
-  paidSpend: 75000000,
-  outstandingSpend: 23000000,
-  billsCount: 18,
-  pendingBillsCount: 5,
-  alertsCount: 2,
-  budgetSummaries: [
-    { projectId: 'one-tapi', projectName: 'One Tapi Executive Tower', allocated: 250000000, committed: 45000000, spent: 38000000, available: 167000000 },
-    { projectId: 'aranya-3', projectName: 'Aranya Phase 3 Residence', allocated: 180000000, committed: 32000000, spent: 22000000, available: 126000000 },
-    { projectId: 'satva', projectName: 'Satva Commercial Center', allocated: 150000000, committed: 18000000, spent: 15000000, available: 117000000 },
-  ],
-  monthlySpend: [
-    { month: 'Jan 26', amount: 15000000 },
-    { month: 'Feb 26', amount: 18000000 },
-    { month: 'Mar 26', amount: 22000000 },
-    { month: 'Apr 26', amount: 28000000 },
-    { month: 'May 26', amount: 12000000 },
-    { month: 'Jun 26', amount: 15000000 },
-  ],
+const emptyOverview: FinanceOverviewData = {
+  totalBilled: 0,
+  approvedSpend: 0,
+  paidSpend: 0,
+  outstandingSpend: 0,
+  billsCount: 0,
+  pendingBillsCount: 0,
+  alertsCount: 0,
+  budgetSummaries: [],
+  monthlySpend: [],
 };
 
-const initialMockBills: VendorBillRow[] = [
-  {
-    id: 'bill-001',
-    project_id: 'one-tapi',
-    vendor_id: 'v1',
-    purchase_order_id: 'po-101',
-    grn_id: 'grn-201',
-    budget_allocation_id: 'all-301',
-    bill_number: 'B-26-8801',
-    bill_date: '2026-06-15',
-    subtotal_amount: 1250000,
-    tax_amount: 225000,
-    total_amount: 1475000,
-    duplicate_detected: false,
-    required_documents_received: true,
-    work_completion_verified: true,
-    qc_approval_verified: true,
-    payment_status: 'pending',
-    status: 'verified',
-    vendors: { id: 'v1', legal_name: 'Shreeji Steel Traders', display_name: 'Shreeji Steel', rating: 94 },
-    three_way_matches: [{ id: 'm-1', match_status: 'matched', po_value: 1475000, grn_value: 1475000, invoice_value: 1475000, remarks: 'PO, GRN, and Bill matched.' }],
-  },
-  {
-    id: 'bill-002',
-    project_id: 'aranya-3',
-    vendor_id: 'v2',
-    purchase_order_id: 'po-102',
-    grn_id: 'grn-202',
-    budget_allocation_id: 'all-302',
-    bill_number: 'B-26-8942',
-    bill_date: '2026-06-18',
-    subtotal_amount: 3200000,
-    tax_amount: 576000,
-    total_amount: 3776000,
-    duplicate_detected: true,
-    required_documents_received: true,
-    work_completion_verified: true,
-    qc_approval_verified: true,
-    payment_status: 'pending',
-    status: 'blocked',
-    vendors: { id: 'v2', legal_name: 'Supreme Concrete Ltd', display_name: 'Supreme Concrete', rating: 88 },
-    three_way_matches: [{ id: 'm-2', match_status: 'blocked_duplicate', po_value: 3776000, grn_value: 3776000, invoice_value: 3776000, remarks: 'Duplicate document hash detected.' }],
-  },
-  {
-    id: 'bill-003',
-    project_id: 'one-tapi',
-    vendor_id: 'v3',
-    purchase_order_id: 'po-103',
-    grn_id: null,
-    budget_allocation_id: 'all-301',
-    bill_number: 'B-26-9051',
-    bill_date: '2026-06-20',
-    subtotal_amount: 450000,
-    tax_amount: 81000,
-    total_amount: 531000,
-    duplicate_detected: false,
-    required_documents_received: false,
-    work_completion_verified: false,
-    qc_approval_verified: false,
-    payment_status: 'pending',
-    status: 'submitted',
-    vendors: { id: 'v3', legal_name: 'Alpha Electrical Services', display_name: 'Alpha Electricals', rating: 85 },
-    three_way_matches: [{ id: 'm-3', match_status: 'pending', po_value: 531000, grn_value: 0, invoice_value: 531000, remarks: 'GRN link missing.' }],
-  },
-  {
-    id: 'bill-004',
-    project_id: 'one-tapi',
-    vendor_id: 'v1',
-    purchase_order_id: 'po-101',
-    grn_id: 'grn-201',
-    budget_allocation_id: 'all-301',
-    bill_number: 'B-26-8711',
-    bill_date: '2026-05-10',
-    subtotal_amount: 8500000,
-    tax_amount: 1530000,
-    total_amount: 10030000,
-    duplicate_detected: false,
-    required_documents_received: true,
-    work_completion_verified: true,
-    qc_approval_verified: true,
-    payment_status: 'paid',
-    status: 'paid',
-    vendors: { id: 'v1', legal_name: 'Shreeji Steel Traders', display_name: 'Shreeji Steel', rating: 94 },
-    three_way_matches: [{ id: 'm-4', match_status: 'matched', po_value: 10030000, grn_value: 10030000, invoice_value: 10030000, remarks: 'PO, GRN, and Bill matched.' }],
-  },
-];
-
-const initialMockPayments: PaymentRow[] = [
-  {
-    id: 'pay-001',
-    project_id: 'one-tapi',
-    vendor_bill_id: 'bill-004',
-    payment_reference: 'TXN-99881023',
-    payment_date: '2026-05-18',
-    amount: 10030000,
-    status: 'paid',
-    payment_mode: 'NEFT Transfer',
-    remarks: 'Payment cleared by Bank.',
-    created_at: '2026-05-18T10:00:00Z',
-    vendor_bills: {
-      bill_number: 'B-26-8711',
-      total_amount: 10030000,
-      vendors: { display_name: 'Shreeji Steel', legal_name: 'Shreeji Steel Traders' },
-    },
-  },
-];
-
-const initialMockOutstanding: VendorOutstandingRow[] = [
-  { vendorId: 'v1', vendorName: 'Shreeji Steel Traders', totalBilled: 11505000, totalPaid: 10030000, totalOutstanding: 1475000, aging0to30: 1475000, aging31to60: 0, aging61to90: 0, aging90plus: 0 },
-  { vendorId: 'v2', vendorName: 'Supreme Concrete Ltd', totalBilled: 3776000, totalPaid: 0, totalOutstanding: 3776000, aging0to30: 3776000, aging31to60: 0, aging61to90: 0, aging90plus: 0 },
-  { vendorId: 'v3', vendorName: 'Alpha Electrical Services', totalBilled: 531000, totalPaid: 0, totalOutstanding: 531000, aging0to30: 531000, aging31to60: 0, aging61to90: 0, aging90plus: 0 },
-];
+const emptyBills: VendorBillRow[] = [];
+const emptyPayments: PaymentRow[] = [];
+const emptyOutstanding: VendorOutstandingRow[] = [];
 
 export default function FinanceDashboard() {
   const { projects, activeProjectId, activeRole } = useAppStore();
@@ -213,10 +92,10 @@ export default function FinanceDashboard() {
   const [activeTab, setActiveTab] = useState<TabType>('overview');
   
   // Loaded states
-  const [overview, setOverview] = useState<FinanceOverviewData>(initialMockOverview);
-  const [bills, setBills] = useState<VendorBillRow[]>(initialMockBills);
-  const [payments, setPayments] = useState<PaymentRow[]>(initialMockPayments);
-  const [outstanding, setOutstanding] = useState<VendorOutstandingRow[]>(initialMockOutstanding);
+  const [overview, setOverview] = useState<FinanceOverviewData>(emptyOverview);
+  const [bills, setBills] = useState<VendorBillRow[]>(emptyBills);
+  const [payments, setPayments] = useState<PaymentRow[]>(emptyPayments);
+  const [outstanding, setOutstanding] = useState<VendorOutstandingRow[]>(emptyOutstanding);
 
   // Budget Desk States
   const [budgetDashboard, setBudgetDashboard] = useState<any>({ summaries: [], allocations: [], ledger: [], alerts: [] });
@@ -318,43 +197,9 @@ export default function FinanceDashboard() {
       }),
     );
 
-    if (!liveMode) {
-      // Simulate state update in mock mode
-      const updatedBill: VendorBillRow = {
-        ...selectedBillForPay,
-        payment_status: 'paid',
-        status: 'paid',
-      };
-      setBills(bills.map((b) => (b.id === selectedBillForPay.id ? updatedBill : b)));
-      setPayments([
-        {
-          id: `pay-${Date.now()}`,
-          project_id: selectedBillForPay.project_id,
-          vendor_bill_id: selectedBillForPay.id,
-          payment_reference: payReference.trim(),
-          payment_date: payDate,
-          amount: selectedBillForPay.total_amount,
-          status: 'paid',
-          payment_mode: payMode,
-          remarks: payRemarks || null,
-          created_at: new Date().toISOString(),
-          vendor_bills: {
-            bill_number: selectedBillForPay.bill_number,
-            total_amount: selectedBillForPay.total_amount,
-            vendors: selectedBillForPay.vendors ?? null,
-          },
-        },
-        ...payments,
-      ]);
-      setSelectedBillForPay(null);
-      setPayReference('');
-      setPayRemarks('');
-      setMessage('Mock Payment Logged Successfully.');
-    } else {
-      setSelectedBillForPay(null);
-      setPayReference('');
-      setPayRemarks('');
-    }
+    setSelectedBillForPay(null);
+    setPayReference('');
+    setPayRemarks('');
   };
 
   // Create Budget Allocation
@@ -445,28 +290,26 @@ export default function FinanceDashboard() {
   }, [bills]);
 
   const activeAlerts = useMemo(() => {
-    return liveMode ? budgetDashboard.alerts : [];
-  }, [liveMode, budgetDashboard.alerts]);
+    return budgetDashboard.alerts;
+  }, [budgetDashboard.alerts]);
 
   // Analytics helper calculations
   const analyticsBudgetChartData = useMemo(() => {
-    const summaries = liveMode ? overview.budgetSummaries : initialMockOverview.budgetSummaries;
-    return summaries.map((s) => ({
+    return overview.budgetSummaries.map((s) => ({
       name: s.projectName.split(' ')[0],
       Allocated: s.allocated / 100000,
       Committed: s.committed / 100000,
       Spent: s.spent / 100000,
     }));
-  }, [liveMode, overview.budgetSummaries]);
+  }, [overview.budgetSummaries]);
 
   const vendorOutstandingChartData = useMemo(() => {
-    const APData = liveMode ? outstanding : initialMockOutstanding;
-    return APData.slice(0, 5).map((v) => ({
+    return outstanding.slice(0, 5).map((v) => ({
       name: v.vendorName.split(' ')[0],
       Outstanding: v.totalOutstanding / 100000,
       Paid: v.totalPaid / 100000,
     }));
-  }, [liveMode, outstanding]);
+  }, [outstanding]);
 
   const COLORS = ['#b68d40', '#059669', '#3b82f6', '#8b5cf6', '#ec4899'];
 
@@ -514,24 +357,16 @@ export default function FinanceDashboard() {
         </div>
       </header>
 
-      {/* Degradation status banner */}
-      {!liveMode && (
-        <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-3 text-xs font-semibold text-amber-800 flex items-center gap-2 dark:border-amber-900/30 dark:bg-amber-950/20 dark:text-amber-300">
-          <Info className="h-4 w-4 shrink-0" />
-          <span>Supabase is not configured. Running in Mock Mode; actions are verified locally but cannot be permanently persisted.</span>
-        </div>
-      )}
-
       {/* Message Notifications */}
       {message && <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-3 text-xs font-semibold text-emerald-800 dark:border-emerald-900/30 dark:bg-emerald-950/20 dark:text-emerald-300">{message}</div>}
       {error && <div className="rounded-xl border border-red-200 bg-red-50/70 p-3 text-xs font-semibold text-red-800 dark:border-red-900/30 dark:bg-red-950/20 dark:text-red-300">{error}</div>}
 
       {/* Stats Quick Metrics */}
       <section className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <MetricCard label="Total Billed" value={formatIndianCurrency(liveMode ? overview.totalBilled : initialMockOverview.totalBilled)} sub="Total invoices submitted" icon={ReceiptIndianRupee} color="purple" />
-        <MetricCard label="Approved Spend" value={formatIndianCurrency(liveMode ? overview.approvedSpend : initialMockOverview.approvedSpend)} sub="Verified & approved liabilities" icon={ShieldCheck} color="emerald" />
-        <MetricCard label="Payments Outflow" value={formatIndianCurrency(liveMode ? overview.paidSpend : initialMockOverview.paidSpend)} sub="Disbursed transaction volume" icon={CircleDollarSign} color="orange" />
-        <MetricCard label="Vendor Outstanding" value={formatIndianCurrency(liveMode ? overview.outstandingSpend : initialMockOverview.outstandingSpend)} sub="Accounts payable aging total" icon={AlertTriangle} color="danger" />
+        <MetricCard label="Total Billed" value={formatIndianCurrency(overview.totalBilled)} sub="Total invoices submitted" icon={ReceiptIndianRupee} color="purple" />
+        <MetricCard label="Approved Spend" value={formatIndianCurrency(overview.approvedSpend)} sub="Verified & approved liabilities" icon={ShieldCheck} color="emerald" />
+        <MetricCard label="Payments Outflow" value={formatIndianCurrency(overview.paidSpend)} sub="Disbursed transaction volume" icon={CircleDollarSign} color="orange" />
+        <MetricCard label="Vendor Outstanding" value={formatIndianCurrency(overview.outstandingSpend)} sub="Accounts payable aging total" icon={AlertTriangle} color="danger" />
       </section>
 
       {/* Cockpit Navigation Tabs */}
@@ -575,8 +410,8 @@ export default function FinanceDashboard() {
               </h2>
               <div className="h-[280px] w-full">
                 <BudgetCashFlowChart
-                  totalSpend={liveMode ? overview.paidSpend : initialMockOverview.paidSpend}
-                  ledger={liveMode ? budgetDashboard.ledger : []}
+                  totalSpend={overview.paidSpend}
+                  ledger={budgetDashboard.ledger}
                 />
               </div>
             </div>
@@ -598,7 +433,7 @@ export default function FinanceDashboard() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border/60">
-                    {(liveMode ? overview.budgetSummaries : initialMockOverview.budgetSummaries).map((item) => (
+                    {overview.budgetSummaries.map((item) => (
                       <tr key={item.projectId} className="hover:bg-muted/10">
                         <td className="py-2.5 font-semibold text-gray-900 dark:text-white">{item.projectName}</td>
                         <td className="py-2.5 text-right font-bold">{formatIndianCurrency(item.allocated)}</td>
@@ -622,7 +457,7 @@ export default function FinanceDashboard() {
                   <StatusRow label="Pending Verified Bills" count={bills.filter((b) => b.status === 'verified').length} color="amber" />
                   <StatusRow label="Submitted/Open Bills" count={bills.filter((b) => b.status === 'submitted').length} color="blue" />
                   <StatusRow label="Blocked Duplicate Checks" count={bills.filter((b) => b.duplicate_detected).length} color="danger" />
-                  <StatusRow label="Budget Alerts Raised" count={liveMode ? overview.alertsCount : initialMockOverview.alertsCount} color="warning" />
+                  <StatusRow label="Budget Alerts Raised" count={overview.alertsCount} color="warning" />
                 </div>
               </div>
               <div className="border-t border-border mt-4 pt-3 text-center">
@@ -1277,7 +1112,7 @@ export default function FinanceDashboard() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/60">
-                {(liveMode ? outstanding : initialMockOutstanding).map((row) => (
+                {outstanding.map((row) => (
                   <tr key={row.vendorId} className="hover:bg-muted/10">
                     <td className="py-3 font-semibold text-gray-900 dark:text-white">{row.vendorName}</td>
                     <td className="py-3 text-right font-bold text-gray-500">{formatIndianCurrency(row.totalBilled)}</td>

@@ -23,13 +23,6 @@ import type {
   DelayRecord,
   CorrectiveTask,
 } from '@/utils/mock-data';
-import {
-  initialMockVendors,
-  initialMockVendorQuotations,
-  initialMockVendorBills,
-  initialMockVendorPayments,
-  initialMockVendorPerformances
-} from '@/utils/mock-data';
 import type { Role } from '@/lib/roles';
 
 export type AIMessage = {
@@ -162,44 +155,30 @@ interface AppState {
 
 export const useAppStore = create<AppState>((set) => ({
   activeRole: 'UPPER_MANAGEMENT',
-  currentUser: {
-    id: 'mock-director-id',
-    name: 'Vikram Patel',
-    email: 'director@pramukh.com',
-    role: 'UPPER_MANAGEMENT',
-    avatar: '',
-  },
-  isLoggedIn: true,
+  currentUser: DEFAULT_USER,
+  isLoggedIn: false,
   projects: [],
   notifications: [],
-  aiConversations: [
-    {
-      id: 'portfolio-summary',
-      title: 'Portfolio progress summary',
-      time: 'Today',
-      messages: [
-        {
-          id: 'welcome-summary',
-          role: 'assistant',
-          content: 'I can help you review execution progress, compare budget exposure, inspect inventory risks, and prepare project updates across the Pramukh portfolio.',
-        },
-      ],
-    },
-  ],
-  activeProjectId: 'one-tapi',
+  aiConversations: [],
+  activeProjectId: '',
   theme: 'light',
   sidebarOpen: true,
   supabaseInitialized: false,
-  vendors: initialMockVendors,
-  vendorBills: initialMockVendorBills,
-  vendorQuotations: initialMockVendorQuotations,
-  vendorPayments: initialMockVendorPayments,
-  vendorPerformances: initialMockVendorPerformances,
+  vendors: [],
+  vendorBills: [],
+  vendorQuotations: [],
+  vendorPayments: [],
+  vendorPerformances: [],
 
   checkLogin: async () => {
     try {
       const profile = await getSessionProfile();
       if (!profile) {
+        set({
+          isLoggedIn: true,
+          activeRole: 'UPPER_MANAGEMENT',
+          currentUser: DEFAULT_USER,
+        });
         return;
       }
       const role = normalizeDatabaseRole(profile.role);
@@ -217,7 +196,11 @@ export const useAppStore = create<AppState>((set) => ({
         },
       });
     } catch {
-      // Keep the mock user logged in on error
+      set({
+        isLoggedIn: true,
+        activeRole: 'UPPER_MANAGEMENT',
+        currentUser: DEFAULT_USER,
+      });
     }
   },
 

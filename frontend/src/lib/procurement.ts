@@ -1408,8 +1408,18 @@ export async function generatePurchaseOrderPdf(po: PurchaseOrderRow): Promise<Mu
       method: 'POST',
       headers,
     });
-    const payload = (await response.json()) as { error?: string } & Partial<PurchaseOrderPdfResult>;
-    if (!response.ok) throw new Error(payload.error || 'Unable to generate PO PDF.');
+    if (!response.ok) {
+      let errText = 'Unable to generate PO PDF.';
+      try {
+        const errJson = await response.json();
+        if (errJson.error) errText = errJson.error;
+      } catch {
+        const rawText = await response.text().catch(() => '');
+        if (rawText) errText = `Server error (${response.status}): ${rawText.slice(0, 100)}`;
+      }
+      throw new Error(errText);
+    }
+    const payload = (await response.json()) as Partial<PurchaseOrderPdfResult>;
     if (!payload.purchaseOrderId || !payload.storagePath || !payload.signedUrl) {
       throw new Error('PO PDF generation response was incomplete.');
     }
@@ -1439,8 +1449,18 @@ export async function generatePurchaseRequisitionPdf(pr: PurchaseRequisitionRow)
       method: 'POST',
       headers,
     });
-    const payload = (await response.json()) as { error?: string } & Partial<PurchaseRequisitionPdfResult>;
-    if (!response.ok) throw new Error(payload.error || 'Unable to generate PR PDF.');
+    if (!response.ok) {
+      let errText = 'Unable to generate PR PDF.';
+      try {
+        const errJson = await response.json();
+        if (errJson.error) errText = errJson.error;
+      } catch {
+        const rawText = await response.text().catch(() => '');
+        if (rawText) errText = `Server error (${response.status}): ${rawText.slice(0, 100)}`;
+      }
+      throw new Error(errText);
+    }
+    const payload = (await response.json()) as Partial<PurchaseRequisitionPdfResult>;
     if (!payload.purchaseRequisitionId || !payload.storagePath || !payload.signedUrl) {
       throw new Error('PR PDF generation response was incomplete.');
     }

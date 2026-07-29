@@ -307,17 +307,6 @@ export default function LoginPage() {
               )}
             </button>
 
-            {/* Mock Login / Bypass Button */}
-            <button
-              type="button"
-              onClick={() => {
-                login(email || 'demo@pramukh.com', 'PROJECT_MANAGER');
-                router.push('/dashboard');
-              }}
-              className="w-full bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-white font-extrabold text-[10px] uppercase tracking-widest rounded-xl py-3.5 transition-all active:scale-[0.98] cursor-pointer mt-1.5 flex items-center justify-center gap-2"
-            >
-              <span>Demo Login (Mock Data)</span>
-            </button>
           </form>
         </div>
 
