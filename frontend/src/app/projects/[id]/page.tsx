@@ -5357,18 +5357,37 @@ Rules:
                   );
                 })() : operationsSubTab === 'issues' ? (() => {
                   // Primary: real issues from delay_events table (submitted via mobile app)
-                  const dbIssues = delayEvents.map((d: any) => ({
-                    trade: d.reason_code || 'Site Issue',
-                    location: d.responsible_team || 'Site Field',
-                    reason: d.reason_details || d.reason_code || 'Stoppage reported',
-                    planned: d.planned_date
-                      ? new Date(d.planned_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
-                      : new Date(d.created_at || Date.now()).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
-                    status: d.status || 'open',
-                    corrective_action: d.corrective_action || '',
-                    severity: d.impact_on_timeline || 'Medium',
-                    id: d.id,
-                  }));
+                  const dbIssues = delayEvents.map((d: any) => {
+                    let parsedDesc = d.reason_details || d.reason_code || '';
+                    if (typeof d.reason_details === 'string') {
+                      const descMatch = d.reason_details.match(/Description:\s*(.*)/s);
+                      if (descMatch && descMatch[1].trim()) {
+                        parsedDesc = descMatch[1].trim();
+                      } else {
+                        // Strip raw metadata lines for cleaner preview
+                        parsedDesc = d.reason_details
+                          .replace(/Location:.*$/gm, '')
+                          .replace(/Agency:.*$/gm, '')
+                          .replace(/Severity:.*$/gm, '')
+                          .trim();
+                      }
+                    }
+
+                    return {
+                      trade: d.reason_code || 'Site Issue',
+                      location: d.responsible_team || 'Site Field',
+                      reason: parsedDesc || d.reason_code || 'Stoppage reported',
+                      full_details: d.reason_details || '',
+                      planned: d.planned_date
+                        ? new Date(d.planned_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+                        : new Date(d.created_at || Date.now()).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
+                      status: d.status || 'open',
+                      corrective_action: d.corrective_action || '',
+                      severity: d.impact_on_timeline || 'Medium',
+                      id: d.id,
+                      raw: d
+                    };
+                  });
 
                   // Fallback: AI-generated delays + DPR-embedded issues
                   const rawDelays = clientDPRReport?.delays || [];
@@ -5377,6 +5396,7 @@ Rules:
                     trade: iss.issue_description || 'Site Issue',
                     location: dpr.created_by_name || 'Site Field',
                     reason: iss.issue_description || 'Stoppage reported',
+                    full_details: iss.issue_description || '',
                     planned: dpr.date || 'Today',
                     status: 'open',
                     corrective_action: '',
@@ -5416,33 +5436,50 @@ Rules:
                                 setIssueCorrectiveActionInput(del.corrective_action || '');
                                 setIsEditingIssueModal(false);
                               }}
-                              className="bg-white dark:bg-gray-900 p-4 rounded-2xl border border-rose-500/30 shadow-xs space-y-3 cursor-pointer hover:border-rose-500 hover:shadow-lg hover:shadow-rose-500/10 transition-all duration-200 group relative"
+                              className="bg-white dark:bg-gray-900 p-4 rounded-2xl border border-rose-500/30 shadow-xs space-y-3 cursor-pointer hover:border-rose-500 hover:shadow-lg hover:shadow-rose-500/10 transition-all duration-200 group relative flex flex-col justify-between"
                             >
-                              <div className="flex justify-between items-start">
-                                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
-                                  del.status === 'resolved'
-                                    ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20'
-                                    : 'bg-rose-500/10 text-rose-600 border-rose-500/20'
-                                }`}>
-                                  {del.status === 'resolved' ? '✅ Resolved' : '🔴 Open Issue'}
-                                </span>
-                                <span className="text-[10px] text-muted-foreground font-semibold">{del.location}</span>
+                              <div className="space-y-3">
+                                <div className="flex justify-between items-start">
+                                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                                    del.status === 'resolved'
+                                      ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20'
+                                      : 'bg-rose-500/10 text-rose-600 border-rose-500/20'
+                                  }`}>
+                                    {del.status === 'resolved' ? '✅ Resolved' : '🔴 Open Issue'}
+                                  </span>
+                                  <span className="text-[10px] text-muted-foreground font-semibold">{del.location}</span>
+                                </div>
+                                <h4 className="font-bold text-sm text-foreground group-hover:text-rose-600 transition-colors flex items-center justify-between">
+                                  <span>{del.trade}</span>
+                                  <Eye className="w-4 h-4 text-muted-foreground group-hover:text-rose-500 transition-colors" />
+                                </h4>
+                                <p className="text-xs text-muted-foreground leading-relaxed line-clamp-3">{del.reason}</p>
+                                {del.corrective_action && (
+                                  <div className="text-[11px] bg-amber-500/10 text-amber-700 dark:text-amber-400 p-2 rounded-lg border border-amber-500/20 font-medium">
+                                    🔧 Action: {del.corrective_action}
+                                  </div>
+                                )}
                               </div>
-                              <h4 className="font-bold text-sm text-foreground group-hover:text-rose-600 transition-colors flex items-center justify-between">
-                                <span>{del.trade}</span>
-                                <Eye className="w-3.5 h-3.5 text-muted-foreground group-hover:text-rose-500 transition-colors" />
-                              </h4>
-                              <p className="text-xs text-muted-foreground leading-relaxed line-clamp-3">{del.reason || del.actual}</p>
-                              {del.corrective_action && (
-                                <p className="text-[11px] bg-amber-500/10 text-amber-700 dark:text-amber-400 p-2 rounded-lg border border-amber-500/20">
-                                  🔧 Action: {del.corrective_action}
-                                </p>
-                              )}
-                              <div className="pt-2 border-t border-border/50 flex items-center justify-between text-xs">
-                                <span className="text-muted-foreground font-semibold">Target: <strong className="text-foreground">{del.planned}</strong></span>
-                                <span className={`font-bold ${del.severity === 'High' || del.severity === 'Critical' ? 'text-rose-600' : 'text-amber-500'}`}>
-                                  {del.severity || 'Medium'} Impact
-                                </span>
+
+                              <div className="pt-3 space-y-2 border-t border-border/50">
+                                <div className="flex items-center justify-between text-xs">
+                                  <span className="text-muted-foreground font-semibold">Target: <strong className="text-foreground">{del.planned}</strong></span>
+                                  <span className={`font-bold ${del.severity === 'High' || del.severity === 'Critical' ? 'text-rose-600' : 'text-amber-500'}`}>
+                                    {del.severity || 'Medium'} Impact
+                                  </span>
+                                </div>
+
+                                <button 
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedIssueModal(del);
+                                    setIssueCorrectiveActionInput(del.corrective_action || '');
+                                    setIsEditingIssueModal(false);
+                                  }}
+                                  className="w-full py-1.5 px-3 bg-rose-500/10 group-hover:bg-rose-600 text-rose-600 group-hover:text-white rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 border border-rose-500/20 cursor-pointer shadow-2xs"
+                                >
+                                  <Eye className="w-3.5 h-3.5" /> Inspect & Edit Details
+                                </button>
                               </div>
                             </div>
                           ))
@@ -10192,7 +10229,7 @@ Rules:
                 Issue Description & Cause
               </h4>
               <div className="p-4 bg-rose-500/5 border border-rose-500/20 rounded-2xl text-xs text-foreground leading-relaxed whitespace-pre-wrap font-medium">
-                {selectedIssueModal.reason || selectedIssueModal.raw?.reason_details || 'No detailed description provided.'}
+                {selectedIssueModal.full_details || selectedIssueModal.reason || selectedIssueModal.raw?.reason_details || 'No detailed description provided.'}
               </div>
             </div>
 
