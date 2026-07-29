@@ -1,4 +1,5 @@
 import { supabase } from '@/utils/supabase-client';
+import { isLiveSupabase } from '@/lib/erp/supabase-modules';
 
 export async function getPendingApprovals(projectId?: string) {
   try {

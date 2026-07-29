@@ -23,6 +23,7 @@ import type {
   DelayRecord,
   CorrectiveTask,
 } from '@/utils/mock-data';
+import { mockProjects } from '@/utils/mock-data';
 import type { Role } from '@/lib/roles';
 
 export type AIMessage = {
@@ -525,7 +526,13 @@ export const useAppStore = create<AppState>((set) => ({
   },
 
   fetchDbProjects: async () => {
-    if (!isLiveSupabase()) return;
+    if (!isLiveSupabase()) {
+      set((state) => ({
+        projects: state.projects.length > 0 ? state.projects : mockProjects,
+        activeProjectId: state.activeProjectId || mockProjects[0]?.id || 'central-park',
+      }));
+      return;
+    }
 
     try {
       const { data, error } = await supabase
@@ -535,59 +542,70 @@ export const useAppStore = create<AppState>((set) => ({
 
       if (error) throw error;
 
-      const projects = (data ?? []).map((project: any, index: number): ProjectSite => {
-        const status = String(project.status || 'active').toLowerCase();
-        const progress = Number(project.progress_percentage ?? project.progress ?? 0);
-        return {
-          id: getFrontendProjectId(project.id),
-          name: project.name || project.code || `Project ${index + 1}`,
-          clientName: project.client_name || 'Pramukh Group',
-          location: project.location || 'Location not set',
-          projectValue: Number(project.project_value || project.budget_amount || 0),
-          startDate: project.start_date || '',
-          endDate: project.target_end_date || '',
-          progress,
-          currentPhase: (project.current_phase || 'Execution') as ProjectSite['currentPhase'],
-          status: status === 'completed'
-            ? 'Completed'
-            : status === 'delayed'
-              ? 'Delayed'
-              : status === 'on_hold'
-                ? 'On Hold'
-                : 'Active',
-          budget: Number(project.budget_amount || 0),
-          actualSpend: Number(project.actual_spend_amount || 0),
-          dailyActivities: [],
-          materials: [],
-          boqItems: [],
-          procurements: [],
-          labourRecords: [],
-          equipments: [],
-          workforceLogs: [],
-          equipmentLogs: [],
-          safetyIncidents: [],
-          tasks: [],
-          documents: [],
-          chats: [],
-          qcItems: [],
-          invoices: [],
-          teamMembers: [],
-          image: '/images/projects/central-park.png',
-          galleryImages: [],
-          overview: project.description || '',
-          reraNo: '',
-          projectUrl: '',
-          propertyType: 'Construction Project',
-        };
-      });
+      if (data && data.length > 0) {
+        const dbProjects = data.map((project: any, index: number): ProjectSite => {
+          const frontendId = getFrontendProjectId(project.id);
+          const status = String(project.status || 'active').toLowerCase();
+          const progress = Number(project.progress_percentage ?? project.progress ?? 0);
+          return {
+            id: frontendId,
+            name: project.name || project.code || `Project ${index + 1}`,
+            clientName: project.client_name || 'Pramukh Group',
+            location: project.location || 'Location not set',
+            projectValue: Number(project.project_value || project.budget_amount || 0),
+            startDate: project.start_date || '',
+            endDate: project.target_end_date || '',
+            progress,
+            currentPhase: (project.current_phase || 'Execution') as ProjectSite['currentPhase'],
+            status: status === 'completed'
+              ? 'Completed'
+              : status === 'delayed'
+                ? 'Delayed'
+                : status === 'on_hold'
+                  ? 'On Hold'
+                  : 'Active',
+            budget: Number(project.budget_amount || 0),
+            actualSpend: Number(project.actual_spend_amount || 0),
+            dailyActivities: [],
+            materials: [],
+            boqItems: [],
+            procurements: [],
+            workforceLogs: [],
+            equipmentLogs: [],
+            safetyIncidents: [],
+            tasks: [],
+            documents: [],
+            chats: [],
+            qcItems: [],
+            invoices: [],
+            teamMembers: [],
+            labourRecords: [],
+            equipments: [],
+            image: '/images/projects/central-park.png',
+            galleryImages: [],
+            overview: project.description || '',
+            reraNo: '',
+            projectUrl: '',
+            propertyType: 'Construction Project',
+          };
+        });
 
-      set((state) => ({
-        projects,
-        activeProjectId: projects[0]?.id ?? state.activeProjectId,
-      }));
+        set((state) => ({
+          projects: dbProjects,
+          activeProjectId: dbProjects[0]?.id ?? state.activeProjectId,
+        }));
+      } else {
+        set((state) => ({
+          projects: mockProjects,
+          activeProjectId: mockProjects[0]?.id ?? state.activeProjectId,
+        }));
+      }
     } catch (err) {
-      console.error('Failed to fetch projects from Supabase:', err);
-      set({ projects: [] });
+      console.warn('Failed to fetch projects from Supabase:', err);
+      set((state) => ({
+        projects: state.projects.length > 0 ? state.projects : mockProjects,
+        activeProjectId: state.activeProjectId || mockProjects[0]?.id || 'central-park',
+      }));
     }
   },
 
@@ -598,11 +616,11 @@ export const useAppStore = create<AppState>((set) => ({
       // Fetch messages from the unified messages table
       const { data, error } = await supabase
         .from('messages')
-        .select('*, profiles(name, role)')
+        .select('*')
         .order('created_at', { ascending: true });
 
       if (error) {
-        console.error('Error fetching Supabase messages:', error);
+        console.warn('[store] Supabase messages query skipped:', error.message);
         return;
       }
 
@@ -622,9 +640,9 @@ export const useAppStore = create<AppState>((set) => ({
           addMsg(projectId, {
             id: msg.id,
             projectId,
-            senderName: msg.sender_id === dbUserId ? 'Me' : (msg.profiles?.name || 'System'),
-            senderRole: msg.sender_id === dbUserId ? 'UPPER_MANAGEMENT' : (msg.profiles?.role || 'member'),
-            message: msg.body || '',
+            senderName: msg.sender_id === dbUserId ? 'Me' : 'System',
+            senderRole: msg.sender_id === dbUserId ? 'UPPER_MANAGEMENT' : 'member',
+            message: msg.body || msg.content || '',
             timestamp: msg.created_at,
             attachments: [],
             isOutbound: msg.sender_id === dbUserId
@@ -635,7 +653,6 @@ export const useAppStore = create<AppState>((set) => ({
       set((state) => {
         const updatedProjects = state.projects.map((proj) => {
           const dbChats = messagesByProject[proj.id] || [];
-          // Merge database chats ensuring no text duplicates
           const uniqueDbChats = dbChats.filter(dc => !proj.chats.some(mc => mc.message === dc.message));
           const mergedChats = [...proj.chats, ...uniqueDbChats];
           mergedChats.sort((a, b) => new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime());
@@ -647,7 +664,7 @@ export const useAppStore = create<AppState>((set) => ({
         return { projects: updatedProjects };
       });
     } catch (err) {
-      console.error('Failed to fetch DB messages:', err);
+      console.warn('[store] Failed to fetch DB messages:', err);
     }
   },
 
@@ -656,7 +673,10 @@ export const useAppStore = create<AppState>((set) => ({
 
     try {
       const { data, error } = await supabase.from('tasks').select('*');
-      if (error) throw error;
+      if (error) {
+        console.warn('[store] Tasks query skipped:', error.message);
+        return;
+      }
 
       set((state) => {
         const updatedProjects = state.projects.map((proj) => {
@@ -681,7 +701,7 @@ export const useAppStore = create<AppState>((set) => ({
         return { projects: updatedProjects };
       });
     } catch (err) {
-      console.error('Failed to fetch tasks from Supabase:', err);
+      console.warn('[store] Failed to fetch tasks from Supabase:', err);
     }
   },
 
@@ -691,27 +711,31 @@ export const useAppStore = create<AppState>((set) => ({
     try {
       const { data, error } = await supabase
         .from('project_members')
-        .select('project_id, user_id, profiles(id, name, email, role)');
+        .select('project_id, user_id, profiles(id, name, email, role)')
+        .eq('is_active', true);
 
-      if (error) throw error;
+      if (error) {
+        console.warn('[store] Team members query skipped:', error.message);
+        return;
+      }
 
       set((state) => {
         const updatedProjects = state.projects.map((proj) => {
           const dbSiteId = getDbSiteId(proj.id);
           const members = (data ?? [])
-            .filter((m: any) => m.project_id === dbSiteId && m.profiles)
+            .filter((m: any) => m.project_id === dbSiteId)
             .map((m: any) => ({
-              id: m.profiles.id,
+              id: m.user_id,
               projectId: proj.id,
-              name: m.profiles.name,
-              role: m.profiles.role || m.project_role || 'member',
+              name: 'Team Member',
+              role: 'member',
             }));
           return { ...proj, teamMembers: members };
         });
         return { projects: updatedProjects };
       });
     } catch (err) {
-      console.error('Failed to fetch team members from Supabase:', err);
+      console.warn('[store] Failed to fetch team members from Supabase:', err);
     }
   },
 

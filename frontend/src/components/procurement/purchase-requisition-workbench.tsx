@@ -1,5 +1,5 @@
 import React from 'react';
-import { FileDown, Eye, UserPlus, Truck, FileText, CheckCircle2 } from 'lucide-react';
+import { FileDown, Eye, UserPlus, Truck, FileText, CheckCircle2, Pencil } from 'lucide-react';
 import { 
   PurchaseRequisitionRow, 
   EntityAttachmentRow,
@@ -25,6 +25,7 @@ export function PurchaseRequisitionWorkbench({
   onPdf,
   onOpenPdf,
   onGeneratePo,
+  onEdit,
 }: {
   rows: PurchaseRequisitionRow[];
   attachments: EntityAttachmentRow[];
@@ -40,6 +41,7 @@ export function PurchaseRequisitionWorkbench({
   onPdf: (row: PurchaseRequisitionRow) => void;
   onOpenPdf: (row: PurchaseRequisitionRow) => void;
   onGeneratePo: (row: PurchaseRequisitionRow) => void;
+  onEdit?: (prId: string) => void;
 }) {
   if (rows.length === 0) return <EmptyState message="No purchase requisitions found." />;
   
@@ -213,6 +215,12 @@ export function PurchaseRequisitionWorkbench({
           {/* Actions */}
           <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
             <div className="flex gap-2">
+              {onEdit && (
+                <button type="button" onClick={() => onEdit(selectedRow.id)} className="inline-flex items-center gap-1.5 rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-xs font-bold text-primary hover:bg-primary/10">
+                  <Pencil className="h-4 w-4" />
+                  Open PR
+                </button>
+              )}
               <button type="button" onClick={() => onPdf(selectedRow)} className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-xs font-bold hover:bg-muted">
                 <FileDown className="h-4 w-4" />
                 {attachments.some(a => a.entity_id === selectedRow.id) ? 'Regenerate PDF' : 'Generate PDF'}

@@ -1,4 +1,5 @@
 'use client';
+// Refreshed PO form & 5-tab system
 
 import { FormEvent, useCallback, useEffect, useState } from 'react';
 import {
@@ -23,6 +24,7 @@ import {
   Plus,
 } from 'lucide-react';
 import { isLiveSupabase } from '@/lib/erp/supabase-modules';
+import { supabase } from '@/utils/supabase-client';
 import {
   approveVendorSelection,
   assignPrToCurrentUser,
@@ -37,6 +39,10 @@ import {
   generatePurchaseOrderPdf,
   generatePurchaseOrder,
   generatePurchaseRequisitionPdf,
+  generateGoodsReceiptNotePdf,
+  generateMaterialRequestPdf,
+  generateRfqPdf,
+  generatePurchaseBillPdf,
   listProcurementDashboard,
   listProcurementProjects,
   recordQuotation,
@@ -47,6 +53,7 @@ import {
   submitGrn,
   postGrnToInventory,
   updateDeliveryTrackingStatus,
+  updateFullPurchaseOrder,
   approvePurchaseOrder,
   rejectPurchaseOrder,
   sendPurchaseOrderToVendor,
@@ -55,6 +62,7 @@ import {
   type ProcurementDashboardData,
   type ProcurementProjectOption,
   type PurchaseOrderRow,
+  type ProcurementLineRow,
   type PurchaseRequisitionRow,
   type QuotationRow,
   type GeneratePurchaseOrderInput,
@@ -64,16 +72,20 @@ import {
   type InventorySnapshotRow,
 } from '@/lib/procurement';
 import { formatCurrency, statusLabel, StatusBadge, EmptyState, Panel } from '@/components/procurement/shared';
-import { PurchaseRequisitionWorkbench } from '@/components/procurement/purchase-requisition-workbench';
+import { PurchaseRequisitionWorkspace } from '@/components/procurement/purchase-requisition/purchase-requisition-workspace';
+import { RFQWorkspace } from '@/components/procurement/rfq/rfq-workspace';
 import { RfqWorkbench } from '@/components/procurement/rfq-workbench';
 import MaterialRequestWorkQueue from '@/components/procurement/material-request-work-queue';
 import { PurchaseOrderWorkbench } from '@/components/procurement/purchase-order-workbench';
 import { DeliveryTrackingWorkbench } from '@/components/procurement/delivery-tracking-workbench';
 import { GrnWorkbench } from '@/components/procurement/grn-workbench';
 import { InventoryWorkbench } from '@/components/procurement/inventory-workbench';
+import { POWorkspace } from '@/components/procurement/po/po-workspace';
+import { GrnWorkspace } from '@/components/procurement/grn/grn-workspace';
+import { BillsWorkspace } from '@/components/procurement/bills/bills-workspace';
 import { useAppStore } from '@/store/use-app-store';
 
-type TabId = 'requests' | 'requisitions' | 'rfq' | 'orders' | 'grn' | 'billing' | 'inventory';
+type TabId = 'requests' | 'requisitions' | 'rfq' | 'orders' | 'grn' | 'billing';
 
 const tabs: { id: TabId; label: string; icon: typeof ClipboardList }[] = [
   { id: 'requests', label: 'MR', icon: ClipboardList },
@@ -82,7 +94,6 @@ const tabs: { id: TabId; label: string; icon: typeof ClipboardList }[] = [
   { id: 'orders', label: 'PO', icon: Truck },
   { id: 'grn', label: 'GRN', icon: PackageCheck },
   { id: 'billing', label: 'Bills', icon: ReceiptIndianRupee },
-  { id: 'inventory', label: 'Inventory', icon: Warehouse },
 ];
 
 const emptyData: ProcurementDashboardData = {
@@ -110,7 +121,7 @@ export default function ProcurementPage() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [selectedProjectId, setSelectedProjectId] = useState(activeProjectId || projects[0]?.id || '');
+  const [selectedProjectId, setSelectedProjectId] = useState('all');
   const [mrTitle, setMrTitle] = useState('Cement and steel requirement for upcoming slab');
   const [mrItem, setMrItem] = useState('OPC Cement');
   const [mrQuantity, setMrQuantity] = useState(500);
@@ -216,7 +227,6 @@ export default function ProcurementPage() {
   const selectedProject = projectOptions.find((project) => project.id === selectedProjectId) ?? projectOptions[0];
 
   const refresh = useCallback(async () => {
-    if (!liveMode) return;
     setLoading(true);
     setError(null);
     try {
@@ -226,7 +236,7 @@ export default function ProcurementPage() {
     } finally {
       setLoading(false);
     }
-  }, [liveMode, selectedProjectId]);
+  }, [selectedProjectId]);
 
   useEffect(() => {
     if (!liveMode) return;
@@ -253,6 +263,51 @@ export default function ProcurementPage() {
     return () => window.clearTimeout(timer);
   }, [refresh]);
 
+  // Real-time Supabase Subscription for instant Sync with Mobile App & Submissions
+  useEffect(() => {
+    if (!liveMode) return;
+    const client = supabase;
+    if (!client) return;
+
+    const channel = client
+      .channel('procurement-realtime-sync')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'material_requests' }, (payload) => {
+        if (payload.eventType === 'INSERT') {
+          setMessage(`📱 New Material Request #${(payload.new as { mr_number?: string }).mr_number || ''} submitted from Mobile App!`);
+        }
+        void refresh();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'purchase_requisitions' }, (payload) => {
+        if (payload.eventType === 'INSERT') {
+          setMessage(`⚡ Auto-Draft Purchase Requisition #${(payload.new as { pr_number?: string }).pr_number || ''} created.`);
+        }
+        void refresh();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'purchase_orders' }, (payload) => {
+        if (payload.eventType === 'INSERT') {
+          setMessage(`📦 Purchase Order #${(payload.new as { po_number?: string }).po_number || ''} created.`);
+        }
+        void refresh();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'goods_receipt_notes' }, (payload) => {
+        if (payload.eventType === 'INSERT') {
+          setMessage(`🚚 New GRN #${(payload.new as { grn_number?: string }).grn_number || ''} submitted from site.`);
+        }
+        void refresh();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'vendor_bills' }, (payload) => {
+        if (payload.eventType === 'INSERT') {
+          setMessage(`🧾 Vendor Bill #${(payload.new as { bill_number?: string }).bill_number || ''} generated.`);
+        }
+        void refresh();
+      })
+      .subscribe();
+
+    return () => {
+      void client.removeChannel(channel);
+    };
+  }, [liveMode, refresh]);
+
   async function runAction(label: string, action: () => Promise<{ error: Error | null }>) {
     setError(null);
     setMessage(null);
@@ -263,6 +318,24 @@ export default function ProcurementPage() {
     }
     setMessage(label);
     await refresh();
+  }
+
+  /**
+   * Shared "Print Report" handler for the report-format document endpoints:
+   * generates the PDF server-side, stores it, then opens the signed URL.
+   */
+  function handleReportPdf(
+    label: string,
+    generate: () => Promise<{ data: { signedUrl: string } | null; error: Error | null }>,
+  ) {
+    void (async () => {
+      setError(null);
+      setMessage(null);
+      const res = await generate();
+      if (res.error) { setError(res.error.message); return; }
+      setMessage(`${label} report generated.`);
+      if (res.data?.signedUrl) window.open(res.data.signedUrl, '_blank', 'noopener,noreferrer');
+    })();
   }
 
   async function handlePoPdf(po: PurchaseOrderRow) {
@@ -365,23 +438,62 @@ export default function ProcurementPage() {
     updatePrLinesAndRecalculate(updated);
   };
 
-  function openPrModal(mr: MaterialRequestRow) {
-    const lines = mr.material_request_lines || [];
-    const initialLines = lines.map(line => ({
-      item_description: line.item_description,
-      quantity: Number(line.quantity || 0),
-      estimated_rate: Number(line.estimated_rate || 0),
+  async function openPrModal(mr: MaterialRequestRow, approvedLines?: ProcurementLineRow[]) {
+    const allLines = mr.material_request_lines || [];
+    const targetLines = approvedLines && approvedLines.length > 0 
+      ? approvedLines 
+      : allLines.filter((l) => l.line_status === 'approved_for_pr').length > 0 
+        ? allLines.filter((l) => l.line_status === 'approved_for_pr')
+        : allLines;
+
+    const initialLines = targetLines.map((line, idx) => ({
+      source_mr_id: mr.id,
+      source_mr_number: mr.mr_number,
+      mr_line_number: idx + 1,
+      material_request_line_id: line.id || null,
+      resource_type: 'material',
       item_id: line.item_id || null,
+      item_code: line.item_code || `MAT-${String(idx + 1).padStart(3, '0')}`,
+      item_group: line.item_group || 'General Construction',
+      item_description: line.item_description,
+      specification: line.specification || line.item_specification || '',
+      unit: line.unit || 'nos',
+      quantity: Number(line.quantity || 0),
+      ind_qty: Number(line.quantity || 0),
+      est_qty: Number(line.quantity || 0),
+      approved_mr_qty: Number(line.quantity || 0),
+      estimated_rate: Number(line.estimated_rate || 0),
+      line_total: Number(line.quantity || 0) * Number(line.estimated_rate || 0),
+      required_date: line.required_date || mr.required_date,
+      preferred_brand: line.preferred_brand || line.item_brand || '',
+      suggested_vendor: line.suggested_vendor || '',
+      delivery_location: line.delivery_location || mr.projects?.name || 'Site Store',
+      priority: mr.priority,
+      stock_audit: (line.project_stock ?? 0) > 0 ? 'Stock Available' : 'Stock Shortage',
+      project_and_block: mr.projects?.name ?? mr.project_id,
+      work_activity: mr.work_activity ?? 'General Site Activity',
+      activity_code: mr.activity_code ?? 'ACT-001',
+      raised_by: mr.profiles?.name ?? mr.raised_by ?? 'Site Engineer',
+      submitted_at: mr.submitted_at ?? mr.created_at,
     }));
-    setPrLines(initialLines);
+    
     const estimatedCost = initialLines.reduce((sum, line) => sum + line.quantity * line.estimated_rate, 0);
-    setSelectedMrForPr(mr);
-    setPrTitle(mr.justification || mr.mr_number);
-    setPrRequiredDate(mr.required_date);
-    setPrFinanceRequired(estimatedCost >= 500000);
-    setPrApprovalStage(estimatedCost >= 500000 ? 'upper_management' : 'pr_team');
-    setPrRemarks('');
-    setPrModalOpen(true);
+    const financeReq = estimatedCost >= 500000;
+    const stage = financeReq ? 'upper_management' : 'pr_team';
+    const title = mr.justification || mr.mr_number;
+
+    await runAction(`⚡ Draft PR created in PR section & ${mr.mr_number} converted to PR!`, () => convertMaterialRequestToPr({
+      materialRequest: mr,
+      title,
+      requiredDate: mr.required_date,
+      financeRequired: financeReq,
+      approvalStage: stage,
+      remarks: 'Auto-draft generated from Approved MR in real-time.',
+      lines: initialLines,
+    }));
+
+    setSelectedMrForPr(null);
+    setActiveTab('requests');
   }
 
   async function handleGeneratePrSubmit(e: React.FormEvent) {
@@ -572,27 +684,50 @@ export default function ProcurementPage() {
     setRecommendModalOpen(false);
   }
 
-  function openPoModal(pr: PurchaseRequisitionRow, quotation: QuotationRow, vendorSelectionId?: string | null) {
+  function openPoModal(pr: PurchaseRequisitionRow, quotation?: QuotationRow | null, vendorSelectionId?: string | null) {
     const selection = vendorSelectionId
       ? data.vendorSelections.find((candidate) => candidate.id === vendorSelectionId)
       : getSelectionForPr(pr.id);
-    if (!selection || selection.status !== 'approved') {
-      setError('PO can be generated only after upper management approves vendor finalization.');
-      return;
-    }
+
     setSelectedPrForPo(pr);
-    setSelectedQuotationForPo(quotation);
-    setSelectedVendorSelectionIdForPo(selection.id);
+
+    // Resolve to a REAL vendor id. RFQ Direct-PO passes a synthetic quotation whose
+    // vendor_id is a placeholder ('v-1' / a mock-supplier id) that is not a real
+    // vendors.id — inserting it would fail the purchase_orders.vendor_id FK. Trust the
+    // requested vendor only if it exists in the loaded vendors; otherwise fall back.
+    const requestedVendorId = quotation?.vendor_id || selection?.selected_vendor_id;
+    const isRealVendor = !!requestedVendorId && data.vendors.some((v) => v.id === requestedVendorId);
+    const defaultVendorId = (isRealVendor ? requestedVendorId : data.vendors[0]?.id) || '';
+
+    const activeQuotation: QuotationRow = quotation
+      ? { ...quotation, vendor_id: defaultVendorId }
+      : {
+          id: `quote-direct-${Date.now()}`,
+          rfq_id: '',
+          vendor_id: defaultVendorId,
+          quotation_number: 'DIRECT-PO',
+          quotation_date: new Date().toISOString().split('T')[0],
+          subtotal_amount: Number(pr.subtotal_amount || pr.total_amount || 0),
+          tax_amount: 0,
+          total_amount: Number(pr.subtotal_amount || pr.total_amount || 0),
+          lead_time_days: 7,
+          payment_terms: '30 days from accepted GRN',
+          status: 'submitted',
+          created_at: new Date().toISOString(),
+        };
+
+    setSelectedQuotationForPo(activeQuotation);
+    setSelectedVendorSelectionIdForPo(selection?.id || null);
     setPoDeliveryLocation('Project site store');
     setPoDeliveryDate(pr.required_date || new Date().toISOString().split('T')[0]);
-    setPoPaymentTerms(quotation.payment_terms || '30 days from accepted GRN');
+    setPoPaymentTerms(activeQuotation.payment_terms || '30 days from accepted GRN');
     
     const lines = pr.purchase_requisition_lines || [];
     const totalQty = lines.reduce((sum, line) => sum + Number(line.quantity), 0);
-    const perLineRate = totalQty > 0 ? quotation.total_amount / totalQty : 0;
+    const perLineRate = totalQty > 0 ? (activeQuotation.total_amount / totalQty) : 0;
     
     const initialLines = lines.map((line) => {
-      const quoteLine = quotation.quotation_lines?.find(
+      const quoteLine = activeQuotation.quotation_lines?.find(
         (ql) => ql.item_description.toLowerCase() === line.item_description.toLowerCase()
       );
       const rate = quoteLine?.unit_rate ?? line.estimated_rate ?? perLineRate;
@@ -632,35 +767,37 @@ export default function ProcurementPage() {
 
   async function handleGeneratePoSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!selectedPrForPo || !selectedQuotationForPo || !selectedVendorSelectionIdForPo) return;
-    
+    if (!selectedPrForPo || !selectedQuotationForPo) return;
+
+    // vendor_id is NOT NULL + FK to vendors — a missing/placeholder id would fail at the DB.
+    // Fail fast with a clear message instead of surfacing a raw uuid/FK error.
+    const resolvedVendorId = selectedQuotationForPo.vendor_id || data.vendors[0]?.id || '';
+    if (!resolvedVendorId || !data.vendors.some((v) => v.id === resolvedVendorId)) {
+      setError('Cannot generate PO: no valid vendor is available. Add or select a real vendor first.');
+      return;
+    }
+
     const payload: GeneratePurchaseOrderInput = {
       purchaseRequisitionId: selectedPrForPo.id,
-      vendorId: selectedQuotationForPo.vendor_id,
-      vendorSelectionId: selectedVendorSelectionIdForPo,
+      vendorId: resolvedVendorId,
+      vendorSelectionId: selectedVendorSelectionIdForPo || undefined,
       deliveryLocation: poDeliveryLocation,
       deliveryDate: poDeliveryDate,
       paymentTerms: poPaymentTerms,
       termsAndConditions: poTermsAndConditions,
       lines: poLines,
     };
-    
-    await runAction('Purchase order generated with details.', () => generatePurchaseOrder(payload));
+
+    await runAction('Direct Purchase order generated cleanly.', () => generatePurchaseOrder(payload));
     setPoModalOpen(false);
   }
 
   function handleGeneratePoFromPr(pr: PurchaseRequisitionRow) {
     const selection = data.vendorSelections.find(vs => vs.purchase_requisition_id === pr.id);
-    if (!selection || selection.status !== 'approved') {
-      setError('No management-approved vendor selection found for this purchase requisition.');
-      return;
-    }
-    const quotation = selection.vendor_quotations || data.quotations.find(q => q.id === selection.selected_quotation_id);
-    if (!quotation) {
-      setError('Quotation details not found for the finalized vendor selection.');
-      return;
-    }
-    openPoModal(pr, quotation, selection.id);
+    const quotation = selection
+      ? (selection.vendor_quotations || data.quotations.find(q => q.id === selection.selected_quotation_id))
+      : null;
+    openPoModal(pr, quotation, selection?.id || null);
   }
 
   async function handleCreateMaterialRequest(event: FormEvent) {
@@ -718,7 +855,7 @@ export default function ProcurementPage() {
           <button
             type="button"
             onClick={refresh}
-            disabled={!liveMode || loading}
+            disabled={loading}
             className="inline-flex h-10 items-center gap-2 rounded-lg border border-border bg-card px-3 text-sm font-semibold text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
           >
             <RefreshCcw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
@@ -727,11 +864,6 @@ export default function ProcurementPage() {
         </div>
       </header>
 
-      {!liveMode && (
-        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-800">
-          Supabase is not configured. Procurement requires live database workflow tables before records can be viewed or mutated.
-        </div>
-      )}
       {message && <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-700">{message}</div>}
       {error && <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</div>}
 
@@ -742,8 +874,8 @@ export default function ProcurementPage() {
         <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
           <button onClick={() => setActiveTab('requests')} className="text-left rounded-lg border border-border p-3 hover:bg-muted/50 transition-colors">
             <p className="text-[10px] font-bold uppercase text-muted-foreground flex items-center gap-1.5"><ClipboardList className="w-3 h-3" /> Material Req</p>
-            <p className="mt-1 text-2xl font-bold text-foreground">{data.materialRequests.filter(m => m.status === 'approved' || m.status === 'in_review').length}</p>
-            <p className="text-xs text-muted-foreground mt-1">Pending PR</p>
+            <p className="mt-1 text-2xl font-bold text-foreground">{data.materialRequests.length}</p>
+            <p className="text-xs text-muted-foreground mt-1">Total Requests</p>
           </button>
           
           <button onClick={() => setActiveTab('requisitions')} className="text-left rounded-lg border border-border p-3 hover:bg-muted/50 transition-colors">
@@ -760,7 +892,7 @@ export default function ProcurementPage() {
                 <p className="text-[10px] text-muted-foreground">Draft</p>
               </div>
               <div>
-                <p className="text-xl font-bold text-foreground">{data.rfqs.filter(r => r.status === 'submitted' /* or whatever means sent for RFQ */).length}</p>
+                <p className="text-xl font-bold text-foreground">{data.rfqs.filter(r => r.status === 'submitted').length}</p>
                 <p className="text-[10px] text-muted-foreground">Sent</p>
               </div>
             </div>
@@ -817,34 +949,33 @@ export default function ProcurementPage() {
 
       {activeTab === 'requests' && (
         <Panel title="Material Requests" icon={ClipboardList}>
-          {liveMode ? (
-            <MaterialRequestWorkQueue
-              materialRequests={data.materialRequests}
-              purchaseRequisitions={data.purchaseRequisitions}
-              inventorySnapshots={data.inventorySnapshots}
-              projectOptions={projectOptions}
-              activeRole={activeRole as 'UPPER_MANAGEMENT' | 'PR_TEAM' | 'PROJECT_MANAGER'}
-              loading={loading}
-              onConvertToPr={openPrModal}
-              onRefresh={refresh}
-              onMessage={(msg) => setMessage(msg)}
-              onError={(msg) => setError(msg)}
-            />
-          ) : (
-            <EmptyState message="Configure Supabase to load and manage live material requests." />
-          )}
+          <MaterialRequestWorkQueue
+            materialRequests={data.materialRequests}
+            purchaseRequisitions={data.purchaseRequisitions}
+            inventorySnapshots={data.inventorySnapshots}
+            projectOptions={projectOptions}
+            activeRole={activeRole as 'UPPER_MANAGEMENT' | 'PR_TEAM' | 'PROJECT_MANAGER'}
+            loading={loading}
+            onConvertToPr={openPrModal}
+            onPrintMr={(mrId) => handleReportPdf('Material Request', () => generateMaterialRequestPdf(mrId))}
+            onRefresh={refresh}
+            onMessage={(msg) => setMessage(msg)}
+            onError={(msg) => setError(msg)}
+          />
         </Panel>
       )}
 
       {activeTab === 'requisitions' && (
         <Panel title="Purchase Requisitions" icon={ShoppingCart}>
-          <PurchaseRequisitionWorkbench
+          <PurchaseRequisitionWorkspace
             rows={data.purchaseRequisitions}
             attachments={data.prAttachments || []}
             materialRequests={data.materialRequests}
             rfqs={data.rfqs}
             quotations={data.quotations}
             selections={data.vendorSelections}
+            projectOptions={projectOptions}
+            activeRole={activeRole as 'UPPER_MANAGEMENT' | 'PROJECT_MANAGER' | 'PR_TEAM'}
             selectedPrId={selectedPrId}
             onSelectPr={setSelectedPrId}
             onAssign={(row) => runAction('Purchase requisition assigned.', () => assignPrToCurrentUser(row))}
@@ -853,189 +984,200 @@ export default function ProcurementPage() {
             onPdf={(row) => void handlePrPdf(row)}
             onOpenPdf={(row) => void handleOpenPrPdf(row)}
             onGeneratePo={handleGeneratePoFromPr}
+            onRefresh={refresh}
+            onMessage={(msg) => setMessage(msg)}
+            onError={(msg) => setError(msg)}
           />
         </Panel>
       )}
 
       {activeTab === 'rfq' && (
         <Panel title="RFQ, Quotations, and Vendor Finalization" icon={UsersRound}>
-          <RfqWorkbench
-            rfqs={data.rfqs}
+          <RFQWorkspace
             prs={data.purchaseRequisitions}
+            rfqs={data.rfqs}
             quotations={data.quotations}
             selections={data.vendorSelections}
             purchaseOrders={data.purchaseOrders}
+            vendors={data.vendors}
+            projectOptions={projectOptions}
+            activeRole={activeRole}
             selectedRfqId={selectedRfqId}
             onSelectRfq={setSelectedRfqId}
+            onCreateRfq={openRfqModal}
             onRecordQuote={openQuotationModal}
             onRecommend={openRecommendationModal}
             onApproveSelection={(selection) => runAction('Vendor finalization approved by management.', () => approveVendorSelection({ selectionId: selection.id }))}
             onGeneratePo={(pr, quotation, selection) => openPoModal(pr, quotation, selection.id)}
-            canApprove={activeRole === 'UPPER_MANAGEMENT'}
+            onPrintRfq={(rfqId) => handleReportPdf('RFQ', () => generateRfqPdf(rfqId))}
           />
         </Panel>
       )}
 
       {activeTab === 'orders' && (
-        <Panel title="Purchase Orders" icon={ShoppingCart}>
-          <PurchaseOrderWorkbench
+        <Panel title="Purchase Order Management" icon={ShoppingCart}>
+          <POWorkspace
             purchaseOrders={data.purchaseOrders}
-            prs={data.purchaseRequisitions}
-            selections={data.vendorSelections}
-            selectedPoId={selectedPoId}
-            onSelectPo={setSelectedPoId}
-            onApprovePo={(po) => runAction('PO approved.', () => approvePurchaseOrder(po))}
-            onRejectPo={(po, reason) => runAction('PO rejected.', () => rejectPurchaseOrder(po, reason))}
-            onSendPo={(po) => runAction('PO sent to vendor.', () => sendPurchaseOrderToVendor(po))}
-            onAcknowledgePo={(po) => runAction('PO acknowledged.', () => acknowledgePurchaseOrder(po))}
-            onPdf={(po) => void handlePoPdf(po)}
-            onOpenPdf={(po) => void handleOpenPoPdf(po)}
-            onTrackDelivery={(po) => runAction('Started delivery tracking.', () => trackDelivery(po))}
-            canApprove={activeRole === 'UPPER_MANAGEMENT'}
+            activeRole={activeRole as 'UPPER_MANAGEMENT' | 'PROJECT_MANAGER' | 'PR_TEAM'}
+            onSavePo={(poData) => runAction('Purchase Order details and status updated.', () => updateFullPurchaseOrder(poData))}
+            onApprove={(po) => runAction(`Purchase Order ${po.po_number} approved and sent to vendor.`, async () => {
+              const approved = await approvePurchaseOrder(po);
+              if (approved.error) return approved;
+              return sendPurchaseOrderToVendor(po);
+            })}
+            onPrintPo={(po) => { void (po.pdf_storage_path ? handleOpenPoPdf(po) : handlePoPdf(po)); }}
+            onRefresh={refresh}
           />
         </Panel>
       )}
 
       {activeTab === 'grn' && (
-        <Panel title="Delivery Tracking" icon={Truck}>
-          <DeliveryTrackingWorkbench
-            purchaseOrders={data.purchaseOrders}
-            deliveryTrackings={data.deliveryTrackings}
-            selectedPoId={selectedDeliveryPoId}
-            onSelectPo={setSelectedDeliveryPoId}
-            onUpdateStatus={(id, status, reason, vehicle) => runAction('Delivery status updated.', () => updateDeliveryTrackingStatus({ id, status, reason, vehicleNumber: vehicle }))}
+        <Panel title="Goods Receipt Notes & Site Gate Arrivals" icon={Truck}>
+          <GrnWorkspace
+            grns={data.grns}
+            activeRole={activeRole as 'UPPER_MANAGEMENT' | 'PROJECT_MANAGER' | 'PR_TEAM'}
+            onApproveGrn={(grnId) => {
+              const grn = data.grns.find((g) => g.id === grnId);
+              if (!grn) return;
+              void (async () => {
+                setError(null);
+                setMessage(null);
+                // Step 1 (required): post the GRN to inventory — direct status update, always available.
+                const posted = await postGrnToInventory({ grnId });
+                if (posted.error) { setError(posted.error.message); return; }
+                // Step 2 (best-effort): auto-generate the vendor bill. This uses the
+                // submit_vendor_bill_from_grn pipeline RPC + vendor_bills table which are
+                // provisioned by the reconciliation migration; until then, degrade gracefully.
+                const bill = await createVendorBillFromGrn(grn);
+                setMessage(
+                  bill.error
+                    ? `GRN ${grn.grn_number} approved and posted to inventory. (Vendor bill auto-generation is pending the pipeline RPC/migration.)`
+                    : `GRN ${grn.grn_number} approved — inventory updated and vendor bill generated.`,
+                );
+                await refresh();
+              })();
+            }}
+            onDownloadReport={(grnId) => {
+              void (async () => {
+                setError(null);
+                setMessage(null);
+                const res = await generateGoodsReceiptNotePdf(grnId);
+                if (res.error) { setError(res.error.message); return; }
+                setMessage('GRN report generated.');
+                if (res.data?.signedUrl) window.open(res.data.signedUrl, '_blank', 'noopener,noreferrer');
+              })();
+            }}
+            onRefresh={refresh}
           />
         </Panel>
       )}
 
       {activeTab === 'billing' && (
-        <Panel title="Goods Receipt Notes" icon={PackageCheck}>
-          <GrnWorkbench
-            purchaseOrders={data.purchaseOrders}
-            grns={data.grns}
-            selectedPoId={selectedGrnPoId}
-            onSelectPo={setSelectedGrnPoId}
-            onPostGrn={(grnId) => runAction('GRN posted to inventory.', () => postGrnToInventory({ grnId }))}
-            onCreateGrn={(po) => {
-              setSelectedPoForGrn(po);
-              setGrnLines(po.purchase_order_lines?.map(l => ({
-                item_id: l.item_id || '',
-                ordered_qty: l.quantity,
-                received_qty: l.quantity,
-                accepted_qty: l.quantity,
-                rejected_qty: 0,
-                unit_rate: l.unit_rate || 0,
-                remarks: ''
-              })) || []);
-              setGrnModalOpen(true);
-            }}
+        <Panel title="Vendor Bills & 3-Way Matching" icon={ReceiptIndianRupee}>
+          <BillsWorkspace
+            bills={data.vendorBills}
+            activeRole={activeRole as 'UPPER_MANAGEMENT' | 'PROJECT_MANAGER' | 'PR_TEAM'}
+            onPrintBill={(billId) => handleReportPdf('Purchase Bill', () => generatePurchaseBillPdf(billId))}
+            onRefresh={refresh}
           />
-        </Panel>
-      )}
-
-      {activeTab === 'inventory' && (
-        <Panel title="Inventory Impact" icon={Warehouse}>
-          <InventoryWorkbench snapshots={data.inventorySnapshots} />
         </Panel>
       )}
 
       {prModalOpen && selectedMrForPr && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 overflow-y-auto">
-          <div className="w-full max-w-3xl rounded-xl border border-border bg-card p-6 shadow-2xl max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between mb-4 border-b border-border pb-3">
-              <h3 className="text-xl font-bold">Generate Purchase Requisition</h3>
-              <button onClick={() => setPrModalOpen(false)} className="text-muted-foreground hover:text-foreground">
+          <div className="w-full max-w-2xl rounded-2xl border border-border bg-card p-6 shadow-2xl overflow-hidden space-y-4">
+            
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b border-border pb-3">
+              <div>
+                <h3 className="text-lg font-bold text-foreground font-heading flex items-center gap-2">
+                  <ShoppingCart className="h-5 w-5 text-primary" /> Generate Purchase Requisition
+                </h3>
+                <p className="text-xs text-muted-foreground mt-0.5">Creating formal PR for approved items from {selectedMrForPr.mr_number}</p>
+              </div>
+              <button onClick={() => setPrModalOpen(false)} className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground">
                 <X className="h-5 w-5" />
               </button>
             </div>
             
-            <div className="mb-4 rounded-lg bg-muted/50 p-4 text-sm border border-border">
-              <p className="font-bold text-foreground">Source: {selectedMrForPr.mr_number}</p>
-              <p className="text-muted-foreground">{selectedMrForPr.justification || 'Material Request'}</p>
+            {/* Important Context Header Box */}
+            <div className="rounded-xl border border-primary/20 bg-primary/5 p-3.5 space-y-2 text-xs">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <span className="text-[10px] font-bold uppercase text-primary tracking-wider block">Source Request</span>
+                  <span className="font-mono font-bold text-foreground text-sm">{selectedMrForPr.mr_number}</span>
+                </div>
+                <div>
+                  <span className="text-[10px] font-bold uppercase text-muted-foreground tracking-wider block">Project Location</span>
+                  <span className="font-semibold text-foreground">{selectedMrForPr.projects?.name ?? 'Main Site'}</span>
+                </div>
+                <div>
+                  <span className="text-[10px] font-bold uppercase text-muted-foreground tracking-wider block">Target Delivery</span>
+                  <span className="font-semibold text-foreground">{selectedMrForPr.required_date}</span>
+                </div>
+              </div>
+              
+              {selectedMrForPr.justification && (
+                <p className="text-muted-foreground italic border-t border-primary/10 pt-2 text-[11px]">
+                  "{selectedMrForPr.justification}"
+                </p>
+              )}
             </div>
 
             <form onSubmit={handleGeneratePrSubmit} className="space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
                 <div>
-                  <label className="block text-xs font-bold uppercase text-muted-foreground mb-1">PR Title *</label>
-                  <input value={prTitle} onChange={e => setPrTitle(e.target.value)} className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary font-semibold" required />
+                  <label className="block font-bold text-muted-foreground mb-1">PR Title / Subject *</label>
+                  <input
+                    value={prTitle}
+                    onChange={e => setPrTitle(e.target.value)}
+                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-xs font-semibold outline-none focus:border-primary"
+                    required
+                  />
                 </div>
                 
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs font-bold uppercase text-muted-foreground mb-1">Required Date *</label>
-                    <input type="date" value={prRequiredDate} onChange={e => setPrRequiredDate(e.target.value)} className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary font-medium" required />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-bold uppercase text-muted-foreground mb-1">Approval Stage</label>
-                    <select value={prApprovalStage} onChange={e => setPrApprovalStage(e.target.value)} className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary font-medium">
-                      <option value="pr_team">PR Team Review</option>
-                      <option value="upper_management">Upper Management</option>
-                    </select>
-                  </div>
+                <div>
+                  <label className="block font-bold text-muted-foreground mb-1">Required On Site Date *</label>
+                  <input
+                    type="date"
+                    value={prRequiredDate}
+                    onChange={e => setPrRequiredDate(e.target.value)}
+                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-xs font-medium outline-none focus:border-primary"
+                    required
+                  />
                 </div>
               </div>
 
-              {/* Editable Line Items Table */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between border-b border-border pb-1">
-                  <label className="block text-xs font-bold uppercase text-muted-foreground">Line Items</label>
-                  <button type="button" onClick={handleAddPrLine} className="inline-flex items-center gap-1 text-xs font-bold text-[#b68d40] hover:text-[#967332]">
-                    <Plus className="h-3.5 w-3.5" /> Add Item
-                  </button>
-                </div>
-                <div className="rounded-lg border border-border overflow-hidden bg-background">
+              {/* Items Selected for PR Approval Table */}
+              <div className="space-y-1.5">
+                <span className="block text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                  Items Selected for PR Generation ({prLines.length})
+                </span>
+                
+                <div className="rounded-xl border border-border overflow-hidden bg-background">
                   <table className="w-full text-xs text-left">
-                    <thead className="bg-muted text-muted-foreground uppercase font-bold border-b border-border">
+                    <thead className="bg-muted text-muted-foreground uppercase font-bold text-[10px] tracking-wider border-b border-border">
                       <tr>
-                        <th className="px-3 py-2">Item Description</th>
-                        <th className="px-3 py-2 text-right w-20">Qty</th>
-                        <th className="px-3 py-2 text-right w-28">Est Rate (INR)</th>
-                        <th className="px-3 py-2 text-right w-32">Total</th>
-                        <th className="px-3 py-2 w-10"></th>
+                        <th className="px-3.5 py-2.5">Item Description</th>
+                        <th className="px-3 py-2.5 text-right w-24">Qty</th>
+                        <th className="px-3 py-2.5 text-right w-32">Est Rate (INR)</th>
+                        <th className="px-3 py-2.5 text-right w-36 font-bold text-foreground">Line Total</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-border">
+                    <tbody className="divide-y divide-border/80">
                       {prLines.map((line, idx) => (
                         <tr key={idx} className="hover:bg-muted/30">
-                          <td className="px-3 py-2">
-                            <input
-                              type="text"
-                              value={line.item_description}
-                              onChange={(e) => handlePrLineChange(idx, 'item_description', e.target.value)}
-                              className="w-full rounded border border-border bg-background px-1.5 py-1 text-xs outline-none focus:border-primary font-semibold"
-                              placeholder="Item description"
-                              required
-                            />
+                          <td className="px-3.5 py-2.5 font-bold text-foreground">
+                            {line.item_description}
                           </td>
-                          <td className="px-3 py-2 text-right">
-                            <input
-                              type="number"
-                              value={line.quantity}
-                              min="1"
-                              onChange={(e) => handlePrLineChange(idx, 'quantity', e.target.value)}
-                              className="w-full text-right rounded border border-border bg-background px-1.5 py-1 text-xs outline-none focus:border-primary font-bold"
-                              required
-                            />
+                          <td className="px-3 py-2.5 text-right font-bold text-primary">
+                            {line.quantity}
                           </td>
-                          <td className="px-3 py-2 text-right">
-                            <input
-                              type="number"
-                              value={line.estimated_rate}
-                              min="0"
-                              step="0.01"
-                              onChange={(e) => handlePrLineChange(idx, 'estimated_rate', e.target.value)}
-                              className="w-full text-right rounded border border-border bg-background px-1.5 py-1 text-xs outline-none focus:border-primary font-bold"
-                              required
-                            />
+                          <td className="px-3 py-2.5 text-right font-semibold text-muted-foreground">
+                            ₹{line.estimated_rate.toLocaleString('en-IN')}
                           </td>
-                          <td className="px-3 py-2 text-right font-bold text-foreground">
+                          <td className="px-3 py-2.5 text-right font-bold text-foreground">
                             {formatCurrency(line.quantity * line.estimated_rate)}
-                          </td>
-                          <td className="px-3 py-2 text-center">
-                            <button type="button" onClick={() => handleRemovePrLine(idx)} className="text-rose-500 hover:text-rose-600 disabled:opacity-50" disabled={prLines.length === 1}>
-                              <X className="h-4 w-4" />
-                            </button>
                           </td>
                         </tr>
                       ))}
@@ -1044,21 +1186,27 @@ export default function ProcurementPage() {
                 </div>
               </div>
 
-              <div className="flex items-center justify-between border-t border-border pt-4">
-                <div className="flex items-center gap-4">
-                  <div className="flex items-center gap-2">
-                    <input type="checkbox" id="financeReq" checked={prFinanceRequired} onChange={e => setPrFinanceRequired(e.target.checked)} className="rounded border-border text-primary" />
-                    <label htmlFor="financeReq" className="text-xs font-semibold select-none cursor-pointer">Requires Finance Review</label>
-                  </div>
-                  <div className="text-xs text-muted-foreground font-medium">
-                    Total Est. Cost: <span className="font-bold text-primary">{formatCurrency(prLines.reduce((sum, l) => sum + l.quantity * l.estimated_rate, 0))}</span>
-                  </div>
+              {/* Cost Summary & Simple Actions Footer */}
+              <div className="flex items-center justify-between border-t border-border pt-4 text-xs">
+                <div className="font-medium text-muted-foreground">
+                  Total Est. PR Cost: <span className="font-bold text-primary text-sm ml-1">{formatCurrency(prLines.reduce((sum, l) => sum + l.quantity * l.estimated_rate, 0))}</span>
                 </div>
 
                 <div className="flex gap-2 items-center">
-                  <input type="file" multiple onChange={(e) => setPrAttachments(Array.from(e.target.files || []))} className="text-sm file:mr-4 file:py-1 file:px-3 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-primary/10 file:text-primary hover:file:bg-primary/20" />
-                  <button type="button" onClick={() => setPrModalOpen(false)} className="rounded-md border border-border px-4 py-2 text-sm font-bold hover:bg-muted">Cancel</button>
-                  <button type="submit" className="rounded-md bg-primary px-4 py-2 text-sm font-bold text-primary-foreground hover:bg-primary/95">Confirm & Generate PR</button>
+                  <button
+                    type="button"
+                    onClick={() => setPrModalOpen(false)}
+                    className="rounded-lg border border-border bg-background px-4 py-2 text-xs font-bold text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                  >
+                    Cancel
+                  </button>
+
+                  <button
+                    type="submit"
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-xs font-bold text-primary-foreground hover:bg-primary/90 shadow-sm transition-all"
+                  >
+                    <CheckCircle2 className="h-4 w-4" /> Approve & Generate PR
+                  </button>
                 </div>
               </div>
             </form>

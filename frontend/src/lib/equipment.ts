@@ -1,6 +1,8 @@
 import { supabase } from '@/utils/supabase-client';
+import { isLiveSupabase } from '@/lib/erp/supabase-modules';
 
 export async function getEquipmentAssets(projectId?: string) {
+  if (!isLiveSupabase()) return [];
   let query = supabase.from("equipment_assets").select("*, projects(name), project_sites(name)").order("created_at", { ascending: false });
   if (projectId) {
     query = query.eq("project_id", projectId);
@@ -11,6 +13,7 @@ export async function getEquipmentAssets(projectId?: string) {
 }
 
 export async function getEquipmentUsageLogs(equipmentId?: string) {
+  if (!isLiveSupabase()) return [];
   let query = supabase.from("equipment_usage_logs").select("*").order("usage_date", { ascending: false });
   if (equipmentId) {
     query = query.eq("equipment_id", equipmentId);
@@ -21,6 +24,7 @@ export async function getEquipmentUsageLogs(equipmentId?: string) {
 }
 
 export async function addEquipmentUsageLog(record: any) {
+  if (!isLiveSupabase()) return null;
   const { data, error } = await supabase.from("equipment_usage_logs").insert(record).select().single();
   if (error) throw error;
   

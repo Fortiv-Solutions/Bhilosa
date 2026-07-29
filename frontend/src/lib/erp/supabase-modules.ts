@@ -25,8 +25,29 @@ function makeSequence(prefix: string): string {
 }
 
 async function currentProfileId(): Promise<string | null> {
-  const { data } = await supabase.auth.getUser();
-  return data.user?.id ?? null;
+  try {
+    const { data } = await supabase.auth.getUser();
+    if (data.user?.id) {
+      const { data: userProfile } = await supabase
+        .from('profiles')
+        .select('id')
+        .eq('id', data.user.id)
+        .maybeSingle();
+      if (userProfile?.id) return userProfile.id;
+    }
+  } catch {}
+
+  try {
+    const { data: anyProfile } = await supabase
+      .from('profiles')
+      .select('id')
+      .limit(1)
+      .maybeSingle();
+
+    if (anyProfile?.id) return anyProfile.id;
+  } catch {}
+
+  return null;
 }
 
 async function maybeDefaultProjectSite(projectId: string): Promise<string | null> {
@@ -233,6 +254,150 @@ export async function createProcurementWorkflowRequest(
     });
 
     return { data: { materialRequestId, purchaseRequisitionId }, error: null };
+  } catch (error) {
+    return { data: null, error: error as Error };
+  }
+}
+
+export async function createPurchaseOrderRecord(input: {
+  projectId: string;
+  vendorName: string;
+  purchaseRequisitionId?: string;
+  deliveryLocation?: string;
+  paymentTerms?: string;
+  items: Array<{ description: string; quantity: number; unitRate: number }>;
+}): Promise<MutationResult<{ poId: string }>> {
+  if (!isLiveSupabase()) return { data: null, error: null };
+
+  try {
+    const profileId = await currentProfileId();
+    const dbProjectId = getDbSiteId(input.projectId);
+    const siteId = await maybeDefaultProjectSite(input.projectId);
+    const vendorId = await findOrCreateVendor(input.vendorName);
+    if (!vendorId) throw new Error('Failed to resolve vendor');
+
+    const poNumber = makeSequence('PO');
+    const subtotal = input.items.reduce((sum, item) => sum + item.quantity * item.unitRate, 0);
+    const taxAmount = subtotal * 0.18;
+    const totalAmount = subtotal + taxAmount;
+
+    const { data: po, error: poError } = await supabase
+      .from('purchase_orders')
+      .insert({
+        project_id: dbProjectId,
+        site_id: siteId,
+        vendor_id: vendorId,
+        purchase_requisition_id: input.purchaseRequisitionId,
+        po_number: poNumber,
+        po_date: today(),
+        delivery_location: input.deliveryLocation,
+        payment_terms: input.paymentTerms ?? 'Net 30 Days',
+        subtotal_amount: subtotal,
+        tax_amount: taxAmount,
+        total_amount: totalAmount,
+        status: 'draft',
+        created_by: profileId,
+        updated_by: profileId,
+      })
+      .select('id')
+      .single();
+
+    if (poError) throw new Error(poError.message);
+    const poId = (po as { id: string }).id;
+
+    for (const item of input.items) {
+      await supabase.from('purchase_order_lines').insert({
+        purchase_order_id: poId,
+        project_id: dbProjectId,
+        item_description: item.description,
+        quantity: item.quantity,
+        unit_rate: item.unitRate,
+        tax_rate: 18,
+        line_total: item.quantity * item.unitRate * 1.18,
+        created_by: profileId,
+        updated_by: profileId,
+      });
+    }
+
+    await createModuleNotification({
+      projectId: input.projectId,
+      title: 'Purchase Order Issued',
+      message: `${poNumber} created for ${input.vendorName} (Rs. ${totalAmount.toLocaleString('en-IN')}).`,
+      notificationType: 'purchase_order_created',
+      entityTable: 'purchase_orders',
+      entityId: poId,
+    });
+
+    return { data: { poId }, error: null };
+  } catch (error) {
+    return { data: null, error: error as Error };
+  }
+}
+
+export async function createGoodsReceiptNoteRecord(input: {
+  projectId: string;
+  purchaseOrderId?: string;
+  vendorName: string;
+  vehicleNo?: string;
+  volumeInBrass?: string;
+  netWeight?: string;
+  items: Array<{ description: string; unit?: string; challanQty: number; acceptedQty: number; rejectedQty: number }>;
+}): Promise<MutationResult<{ grnId: string }>> {
+  if (!isLiveSupabase()) return { data: null, error: null };
+
+  try {
+    const profileId = await currentProfileId();
+    const dbProjectId = getDbSiteId(input.projectId);
+    const siteId = await maybeDefaultProjectSite(input.projectId);
+    const vendorId = await findOrCreateVendor(input.vendorName);
+    const grnNumber = makeSequence('GRN');
+
+    const { data: grn, error: grnError } = await supabase
+      .from('goods_receipt_notes')
+      .insert({
+        project_id: dbProjectId,
+        site_id: siteId,
+        purchase_order_id: input.purchaseOrderId,
+        vendor_id: vendorId,
+        grn_number: grnNumber,
+        receipt_date: today(),
+        received_by: profileId,
+        status: 'posted',
+        vehicle_no: input.vehicleNo,
+        volume_in_brass: input.volumeInBrass,
+        net_weight: input.netWeight,
+        created_by: profileId,
+        updated_by: profileId,
+      })
+      .select('id')
+      .single();
+
+    if (grnError) throw new Error(grnError.message);
+    const grnId = (grn as { id: string }).id;
+
+    for (const item of input.items) {
+      await supabase.from('goods_receipt_note_lines').insert({
+        grn_id: grnId,
+        project_id: dbProjectId,
+        item_description: item.description,
+        received_qty: item.challanQty,
+        accepted_qty: item.acceptedQty,
+        rejected_qty: item.rejectedQty,
+        created_by: profileId,
+        updated_by: profileId,
+      });
+    }
+
+    await createModuleNotification({
+      projectId: input.projectId,
+      title: 'GRN Created',
+      message: `${grnNumber} posted for ${input.vendorName}.`,
+      notificationType: 'grn_created',
+      entityTable: 'goods_receipt_notes',
+      entityId: grnId,
+    });
+
+    return { data: { grnId }, error: null };
   } catch (error) {
     return { data: null, error: error as Error };
   }

@@ -156,7 +156,7 @@ export function RfqWorkbench({
                 <p className="mt-2 text-base text-foreground font-medium">
                   {selection.vendors?.display_name || selection.vendors?.legal_name || selectedQuotation?.vendors?.display_name || selectedQuotation?.vendors?.legal_name || 'Vendor'} 
                   <span className="mx-2 text-muted-foreground">|</span> 
-                  <span className="text-emerald-700 font-bold">{formatCurrency(selection.final_amount)}</span>
+                  <span className="text-emerald-700 font-bold">{formatCurrency(selection.final_amount ?? 0)}</span>
                 </p>
                 <div className="mt-3 p-3 rounded-lg bg-background border border-border">
                   <span className="text-xs font-bold uppercase text-muted-foreground block mb-1">Reason for Selection</span>
