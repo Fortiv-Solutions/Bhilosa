@@ -16,11 +16,12 @@ export const isSupabaseConfigured = Boolean(
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 // Map frontend project IDs to Supabase site UUIDs
+// central-park UUID verified against live Supabase projects table on 2026-07-29
 const projectToSiteMap: Record<string, string> = {
   'one-tapi': 'a1b2c3d4-0000-0000-0000-000000000001',
   'aranya-3': 'a1b2c3d4-0000-0000-0000-000000000002',
   'satva': 'a1b2c3d4-0000-0000-0000-000000000003',
-  'central-park': 'af6fca4d-3498-48c0-b87d-bb234c23728d',
+  'central-park': 'f6704467-df8c-4f51-a49b-ddfdc40c39af',
   'orbit-4': 'e8a7c213-df8c-4f51-a49b-ddfdc40c39af',
 };
 

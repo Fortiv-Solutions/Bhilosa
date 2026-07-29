@@ -653,10 +653,15 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
         photos: req.photos || []
       });
 
+      const dbStatus = req.status === 'Approved' ? 'approved'
+        : req.status === 'Failed' ? 'failed'
+        : req.status === 'Rejected' ? 'rejected'
+        : 'pending';
+
       const { error } = await supabase
         .from('qc_inspections')
         .update({
-          status: req.status,
+          status: dbStatus,
           remarks: remarksJson
         })
         .eq('id', req.id);
@@ -1143,7 +1148,14 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
               submittedDate: details.submittedDate,
               requestedBy: details.requestedBy,
               priority: details.priority,
-              status: ins.status || 'Pending QC Inspection',
+              status: (() => {
+                const s = (ins.status || '').toLowerCase();
+                if (s === 'approved') return 'Approved';
+                if (s === 'failed' || s === 'fail') return 'Failed';
+                if (s === 'rejected') return 'Failed';
+                if (s === 'pending') return 'Submitted';
+                return ins.status || 'Submitted';
+              })(),
               assignedEngineer: details.assignedEngineer,
               scheduledDate: details.scheduledDate,
               location: details.location,
@@ -2447,10 +2459,13 @@ Rules:
         completionId: newQcr.completionId
       });
 
+      const randomNum = Math.floor(1000 + Math.random() * 9000);
+      const inspectionNumber = `QC-CP-${new Date().getFullYear()}-${randomNum}`;
       supabase.from('qc_inspections').insert({
         id: newQcrId,
         project_id: dbSiteId,
-        status: 'Submitted',
+        inspection_number: inspectionNumber,
+        status: 'pending',
         remarks: remarksJson
       }).then();
 
