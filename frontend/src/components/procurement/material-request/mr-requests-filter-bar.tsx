@@ -49,6 +49,8 @@ interface Props {
   sort: MrSort;
   onChangeSort: (s: MrSort) => void;
   projectOptions: ProcurementProjectOption[];
+  /** When set the project filter is pinned to this id and rendered read-only. */
+  lockedProjectId?: string;
   reviewers: ReviewerOption[];
   loading: boolean;
   onRefresh: () => void;
@@ -68,10 +70,11 @@ function toggleCls(active: boolean) {
 
 export function MRRequestsFilterBar({
   search, onSearch, filters, onChangeFilters, sort, onChangeSort,
-  projectOptions, reviewers, loading, onRefresh, onReset, onOpenCreate,
+  projectOptions, lockedProjectId, reviewers, loading, onRefresh, onReset, onOpenCreate,
 }: Props) {
+  // A pinned project is scope, not a user-applied filter — it must not count toward "Clear (n)".
   const activeCount =
-    (filters.status ? 1 : 0) + (filters.priority ? 1 : 0) + (filters.projectId ? 1 : 0) +
+    (filters.status ? 1 : 0) + (filters.priority ? 1 : 0) + (filters.projectId && !lockedProjectId ? 1 : 0) +
     (filters.reviewerId ? 1 : 0) + (filters.dateFrom ? 1 : 0) + (filters.dateTo ? 1 : 0) +
     (filters.myRequests ? 1 : 0) + (filters.pendingMyApproval ? 1 : 0) + (search.trim() ? 1 : 0);
 
@@ -109,8 +112,14 @@ export function MRRequestsFilterBar({
 
       {/* Second row: filters */}
       <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-        <select value={filters.projectId} onChange={(e) => onChangeFilters({ projectId: e.target.value })} className={selectCls(!!filters.projectId)}>
-          <option value="">All Projects</option>
+        <select
+          value={filters.projectId}
+          onChange={(e) => onChangeFilters({ projectId: e.target.value })}
+          disabled={!!lockedProjectId}
+          title={lockedProjectId ? 'Scoped to this project' : 'Filter by project'}
+          className={`${selectCls(!!filters.projectId)} ${lockedProjectId ? 'cursor-not-allowed opacity-90' : ''}`}
+        >
+          {!lockedProjectId && <option value="">All Projects</option>}
           {projectOptions.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
 

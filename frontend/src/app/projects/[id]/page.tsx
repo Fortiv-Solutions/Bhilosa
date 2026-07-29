@@ -56,6 +56,7 @@ import { ImageSlider } from '@/components/ui/image-slider';
 import { InboxModule } from '@/components/projects/inbox-module';
 import { ProjectMembers } from '@/components/projects/project-members';
 import { TaskModule } from '@/components/projects/task-module';
+import { ProcurementModule } from '@/components/procurement/procurement-module';
 import { supabase, getDbSiteId } from '@/utils/supabase-client';
 import { attachmentUrl } from '@/lib/inbox';
 import { isLiveSupabase } from '@/lib/erp/supabase-modules';
@@ -5546,53 +5547,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
 
             {/* PROCUREMENT */}
             {activeTab === 'procurement' && (
-              <div className="space-y-4">
-                <div className="bg-white dark:bg-gray-900 p-3 rounded-xl border border-gray-100 dark:border-gray-850 shadow-sm space-y-4">
-                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
-                    <div>
-                      <h3 className="font-heading font-semibold text-gray-900 dark:text-white text-[13px]">Procurement & RFQ Logs</h3>
-                      <p className="text-xs text-gray-450 mt-0.5">Track purchase requisition pipelines and supply allocations</p>
-                    </div>
-
-                    <form onSubmit={handleProcurementSubmit} className="flex flex-wrap items-center gap-2">
-                      <input type="text" required value={procTitle} onChange={(e) => setProcTitle(e.target.value)} placeholder="Material title" className="text-xs p-2 rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 focus:outline-none" />
-                      <input type="number" required value={procCost || ''} onChange={(e) => setProcCost(parseFloat(e.target.value))} placeholder="Est Cost" className="text-xs w-28 p-2 rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 focus:outline-none" />
-                      <button type="submit" disabled={currentUser.role === 'PR_TEAM'} className="text-xs font-bold bg-primary text-white px-3 py-2 rounded-lg disabled:opacity-50">Raise PR</button>
-                    </form>
-                  </div>
-
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-xs text-left">
-                      <thead>
-                        <tr className="border-b border-gray-200 dark:border-gray-850 text-gray-400">
-                          <th className="pb-3 font-semibold">PR Number</th>
-                          <th className="pb-3 font-semibold">Description Requisition</th>
-                          <th className="pb-3 font-semibold">Cost Estimate</th>
-                          <th className="pb-3 font-semibold">Assigned Vendor</th>
-                          <th className="pb-3 font-semibold">Order Status</th>
-                          <th className="pb-3 font-semibold">Raise Date</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {project!.procurements.map((proc) => (
-                          <tr key={proc.id} className="border-b border-gray-50 dark:border-gray-850/50">
-                            <td className="py-3 font-bold">{proc.requisitionNo}</td>
-                            <td className="py-3 font-medium">{proc.title}</td>
-                            <td className="py-3">{formatCurrency(proc.cost)}</td>
-                            <td className="py-3 text-gray-500">{proc.vendorName || '-- Unassigned --'}</td>
-                            <td className="py-3">
-                              <span className={`px-2 py-0.5 rounded-full text-xs font-bold border ${proc.status === 'DELIVERED' ? 'bg-emerald-50 text-success' : 'bg-amber-50 text-warning'}`}>
-                                {proc.status}
-                              </span>
-                            </td>
-                            <td className="py-3 text-gray-400">{proc.requestedDate}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              </div>
+              <ProcurementModule initialProjectId={id} hideProjectSelector={true} />
             )}
 
             {/* QUALITY CONTROL */}

@@ -46,6 +46,11 @@ interface MaterialRequestWorkQueueProps {
   purchaseRequisitions: PurchaseRequisitionRow[];
   inventorySnapshots?: InventorySnapshotRow[];
   projectOptions: ProcurementProjectOption[];
+  /**
+   * Pins the queue to one project: the project filter is forced to this id and
+   * locked in the UI, so a project-scoped mount can never list another project's MRs.
+   */
+  lockedProjectId?: string;
   activeRole: Role;
   loading?: boolean;
   onConvertToPr: (mr: MaterialRequestRow, approvedLines?: ProcurementLineRow[]) => void;
@@ -59,6 +64,7 @@ interface MaterialRequestWorkQueueProps {
 export default function MaterialRequestWorkQueue({
   purchaseRequisitions,
   projectOptions,
+  lockedProjectId,
   activeRole,
   onConvertToPr,
   onPrintMr,
@@ -68,7 +74,10 @@ export default function MaterialRequestWorkQueue({
 }: MaterialRequestWorkQueueProps) {
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
-  const [filters, setFilters] = useState<MrRequestFilters>(EMPTY_MR_FILTERS);
+  const [filters, setFilters] = useState<MrRequestFilters>(() => ({
+    ...EMPTY_MR_FILTERS,
+    projectId: lockedProjectId ?? '',
+  }));
   const [sort, setSort] = useState<MrSort>('newest');
   const [page, setPage] = useState(1);
 
@@ -113,14 +122,17 @@ export default function MaterialRequestWorkQueue({
   const selectedMr = useMemo(() => rows.find((mr) => mr.id === selectedMrId) ?? null, [rows, selectedMrId]);
   const linkedPrFor = (mr: MaterialRequestRow) => purchaseRequisitions.find((pr) => pr.material_request_id === mr.id);
 
+  // A locked project survives every filter change and reset.
   function updateFilters(patch: Partial<MrRequestFilters>) {
-    setFilters((f) => ({ ...f, ...patch }));
+    setFilters((f) => ({ ...f, ...patch, ...(lockedProjectId ? { projectId: lockedProjectId } : {}) }));
     setPage(1);
     setSelectedMrId(null);
   }
   function changeSort(s: MrSort) { setSort(s); setPage(1); }
   function resetFilters() {
-    setSearch(''); setDebouncedSearch(''); setFilters(EMPTY_MR_FILTERS); setSort('newest'); setPage(1); setSelectedMrId(null);
+    setSearch(''); setDebouncedSearch('');
+    setFilters({ ...EMPTY_MR_FILTERS, projectId: lockedProjectId ?? '' });
+    setSort('newest'); setPage(1); setSelectedMrId(null);
   }
   function goToPage(p: number) { setPage(p); setSelectedMrId(null); }
 
@@ -139,7 +151,7 @@ export default function MaterialRequestWorkQueue({
     requiredDate: string,
     lines: { itemDescription: string; quantity: number; estimatedRate: number }[],
   ) {
-    const res = await createMaterialRequest({ projectId, title, priority, requiredDate, lines });
+    const res = await createMaterialRequest({ projectId: lockedProjectId ?? projectId, title, priority, requiredDate, lines });
     if (res.error) { onError(res.error.message); return; }
     onMessage('New Material Request raised successfully.');
     setCreateModalOpen(false);
@@ -162,6 +174,7 @@ export default function MaterialRequestWorkQueue({
         sort={sort}
         onChangeSort={changeSort}
         projectOptions={projectOptions}
+        lockedProjectId={lockedProjectId}
         reviewers={reviewers}
         loading={loading}
         onRefresh={() => setReloadKey((k) => k + 1)}
