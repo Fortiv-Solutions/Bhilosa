@@ -434,7 +434,7 @@ export function InboxModule({project}:{project:ProjectSite}) {
         setProfile(meProfile);
         setIsMockInbox(false);
 
-        const realProjectId = 'f6704467-df8c-4f51-a49b-ddfdc40c39af';
+        const realProjectId = getDbSiteId(project?.id || '') || '00000000-0000-0000-0000-000000000001';
         setDbProjectId(realProjectId);
 
         const memberRows: MemberRow[] = [

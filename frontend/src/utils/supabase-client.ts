@@ -21,7 +21,8 @@ const projectToSiteMap: Record<string, string> = {
   'one-tapi': 'a1b2c3d4-0000-0000-0000-000000000001',
   'aranya-3': 'a1b2c3d4-0000-0000-0000-000000000002',
   'satva': 'a1b2c3d4-0000-0000-0000-000000000003',
-  'central-park': 'f6704467-df8c-4f51-a49b-ddfdc40c39af',
+  'central-park': '00000000-0000-0000-0000-000000000001',
+  'f6704467-df8c-4f51-a49b-ddfdc40c39af': '00000000-0000-0000-0000-000000000001',
   'orbit-4': 'e8a7c213-df8c-4f51-a49b-ddfdc40c39af',
 };
 
