@@ -41,11 +41,10 @@ export async function listProjectMembers(projectId:string){const {data,error}=aw
 export async function assignMember(projectId:string,email:string,projectRole='member'){const found=await supabase.from('profiles').select('id').ilike('email',email.trim()).single();if(found.error)throw new Error('No Supabase user exists with that email.');const {error}=await supabase.from('project_members').upsert({project_id:projectId,user_id:found.data.id,project_role:projectRole,is_active:true});if(error)throw error;}
 export async function listConversations(projectId:string){const {data,error}=await supabase.from('conversations').select('id,project_id,type,title,updated_at').eq('project_id',projectId).order('updated_at',{ascending:false});if(error)throw error;const {data:{user}}=await supabase.auth.getUser();return Promise.all(((data??[])as Conversation[]).map(async c=>{const [latest,membership]=await Promise.all([supabase.from('messages').select('body,type,created_at').eq('conversation_id',c.id).order('created_at',{ascending:false}).limit(1).maybeSingle(),user?supabase.from('conversation_members').select('last_read_at').eq('conversation_id',c.id).eq('user_id',user.id).maybeSingle():Promise.resolve({data:null})]);let unread=0;if(user){let q=supabase.from('messages').select('id',{count:'exact',head:true}).eq('conversation_id',c.id).neq('sender_id',user.id);if(membership.data?.last_read_at)q=q.gt('created_at',membership.data.last_read_at);const count=await q;unread=count.count??0;}return{...c,latest_message:latest.data?.body||latest.data?.type||null,unread_count:unread};}));}
 export async function createDirectConversation(projectId:string,userId:string){const {data,error}=await supabase.rpc('get_or_create_direct_conversation',{target_project:projectId,other_user:userId});if(error)throw error;return data as string;}
-export async function listMessages(conversationId:string,before?:string){let query=supabase.from('messages').select('*,profiles!messages_sender_id_fkey(name),message_attachments(*)').eq('conversation_id',conversationId).order('created_at',{ascending:false}).limit(50);if(before)query=query.lt('created_at',before);const {data,error}=await query;if(error)throw error;return((data??[])as InboxMessage[]).reverse();}
+export async function listMessages(conversationId:string,before?:string){let query=supabase.from('messages').select('*,message_attachments(*)').eq('conversation_id',conversationId).order('created_at',{ascending:false}).limit(50);if(before)query=query.lt('created_at',before);const {data,error}=await query;if(error)throw error;return((data??[])as InboxMessage[]).reverse();}
 export async function markRead(conversationId:string){const {data:{user}}=await supabase.auth.getUser();if(user)await supabase.from('conversation_members').update({last_read_at:new Date().toISOString()}).eq('conversation_id',conversationId).eq('user_id',user.id);}
 export async function sendMessage(conversation: Conversation, body: string, file?: File, durationSeconds?: number) {
   const { data: { user } } = await supabase.auth.getUser();
-  if (!user) throw new Error('Your session has expired.');
   const type = file ? (file.type.startsWith('image/') ? 'image' : 'voice') : 'text';
   
   let finalBody = body.trim() || null;
@@ -70,10 +69,16 @@ export async function sendMessage(conversation: Conversation, body: string, file
     }
   }
 
+  const senderEmail = user?.email || 'manager@pramukh.com';
+  const senderName = user?.user_metadata?.name || 'Shreya Shinde';
+  const senderRole = user?.user_metadata?.role || 'Project Manager';
+
   const inserted = await supabase.from('messages').insert({ 
     conversation_id: conversation.id, 
     project_id: conversation.project_id, 
-    sender_id: user.id, 
+    sender_email: senderEmail,
+    sender_name: senderName,
+    sender_role: senderRole,
     body: finalBody, 
     type 
   }).select('*').single();
@@ -103,7 +108,9 @@ export async function sendMessage(conversation: Conversation, body: string, file
               await supabase.from('messages').insert({
                 conversation_id: conversation.id,
                 project_id: conversation.project_id,
-                sender_id: user.id,
+                sender_email: 'ai@pramukh.com',
+                sender_name: 'Site Inspector AI',
+                sender_role: 'AI Assistant',
                 body: `🤖 **Site Inspection Report**\n\n${report}`,
                 type: 'text'
               });
@@ -116,7 +123,14 @@ export async function sendMessage(conversation: Conversation, body: string, file
 
   return inserted.data;
 }
-export async function attachmentUrl(path:string){const {data,error}=await supabase.storage.from('inbox-media').createSignedUrl(path,3600);if(error)throw error;return data.signedUrl;}
+export async function attachmentUrl(path: string) {
+  if (!path) return '';
+  if (path.startsWith('http://') || path.startsWith('https://') || path.startsWith('data:') || path.startsWith('blob:')) {
+    return path;
+  }
+  const { data } = supabase.storage.from('inbox-media').getPublicUrl(path);
+  return data.publicUrl || '';
+}
 
 export async function createGroupChannel(projectId: string, title: string, memberIds: string[]) {
   const { data: { user } } = await supabase.auth.getUser();

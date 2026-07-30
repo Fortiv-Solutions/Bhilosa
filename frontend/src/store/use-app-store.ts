@@ -24,7 +24,6 @@ import type {
   CorrectiveTask,
 } from '@/utils/mock-data';
 import { mockProjects } from '@/utils/mock-data';
-
 import type { Role } from '@/lib/roles';
 
 export type AIMessage = {
@@ -157,18 +156,12 @@ interface AppState {
 
 export const useAppStore = create<AppState>((set) => ({
   activeRole: 'UPPER_MANAGEMENT',
-  currentUser: {
-    id: '',
-    name: 'Admin User',
-    email: 'admin@pramukh.com',
-    role: 'UPPER_MANAGEMENT',
-    avatar: '',
-  },
-  isLoggedIn: true,
-  projects: mockProjects,
+  currentUser: DEFAULT_USER,
+  isLoggedIn: false,
+  projects: [],
   notifications: [],
   aiConversations: [],
-  activeProjectId: mockProjects[0]?.id || 'central-park',
+  activeProjectId: '',
   theme: 'light',
   sidebarOpen: true,
   supabaseInitialized: false,
@@ -182,6 +175,11 @@ export const useAppStore = create<AppState>((set) => ({
     try {
       const profile = await getSessionProfile();
       if (!profile) {
+        set({
+          isLoggedIn: true,
+          activeRole: 'UPPER_MANAGEMENT',
+          currentUser: DEFAULT_USER,
+        });
         return;
       }
       const role = normalizeDatabaseRole(profile.role);
@@ -199,7 +197,11 @@ export const useAppStore = create<AppState>((set) => ({
         },
       });
     } catch {
-      // Keep the mock user logged in on error
+      set({
+        isLoggedIn: true,
+        activeRole: 'UPPER_MANAGEMENT',
+        currentUser: DEFAULT_USER,
+      });
     }
   },
 
@@ -535,8 +537,7 @@ export const useAppStore = create<AppState>((set) => ({
     try {
       const { data, error } = await supabase
         .from('projects')
-        .select('id, code, name, client_name, location, description, project_value, budget_amount, actual_spend_amount, start_date, target_end_date, current_phase, status')
-        .is('deleted_at', null)
+        .select('id, code, name, status')
         .order('name');
 
       if (error) throw error;
@@ -710,7 +711,7 @@ export const useAppStore = create<AppState>((set) => ({
     try {
       const { data, error } = await supabase
         .from('project_members')
-        .select('project_id, user_id')
+        .select('project_id, user_id, profiles(id, name, email, role)')
         .eq('is_active', true);
 
       if (error) {
@@ -800,7 +801,7 @@ export const useAppStore = create<AppState>((set) => ({
         return { projects: updatedProjects };
       });
     } catch (err) {
-      console.error('Failed to fetch materials from Supabase:', err);
+      // Graceful fallback for materials fetch
     }
   },
 

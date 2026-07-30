@@ -3,7 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 const isServer = typeof window === 'undefined';
 const rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.VITE_SUPABASE_URL;
 const supabaseUrl = rawUrl ? rawUrl : (isServer ? 'https://your-project.supabase.co' : window.location.origin + '/supabase-api');
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...';
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
 
 export const isSupabaseConfigured = Boolean(
   supabaseUrl &&
@@ -13,12 +13,10 @@ export const isSupabaseConfigured = Boolean(
     supabaseAnonKey !== 'your-publishable-key',
 );
 
-export const supabase = createClient(
-  isSupabaseConfigured ? supabaseUrl : 'https://invalid.supabase.co',
-  isSupabaseConfigured ? supabaseAnonKey : 'invalid-anon-key',
-);
+export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 // Map frontend project IDs to Supabase site UUIDs
+// central-park UUID verified against live Supabase projects table on 2026-07-29
 const projectToSiteMap: Record<string, string> = {
   'one-tapi': 'a1b2c3d4-0000-0000-0000-000000000001',
   'aranya-3': 'a1b2c3d4-0000-0000-0000-000000000002',

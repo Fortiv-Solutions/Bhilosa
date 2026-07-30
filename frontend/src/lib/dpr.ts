@@ -2,13 +2,18 @@ import { supabase } from '@/utils/supabase-client';
 import { isLiveSupabase } from '@/lib/erp/supabase-modules';
 
 export async function getDPRs(projectId?: string) {
-  if (!isLiveSupabase()) return [];
-  let query = supabase.from("daily_progress_reports").select("*, dpr_activity_lines(*), projects(name)").order("report_date", { ascending: false });
+  let query = supabase.from("daily_progress_reports").select("*, dpr_activity_lines(*), site_photos(*), projects(name)").order("report_date", { ascending: false });
   if (projectId) {
     query = query.eq("project_id", projectId);
   }
   const { data, error } = await query;
-  if (error) throw error;
+  if (error) {
+    let fallbackQuery = supabase.from("daily_progress_reports").select("*, dpr_activity_lines(*), projects(name)").order("report_date", { ascending: false });
+    if (projectId) fallbackQuery = fallbackQuery.eq("project_id", projectId);
+    const { data: fallbackData, error: fallbackError } = await fallbackQuery;
+    if (fallbackError) throw fallbackError;
+    return fallbackData;
+  }
   return data;
 }
 

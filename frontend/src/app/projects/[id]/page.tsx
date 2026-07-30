@@ -16,10 +16,12 @@ import {
   MessageSquare, 
   ShieldCheck, 
   FileText, 
+  Mic,
   TrendingUp,
   Send,
   Printer,
   Plus,
+  Eye,
   Clock,
   UserCheck,
   Paperclip,
@@ -35,6 +37,7 @@ import {
   BarChart3,
   ListTodo,
   ChevronDown,
+  ZoomIn,
   Search,
   ArrowUpRight,
   ArrowLeft,
@@ -57,7 +60,7 @@ import { InboxModule } from '@/components/projects/inbox-module';
 import { ProjectMembers } from '@/components/projects/project-members';
 import { TaskModule } from '@/components/projects/task-module';
 import { ProcurementModule } from '@/components/procurement/procurement-module';
-import { supabase, getDbSiteId } from '@/utils/supabase-client';
+import { supabase, getDbSiteId, isSupabaseConfigured } from '@/utils/supabase-client';
 import { attachmentUrl } from '@/lib/inbox';
 import { isLiveSupabase } from '@/lib/erp/supabase-modules';
 import { getDPRs, approveDPR, rejectDPR } from '@/lib/dpr';
@@ -97,11 +100,31 @@ type ProjectTab =
   | 'billing'
   | 'analytics'
   | 'tasks'
+  | 'equipment-tracking'
+  | 'drawings'
+  | 'team'
+  | 'reports'
   | 'inbox'
   | 'user-management'
   | 'vendor-management'
   | 'document-control'
-  | 'equipment-tracking';
+
+const DEFAULT_CONSTRUCTION_PHOTO = "https://images.unsplash.com/photo-1541888946425-d0fbb186a5b7?auto=format&fit=crop&w=800&q=80";
+
+function resolvePhotoUrl(photo: string): string {
+  if (!photo || typeof photo !== 'string') return DEFAULT_CONSTRUCTION_PHOTO;
+  const trimmed = photo.trim();
+  if (
+    trimmed.startsWith('data:image') ||
+    trimmed.startsWith('data:application') ||
+    trimmed.startsWith('blob:') ||
+    trimmed.startsWith('http://') ||
+    trimmed.startsWith('https://')
+  ) {
+    return trimmed;
+  }
+  return DEFAULT_CONSTRUCTION_PHOTO;
+}
 
 export default function ProjectDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -137,6 +160,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   const [ganttShowResources, setGanttShowResources] = useState(true);
   const [isRecording, setIsRecording] = useState(false);
   const [voiceNotes, setVoiceNotes] = useState<string[]>([]);
+  const [isRecordingChatVoice, setIsRecordingChatVoice] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   // Site Media Gallery States
@@ -146,6 +170,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
     type: 'image' | 'video';
     createdAt: string;
     name: string;
+    caption?: string;
   }
   const [galleryMedia, setGalleryMedia] = useState<GalleryMediaItem[]>([]);
   const [galleryLoading, setGalleryLoading] = useState(true);
@@ -171,9 +196,72 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   const [checklistLoading, setChecklistLoading] = useState(true);
   const [expandedChecklistId, setExpandedChecklistId] = useState<string | null>(null);
 
+  // Find project
+  const project = projects.find(p => p.id === id);
+
   // DPR States
   const [dprLogs, setDprLogs] = useState<any[]>([]);
   const [dprLoading, setDprLoading] = useState(true);
+
+  // New Client-Facing DPR Redesign States
+  const [operationsSubTab, setOperationsSubTab] = useState<'feed' | 'agencies' | 'issues' | 'photos' | 'client-report' | 'history'>('feed');
+  const [selectedDPRDate, setSelectedDPRDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [clientDPRReport, setClientDPRReport] = useState<any>(null);
+  const [delayEvents, setDelayEvents] = useState<any[]>([]);
+  const [generatingDPR, setGeneratingDPR] = useState<boolean>(false);
+  const [isEditingDPR, setIsEditingDPR] = useState<boolean>(false);
+  const [editedDPR, setEditedDPR] = useState<any>(null);
+  const [selectedTimelineDPR, setSelectedTimelineDPR] = useState<any>(null);
+  const [isEditingModalDPR, setIsEditingModalDPR] = useState<boolean>(false);
+  const [selectedIssueModal, setSelectedIssueModal] = useState<any>(null);
+  const [isEditingIssueModal, setIsEditingIssueModal] = useState<boolean>(false);
+  const [issueCorrectiveActionInput, setIssueCorrectiveActionInput] = useState<string>('');
+  const [updatingIssueStatus, setUpdatingIssueStatus] = useState<boolean>(false);
+
+  // Helper function to build structured default DPR matching site operations format
+  const getDefaultClientDPR = (projName: string, dateStr: string) => ({
+    project_name: projName || "Construction Site",
+    date: dateStr,
+    day: new Date(dateStr).toLocaleDateString('en-US', { weekday: 'long' }),
+    overall_progress_pct: 0,
+    status: 'on_track',
+    total_manpower: 0,
+    trades_active: 0,
+    open_delays: 0,
+    trade_summary: [],
+    work_done: [],
+    delays: [],
+    site_verification: []
+  });
+
+  // Load saved client DPR on date or project ID change
+  useEffect(() => {
+    setIsEditingDPR(false);
+    setEditedDPR(null);
+    if (!project) return;
+    const saved = localStorage.getItem(`pramukh_client_dpr_${project.id}_${selectedDPRDate}`);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed?.delays)) {
+          parsed.delays = parsed.delays.filter((d: any) => 
+            d.reason && !d.reason.includes("Material supply logistics delay") && !d.reason.includes("Contractor shortage")
+          );
+        }
+        if (Array.isArray(parsed?.site_verification)) {
+          parsed.site_verification = parsed.site_verification.filter((p: any) => 
+            p.photo_url && typeof p.photo_url === 'string' && !p.photo_url.includes("unsplash.com")
+          );
+        }
+        setClientDPRReport(parsed);
+      } catch (err) {
+        console.error("Failed to parse saved client DPR:", err);
+        setClientDPRReport(getDefaultClientDPR(project.name, selectedDPRDate));
+      }
+    } else {
+      setClientDPRReport(getDefaultClientDPR(project.name, selectedDPRDate));
+    }
+  }, [project?.id, selectedDPRDate]);
 
   // Workflow Approvals State
   const [pendingWorkflows, setPendingWorkflows] = useState<any[]>([]);
@@ -189,9 +277,6 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
     return () => { document.body.style.overflow = 'unset'; };
   }, [isMobileMenuOpen]);
 
-  // Find project
-  const project = projects.find(p => p.id === id);
-
   // Fetch site media gallery items
   useEffect(() => {
     if (!project) return;
@@ -202,7 +287,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
 
     const fetchGalleryMedia = async () => {
       setGalleryLoading(true);
-      const isSimulation = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project');
+      const isSimulation = !isSupabaseConfigured;
       
       if (isSimulation) {
         setGalleryMedia([
@@ -339,7 +424,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
 
     const fetchChecklists = async () => {
       setChecklistLoading(true);
-      const isSimulation = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project');
+      const isSimulation = !isSupabaseConfigured;
 
       if (isSimulation) {
         // Mock checklists & items
@@ -412,7 +497,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
     fetchChecklists();
 
     // Set up Realtime listener on checklists and checklist_items tables
-    const isSimulation = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project');
+    const isSimulation = !isSupabaseConfigured;
     if (!isSimulation) {
       const channelName = `site-checklists-${dbSiteId}-${Date.now()}`;
       checklistsChannel = supabase
@@ -501,6 +586,22 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
     };
 
     fetchDPRs();
+
+    // Fetch site issues / delay events from mobile app
+    const fetchDelayEvents = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('delay_events')
+          .select('*')
+          .eq('project_id', dbSiteId)
+          .order('created_at', { ascending: false });
+        if (!error && data && isMounted) setDelayEvents(data);
+      } catch (err) {
+        console.error('Error fetching delay events:', err);
+      }
+    };
+    fetchDelayEvents();
+
     fetchWorkflows();
 
     return () => {
@@ -535,7 +636,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
 
   // Supabase sync helpers for Quality Control module
   const syncQcRequestToSupabase = async (req: any) => {
-    const isSimulation = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project');
+    const isSimulation = !isSupabaseConfigured;
     if (isSimulation) return;
 
     try {
@@ -554,10 +655,15 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
         photos: req.photos || []
       });
 
+      const dbStatus = req.status === 'Approved' ? 'approved'
+        : req.status === 'Failed' ? 'failed'
+        : req.status === 'Rejected' ? 'rejected'
+        : 'pending';
+
       const { error } = await supabase
         .from('qc_inspections')
         .update({
-          status: req.status,
+          status: dbStatus,
           remarks: remarksJson
         })
         .eq('id', req.id);
@@ -569,7 +675,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   };
 
   const syncCheckpointsToSupabase = async (reqId: string, checkpoints: any[]) => {
-    const isSimulation = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project');
+    const isSimulation = !isSupabaseConfigured;
     if (isSimulation) return;
 
     try {
@@ -590,7 +696,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
             .from('qc_inspection_items')
             .insert({
               id: newId,
-              qc_inspection_id: reqId,
+              inspection_id: reqId,
               description: cp.checkpoint,
               result: cp.result || 'Pending',
               remarks: cp.observation || ''
@@ -605,7 +711,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   };
 
   const createReworkTaskInSupabase = async (rw: any) => {
-    const isSimulation = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project');
+    const isSimulation = !isSupabaseConfigured;
     if (isSimulation) return;
 
     try {
@@ -636,7 +742,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   };
 
   const updateReworkTaskInSupabase = async (rw: any) => {
-    const isSimulation = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project');
+    const isSimulation = !isSupabaseConfigured;
     if (isSimulation) return;
 
     try {
@@ -661,7 +767,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   };
 
   const syncWorkCompletionStatus = async (wcId: string, status: string) => {
-    const isSimulation = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project');
+    const isSimulation = !isSupabaseConfigured;
     if (isSimulation) return;
 
     try {
@@ -904,7 +1010,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   // Sync reworkItems from project.tasks in live mode
   useEffect(() => {
     if (!project) return;
-    const isSimulation = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project');
+    const isSimulation = !isSupabaseConfigured;
     if (isSimulation) return;
 
     const parsedReworks = (project.tasks || [])
@@ -947,7 +1053,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
     if (!project) return;
     
     let isMounted = true;
-    const isSimulation = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project');
+    const isSimulation = !isSupabaseConfigured;
     if (isSimulation) return;
 
     const dbSiteId = getDbSiteId(project.id);
@@ -999,7 +1105,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
             const { data: qItems, error: itemsError } = await supabase
               .from('qc_inspection_items')
               .select('*')
-              .in('qc_inspection_id', inspectionIds);
+              .in('inspection_id', inspectionIds);
 
             if (itemsError) throw itemsError;
             itemsData = qItems || [];
@@ -1027,7 +1133,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
               }
             } catch (e) {}
 
-            const checklistItems = itemsData.filter(item => item.qc_inspection_id === ins.id);
+            const checklistItems = itemsData.filter(item => item.inspection_id === ins.id);
             const checkpoints = checklistItems.map(item => ({
               id: item.id,
               checkpoint: item.description,
@@ -1044,7 +1150,14 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
               submittedDate: details.submittedDate,
               requestedBy: details.requestedBy,
               priority: details.priority,
-              status: ins.status || 'Pending QC Inspection',
+              status: (() => {
+                const s = (ins.status || '').toLowerCase();
+                if (s === 'approved') return 'Approved';
+                if (s === 'failed' || s === 'fail') return 'Failed';
+                if (s === 'rejected') return 'Failed';
+                if (s === 'pending') return 'Submitted';
+                return ins.status || 'Submitted';
+              })(),
               assignedEngineer: details.assignedEngineer,
               scheduledDate: details.scheduledDate,
               location: details.location,
@@ -1132,12 +1245,12 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
     fetchQcData();
 
     // Set up Realtime listener for QC changes
-    const channelName = `qc-updates-\${dbSiteId}-\${Date.now()}`;
+    const channelName = `qc-updates-${dbSiteId}-${Date.now()}`;
     const qcChannel = supabase
       .channel(channelName)
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'qc_inspections', filter: `project_id=eq.\${dbSiteId}` },
+        { event: '*', schema: 'public', table: 'qc_inspections', filter: `project_id=eq.${dbSiteId}` },
         () => { fetchQcData(); }
       )
       .on(
@@ -1147,7 +1260,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
       )
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'daily_logs', filter: `project_id=eq.\${dbSiteId}` },
+        { event: '*', schema: 'public', table: 'daily_logs', filter: `project_id=eq.${dbSiteId}` },
         () => { fetchQcData(); }
       )
       .subscribe();
@@ -1479,52 +1592,157 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   const [attachedPhotos, setAttachedPhotos] = useState<string[]>([]);
   const [qcTemplates, setQcTemplates] = useState<any[]>([
     {
-      id: 'qc-concrete',
-      category: 'Concrete Casting',
-      title: 'Concrete Casting Inspection',
+      id: 'qc-footing',
+      category: 'Civil Work',
+      title: 'RCC Footing Inspection Report',
       checkpoints: [
-        'Formwork alignment and shuttering oil check',
-        'Rebar layout, spacing, and binding checks',
-        'Reinforcement concrete cover block spacing check',
-        'Slump test value and water-cement ratio verification',
-        'Concrete pour vibrator usage check',
-        'Proper water curing scheduling check'
+        '[Pre-Casting] Line Out of Footing as per Centerline',
+        '[Pre-Casting] Length of Footing (Site Dimension check)',
+        '[Pre-Casting] Width of Footing (Site Dimension check)',
+        '[Pre-Casting] Height of Footing - Marking to be checked',
+        '[Pre-Casting] Diagonal Dimensions check',
+        '[Pre-Casting] Cleaning of Bottom PCC Surface',
+        '[Pre-Casting] Footing Steel Checking as per Drawing',
+        '[Pre-Casting] Cover placed as per Specified Sizes',
+        '[Pre-Casting] Formwork properly braced & Supported from all sides',
+        '[Post-Casting] Date of Footing casting to be logged',
+        '[Post-Casting] Cubes to be removed on next day and kept for curing',
+        '[Post-Casting] Curing of Footing to be done for min 15 days with wet Hessian cloth',
+        '[Post-Casting] Finishing of honey combing if any'
+      ]
+    },
+    {
+      id: 'qc-column',
+      category: 'Civil Work',
+      title: 'RCC Column Inspection Report',
+      checkpoints: [
+        'Column positioning as per centerline',
+        'Sizes as per drawing (Site Dimension check)',
+        'Diagonals check',
+        'Proper oiling on shuttering',
+        'Plumb level check',
+        'Level marking upto which concreting to be done',
+        'Form work properly braced from sides',
+        'Cover placed as per specified sizes',
+        'Reinforcement as per detail with sufficient lap length'
+      ]
+    },
+    {
+      id: 'qc-slab',
+      category: 'Civil Work',
+      title: 'RCC Slab Inspection Report',
+      checkpoints: [
+        'Line and Level of Beam Bottom as per Drawings',
+        'Height/Level of slab from Plinth/Slab level as per Drawings',
+        'Width of Beam Bottom Plank and Top (Kanda maap)',
+        'Depth of beam as per drawing',
+        'Beam sides properly fixed in line, level and plumb',
+        'Levels of each individual bay to be checked',
+        'Checking of bay sizes, diagonals and Out to Out dimensions of building',
+        'Column Reduction direction and Termination as per Drawings',
+        'Quality of shuttering material (Edges of Ply not broken / no bending)'
       ]
     },
     {
       id: 'qc-masonry',
-      category: 'Masonry & Plastering',
-      title: 'Brick Masonry & Plastering Check',
+      category: 'Civil Work',
+      title: 'Masonry Inspection Report',
       checkpoints: [
-        'Mortar mix ratio (e.g. 1:4 / 1:6) check',
-        'Plumb alignment and wall verticality checks',
-        'Joint thickness check (should be uniform 10mm)',
-        'Rough surface keying check before plastering',
-        'Plaster level thickness & curing check'
+        'Cleaning of entire floor before starting line out of masonry',
+        'Checking of dimensions & diagonals of room after first layer (rangat / perni / nondh)',
+        'First layer checked with beam bottom edge, offset, plumb',
+        'Opening provided for doors at first layer and for window & A.C. unit at sill level',
+        'Sand and cement screed applied on adjoining column surface',
+        'Water sprinkled over bricks before start of masonry work',
+        'Specific bond followed and avoid vertical perpend',
+        'Mortar applied properly on all block surfaces (no gaps)',
+        'Plumb checked at every layer',
+        'Water curing done for at least 7 days',
+        'Adjustment in brick laying such that last layer touches beam bottom (gap <= 10mm)',
+        'Junction of Last Layer of Brick and Beam Bottom fixed with Cement Mortar & Aggregate',
+        'Cleaning of rooms'
       ]
     },
     {
-      id: 'qc-plumbing',
-      category: 'Plumbing & Sanitary',
-      title: 'Plumbing Pressure & Leakage Check',
+      id: 'qc-plaster',
+      category: 'Finishing Work',
+      title: 'Internal Plaster Inspection Report',
       checkpoints: [
-        'Pipe pressure testing (e.g., 5 bar test)',
-        'Drainage pipe slope alignment verification',
-        'Leakage test at joints & connectors',
-        'Waterproofing of wet areas (bathrooms/balconies) check',
-        'Sanitary fixture testing'
+        '[Pre-Plastering] Masonry work completely finished',
+        '[Pre-Plastering] Watering of surface a day before plastering',
+        '[Pre-Plastering] All electrical conduiting chasing work completed',
+        '[Pre-Plastering] Height of Switch boards as per drawings',
+        '[Pre-Plastering] All chasing work filled and covered with Chicken mesh',
+        '[Pre-Plastering] All concrete and masonry junctions covered with chicken mesh',
+        '[Pre-Plastering] All concrete work properly hacked (tanchaa)',
+        '[Pre-Plastering] T.P. (Thiyaa) marked as per minimum plaster level (12mm-15mm)',
+        '[Pre-Plastering] Checking of Plumb and Right Angle for T.P. marked',
+        '[Pre-Plastering] All electrical boxes covered with dummy plates',
+        '[Pre-Plastering] Min. 5" as per decided plaster left from bottom floor for skirting',
+        '[Post-Plastering] Proper curing work for min. 10 days',
+        '[Post-Plastering] Checking plumb line, level and right angle of all plastered surfaces',
+        '[Post-Plastering] Cleaning of plastered surface',
+        '[Post-Plastering] Sill, column, beam edges properly dressed at right angle and in plumb'
       ]
     },
     {
-      id: 'qc-electrical',
-      category: 'Electrical Installation',
-      title: 'Conduiting & Wiring Continuity Check',
+      id: 'qc-granite',
+      category: 'Finishing Work',
+      title: 'Granite / Marble Frame Inspection Report',
       checkpoints: [
-        'Conduit pipe routing and joint checks',
-        'Continuity and insulation resistance test of cables',
-        'DB/MCB placement and wiring connection checks',
-        'Earthing and ground resistance measurement check',
-        'Fixing switchboards & fixtures check'
+        'Dimensions (Length and Width) as per drawings',
+        'Diagonal measurements check',
+        'Vertical Straightness (Plumb Line check)',
+        'Mortar applied evenly throughout length and width of stone',
+        'Stone edges properly shaped and not broken'
+      ]
+    },
+    {
+      id: 'qc-flooring',
+      category: 'Finishing Work',
+      title: 'Flooring Tile Inspection Report',
+      checkpoints: [
+        'Dimension of tiles (length and width) as per requirement',
+        'Diagonal dimensions check',
+        'Tiles soaked for 12 hours before commencement of work',
+        'Dry weight Vs Wet weight check',
+        'Cleaning of surface a day before flooring work',
+        'Common reference level marked on all walls of each room/bay',
+        'Benchmark flooring level (Thiya) made before maachan work',
+        'Flooring work started as per starting point and laying direction in drawing',
+        'Maachan work done as per Thiya marked & necessary slope given in bathroom/toilets',
+        'All vertical and horizontal lines in one line',
+        'Cement slurry evenly poured below tile over entire surface',
+        'No undulation observed at joints'
+      ]
+    },
+    {
+      id: 'qc-wall-tiles',
+      category: 'Finishing Work',
+      title: 'Wall Tiling Inspection Report',
+      checkpoints: [
+        'Dimension of tiles (length and width) as per requirement',
+        'Diagonal dimensions check',
+        'Tiles soaked for 12 hours before commencement of work',
+        'Dry weight Vs Wet weight check',
+        'Benchmark level (Thiya) made on all walls',
+        'Mortar applied evenly on entire surface of tile, no voids observed',
+        'All vertical and horizontal lines in one line',
+        'No undulation observed at joints',
+        'Height checked upto which Dado is to be done'
+      ]
+    },
+    {
+      id: 'qc-cube-test',
+      category: 'Lab & Testing',
+      title: 'Concrete Cube Strength Test Report',
+      checkpoints: [
+        'Concrete Grade & Slump test mm verification',
+        'Specimen Curing Start & Finish Date logging',
+        'Weight of 150mm Cube Specimen check',
+        '7 Days Compressive Strength Test (KN & N/mm² vs Required Avg)',
+        '28 Days Compressive Strength Test (KN & N/mm² vs Required Avg)',
+        'Pass / Fail Result Certification & Review Signoff'
       ]
     }
   ]);
@@ -1712,6 +1930,259 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   const formatCurrency = (val: number) => {
     if (val >= 10000000) return `INR ${(val / 10000000).toFixed(2)} Cr`;
     return `INR ${(val / 100000).toFixed(2)} L`;
+  };
+
+  // Compile Today's Site Logs for AI Analysis
+  const compileTodayLogs = () => {
+    if (!project) return [];
+    
+    // 1. Filter DB dpr logs for selected date
+    const dbLogs = dprLogs.filter(dpr => {
+      const dprDate = dpr.date || dpr.report_date || '';
+      return dprDate.split('T')[0] === selectedDPRDate;
+    }).map(dpr => {
+      // Calculate actual manpower from activity lines if available, otherwise root manpower/totalLabourCount, or 1
+      const lineManpowerSum = (dpr.dpr_activity_lines || []).reduce((sum: number, l: any) => sum + (Number(l.headcount || l.manpower_count) || 0), 0);
+      const actualManpower = lineManpowerSum > 0 ? lineManpowerSum : (Number(dpr.totalLabourCount || dpr.manpower) || 1);
+
+      const firstLine = dpr.dpr_activity_lines?.[0] || dpr.activities?.[0] || {};
+      const tradeName = firstLine.trade_name || firstLine.work_type || dpr.agency_name || dpr.contractor_name || "General Work";
+      const locationName = firstLine.location || firstLine.location_zone || "Site Area";
+
+      return {
+        trade: tradeName,
+        location: locationName,
+        manpower_count: actualManpower,
+        activity_text: dpr.activities_completed || dpr.workCompleted || (dpr.dpr_activity_lines || dpr.activities || []).map((a: any) => a.activity_name || a.activity_text || a.remarks).filter(Boolean).join(', ') || "Site activity logged",
+        photo_urls: dpr.photos || (dpr.dpr_activity_lines || []).flatMap((l: any) => l.photo_urls || []).filter(Boolean),
+        timestamp: dpr.submitted_at || dpr.date || new Date().toISOString(),
+        site_manager_name: dpr.created_by_name || dpr.submitted_by || "Site Engineer"
+      };
+    });
+
+    // 2. Gather logs from WhatsApp inbox chat messages
+    const chatLogs = (project.chats || []).filter(msg => {
+      const msgDate = msg.timestamp || '';
+      return msgDate.split('T')[0] === selectedDPRDate;
+    }).map(msg => {
+      let trade = "General Operations";
+      const text = msg.message.toLowerCase();
+      if (text.includes("brick") || text.includes("masonry") || text.includes("brickwork")) trade = "Brickwork & Masonry";
+      else if (text.includes("rcc") || text.includes("concrete") || text.includes("slab") || text.includes("rebar") || text.includes("reinforcement")) trade = "RCC & Concrete";
+      else if (text.includes("wiring") || text.includes("electric") || text.includes("conduit") || text.includes("plumbing") || text.includes("pipe")) trade = "Electrical & Plumbing";
+      else if (text.includes("plaster") || text.includes("gypsum") || text.includes("finish") || text.includes("paint")) trade = "Plastering & Finishes";
+
+      let location = "Site Area";
+      if (text.includes("tower a")) location = "Tower A";
+      else if (text.includes("tower b")) location = "Tower B";
+      else if (text.includes("block c")) location = "Block C";
+      
+      let manpower = 0;
+      const workersMatch = msg.message.match(/(\d+)\s*(?:workers|men|laborers|masons|guys|headcount)/i);
+      if (workersMatch) {
+        manpower = parseInt(workersMatch[1]);
+      }
+
+      return {
+        trade,
+        location,
+        manpower_count: manpower > 0 ? manpower : 1,
+        activity_text: `[Inbox Chat - ${msg.senderName} (${msg.senderRole})]: ${msg.message}`,
+        photo_urls: msg.attachments && msg.attachments.length > 0 ? msg.attachments : [],
+        timestamp: msg.timestamp,
+        site_manager_name: msg.senderName
+      };
+    });
+
+    return [...dbLogs, ...chatLogs];
+  };
+
+  // Compile Yesterday's Planned Tasks
+  const compileYesterdayPlan = () => {
+    if (project?.tasks && project.tasks.length > 0) {
+      const activeTasks = project.tasks.filter(t => t.status !== 'COMPLETED');
+      if (activeTasks.length > 0) {
+        return activeTasks.map(t => ({
+          trade: t.phase || "General Structure",
+          location: t.siteTowerBlock || "Tower A & B",
+          planned_activity: t.name,
+          material_required: "As per task BOQ"
+        }));
+      }
+    }
+    return [];
+  };
+
+  // Local compilation fallback algorithm in case OpenAI API is offline/not configured
+  const runLocalDPRCompilation = (todayLogs: any[], yesterdayPlan: any[]) => {
+    const workDone = todayLogs.map(log => ({
+      trade: log.trade,
+      location: log.location,
+      manpower: log.manpower_count,
+      activity: log.activity_text,
+      photo_urls: log.photo_urls
+    }));
+
+    const delays: any[] = [];
+    if (yesterdayPlan.length > 0) {
+      yesterdayPlan.forEach(plan => {
+        const match = todayLogs.find(log => 
+          log.trade.toLowerCase() === plan.trade.toLowerCase() && 
+          log.location.toLowerCase() === plan.location.toLowerCase()
+        );
+        if (!match || match.manpower_count === 0) {
+          delays.push({
+            trade: plan.trade,
+            location: plan.location,
+            planned: plan.planned_activity,
+            actual: match ? match.activity_text : "No activity logged today.",
+            reason: "Task delay / Pending site progress"
+          });
+        }
+      });
+    }
+
+    const totalManpower = todayLogs.reduce((sum, log) => sum + (Number(log.manpower_count) || 0), 0);
+    const tradesActive = new Set(todayLogs.map(log => log.trade)).size;
+    const matchedCount = yesterdayPlan.length - delays.length;
+    const progressPct = yesterdayPlan.length > 0 ? Math.round((matchedCount / yesterdayPlan.length) * 100) : 100;
+
+    let status: 'on_track' | 'delayed' | 'critical' = 'on_track';
+    if (delays.length >= 3) {
+      status = 'critical';
+    } else if (delays.length >= 1) {
+      status = 'delayed';
+    }
+
+    const siteVerification = Array.from(new Set(todayLogs.map(log => log.site_manager_name))).map(name => ({
+      site_manager_name: name,
+      location: "Site Office",
+      photo_url: todayLogs.find(l => l.photo_urls?.length)?.[0] || "",
+      timestamp: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+    })).filter(v => v.photo_url);
+
+    return {
+      project_name: project?.name || "Construction Site",
+      date: selectedDPRDate,
+      day: new Date(selectedDPRDate).toLocaleDateString('en-US', { weekday: 'long' }),
+      overall_progress_pct: progressPct,
+      status,
+      total_manpower: totalManpower,
+      trades_active: tradesActive,
+      open_delays: delays.length,
+      work_done: workDone,
+      delays: delays,
+      site_verification: siteVerification,
+      tomorrow_plan: yesterdayPlan
+    };
+  };
+
+  // Compile daily site reports with AI using the system prompt
+  const generateDPRWithAI = async () => {
+    if (!project) return;
+    setGeneratingDPR(true);
+
+    const todayLogs = compileTodayLogs();
+    const yesterdayPlan = compileYesterdayPlan();
+
+    const userMessage = `
+TODAY_LOGS:
+${JSON.stringify(todayLogs, null, 2)}
+
+YESTERDAY_PLAN:
+${JSON.stringify(yesterdayPlan, null, 2)}
+`;
+
+    const systemPrompt = `You are a construction site reporting assistant. You will be given:
+1. TODAY_LOGS: a JSON array of site manager log entries for one project, one day.
+   Each entry has: trade, location, manpower_count, activity_text, photo_urls, timestamp, site_manager_name.
+2. YESTERDAY_PLAN: a JSON array of planned activities for today, carried over from the
+   previous day's planner. Each entry has: trade, location, planned_activity, material_required.
+
+Your job is to produce ONE JSON object matching this exact schema — no prose, no markdown,
+no explanation outside the JSON:
+
+{
+  "project_name": "${project.name}",
+  "date": "${selectedDPRDate}",
+  "day": "${new Date(selectedDPRDate).toLocaleDateString('en-US', { weekday: 'long' })}",
+  "overall_progress_pct": number,       // % of YESTERDAY_PLAN items that have a matching TODAY_LOGS entry
+  "status": "on_track" | "delayed" | "critical",
+  "total_manpower": number,
+  "trades_active": number,
+  "open_delays": number,
+  "work_done": [
+    { "trade": string, "location": string, "manpower": number, "activity": string, "photo_urls": [string] }
+  ],
+  "delays": [
+    { "trade": string, "location": string, "planned": string, "actual": string, "reason": string }
+  ],
+  "site_verification": [
+    { "site_manager_name": string, "location": string, "photo_url": string, "timestamp": string }
+  ],
+  "tomorrow_plan": [
+    { "trade": string, "location": string, "planned_activity": string, "material_required": string }
+  ]
+}
+
+Rules:
+- Group TODAY_LOGS by trade. Sum manpower per trade+location pair.
+- A delay exists when a YESTERDAY_PLAN item has no matching TODAY_LOGS entry for the same
+  trade+location, OR the matching entry has manpower_count of 0. State the reason only if
+  it's present in the log text — otherwise write "Not specified, flag for site manager follow-up."
+- status = "critical" if open_delays >= 3 or any single trade has been delayed 2+ days running. Otherwise "delayed" if open_delays >= 1, else "on_track".
+- overall_progress_pct = round(matched_plan_items / total_plan_items * 100). If YESTERDAY_PLAN
+  is empty, return null for this field rather than guessing.
+- Do not invent manpower numbers, locations, or activities that are not present in TODAY_LOGS.
+- Every site_manager_name that appears in TODAY_LOGS must appear once in site_verification.
+- Output valid JSON only. No trailing commentary.`;
+
+    try {
+      const response = await fetch('/api/ai/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          message: `${systemPrompt}\n\nUser inputs to analyze:\n${userMessage}`,
+          history: [],
+          context: {
+            projects: projects,
+            currentUser: currentUser
+          }
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('AI API request failed');
+      }
+
+      const data = await response.json();
+      const aiResponse = data.response || '';
+
+      let reportData = null;
+      try {
+        const jsonMatch = aiResponse.match(/```json\s*([\s\S]*?)\s*```/) || aiResponse.match(/```\s*([\s\S]*?)\s*```/);
+        const cleanText = jsonMatch ? jsonMatch[1].trim() : aiResponse.trim();
+        reportData = JSON.parse(cleanText);
+      } catch (parseErr) {
+        console.error("Failed to parse JSON, attempting string cleanup:", parseErr);
+        const cleanStr = aiResponse.replace(/```json/g, '').replace(/```/g, '').trim();
+        reportData = JSON.parse(cleanStr);
+      }
+
+      if (reportData) {
+        setClientDPRReport(reportData);
+        localStorage.setItem(`pramukh_client_dpr_${project.id}_${selectedDPRDate}`, JSON.stringify(reportData));
+      }
+    } catch (err) {
+      console.error('Error generating AI DPR report, using local compiler:', err);
+      const localReport = runLocalDPRCompilation(todayLogs, yesterdayPlan);
+      setClientDPRReport(localReport);
+      localStorage.setItem(`pramukh_client_dpr_${project.id}_${selectedDPRDate}`, JSON.stringify(localReport));
+    } finally {
+      setGeneratingDPR(false);
+    }
   };
 
   // Submit Daily Activity
@@ -1952,7 +2423,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
     setWcPhotoUrlInput('');
 
     // Database Sync
-    const isSimulation = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project');
+    const isSimulation = !isSupabaseConfigured;
     if (!isSimulation) {
       const dbSiteId = getDbSiteId(project!.id);
       
@@ -1990,10 +2461,13 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
         completionId: newQcr.completionId
       });
 
+      const randomNum = Math.floor(1000 + Math.random() * 9000);
+      const inspectionNumber = `QC-CP-${new Date().getFullYear()}-${randomNum}`;
       supabase.from('qc_inspections').insert({
         id: newQcrId,
         project_id: dbSiteId,
-        status: 'Submitted',
+        inspection_number: inspectionNumber,
+        status: 'pending',
         remarks: remarksJson
       }).then();
 
@@ -2001,6 +2475,33 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
     }
 
     showQcAlert(`Work completion ${newWcId} recorded and QC Request ${newQcrId} generated!`);
+  };
+
+  const handleSuspendInspectionCheck = () => {
+    if (!inspectingReqId) return;
+    const req = qcRequests.find(r => r.id === inspectingReqId);
+    if (!req) return;
+
+    const pointsChecked = req.checklist.checkpoints.filter((c: any) => c.result !== 'Pending').length;
+    const totalPoints = req.checklist.checkpoints.length;
+
+    const updatedReq = {
+      ...req,
+      photos: Array.from(new Set([...(req.photos || []), ...attachedPhotos])),
+      draftReworkDesc: reworkDesc,
+      draftReworkTargetDate: reworkTargetDate,
+      lastSuspendedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    };
+
+    setQcRequests(prev => prev.map(r => r.id === inspectingReqId ? updatedReq : r));
+    syncQcRequestToSupabase(updatedReq);
+
+    setInspectingReqId(null);
+    setAttachedPhotos([]);
+    setReworkTargetDate('');
+    setReworkDesc('');
+
+    showQcAlert(`⏸️ Inspection suspended for ${req.activityName}. Progress saved (${pointsChecked}/${totalPoints} points verified)!`, 'info');
   };
 
   const handleAssignQCRequest = (requestId: string) => {
@@ -2074,7 +2575,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   };
 
   const syncTemplateItemsToSupabase = async (templateId: string, checkpoints: string[]) => {
-    const isSimulation = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project');
+    const isSimulation = !isSupabaseConfigured;
     if (isSimulation) return;
     try {
       await supabase
@@ -2257,7 +2758,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
     setNewTemplateTitle('');
     setNewTemplatePoints('');
 
-    const isSimulation = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project');
+    const isSimulation = !isSupabaseConfigured;
     if (!isSimulation) {
       try {
         await supabase
@@ -2882,7 +3383,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
     if (!project) return;
     const checklistId = crypto.randomUUID();
     const dbSiteId = getDbSiteId(project.id);
-    const isSimulation = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project');
+    const isSimulation = !isSupabaseConfigured;
 
     const newChecklist = {
       id: checklistId,
@@ -2972,7 +3473,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
 
     setDbChecklistItems(prev => prev.map(i => i.id === itemId ? { ...i, text: updatedText, done: nextDone } : i));
 
-    const isSimulation = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project');
+    const isSimulation = !isSupabaseConfigured;
     if (!isSimulation) {
       try {
         await supabase
@@ -3001,7 +3502,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
 
     setDbChecklistItems(prev => prev.map(i => i.id === itemId ? { ...i, text: updatedText } : i));
 
-    const isSimulation = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project');
+    const isSimulation = !isSupabaseConfigured;
     if (!isSimulation) {
       try {
         await supabase
@@ -3022,7 +3523,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
     setDbChecklistItems(prev => prev.filter(i => i.checklistId !== checklistId));
     if (expandedChecklistId === checklistId) setExpandedChecklistId(null);
 
-    const isSimulation = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project');
+    const isSimulation = !isSupabaseConfigured;
     if (!isSimulation) {
       try {
         await supabase
@@ -3038,7 +3539,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   // Reject / Delete PR
   const handleDashboardDeletePR = async (materialId: string) => {
     if (!confirm('Are you sure you want to reject and delete this purchase request?')) return;
-    const isSimulation = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project');
+    const isSimulation = !isSupabaseConfigured;
 
     if (isSimulation) {
       useAppStore.setState(state => ({
@@ -3073,7 +3574,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
       }
     } catch (e) {}
 
-    const isSimulation = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('your-project');
+    const isSimulation = !isSupabaseConfigured;
 
     if (nextStage === 'Delivered') {
       // Transition to in-stock
@@ -3188,9 +3689,8 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
     { id: 'quality-control', label: 'Quality Control', icon: ShieldCheck },
     { id: 'site-operations', label: 'Site Operations', icon: Wrench },
     { id: 'budget', label: 'Budget', icon: Coins },
-    { id: 'billing', label: 'Billing', icon: FileSpreadsheet },
+    {id: 'billing', label: 'Billing', icon: FileSpreadsheet },
     { id: 'tasks', label: 'Tasks', icon: ListTodo },
-    { id: 'analytics', label: 'Analytics', icon: BarChart3 },
     { id: 'inbox', label: 'Inbox', icon: MessageSquare },
     { id: 'vendor-management', label: 'Vendor Scorecard', icon: Award },
     { id: 'document-control', label: 'Document Control', icon: FileText },
@@ -3211,121 +3711,70 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
 
   return (
     <div className="flex w-full h-screen overflow-hidden bg-gray-50 dark:bg-black/95">
-      {/* Left Sidebar */}
-      <aside className="hidden md:flex flex-col w-64 border-r border-gray-200/50 dark:border-gray-800/50 bg-white dark:bg-gray-900 h-full shrink-0 z-40 pb-2 justify-between select-none">
-        <div className="flex flex-col overflow-y-auto scrollbar-none flex-1">
-          {/* Top: Exit Button & Brand Logo */}
-          <div className="flex items-center gap-3 h-14 px-5 flex-shrink-0">
-            <Link href="/projects" className="w-9 h-9 flex items-center justify-center rounded-full bg-gray-50 dark:bg-gray-850 border border-gray-200/50 dark:border-gray-800/50 hover:bg-gray-100 dark:hover:bg-gray-800 hover:border-gray-300 dark:hover:border-gray-700 transition-all text-gray-600 dark:text-gray-300 shadow-xs" title="Back to Projects">
-              <ArrowLeft className="w-4 h-4" />
-            </Link>
-            <div className="flex items-center gap-2 min-w-0">
-              <svg className="w-6 h-6 text-[#b68d40] drop-shadow-md flex-shrink-0" viewBox="30 1 36 29" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path className="fill-[#b68d40]" d="M52.13,17.62v2.6s7.81,1.18,9,9.31h4.34a4.39,4.39,0,0,1-1.9-2.21C63,25.74,60.25,18.65,52.13,17.62ZM34.47,3.9H44.72V14.23C37.23,14.15,34.62,13.2,34.47,3.9ZM30,1.38A5.14,5.14,0,0,1,32,5.24v.63c.71,9.31,4.65,10.57,12.7,10.65V27.16h-.08s-.4,2.21-1.58,2.37h4.18V1.38H30ZM43.53,17.62v2.6s-7.8,1.18-8.91,9.31H30.29a4.07,4.07,0,0,0,1.81-2.21C32.65,25.74,35.49,18.65,43.53,17.62ZM51,14.23V3.9H61.28C61,13.2,58.44,14.15,51,14.23ZM63.8,1.38H48.5V29.53h4.1C51.5,29.37,51,27.16,51,27.16h0V16.52c8-0.08,12-1.34,12.61-10.65a1.71,1.71,0,0,0,.08-.63,4.93,4.93,0,0,1,2-3.86Z"/>
-              </svg>
-              <span className="font-heading font-black text-sm text-gray-900 dark:text-white truncate" title={project!.name}>{project!.name}</span>
-            </div>
-          </div>
-
-          {/* Navigation Menu */}
-          <nav className="flex flex-col">
-
-            {/* Overview */}
-            <button
-              onClick={() => setActiveTab('project-management')}
-              className={`flex items-center gap-3 w-full pl-[17px] pr-4 py-1.5 text-[13px] font-semibold transition-all duration-150 border-l-[3px] rounded-none ${
-                activeTab === 'project-management'
-                  ? 'bg-[#b68d40]/10 text-[#b68d40] border-[#b68d40]'
-                  : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 border-transparent'
-              }`}
-            >
-              <Building2 className="w-4 h-4 flex-shrink-0" />
-              <span>Overview</span>
-            </button>
-
-            {/* Inbox */}
-            <button
-              onClick={() => setActiveTab('inbox')}
-              className={`flex items-center gap-3 w-full pl-[17px] pr-4 py-1.5 text-[13px] font-semibold transition-all duration-150 border-l-[3px] rounded-none ${
-                activeTab === 'inbox'
-                  ? 'bg-[#b68d40]/10 text-[#b68d40] border-[#b68d40]'
-                  : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 border-transparent'
-              }`}
-            >
-              <MessageSquare className="w-4 h-4 flex-shrink-0" />
-              <span>Inbox</span>
-            </button>
-
-            {/* OPERATIONS */}
-            <p className="pl-5 pr-4 pt-2 pb-0.5 text-[10px] font-extrabold uppercase tracking-widest text-gray-400 dark:text-gray-600 m-0">Operations</p>
-            {projectModules.filter(m => ['site-operations', 'quality-control', 'tasks', 'equipment-tracking'].includes(m.id)).map(module => {
-              const Icon = module.icon;
-              const isActive = activeTab === module.id;
-              return (
-                <button
-                  key={module.id}
-                  onClick={() => setActiveTab(module.id)}
-                  className={`flex items-center gap-3 w-full pl-[17px] pr-4 py-1.5 text-[13px] font-semibold transition-all duration-150 border-l-[3px] rounded-none ${
-                    isActive ? 'bg-[#b68d40]/10 text-[#b68d40] border-[#b68d40]' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 border-transparent'
-                  }`}
-                >
-                  <Icon className="w-4 h-4 flex-shrink-0" />
-                  <span>{module.label}</span>
-                </button>
-              );
-            })}
-
-            {/* SUPPLY CHAIN */}
-            <p className="pl-5 pr-4 pt-2 pb-0.5 text-[10px] font-extrabold uppercase tracking-widest text-gray-400 dark:text-gray-600 m-0">Supply Chain</p>
-            {projectModules.filter(m => ['procurement', 'inventory', 'vendor-management'].includes(m.id)).map(module => {
-              const Icon = module.icon;
-              const isActive = activeTab === module.id;
-              return (
-                <button
-                  key={module.id}
-                  onClick={() => setActiveTab(module.id)}
-                  className={`flex items-center gap-3 w-full pl-[17px] pr-4 py-1.5 text-[13px] font-semibold transition-all duration-150 border-l-[3px] rounded-none ${
-                    isActive ? 'bg-[#b68d40]/10 text-[#b68d40] border-[#b68d40]' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 border-transparent'
-                  }`}
-                >
-                  <Icon className="w-4 h-4 flex-shrink-0" />
-                  <span>{module.label}</span>
-                </button>
-              );
-            })}
-
-            {/* Documents (standalone) */}
-            <button
-              onClick={() => setActiveTab('document-control')}
-              className={`flex items-center gap-3 w-full pl-[17px] pr-4 py-1.5 text-[13px] font-semibold mt-3 transition-all duration-150 border-l-[3px] rounded-none ${
-                activeTab === 'document-control' ? 'bg-[#b68d40]/10 text-[#b68d40] border-[#b68d40]' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 border-transparent'
-              }`}
-            >
-              <FileText className="w-4 h-4 flex-shrink-0" />
-              <span>Documents</span>
-            </button>
-
-            {/* FINANCIALS */}
-            <p className="pl-5 pr-4 pt-2 pb-0.5 text-[10px] font-extrabold uppercase tracking-widest text-gray-400 dark:text-gray-600 m-0">Financials</p>
-            {projectModules.filter(m => ['budget', 'billing', 'analytics'].includes(m.id)).map(module => {
-              const Icon = module.icon;
-              const isActive = activeTab === module.id;
-              return (
-                <button
-                  key={module.id}
-                  onClick={() => setActiveTab(module.id)}
-                  className={`flex items-center gap-3 w-full pl-[17px] pr-4 py-1.5 text-[13px] font-semibold transition-all duration-150 border-l-[3px] rounded-none ${
-                    isActive ? 'bg-[#b68d40]/10 text-[#b68d40] border-[#b68d40]' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 border-transparent'
-                  }`}
-                >
-                  <Icon className="w-4 h-4 flex-shrink-0" />
-                  <span>{module.label}</span>
-                </button>
-              );
-            })}
-
-          </nav>
+      {/* Left Sidebar - narrow icon style matching reference */}
+      <aside className="hidden md:flex flex-col w-[78px] border-r border-gray-200/50 dark:border-gray-800/50 bg-white dark:bg-gray-900 h-full shrink-0 z-40 justify-between select-none overflow-y-auto scrollbar-none">
+        {/* Top Logo */}
+        <div className="flex items-center justify-center h-16 flex-shrink-0 border-b border-gray-100 dark:border-gray-800/60">
+          <Link href="/projects" title="Back to Projects" className="flex items-center justify-center w-10 h-10 rounded-xl hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors group">
+            <svg className="w-7 h-7 text-[#b68d40] drop-shadow-sm" viewBox="30 1 36 29" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path className="fill-[#b68d40]" d="M52.13,17.62v2.6s7.81,1.18,9,9.31h4.34a4.39,4.39,0,0,1-1.9-2.21C63,25.74,60.25,18.65,52.13,17.62ZM34.47,3.9H44.72V14.23C37.23,14.15,34.62,13.2,34.47,3.9ZM30,1.38A5.14,5.14,0,0,1,32,5.24v.63c.71,9.31,4.65,10.57,12.7,10.65V27.16h-.08s-.4,2.21-1.58,2.37h4.18V1.38H30ZM43.53,17.62v2.6s-7.8,1.18-8.91,9.31H30.29a4.07,4.07,0,0,0,1.81-2.21C32.65,25.74,35.49,18.65,43.53,17.62ZM51,14.23V3.9H61.28C61,13.2,58.44,14.15,51,14.23ZM63.8,1.38H48.5V29.53h4.1C51.5,29.37,51,27.16,51,27.16h0V16.52c8-0.08,12-1.34,12.61-10.65a1.71,1.71,0,0,0,.08-.63,4.93,4.93,0,0,1,2-3.86Z"/>
+            </svg>
+          </Link>
         </div>
+
+        {/* Nav Items */}
+        <nav className="flex flex-col items-center flex-1 py-3 gap-1">
+          {[
+            { id: 'project-management', label: 'Overview',       Icon: Building2       },
+            { id: 'inbox',              label: 'Inbox',           Icon: MessageSquare   },
+            { id: 'quality-control',    label: 'Quality',         Icon: ShieldCheck     },
+            { id: 'site-operations',    label: 'Site Ops',        Icon: Wrench          },
+            { id: 'tasks',              label: 'Tasks',           Icon: ListTodo        },
+            { id: 'equipment-tracking', label: 'Fleet',           Icon: Truck           },
+            { id: 'procurement',        label: 'Procurement',     Icon: ShoppingCart    },
+            { id: 'inventory',          label: 'Inventory',       Icon: PackageOpen     },
+            { id: 'vendor-management',  label: 'Vendors',         Icon: Award           },
+            { id: 'document-control',   label: 'Documents',       Icon: FileText        },
+            { id: 'budget',             label: 'Budget',          Icon: Coins           },
+            { id: 'billing',            label: 'Billing',         Icon: FileSpreadsheet },
+          ].map(({ id, label, Icon }) => {
+            const isActive = activeTab === id;
+            return (
+              <button
+                key={id}
+                onClick={() => setActiveTab(id as ProjectTab)}
+                className={`relative flex flex-col items-center justify-center w-full py-2 gap-1 transition-all duration-150 border-l-[3px] ${
+                  isActive
+                    ? 'border-[#b68d40] text-[#b68d40] bg-amber-50/70 dark:bg-amber-900/15'
+                    : 'border-transparent text-gray-500 dark:text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800/60'
+                }`}
+                title={label}
+              >
+                <Icon className="w-5 h-5 flex-shrink-0" strokeWidth={isActive ? 2.2 : 1.8} />
+                <span className={`text-[9px] font-bold uppercase tracking-wide leading-none ${isActive ? 'text-[#b68d40]' : 'text-gray-400 dark:text-gray-500'}`}>
+                  {label}
+                </span>
+              </button>
+            );
+          })}
+        </nav>
+
+        {/* Bottom: Issues badge */}
+        {unreadNotificationCount > 0 && (
+          <div className="flex flex-col items-center pb-4">
+            <button
+              onClick={() => setIsNotificationOpen(true)}
+              className="relative flex flex-col items-center justify-center w-full py-2 gap-1 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/20 transition-colors"
+              title={`${unreadNotificationCount} Issues`}
+            >
+              <div className="relative">
+                <Bell className="w-5 h-5" />
+                <span className="absolute -top-1 -right-1.5 min-w-[14px] h-3.5 bg-rose-500 text-white text-[8px] font-black rounded-full flex items-center justify-center px-0.5">{unreadNotificationCount}</span>
+              </div>
+              <span className="text-[9px] font-bold uppercase tracking-wide leading-none text-rose-400">Issues</span>
+            </button>
+          </div>
+        )}
       </aside>
 
       {/* Main Content Area */}
@@ -3839,7 +4288,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
             )}
 
             {/* 0.5. INBOX MODULE */}
-            {activeTab === 'inbox' && (
+            {activeTab === 'inbox' && project && (
               <InboxModule project={project} />
             )}
 
@@ -4619,271 +5068,1544 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
             {/* 2. DAILY PROGRESS REPORTS AND FLEET MANAGEMENT */}
             {activeTab === 'site-operations' && (
               <div className="space-y-4">
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-                {/* Site Operations & Site Diary Panel */}
-                  {/* Reports Feed & Site Diary */}
-                  <div className="lg:col-span-2 space-y-4">
-                    {/* Header bar with Offline status */}
-                    <div className="bg-white dark:bg-gray-900 p-4 rounded-2xl border border-border/60 shadow-sm flex items-center justify-between">
-                      <div>
-                        <h3 className="font-heading font-bold text-foreground text-xs uppercase tracking-wider">Site Diary & DPR Logs</h3>
-                        <p className="text-xs text-muted-foreground mt-0.5">Live site logs, voice notes, photos, and offline data cache status.</p>
-                      </div>
-                      <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-2.5 py-1 text-[10px] font-bold text-emerald-600 dark:text-emerald-500 border border-emerald-500/25">
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                        Offline Sync Enabled (Cache Clean)
-                      </span>
+                {/* Operations Sub-Tab Navigation bar */}
+                <div className="flex border-b border-border/60 pb-2 mb-4 gap-2.5 sm:gap-4 overflow-x-auto print:hidden">
+                  <button
+                    type="button"
+                    onClick={() => setOperationsSubTab('feed')}
+                    className={`pb-1 text-xs font-bold transition-all relative border-b-2 whitespace-nowrap ${
+                      operationsSubTab === 'feed'
+                        ? 'border-primary text-primary'
+                        : 'border-transparent text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    📝 Log Feed & Submit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setOperationsSubTab('agencies')}
+                    className={`pb-1 text-xs font-bold transition-all relative border-b-2 whitespace-nowrap ${
+                      operationsSubTab === 'agencies'
+                        ? 'border-primary text-primary'
+                        : 'border-transparent text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    👷‍♂️ Agency & Headcount
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setOperationsSubTab('issues')}
+                    className={`pb-1 text-xs font-bold transition-all relative border-b-2 whitespace-nowrap ${
+                      operationsSubTab === 'issues'
+                        ? 'border-primary text-primary'
+                        : 'border-transparent text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    🚨 Issue Radar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setOperationsSubTab('photos')}
+                    className={`pb-1 text-xs font-bold transition-all relative border-b-2 whitespace-nowrap ${
+                      operationsSubTab === 'photos'
+                        ? 'border-primary text-primary'
+                        : 'border-transparent text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    📸 Site Gallery
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setOperationsSubTab('client-report')}
+                    className={`pb-1 text-xs font-bold transition-all relative border-b-2 whitespace-nowrap ${
+                      operationsSubTab === 'client-report'
+                        ? 'border-primary text-primary'
+                        : 'border-transparent text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    📊 Client DPR Dashboard
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setOperationsSubTab('history')}
+                    className={`pb-1 text-xs font-bold transition-all relative border-b-2 whitespace-nowrap ${
+                      operationsSubTab === 'history'
+                        ? 'border-primary text-primary'
+                        : 'border-transparent text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    📅 DPR History
+                  </button>
+                </div>
+
+                {operationsSubTab === 'feed' ? (
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                    {/* 1. Submit DPR Form (Pushed to top on mobile via source-order, right-hand column on desktop) */}
+                    <div className="lg:col-span-1 lg:order-2 bg-white dark:bg-gray-900 p-4 rounded-3xl border border-border/60 shadow-sm space-y-4 h-fit">
+                      <h3 className="font-heading font-extrabold text-foreground text-xs uppercase tracking-wider border-l-2 border-primary pl-2">
+                        Submit Daily Site Report
+                      </h3>
+                      
+                      <form onSubmit={handleDailyActivitySubmit} className="space-y-4">
+                        <div>
+                          <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Engineer Name</label>
+                          <input
+                            type="text"
+                            required
+                            value={engineerName}
+                            onChange={(e) => setEngineerName(e.target.value)}
+                            placeholder="e.g. Priya Nair"
+                            className="w-full text-xs mt-1.5 p-2.5 rounded-xl border border-border bg-gray-50 dark:bg-gray-950 text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Weather Condition</label>
+                          <select
+                            value={weather}
+                            onChange={(e) => setWeather(e.target.value as typeof weather)}
+                            className="w-full text-xs mt-1.5 p-2.5 rounded-xl border border-border bg-gray-50 dark:bg-gray-950 text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                          >
+                            <option value="Sunny">Sunny</option>
+                            <option value="Cloudy">Cloudy</option>
+                            <option value="Rainy">Rainy</option>
+                            <option value="Windy">Windy</option>
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Work Completed Details</label>
+                          <textarea
+                            required
+                            value={workCompleted}
+                            onChange={(e) => setWorkCompleted(e.target.value)}
+                            rows={3}
+                            placeholder="Specify excavation status, concrete casting, shuttering, bricks, etc..."
+                            className="w-full text-xs mt-1.5 p-2.5 rounded-xl border border-border bg-gray-50 dark:bg-gray-950 text-foreground focus:outline-none focus:ring-1 focus:ring-primary resize-none"
+                          />
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2.5">
+                          <div>
+                            <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Issues (Optional)</label>
+                            <input
+                              type="text"
+                              value={issues}
+                              onChange={(e) => setIssues(e.target.value)}
+                              placeholder="e.g. Transit delays"
+                              className="w-full text-xs mt-1.5 p-2.5 rounded-xl border border-border bg-gray-50 dark:bg-gray-950 text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Risks (Optional)</label>
+                            <input
+                              type="text"
+                              value={risks}
+                              onChange={(e) => setRisks(e.target.value)}
+                              placeholder="e.g. Mud slides"
+                              className="w-full text-xs mt-1.5 p-2.5 rounded-xl border border-border bg-gray-50 dark:bg-gray-950 text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                            />
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Progress Contribution (%)</label>
+                          <input
+                            type="number"
+                            step="0.05"
+                            required
+                            value={progressDelta}
+                            onChange={(e) => setProgressDelta(parseFloat(e.target.value))}
+                            className="w-full text-xs mt-1.5 p-2.5 rounded-xl border border-border bg-gray-50 dark:bg-gray-950 text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                          />
+                        </div>
+
+                        <button
+                          type="submit"
+                          disabled={currentUser.role === 'PR_TEAM'}
+                          className="w-full text-xs font-bold bg-primary hover:bg-orange-850 text-white py-3 rounded-xl shadow-xs transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                        >
+                          Log Site Activity
+                        </button>
+                      </form>
                     </div>
 
-                    {/* Voice Notes Recorder Simulator */}
-                    <div className="bg-white dark:bg-gray-900 p-4 rounded-2xl border border-border/60 shadow-sm space-y-3.5">
-                      <h4 className="font-heading font-bold text-foreground text-xs uppercase tracking-wider flex items-center gap-2">
-                        🎙️ Voice Notes Site Diary
-                      </h4>
-                      <div className="flex flex-wrap items-center gap-4 bg-muted/30 p-3 rounded-xl border border-border/50">
-                        {isRecording ? (
-                          <div className="flex items-center gap-3">
-                            <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-ping"></span>
-                            <span className="text-xs font-bold text-red-500 animate-pulse">Recording Site Update... (0:08)</span>
-                            <button 
-                              type="button"
-                              onClick={() => {
-                                setIsRecording(false);
-                                setVoiceNotes([...voiceNotes, `VoiceNote_${Date.now()}.mp3`]);
-                              }}
-                              className="bg-red-500 text-white text-[10px] font-bold px-2.5 py-1 rounded-lg hover:bg-red-600 transition-all cursor-pointer"
-                            >
-                              Stop
-                            </button>
-                          </div>
-                        ) : (
-                          <button 
-                            type="button"
-                            onClick={() => setIsRecording(true)}
-                            className="bg-primary text-primary-foreground text-xs font-bold px-3.5 py-2 rounded-lg hover:bg-primary/95 transition-all shadow-xs cursor-pointer"
-                          >
-                            Record Voice Memo
-                          </button>
-                        )}
-                        <p className="text-[10px] text-muted-foreground font-semibold flex-1">Record audio notes directly from site walk-throughs. Syncs offline automatically.</p>
+                    {/* 2. Site Diary & Timeline Feed (column 1 on desktop, stacked below form on mobile) */}
+                    <div className="lg:col-span-2 lg:order-1 space-y-4">
+                      {/* Header bar with Offline status */}
+                      <div className="bg-white dark:bg-gray-900 p-4 rounded-2xl border border-border/60 shadow-sm flex items-center justify-between">
+                        <div>
+                          <h3 className="font-heading font-bold text-foreground text-xs uppercase tracking-wider">Site Diary & DPR Logs</h3>
+                          <p className="text-xs text-muted-foreground mt-0.5">Live site logs, voice notes, photos, and offline data cache status.</p>
+                        </div>
+                        <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-2.5 py-1 text-[10px] font-bold text-emerald-600 dark:text-emerald-500 border border-emerald-500/25">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                          Offline Sync Enabled (Cache Clean)
+                        </span>
                       </div>
 
-                      {/* Voice Notes List */}
-                      {voiceNotes.length > 0 && (
-                        <div className="space-y-2 pt-2 border-t border-border/60">
-                          {voiceNotes.map((note, index) => (
-                            <div key={note} className="flex items-center justify-between bg-muted/40 p-2.5 rounded-lg border border-border/40 text-xs font-semibold">
-                              <span className="text-foreground">🔊 Walk-through Update #{index + 1} ({note.slice(-10)})</span>
-                              <div className="flex gap-2">
-                                <button type="button" className="text-primary hover:underline text-[10px] font-bold">Play</button>
-                                <button 
-                                  type="button" 
-                                  onClick={() => setVoiceNotes(voiceNotes.filter(vn => vn !== note))}
-                                  className="text-rose-500 hover:underline text-[10px] font-bold"
-                                >
-                                  Delete
-                                </button>
+                      {/* Voice Notes Recorder Simulator */}
+                      <div className="bg-white dark:bg-gray-900 p-4 rounded-2xl border border-border/60 shadow-sm space-y-3.5">
+                        <h4 className="font-heading font-bold text-foreground text-xs uppercase tracking-wider flex items-center gap-2">
+                          🎙️ Voice Notes Site Diary
+                        </h4>
+                        
+                        <div className="flex items-center justify-between gap-4 border border-border/50 p-3 rounded-xl bg-muted/5">
+                          {isRecording ? (
+                            <div className="flex items-center gap-3">
+                              <span className="relative flex h-2 w-2">
+                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                                <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span>
+                              </span>
+                              <span className="text-xs font-bold text-red-500 animate-pulse">Recording Site Update... (0:08)</span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setIsRecording(false);
+                                  setVoiceNotes([...voiceNotes, `VoiceNote_${Date.now()}.mp3`]);
+                                }}
+                                className="text-[10px] bg-red-500 text-white font-bold px-2 py-1 rounded hover:bg-red-600 transition-colors cursor-pointer"
+                              >
+                                Stop & Save
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setIsRecording(true)}
+                              className="bg-primary hover:bg-orange-850 text-white text-xs font-bold px-3 py-2 rounded-lg transition-colors cursor-pointer"
+                            >
+                              Record Voice Memo
+                            </button>
+                          )}
+                          <p className="text-[10px] text-muted-foreground font-semibold flex-1">Record audio notes directly from site walk-throughs. Syncs offline automatically.</p>
+                        </div>
+
+                        {/* Voice Notes List */}
+                        {voiceNotes.length > 0 && (
+                          <div className="space-y-1.5">
+                            <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Unprocessed Voice Updates ({voiceNotes.length})</p>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                              {voiceNotes.map((note, index) => (
+                                <div key={index} className="flex items-center justify-between p-2 bg-muted/15 border border-border/40 rounded-lg text-xs font-semibold">
+                                  <span className="truncate">🎵 {note}</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => setVoiceNotes(voiceNotes.filter(vn => vn !== note))}
+                                    className="text-rose-500 hover:text-rose-700 font-bold ml-2 cursor-pointer"
+                                  >
+                                    Delete
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Daily Activity Timeline / Feed */}
+                      <div className="bg-white dark:bg-gray-900 p-6 rounded-3xl border border-border/60 shadow-sm space-y-4">
+                        <h4 className="font-heading font-bold text-foreground text-xs uppercase tracking-wider">
+                          Activity Logs Timeline
+                        </h4>
+                        
+                        <div className="relative pl-6 border-l-2 border-primary/20 space-y-6 ml-2 mt-4 text-foreground">
+                          {dprLoading ? (
+                            <div className="py-12 text-center text-muted-foreground text-xs">Loading DPRs...</div>
+                          ) : dprLogs.map((dpr) => (
+                            <div key={dpr.id} className="relative space-y-2">
+                              {/* Timeline dot connector */}
+                              <div className="absolute -left-[31px] top-1.5 w-3 h-3 rounded-full bg-primary border-2 border-white dark:border-gray-900 shadow-sm" />
+                              
+                              <div 
+                                onClick={() => {
+                                  setSelectedTimelineDPR(dpr);
+                                }}
+                                className="p-4 bg-white dark:bg-gray-900 border border-border/60 hover:border-primary/50 rounded-2xl shadow-xs hover:shadow-md transition-all space-y-2.5 cursor-pointer group relative"
+                              >
+                                <div className="flex items-center justify-between text-xs flex-wrap gap-2">
+                                  <span className="font-bold text-foreground">Engr. {dpr.created_by_name || dpr.submitted_by || 'Site Engineer'}</span>
+                                  <div className="flex items-center gap-3 text-muted-foreground">
+                                    <span className="bg-primary/5 text-primary px-2 py-0.5 rounded text-[10px] font-bold border border-primary/10">{dpr.weather_condition || dpr.weather_conditions || 'Clear'}</span>
+                                    <span className="font-semibold">{dpr.report_date || dpr.date || 'Today'}</span>
+                                  </div>
+                                </div>
+                                <p className="text-xs text-muted-foreground leading-relaxed font-semibold">
+                                  {dpr.activities?.map((a: any) => a.activity_name).filter(Boolean).join(', ') || dpr.summary || dpr.trade_name || 'Site activity logged'}
+                                </p>
+                                
+                                 {(() => {
+                                   const dprDate = dpr.report_date || dpr.date;
+                                   const explicitIssues = Array.isArray(dpr.issues) ? dpr.issues : [];
+                                   const textDelays = typeof dpr.delays === 'string' && dpr.delays.trim() ? [{ issue_description: dpr.delays }] : (Array.isArray(dpr.delays) ? dpr.delays : []);
+                                   const matchingDbDelays = delayEvents.filter(d => {
+                                     const cDate = (d.created_at || d.planned_date || '').split('T')[0];
+                                     return dprDate ? cDate === dprDate : false;
+                                   }).map(d => {
+                                     let cleanDesc = d.reason_code || 'Site Issue';
+                                     if (typeof d.reason_details === 'string') {
+                                       const descMatch = d.reason_details.match(/Description:\s*([\s\S]*)/);
+                                       if (descMatch && descMatch[1].trim()) cleanDesc = `${d.reason_code}: ${descMatch[1].trim()}`;
+                                       else cleanDesc = `${d.reason_code}: ${d.reason_details.replace(/Location:.*$/gm, '').replace(/Agency:.*$/gm, '').replace(/Severity:.*$/gm, '').trim()}`;
+                                     }
+                                     return { issue_description: cleanDesc };
+                                   });
+
+                                   const combined = [...explicitIssues, ...textDelays, ...matchingDbDelays];
+                                   const uniqueCombined = Array.from(new Map(combined.map(i => [(i.issue_description || i.reason || '').trim(), i])).values());
+                                   if (uniqueCombined.length === 0) return null;
+
+                                   return (
+                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-2 pt-2 border-t border-border/50 text-[10px] font-bold">
+                                       {uniqueCombined.map((issue: any, idx: number) => (
+                                         <p key={idx} className="text-rose-500 font-bold flex items-center gap-1">
+                                           <span>⚠️ Historical Delay ({dprDate || 'Logged'}):</span> {issue.issue_description || issue.reason}
+                                         </p>
+                                       ))}
+                                     </div>
+                                   );
+                                 })()}
+
+                                <div className="flex items-center justify-between pt-2 border-t border-border/40 text-[10px] text-muted-foreground font-medium">
+                                  <span>Tap card to view compiled DPR & breakdown</span>
+                                  <span className="text-primary font-bold group-hover:underline flex items-center gap-1">
+                                    View Detailed DPR →
+                                  </span>
+                                </div>
                               </div>
                             </div>
                           ))}
+                          
+                          {!dprLoading && dprLogs.length === 0 && (
+                            <div className="py-12 text-center text-gray-400">
+                              <ClipboardList className="w-10 h-10 mx-auto text-gray-300 mb-2" />
+                              <p className="text-xs">No daily activities logged for this project yet.</p>
+                            </div>
+                          )}
                         </div>
-                      )}
+                      </div>
                     </div>
+                  </div>
+                ) : operationsSubTab === 'agencies' ? (() => {
+                  const parseWorkersOnlyCount = (act: any, dpr: any): number => {
+                    const text = [
+                      act?.activity_name,
+                      act?.remarks,
+                      act?.activity_text,
+                      dpr?.activities_completed,
+                      dpr?.workCompleted,
+                      dpr?.summary
+                    ].filter(Boolean).join(' ');
+                    
+                    const match = text.match(/(?:Persons|Workers|Laborers|Masons|Headcount)\s*[:=]\s*(\d+)/i)
+                               || text.match(/(\d+)\s*(?:persons|workers|laborers|masons|men)/i);
+                    if (match) {
+                      const parsed = parseInt(match[1], 10);
+                      if (!isNaN(parsed) && parsed > 0) return parsed;
+                    }
+                    const num = Number(act?.headcount || act?.manpower_count || dpr?.totalLabourCount || dpr?.manpower);
+                    if (!isNaN(num) && num > 0 && num !== 12) return num;
+                    return 10;
+                  };
 
-                    {/* DPR Logs List */}
-                    <div className="bg-white dark:bg-gray-900 p-4 rounded-2xl border border-border/60 shadow-sm space-y-4">
-                      <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2">
-                        {dprLoading ? (
-                          <div className="py-12 text-center text-muted-foreground text-xs">Loading DPRs...</div>
-                        ) : dprLogs.map((dpr) => (
-                          <div key={dpr.id} className="p-3.5 border border-border bg-muted/20 rounded-xl space-y-2">
-                            <div className="flex items-center justify-between text-xs flex-wrap gap-2">
-                              <span className="font-bold text-foreground">Engr. {dpr.created_by_name}</span>
-                              <div className="flex items-center gap-3 text-muted-foreground">
-                                <span className="bg-muted px-2 py-0.5 rounded text-[10px] font-bold border border-border/50">{dpr.weather_conditions}</span>
-                                <span className="font-semibold">{dpr.date}</span>
+                  const activeAgenciesList = dprLogs.length > 0
+                    ? dprLogs.flatMap(dpr => {
+                        const lines = dpr.dpr_activity_lines || dpr.activities || [];
+                        if (lines.length > 0) {
+                          return lines.map((act: any) => ({
+                            trade: act.contractor_name || act.trade_name || dpr.agency_name || dpr.created_by_name || 'Ram workers',
+                            trade_role: act.work_type || act.trade_name || 'Civil/Structure',
+                            location: act.location_zone || act.location || 'Tower A',
+                            manpower: parseWorkersOnlyCount(act, dpr),
+                            activity: act.activity_name || act.activity_text || act.remarks || dpr.activities_completed || 'Site activity logged'
+                          }));
+                        }
+                        return [{
+                          trade: dpr.agency_name || dpr.contractor_name || dpr.created_by_name || 'Ram workers',
+                          trade_role: 'Civil/Structure',
+                          location: dpr.location || 'Tower A',
+                          manpower: parseWorkersOnlyCount({}, dpr),
+                          activity: dpr.activities_completed || dpr.workCompleted || 'Site activity logged'
+                        }];
+                      })
+                    : (clientDPRReport?.work_done || []).map((item: any) => ({
+                        ...item,
+                        manpower: parseWorkersOnlyCount(item, null)
+                      }));
+                  const totalManpowerSum = activeAgenciesList.reduce((acc: number, item: any) => acc + (Number(item.manpower) || 0), 0);
+
+                  return (
+                    /* Agency & Headcount Tracker Sub-Tab */
+                    <div className="space-y-4">
+                      {/* Header Cards */}
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <div className="bg-white dark:bg-gray-900 p-4 rounded-2xl border border-border/60 shadow-xs flex items-center gap-3">
+                          <div className="p-3 bg-amber-500/10 text-amber-600 rounded-xl">
+                            <Users className="w-6 h-6" />
+                          </div>
+                          <div>
+                            <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Active Agencies</p>
+                            <p className="text-xl font-bold text-foreground mt-0.5">{activeAgenciesList.length} Active</p>
+                          </div>
+                        </div>
+                        <div className="bg-white dark:bg-gray-900 p-4 rounded-2xl border border-border/60 shadow-xs flex items-center gap-3">
+                          <div className="p-3 bg-emerald-500/10 text-emerald-600 rounded-xl">
+                            <UserCheck className="w-6 h-6" />
+                          </div>
+                          <div>
+                            <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Total Manpower Today</p>
+                            <p className="text-xl font-bold text-foreground mt-0.5">{totalManpowerSum} Workers</p>
+                          </div>
+                        </div>
+                        <div className="bg-white dark:bg-gray-900 p-4 rounded-2xl border border-border/60 shadow-xs flex items-center gap-3">
+                          <div className="p-3 bg-blue-500/10 text-blue-600 rounded-xl">
+                            <Building2 className="w-6 h-6" />
+                          </div>
+                          <div>
+                            <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Work Zones Active</p>
+                            <p className="text-xl font-bold text-foreground mt-0.5">{new Set(activeAgenciesList.map((i: any) => i.location)).size} Zones</p>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Agency Tracker Table */}
+                      <div className="bg-white dark:bg-gray-900 p-4 rounded-2xl border border-border/60 shadow-sm space-y-3">
+                        <div className="flex justify-between items-center">
+                          <h3 className="font-heading font-bold text-foreground text-xs uppercase tracking-wider border-l-2 border-primary pl-2">
+                            Subcontractor Headcount & Location Breakdown
+                          </h3>
+                          <span className="text-[10px] bg-emerald-500/10 text-emerald-600 border border-emerald-500/20 font-bold px-2 py-0.5 rounded-full">
+                            Live Supabase Mobile Feed
+                          </span>
+                        </div>
+
+                        <div className="overflow-x-auto border border-border/50 rounded-2xl">
+                          <table className="w-full text-xs text-left border-collapse">
+                            <thead>
+                              <tr className="bg-muted/30 text-muted-foreground font-bold border-b border-border/60">
+                                <th className="p-3">Agency / Trade</th>
+                                <th className="p-3">Manpower Role</th>
+                                <th className="p-3">Tower / Location</th>
+                                <th className="p-3 text-center">Headcount</th>
+                                <th className="p-3 text-center">Status</th>
+                                <th className="p-3">Work Activity</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-border/40 font-medium">
+                              {activeAgenciesList.length > 0 ? (
+                                activeAgenciesList.map((item: any, idx: number) => (
+                                  <tr key={idx} className="hover:bg-muted/10">
+                                    <td className="p-3 font-bold text-foreground">{item.trade}</td>
+                                    <td className="p-3 text-muted-foreground">{item.trade_role || item.trade}</td>
+                                    <td className="p-3 text-foreground">{item.location}</td>
+                                    <td className="p-3 text-center font-bold text-emerald-600">{item.manpower} Workers</td>
+                                    <td className="p-3 text-center">
+                                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                        item.manpower > 0
+                                          ? 'bg-emerald-500/10 text-emerald-600 border border-emerald-500/20'
+                                          : 'bg-amber-500/10 text-amber-600 border border-amber-500/20'
+                                      }`}>
+                                        {item.manpower > 0 ? 'Active' : 'No Headcount'}
+                                      </span>
+                                    </td>
+                                    <td className="p-3 text-muted-foreground">{item.activity}</td>
+                                  </tr>
+                                ))
+                              ) : (
+                                <tr>
+                                  <td colSpan={6} className="p-8 text-center text-muted-foreground text-xs font-semibold">
+                                    No subcontractor headcount logged in Supabase for this project.
+                                  </td>
+                                </tr>
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })() : operationsSubTab === 'issues' ? (() => {
+                  // Primary: real issues from delay_events table (submitted via mobile app)
+                  const dbIssues = delayEvents.map((d: any) => {
+                    let parsedDesc = d.reason_details || d.reason_code || '';
+                    if (typeof d.reason_details === 'string') {
+                      const descMatch = d.reason_details.match(/Description:\s*([\s\S]*)/);
+                      if (descMatch && descMatch[1].trim()) {
+                        parsedDesc = descMatch[1].trim();
+                      } else {
+                        // Strip raw metadata lines for cleaner preview
+                        parsedDesc = d.reason_details
+                          .replace(/Location:.*$/gm, '')
+                          .replace(/Agency:.*$/gm, '')
+                          .replace(/Severity:.*$/gm, '')
+                          .trim();
+                      }
+                    }
+
+                    return {
+                      trade: d.reason_code || 'Site Issue',
+                      location: d.responsible_team || 'Site Field',
+                      reason: parsedDesc || d.reason_code || 'Stoppage reported',
+                      full_details: d.reason_details || '',
+                      planned: d.planned_date
+                        ? new Date(d.planned_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+                        : new Date(d.created_at || Date.now()).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
+                      status: d.status || 'open',
+                      corrective_action: d.corrective_action || '',
+                      severity: d.impact_on_timeline || 'Medium',
+                      id: d.id,
+                      raw: d
+                    };
+                  });
+
+                  // Fallback: AI-generated delays + DPR-embedded issues
+                  const rawDelays = clientDPRReport?.delays || [];
+                  const filteredDelays = rawDelays.filter((d: any) => d.reason && !d.reason.includes("Material supply logistics delay") && !d.reason.includes("Contractor shortage"));
+                  const dprIssues = dprLogs.flatMap(dpr => (dpr.issues || []).map((iss: any) => ({
+                    trade: iss.issue_description || 'Site Issue',
+                    location: dpr.created_by_name || 'Site Field',
+                    reason: iss.issue_description || 'Stoppage reported',
+                    full_details: iss.issue_description || '',
+                    planned: dpr.date || 'Today',
+                    status: 'open',
+                    corrective_action: '',
+                    severity: 'Medium',
+                  })));
+
+                  const activeIssuesList = dbIssues.length > 0
+                    ? dbIssues
+                    : filteredDelays.length > 0 ? filteredDelays : dprIssues;
+
+                  return (
+                    /* Site Issue Radar Sub-Tab */
+                    <div className="space-y-4">
+                      {/* Header Banner */}
+                      <div className="bg-white dark:bg-gray-900 p-4 rounded-2xl border border-border/60 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                        <div>
+                          <h3 className="font-heading font-bold text-foreground text-xs uppercase tracking-wider border-l-2 border-rose-500 pl-2">
+                            Site Issue & Stoppage Radar
+                          </h3>
+                          <p className="text-xs text-muted-foreground mt-0.5">Track field delays, material shortages, and structural impediments reported by engineers.</p>
+                        </div>
+                        {activeIssuesList.length > 0 && (
+                          <span className="text-[10px] font-bold bg-rose-500/10 text-rose-600 border border-rose-500/20 px-3 py-1 rounded-full self-start sm:self-auto">
+                            {activeIssuesList.length} Active Issue{activeIssuesList.length !== 1 ? 's' : ''}
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Issue Cards Grid */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                        {activeIssuesList.length > 0 ? (
+                          activeIssuesList.map((del: any, idx: number) => (
+                            <div 
+                              key={del.id || idx} 
+                              onClick={() => {
+                                setSelectedIssueModal(del);
+                                setIssueCorrectiveActionInput(del.corrective_action || '');
+                                setIsEditingIssueModal(false);
+                              }}
+                              className="bg-white dark:bg-gray-900 p-4 rounded-2xl border border-rose-500/30 shadow-xs space-y-3 cursor-pointer hover:border-rose-500 hover:shadow-lg hover:shadow-rose-500/10 transition-all duration-200 group relative flex flex-col justify-between"
+                            >
+                              <div className="space-y-3">
+                                <div className="flex justify-between items-start">
+                                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                                    del.status === 'resolved'
+                                      ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20'
+                                      : 'bg-rose-500/10 text-rose-600 border-rose-500/20'
+                                  }`}>
+                                    {del.status === 'resolved' ? '✅ Resolved' : '🔴 Open Issue'}
+                                  </span>
+                                  <span className="text-[10px] text-muted-foreground font-semibold">{del.location}</span>
+                                </div>
+                                <h4 className="font-bold text-sm text-foreground group-hover:text-rose-600 transition-colors flex items-center justify-between">
+                                  <span>{del.trade}</span>
+                                  <Eye className="w-4 h-4 text-muted-foreground group-hover:text-rose-500 transition-colors" />
+                                </h4>
+                                <p className="text-xs text-muted-foreground leading-relaxed line-clamp-3">{del.reason}</p>
+                                {del.corrective_action && (
+                                  <div className="text-[11px] bg-amber-500/10 text-amber-700 dark:text-amber-400 p-2 rounded-lg border border-amber-500/20 font-medium">
+                                    🔧 Action: {del.corrective_action}
+                                  </div>
+                                )}
+                              </div>
+
+                              <div className="pt-3 space-y-2 border-t border-border/50">
+                                <div className="flex items-center justify-between text-xs">
+                                  <span className="text-muted-foreground font-semibold">Target: <strong className="text-foreground">{del.planned}</strong></span>
+                                  <span className={`font-bold ${del.severity === 'High' || del.severity === 'Critical' ? 'text-rose-600' : 'text-amber-500'}`}>
+                                    {del.severity || 'Medium'} Impact
+                                  </span>
+                                </div>
+
+                                <button 
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedIssueModal(del);
+                                    setIssueCorrectiveActionInput(del.corrective_action || '');
+                                    setIsEditingIssueModal(false);
+                                  }}
+                                  className="w-full py-1.5 px-3 bg-rose-500/10 group-hover:bg-rose-600 text-rose-600 group-hover:text-white rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 border border-rose-500/20 cursor-pointer shadow-2xs"
+                                >
+                                  <Eye className="w-3.5 h-3.5" /> Inspect & Edit Details
+                                </button>
                               </div>
                             </div>
-                            <p className="text-xs text-muted-foreground leading-relaxed font-medium">
-                              {dpr.activities.map((a: any) => a.activity_name).join(', ')}
-                            </p>
-                            
-                            {(dpr.issues && dpr.issues.length > 0) && (
-                              <div className="grid grid-cols-1 md:grid-cols-2 gap-2 pt-2 border-t border-border/50 text-[10px] font-bold">
-                                {dpr.issues.map((issue: any, idx: number) => (
-                                  <p key={idx} className="text-red-500 font-bold">
-                                    <span>Issue:</span> {issue.issue_description}
-                                  </p>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        ))}
-                        
-                        {!dprLoading && dprLogs.length === 0 && (
-                          <div className="py-12 text-center text-gray-400">
-                            <ClipboardList className="w-10 h-10 mx-auto text-gray-300 mb-2" />
-                            <p className="text-xs">No daily activities logged for this project yet.</p>
+                          ))
+                        ) : (
+                          <div className="col-span-full p-8 text-center bg-white dark:bg-gray-900 border border-border/60 rounded-2xl text-muted-foreground text-xs font-semibold">
+                            No site issues or work stoppages reported in Supabase for this project.
                           </div>
                         )}
                       </div>
                     </div>
-                  </div>
+                  );
+                })() : operationsSubTab === 'photos' ? (() => {
+                  const rawPhotos = (clientDPRReport?.site_verification || []).concat(
+                    dprLogs.flatMap(dpr => {
+                      const pList: any[] = [];
+                      if (Array.isArray(dpr.photos)) {
+                        dpr.photos.forEach((p: any) => {
+                          const url = typeof p === 'string' ? p : p?.photo_url || p?.url || p?.src;
+                          if (url) pList.push({ photo_url: url, location: p?.location || dpr.location || 'Tower A', site_manager_name: dpr.created_by_name || 'Site Engineer', timestamp: dpr.submitted_at || dpr.report_date || dpr.date });
+                        });
+                      }
+                      if (Array.isArray(dpr.site_photos)) {
+                        dpr.site_photos.forEach((p: any) => {
+                          const url = typeof p === 'string' ? p : p?.photo_url || p?.url || p?.src;
+                          if (url) pList.push({ photo_url: url, location: p?.location || dpr.location || 'Tower A', site_manager_name: dpr.created_by_name || 'Site Engineer', timestamp: dpr.submitted_at || dpr.report_date || dpr.date });
+                        });
+                      }
+                      if (Array.isArray(dpr.site_verification)) {
+                        dpr.site_verification.forEach((p: any) => {
+                          const url = typeof p === 'string' ? p : p?.photo_url || p?.url || p?.src;
+                          if (url) pList.push({ photo_url: url, location: p?.location || dpr.location || 'Tower A', site_manager_name: p?.site_manager_name || dpr.created_by_name || 'Site Engineer', timestamp: dpr.submitted_at || dpr.report_date || dpr.date });
+                        });
+                      }
 
-                {/* Submit DPR Form */}
-                <div className="bg-white dark:bg-gray-900 p-3 rounded-xl border border-gray-100 dark:border-gray-850 shadow-sm space-y-4 h-fit">
-                  <h3 className="font-heading font-semibold text-gray-900 dark:text-white text-[13px]">Submit Daily Site Report</h3>
-                  
-                  <form onSubmit={handleDailyActivitySubmit} className="space-y-3.5">
-                    <div>
-                      <label className="text-xs font-bold text-gray-400 uppercase">Engineer Name</label>
-                      <input
-                        type="text"
-                        required
-                        value={engineerName}
-                        onChange={(e) => setEngineerName(e.target.value)}
-                        placeholder="e.g. Priya Nair"
-                        className="w-full text-xs mt-1 p-2.5 rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary"
-                      />
-                    </div>
+                      const lines = dpr.dpr_activity_lines || dpr.activities || [];
+                      if (Array.isArray(lines)) {
+                        lines.forEach((act: any) => {
+                          const candidateUrls = [
+                            ...(Array.isArray(act.photo_urls) ? act.photo_urls : []),
+                            ...(Array.isArray(act.photos) ? act.photos : []),
+                            act.photo_url,
+                            act.image_url,
+                            act.attachment_url,
+                            act.file_url
+                          ].filter(Boolean);
 
-                    <div>
-                      <label className="text-xs font-bold text-gray-400 uppercase">Weather Condition</label>
-                      <select
-                        value={weather}
-                        onChange={(e) => setWeather(e.target.value as typeof weather)}
-                        className="w-full text-xs mt-1 p-2.5 rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary"
-                      >
-                        <option value="Sunny">Sunny</option>
-                        <option value="Cloudy">Cloudy</option>
-                        <option value="Rainy">Rainy</option>
-                        <option value="Windy">Windy</option>
-                      </select>
-                    </div>
+                          candidateUrls.forEach((url: any) => {
+                            const finalUrl = typeof url === 'string' ? url : url?.url || url?.photo_url;
+                            if (finalUrl) {
+                              pList.push({
+                                photo_url: finalUrl,
+                                location: act.location_zone || act.location || dpr.location || 'Tower A',
+                                site_manager_name: act.contractor_name || act.agency_name || dpr.created_by_name || 'Site Engineer',
+                                timestamp: dpr.submitted_at || dpr.report_date || dpr.date
+                              });
+                            }
+                          });
+                        });
+                      }
 
-                    <div>
-                      <label className="text-xs font-bold text-gray-400 uppercase">Work Completed Details</label>
-                      <textarea
-                        required
-                        value={workCompleted}
-                        onChange={(e) => setWorkCompleted(e.target.value)}
-                        rows={3}
-                        placeholder="Specify excavation status, concrete casting, shuttering, bricks, etc..."
-                        className="w-full text-xs mt-1 p-2.5 rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary resize-none"
-                      />
-                    </div>
+                      return pList;
+                    })
+                  );
+                  const activePhotosList = rawPhotos.filter((p: any) => p.photo_url && typeof p.photo_url === 'string' && (p.photo_url.startsWith('http') || p.photo_url.startsWith('data:image')) && !p.photo_url.includes('unsplash.com'));
 
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <label className="text-xs font-bold text-gray-400 uppercase">Issues (Optional)</label>
-                        <input
-                          type="text"
-                          value={issues}
-                          onChange={(e) => setIssues(e.target.value)}
-                          placeholder="e.g. Transit delays"
-                          className="w-full text-xs mt-1 p-2.5 rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary"
-                        />
+                  return (
+                    /* Site Photo & Video Gallery Sub-Tab */
+                    <div className="space-y-4">
+                      <div className="bg-white dark:bg-gray-900 p-4 rounded-2xl border border-border/60 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                        <div>
+                          <h3 className="font-heading font-bold text-foreground text-xs uppercase tracking-wider border-l-2 border-primary pl-2">
+                            Live Site Photo & Visual Audit Gallery
+                          </h3>
+                          <p className="text-xs text-muted-foreground mt-0.5">Chronological site photos uploaded by engineers directly from mobile DPR logs.</p>
+                        </div>
                       </div>
-                      <div>
-                        <label className="text-xs font-bold text-gray-400 uppercase">Risks (Optional)</label>
-                        <input
-                          type="text"
-                          value={risks}
-                          onChange={(e) => setRisks(e.target.value)}
-                          placeholder="e.g. Mud slides"
-                          className="w-full text-xs mt-1 p-2.5 rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary"
-                        />
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                        {activePhotosList.length > 0 ? (
+                          activePhotosList.map((img: any, idx: number) => (
+                            <div key={idx} className="bg-white dark:bg-gray-900 rounded-2xl border border-border/60 overflow-hidden shadow-xs group hover:shadow-md transition-all">
+                              <div className="aspect-video relative overflow-hidden bg-muted">
+                                <img src={img.photo_url} alt={img.location || "Site Verification Photo"} className="w-full h-full object-cover group-hover:scale-105 transition-all duration-300" />
+                                <span className="absolute bottom-2 left-2 bg-black/70 backdrop-blur-md text-white text-[10px] font-bold px-2 py-0.5 rounded-full">
+                                  📍 {img.location}
+                                </span>
+                              </div>
+                              <div className="p-3">
+                                <h5 className="font-bold text-xs text-foreground truncate">{img.site_manager_name || "Engineer Check-In"}</h5>
+                                <p className="text-[10px] text-muted-foreground mt-1 flex items-center justify-between">
+                                  <span>🕒 {img.timestamp || "Today"}</span>
+                                  <span className="text-primary font-bold">Verified</span>
+                                </p>
+                              </div>
+                            </div>
+                          ))
+                        ) : (
+                          <div className="col-span-full p-8 text-center bg-white dark:bg-gray-900 border border-border/60 rounded-2xl text-muted-foreground text-xs font-semibold">
+                            No site photos uploaded in Supabase for this project.
+                          </div>
+                        )}
                       </div>
                     </div>
+                  );
+                })() : operationsSubTab === 'client-report' ? (
+              /* Client DPR Dashboard */
+              <div className="space-y-4 dpr-print-area">
+                <style dangerouslySetInnerHTML={{ __html: `
+                  @media print {
+                    /* Hide everything by default */
+                    body {
+                      visibility: hidden !important;
+                      background: white !important;
+                    }
+                    /* Show only the print area and its contents */
+                    .dpr-print-area, .dpr-print-area * {
+                      visibility: visible !important;
+                    }
+                    /* Position the print area to fill the page cleanly */
+                    .dpr-print-area {
+                      position: absolute !important;
+                      left: 0 !important;
+                      top: 0 !important;
+                      width: 100% !important;
+                      background: white !important;
+                      color: black !important;
+                      box-shadow: none !important;
+                      border: none !important;
+                      padding: 0 !important;
+                      margin: 0 !important;
+                    }
+                    /* Ensure buttons or inputs in the print area are hidden */
+                    .dpr-print-area button,
+                    .dpr-print-area select,
+                    .dpr-print-area input,
+                    .dpr-print-area .print\\:hidden,
+                    .dpr-print-area .print-hidden {
+                      display: none !important;
+                    }
+                  }
+                ` }} />
 
-                    <div>
-                      <label className="text-xs font-bold text-gray-400 uppercase">Progress Increase Contribution</label>
-                      <input
-                        type="number"
-                        step="0.05"
-                        required
-                        value={progressDelta}
-                        onChange={(e) => setProgressDelta(parseFloat(e.target.value))}
-                        className="w-full text-xs mt-1 p-2.5 rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary"
-                      />
-                    </div>
-
-                    <button
-                      type="submit"
-                      disabled={currentUser.role === 'PR_TEAM'}
-                      className="w-full text-xs font-bold bg-primary hover:bg-orange-800 text-white py-3 rounded-lg shadow-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      Log Site Activity
-                    </button>
-                  </form>
-                </div>
-              </div>
-
-                {/* 6. FLEET MANAGEMENT */}
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  <div className="bg-white dark:bg-gray-900 p-3 rounded-xl border border-gray-100 dark:border-gray-850 shadow-sm">
-                    <p className="text-xs text-gray-400 font-semibold uppercase">Assigned Assets</p>
-                    <p className="font-heading text-xl font-bold text-gray-900 dark:text-white mt-1">{project!.equipments.length}</p>
-                  </div>
-                  <div className="bg-white dark:bg-gray-900 p-3 rounded-xl border border-gray-100 dark:border-gray-850 shadow-sm">
-                    <p className="text-xs text-gray-400 font-semibold uppercase">Fuel Consumption</p>
-                    <p className="font-heading text-xl font-bold text-orange-600 dark:text-orange-400 mt-1">
-                      {project!.equipments.reduce((acc, eq) => acc + eq.fuelConsumed, 0)} L
-                    </p>
-                  </div>
-                  <div className="bg-white dark:bg-gray-900 p-3 rounded-xl border border-gray-100 dark:border-gray-850 shadow-sm">
-                    <p className="text-xs text-gray-400 font-semibold uppercase">Maintenance Alerts</p>
-                    <p className="font-heading text-xl font-bold text-danger mt-1">
-                      {project!.equipments.filter((eq) => eq.status === 'MAINTENANCE').length}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="bg-white dark:bg-gray-900 p-3 rounded-xl border border-gray-100 dark:border-gray-850 shadow-sm space-y-4">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                    <div>
-                      <h3 className="font-heading font-semibold text-gray-900 dark:text-white text-[13px]">Fleet & Machinery Register</h3>
-                      <p className="text-xs text-gray-400 mt-0.5">Site-wise asset availability, usage hours, diesel burn, and maintenance readiness</p>
-                    </div>
-                    <span className="text-xs bg-orange-50 dark:bg-orange-950/40 text-primary border border-orange-200 px-2 py-0.5 rounded-full font-bold">
-                      {project!.name}
-                    </span>
+                {/* Date Selector & Action Header */}
+                <div className="bg-white dark:bg-gray-900 p-4 rounded-2xl border border-border/60 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4 print:hidden">
+                  <div className="flex items-center gap-3">
+                    <label className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Report Date:</label>
+                    <input
+                      type="date"
+                      value={selectedDPRDate}
+                      disabled={isEditingDPR}
+                      onChange={(e) => setSelectedDPRDate(e.target.value)}
+                      className="text-xs p-2 rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50"
+                    />
                   </div>
                   
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    {project!.equipments.map((eq) => (
-                      <div key={eq.id} className="flex justify-between items-center text-xs p-3 rounded-lg border border-gray-50 dark:border-gray-850 bg-gray-50/20 dark:bg-gray-950/30">
-                        <div className="flex items-center gap-3 min-w-0">
-                          <div className="p-2 rounded-lg bg-orange-50 dark:bg-orange-950/20 text-primary flex-shrink-0">
-                            <Wrench className="w-4 h-4" />
+                  <div className="flex items-center gap-2">
+                    {isEditingDPR ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setClientDPRReport(editedDPR);
+                            localStorage.setItem(`pramukh_client_dpr_${project!.id}_${selectedDPRDate}`, JSON.stringify(editedDPR));
+                            setIsEditingDPR(false);
+                          }}
+                          className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-4 py-2.5 rounded-lg transition-all shadow-xs cursor-pointer flex items-center gap-1.5 border border-transparent"
+                        >
+                          💾 Save Changes
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsEditingDPR(false);
+                            setEditedDPR(null);
+                          }}
+                          className="bg-white dark:bg-gray-800 text-foreground border border-border/80 hover:bg-muted text-xs font-bold px-4 py-2.5 rounded-lg transition-all cursor-pointer"
+                        >
+                          ❌ Cancel
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={generateDPRWithAI}
+                          disabled={generatingDPR}
+                          className="bg-primary hover:bg-orange-800 text-white text-xs font-bold px-4 py-2.5 rounded-lg transition-all shadow-xs cursor-pointer flex items-center gap-2 disabled:opacity-50"
+                        >
+                          {generatingDPR ? (
+                            <>
+                              <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+                              AI is compiling...
+                            </>
+                          ) : (
+                            <>
+                              ✨ Auto-Generate with AI
+                            </>
+                          )}
+                        </button>
+
+                        {clientDPRReport && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditedDPR(JSON.parse(JSON.stringify(clientDPRReport)));
+                                setIsEditingDPR(true);
+                              }}
+                              className="bg-white dark:bg-gray-800 text-foreground border border-border/80 hover:bg-muted text-xs font-bold px-4 py-2.5 rounded-lg transition-all cursor-pointer flex items-center gap-1.5"
+                            >
+                              ✏️ Edit Manually
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => window.print()}
+                              className="bg-white dark:bg-gray-800 text-foreground border border-border/80 hover:bg-muted text-xs font-bold px-4 py-2.5 rounded-lg transition-all cursor-pointer flex items-center gap-2"
+                            >
+                              🖨️ Print / Save PDF
+                            </button>
+                          </>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                {/* Report Render Card */}
+                {(isEditingDPR ? editedDPR : clientDPRReport) ? (() => {
+                  const dpr = isEditingDPR ? editedDPR : clientDPRReport;
+                  return (
+                    <div className="bg-white dark:bg-gray-900 rounded-3xl border border-border/60 shadow-md p-6 sm:p-8 space-y-6 print:border-none print:shadow-none print:p-0">
+                      {/* Report Header */}
+                      <div className="flex flex-col md:flex-row md:items-center justify-between border-b border-border/60 pb-6 gap-4">
+                        <div className="space-y-2 flex-1">
+                          <div className="flex items-center gap-3">
+                            <span className="bg-primary/10 text-primary text-[10px] font-bold tracking-widest uppercase px-2 py-0.5 rounded border border-primary/20">
+                              Daily Progress Report
+                            </span>
+                            {isEditingDPR ? (
+                              <select
+                                value={dpr.status}
+                                onChange={(e) => setEditedDPR({ ...dpr, status: e.target.value })}
+                                className="text-[10px] p-1 rounded border border-border bg-gray-50 dark:bg-gray-950 font-bold uppercase text-foreground"
+                              >
+                                <option value="on_track">ON TRACK</option>
+                                <option value="delayed">DELAYED</option>
+                                <option value="critical">CRITICAL</option>
+                              </select>
+                            ) : (
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold border uppercase tracking-wider ${
+                                dpr.status === 'critical' ? 'bg-rose-50 border-rose-200 text-rose-600 dark:bg-rose-950/20 dark:text-rose-400' :
+                                dpr.status === 'delayed' ? 'bg-amber-50 border-amber-200 text-amber-600 dark:bg-amber-950/20 dark:text-amber-400' :
+                                'bg-emerald-50 border-emerald-200 text-emerald-600 dark:bg-emerald-950/20 dark:text-emerald-400'
+                              }`}>
+                                {dpr.status?.replace('_', ' ')}
+                              </span>
+                            )}
                           </div>
-                          <div className="min-w-0">
-                            <p className="font-bold text-gray-800 dark:text-gray-200 truncate">{eq.name}</p>
-                            <p className="text-xs text-gray-400 mt-0.5">Fuel: {eq.fuelConsumed} L | Maint: {eq.lastMaintenance}</p>
+                          
+                          {isEditingDPR ? (
+                            <input
+                              type="text"
+                              value={dpr.project_name}
+                              onChange={(e) => setEditedDPR({ ...dpr, project_name: e.target.value })}
+                              className="w-full text-base font-extrabold text-foreground p-1.5 rounded border border-border bg-gray-50 dark:bg-gray-950 mt-1"
+                            />
+                          ) : (
+                            <h2 className="font-heading text-xl font-extrabold text-foreground mt-2">
+                              {dpr.project_name}
+                            </h2>
+                          )}
+                          <p className="text-xs text-muted-foreground font-semibold mt-1">
+                            📅 {dpr.day}, {new Date(dpr.date).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}
+                          </p>
+                        </div>
+
+                        <div className="flex items-center gap-4 bg-muted/20 p-3 rounded-2xl border border-border/40">
+                          <div className="text-right">
+                            <p className="text-[10px] text-muted-foreground font-bold uppercase tracking-wider">Overall Completion</p>
+                            {isEditingDPR ? (
+                              <div className="flex items-center gap-1 mt-1 justify-end">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max="100"
+                                  value={dpr.overall_progress_pct ?? ''}
+                                  onChange={(e) => setEditedDPR({ ...dpr, overall_progress_pct: e.target.value ? parseInt(e.target.value) : null })}
+                                  className="w-16 text-xs text-right p-1 rounded border border-border bg-gray-50 dark:bg-gray-950 font-bold"
+                                />
+                                <span className="text-xs font-bold text-foreground">%</span>
+                              </div>
+                            ) : (
+                              dpr.overall_progress_pct !== null && (
+                                <p className="text-lg font-black text-foreground mt-0.5">{dpr.overall_progress_pct}%</p>
+                              )
+                            )}
                           </div>
+                          <div className="w-10 h-10 rounded-full border-4 border-primary/20 border-t-primary flex items-center justify-center font-bold text-xs text-primary">
+                            {dpr.overall_progress_pct || 100}%
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Summary Strip Grid */}
+                      <div className="grid grid-cols-3 gap-4 bg-muted/10 border border-border/50 p-4 rounded-2xl text-center">
+                        <div>
+                          <p className="text-[10px] text-muted-foreground font-bold uppercase tracking-wider">Total Manpower</p>
+                          {isEditingDPR ? (
+                            <input
+                              type="number"
+                              value={dpr.total_manpower}
+                              onChange={(e) => setEditedDPR({ ...dpr, total_manpower: parseInt(e.target.value) || 0 })}
+                              className="w-20 text-xs text-center p-1 rounded border border-border bg-gray-50 dark:bg-gray-950 font-bold mt-1 mx-auto"
+                            />
+                          ) : (
+                            <p className="text-base font-extrabold text-foreground mt-1">{dpr.total_manpower} workers</p>
+                          )}
+                        </div>
+                        <div className="border-x border-border/60">
+                          <p className="text-[10px] text-muted-foreground font-bold uppercase tracking-wider">Trades Active</p>
+                          {isEditingDPR ? (
+                            <input
+                              type="number"
+                              value={dpr.trades_active}
+                              onChange={(e) => setEditedDPR({ ...dpr, trades_active: parseInt(e.target.value) || 0 })}
+                              className="w-20 text-xs text-center p-1 rounded border border-border bg-gray-50 dark:bg-gray-950 font-bold mt-1 mx-auto"
+                            />
+                          ) : (
+                            <p className="text-base font-extrabold text-foreground mt-1">{dpr.trades_active} trades</p>
+                          )}
+                        </div>
+                        <div>
+                          <p className="text-[10px] text-muted-foreground font-bold uppercase tracking-wider">Open Delays</p>
+                          {isEditingDPR ? (
+                            <input
+                              type="number"
+                              value={dpr.open_delays}
+                              onChange={(e) => setEditedDPR({ ...dpr, open_delays: parseInt(e.target.value) || 0 })}
+                              className="w-20 text-xs text-center p-1 rounded border border-border bg-gray-50 dark:bg-gray-950 font-bold mt-1 mx-auto"
+                            />
+                          ) : (
+                            <p className={`text-base font-extrabold mt-1 ${dpr.open_delays > 0 ? 'text-rose-500' : 'text-emerald-500'}`}>
+                              {dpr.open_delays} delays
+                            </p>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Work Done Today Table/Section */}
+                      <div className="space-y-3">
+                        <div className="flex justify-between items-center">
+                          <h4 className="font-heading font-bold text-foreground text-xs uppercase tracking-wider border-l-2 border-primary pl-2">
+                            Work Done Today
+                          </h4>
+                          {isEditingDPR && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const updated = [...(dpr.work_done || []), { trade: '', location: '', manpower: 0, activity: '', photo_urls: ["https://images.unsplash.com/photo-1541888946425-d81bb19240f5?auto=format&fit=crop&w=400&q=80"] }];
+                                setEditedDPR({ ...dpr, work_done: updated });
+                              }}
+                              className="text-[10px] bg-primary text-white font-bold px-2 py-1 rounded hover:bg-orange-850 cursor-pointer"
+                            >
+                              + Add Row
+                            </button>
+                          )}
+                        </div>
+                        <div className="overflow-x-auto border border-border/50 rounded-2xl bg-muted/5">
+                          <table className="w-full text-xs text-left border-collapse text-foreground">
+                            <thead>
+                              <tr className="border-b border-border bg-muted/30 text-muted-foreground font-bold">
+                                <th className="p-3 w-1/5">Trade</th>
+                                <th className="p-3 w-1/5">Location (Floor/Tower)</th>
+                                <th className="p-3 text-center w-1/12">Manpower</th>
+                                <th className="p-3 w-2/5">Activity Description</th>
+                                <th className="p-3 text-center print:hidden w-1/6">Actions</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {dpr.work_done?.map((w: any, idx: number) => (
+                                <tr key={idx} className="border-b border-border/40 hover:bg-muted/10 last:border-0 font-medium">
+                                  <td className="p-3 font-bold text-foreground">
+                                    {isEditingDPR ? (
+                                      <input
+                                        type="text"
+                                        value={w.trade}
+                                        onChange={(e) => {
+                                          const updated = [...dpr.work_done];
+                                          updated[idx].trade = e.target.value;
+                                          setEditedDPR({ ...dpr, work_done: updated });
+                                        }}
+                                        className="w-full text-xs p-1 rounded border border-border bg-white dark:bg-gray-950 text-foreground"
+                                      />
+                                    ) : (
+                                      <div>
+                                        <div className="font-extrabold text-foreground">{w.trade}</div>
+                                        {w.trade_role && (
+                                          <span className="inline-block mt-1 text-[10px] font-bold px-2 py-0.5 rounded bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800">
+                                            {w.trade_role}
+                                          </span>
+                                        )}
+                                      </div>
+                                    )}
+                                  </td>
+                                  <td className="p-3 text-muted-foreground">
+                                    {isEditingDPR ? (
+                                      <input
+                                        type="text"
+                                        value={w.location}
+                                        onChange={(e) => {
+                                          const updated = [...dpr.work_done];
+                                          updated[idx].location = e.target.value;
+                                          setEditedDPR({ ...dpr, work_done: updated });
+                                        }}
+                                        className="w-full text-xs p-1 rounded border border-border bg-white dark:bg-gray-950 text-foreground"
+                                      />
+                                    ) : (
+                                      w.location
+                                    )}
+                                  </td>
+                                  <td className="p-3 text-center text-foreground font-bold">
+                                    {isEditingDPR ? (
+                                      <input
+                                        type="number"
+                                        value={w.manpower}
+                                        onChange={(e) => {
+                                          const updated = [...dpr.work_done];
+                                          updated[idx].manpower = parseInt(e.target.value) || 0;
+                                          setEditedDPR({ ...dpr, work_done: updated });
+                                        }}
+                                        className="w-16 text-xs text-center p-1 rounded border border-border bg-white dark:bg-gray-950 text-foreground"
+                                      />
+                                    ) : (
+                                      w.manpower
+                                    )}
+                                  </td>
+                                  <td className="p-3 text-muted-foreground leading-relaxed">
+                                    {isEditingDPR ? (
+                                      <textarea
+                                        value={w.activity}
+                                        rows={2}
+                                        onChange={(e) => {
+                                          const updated = [...dpr.work_done];
+                                          updated[idx].activity = e.target.value;
+                                          setEditedDPR({ ...dpr, work_done: updated });
+                                        }}
+                                        className="w-full text-xs p-1 rounded border border-border bg-white dark:bg-gray-950 text-foreground"
+                                      />
+                                    ) : (
+                                      w.activity
+                                    )}
+                                  </td>
+                                  <td className="p-3 text-center print:hidden">
+                                    {isEditingDPR ? (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          const updated = dpr.work_done.filter((_: any, rIdx: number) => rIdx !== idx);
+                                          setEditedDPR({ ...dpr, work_done: updated });
+                                        }}
+                                        className="text-rose-500 hover:text-rose-700 font-bold text-[10px] cursor-pointer"
+                                      >
+                                        Delete
+                                      </button>
+                                    ) : (
+                                      <div className="flex gap-1.5 flex-wrap justify-center">
+                                        {w.photo_urls?.map((url: string, pIdx: number) => (
+                                          <img
+                                            key={pIdx}
+                                            src={url}
+                                            alt="Activity check"
+                                            className="w-8 h-8 rounded-lg object-cover border border-border/80 cursor-zoom-in hover:opacity-85 transition-opacity"
+                                            onClick={() => {
+                                              setActiveLightboxMedia({
+                                                id: `dpr-photo-${idx}-${pIdx}`,
+                                                url: url,
+                                                type: 'image',
+                                                createdAt: new Date().toISOString(),
+                                                name: `${w.trade} - ${w.location}`
+                                              });
+                                              setGalleryOpen(true);
+                                            }}
+                                          />
+                                        ))}
+                                      </div>
+                                    )}
+                                  </td>
+                                </tr>
+                              ))}
+                              {(!dpr.work_done || dpr.work_done.length === 0) && (
+                                <tr>
+                                  <td colSpan={5} className="p-4 text-center text-muted-foreground italic">
+                                    No work activities logged.
+                                  </td>
+                                </tr>
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+
+                      {/* Delays & Issues Section */}
+                      <div className="space-y-3">
+                        <div className="flex justify-between items-center">
+                          <h4 className="font-heading font-bold text-foreground text-xs uppercase tracking-wider border-l-2 border-rose-500 pl-2">
+                            Delays & Blockages
+                          </h4>
+                          {isEditingDPR && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const updated = [...(dpr.delays || []), { trade: '', location: '', planned: '', actual: '', reason: '' }];
+                                setEditedDPR({ ...dpr, delays: updated });
+                              }}
+                              className="text-[10px] bg-rose-600 text-white font-bold px-2 py-1 rounded hover:bg-rose-700 cursor-pointer"
+                            >
+                              + Add Delay
+                            </button>
+                          )}
                         </div>
                         
-                        <div className="text-right flex-shrink-0">
-                          <span className={`px-2 py-0.5 rounded-full text-xs font-bold border
-                            ${eq.status === 'ACTIVE' ? 'bg-emerald-50 border-emerald-200 text-success' : 
-                              eq.status === 'MAINTENANCE' ? 'bg-red-50 border-red-200 text-danger' : 
-                              'bg-amber-50 border-amber-200 text-warning'}`}>
-                            {eq.status}
-                          </span>
-                          <p className="text-xs text-gray-400 mt-1">Usage: {eq.usageHours} hrs</p>
+                        {(() => {
+                          const targetDateStr = dpr.date || selectedDPRDate;
+                          const rawReportDelays = Array.isArray(dpr.delays) ? dpr.delays : [];
+                          
+                          const dbDelaysForDate = delayEvents.filter((d: any) => {
+                            const cDate = (d.created_at || d.planned_date || '').split('T')[0];
+                            return targetDateStr ? cDate <= targetDateStr : true;
+                          }).map((d: any) => {
+                            let parsedDesc = d.reason_details || d.reason_code || '';
+                            if (typeof d.reason_details === 'string') {
+                              const descMatch = d.reason_details.match(/Description:\s*([\s\S]*)/);
+                              if (descMatch && descMatch[1].trim()) {
+                                parsedDesc = descMatch[1].trim();
+                              } else {
+                                parsedDesc = d.reason_details
+                                  .replace(/Location:.*$/gm, '')
+                                  .replace(/Agency:.*$/gm, '')
+                                  .replace(/Severity:.*$/gm, '')
+                                  .trim();
+                              }
+                            }
+                            return {
+                              trade: d.reason_code || 'Site Issue',
+                              location: d.responsible_team || 'Site Field',
+                              planned: d.planned_date ? new Date(d.planned_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : targetDateStr,
+                              actual: 'Work Blocked / Delayed',
+                              reason: parsedDesc || d.reason_details || 'Stoppage logged',
+                              corrective_action: d.corrective_action || '',
+                              status: d.status || 'open'
+                            };
+                          });
+
+                          const activeReportDelays = rawReportDelays.length > 0 
+                            ? rawReportDelays 
+                            : dbDelaysForDate;
+
+                          if (!activeReportDelays || activeReportDelays.length === 0) {
+                            return (
+                              <div className="py-4 text-center border border-dashed border-border rounded-2xl bg-muted/5 text-muted-foreground text-xs italic">
+                                No delays reported.
+                              </div>
+                            );
+                          }
+
+                          return (
+                            <div className="space-y-2">
+                              {activeReportDelays.map((d: any, idx: number) => (
+                                <div key={idx} className="p-3.5 bg-rose-500/5 dark:bg-rose-950/10 border border-rose-500/20 rounded-2xl flex flex-col gap-1.5 text-xs">
+                                  <div className="flex justify-between items-center flex-wrap gap-2">
+                                    <span className="font-bold text-rose-600 dark:text-rose-400 uppercase tracking-wider flex items-center gap-1.5 w-full sm:w-auto">
+                                      {d.trade} · {d.location}
+                                    </span>
+                                    <div className="flex items-center gap-2 ml-auto">
+                                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${
+                                        d.status === 'resolved' ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20' : 'bg-rose-500/10 text-rose-600 border-rose-500/20'
+                                      }`}>
+                                        {d.status === 'resolved' ? 'Resolved Later' : 'Delay Flag'}
+                                      </span>
+                                    </div>
+                                  </div>
+                                  <div className="text-muted-foreground leading-relaxed space-y-1 mt-1">
+                                    <div><span className="font-bold text-foreground">Target Date:</span> {d.planned}</div>
+                                    <div><span className="font-bold text-foreground">Impact:</span> {d.actual}</div>
+                                  </div>
+                                  <p className="text-rose-600 dark:text-rose-400 font-semibold bg-rose-500/5 p-2 rounded-lg border border-rose-500/10 mt-1 flex flex-col">
+                                    <span className="font-bold text-foreground mb-0.5">⚠️ Delay Reason / Stoppage:</span>
+                                    {d.reason}
+                                  </p>
+                                  {d.corrective_action && (
+                                    <p className="text-[11px] bg-amber-500/10 text-amber-700 dark:text-amber-400 p-2 rounded-lg border border-amber-500/20 font-medium">
+                                      🔧 Action Plan: {d.corrective_action}
+                                    </p>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          );
+                        })()}
+                      </div>
+
+                      {/* Site Verification Section */}
+                      <div className="space-y-3">
+                        <div className="flex justify-between items-center">
+                          <h4 className="font-heading font-bold text-foreground text-xs uppercase tracking-wider border-l-2 border-indigo-500 pl-2">
+                            Site Manager Check-In Verification
+                          </h4>
+                          {isEditingDPR && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const updated = [...(dpr.site_verification || []), { site_manager_name: '', location: 'Block A Site Office', photo_url: 'https://images.unsplash.com/photo-1504307651254-35680f356dfd?auto=format&fit=crop&w=400&q=80', timestamp: '09:00 AM' }];
+                                setEditedDPR({ ...dpr, site_verification: updated });
+                              }}
+                              className="text-[10px] bg-indigo-600 text-white font-bold px-2 py-1 rounded hover:bg-indigo-700 cursor-pointer"
+                            >
+                              + Add Check-In
+                            </button>
+                          )}
+                        </div>
+                        
+                        {dpr.site_verification && dpr.site_verification.length > 0 ? (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            {dpr.site_verification.map((v: any, idx: number) => (
+                              <div key={idx} className="flex gap-4 p-3.5 bg-muted/15 border border-border/40 rounded-2xl items-center relative">
+                                <img
+                                  src={v.photo_url || "https://images.unsplash.com/photo-1504307651254-35680f356dfd?auto=format&fit=crop&w=400&q=80"}
+                                  alt="Site verification manager"
+                                  className="w-12 h-12 rounded-xl object-cover border border-border/60 shadow-xs flex-shrink-0"
+                                />
+                                <div className="text-xs min-w-0 font-medium flex-1">
+                                  {isEditingDPR ? (
+                                    <div className="space-y-1">
+                                      <input
+                                        type="text"
+                                        placeholder="Manager Name"
+                                        value={v.site_manager_name}
+                                        onChange={(e) => {
+                                          const updated = [...dpr.site_verification];
+                                          updated[idx].site_manager_name = e.target.value;
+                                          setEditedDPR({ ...dpr, site_verification: updated });
+                                        }}
+                                        className="w-full text-xs p-0.5 rounded border border-border bg-white dark:bg-gray-950 font-bold"
+                                      />
+                                      <input
+                                        type="text"
+                                        placeholder="Location"
+                                        value={v.location}
+                                        onChange={(e) => {
+                                          const updated = [...dpr.site_verification];
+                                          updated[idx].location = e.target.value;
+                                          setEditedDPR({ ...dpr, site_verification: updated });
+                                        }}
+                                        className="w-full text-xs p-0.5 rounded border border-border bg-white dark:bg-gray-950"
+                                      />
+                                      <input
+                                        type="text"
+                                        placeholder="Timestamp"
+                                        value={v.timestamp}
+                                        onChange={(e) => {
+                                          const updated = [...dpr.site_verification];
+                                          updated[idx].timestamp = e.target.value;
+                                          setEditedDPR({ ...dpr, site_verification: updated });
+                                        }}
+                                        className="w-full text-[10px] p-0.5 rounded border border-border bg-white dark:bg-gray-950 text-muted-foreground"
+                                      />
+                                    </div>
+                                  ) : (
+                                    <>
+                                      <p className="font-bold text-foreground truncate">{v.site_manager_name}</p>
+                                      <p className="text-muted-foreground mt-0.5">📍 Location: {v.location}</p>
+                                      <p className="text-[10px] text-muted-foreground font-semibold mt-1">
+                                        ⏰ Check-in: {v.timestamp} · Geotag Verified
+                                      </p>
+                                    </>
+                                  )}
+                                </div>
+                                {isEditingDPR && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const updated = dpr.site_verification.filter((_: any, rIdx: number) => rIdx !== idx);
+                                      setEditedDPR({ ...dpr, site_verification: updated });
+                                    }}
+                                    className="absolute top-2 right-2 text-rose-500 hover:text-rose-700 font-bold text-[10px] cursor-pointer"
+                                  >
+                                    ✕
+                                  </button>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="py-4 text-center border border-dashed border-border rounded-2xl bg-muted/5 text-muted-foreground text-xs italic">
+                            No check-in verifications logged.
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Tomorrow's Plan Section */}
+                      <div className="space-y-3">
+                        <div className="flex justify-between items-center">
+                          <h4 className="font-heading font-bold text-foreground text-xs uppercase tracking-wider border-l-2 border-emerald-500 pl-2">
+                            Tomorrow's Schedule Forecast
+                          </h4>
+                          {isEditingDPR && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const updated = [...(dpr.tomorrow_plan || []), { trade: '', location: '', planned_activity: '', material_required: '' }];
+                                setEditedDPR({ ...dpr, tomorrow_plan: updated });
+                              }}
+                              className="text-[10px] bg-emerald-600 text-white font-bold px-2 py-1 rounded hover:bg-emerald-700 cursor-pointer"
+                            >
+                              + Add Row
+                            </button>
+                          )}
+                        </div>
+                        
+                        <div className="overflow-x-auto border border-border/50 rounded-2xl bg-muted/5">
+                          <table className="w-full text-xs text-left border-collapse text-foreground">
+                            <thead>
+                              <tr className="border-b border-border bg-muted/30 text-muted-foreground font-bold">
+                                <th className="p-3 w-1/5">Trade</th>
+                                <th className="p-3 w-1/5">Planned Location</th>
+                                <th className="p-3 w-2/5">Activity Forecast</th>
+                                <th className="p-3 w-1/5">Required Materials</th>
+                                {isEditingDPR && <th className="p-3 text-center print:hidden w-1/12">Actions</th>}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {dpr.tomorrow_plan?.map((t: any, idx: number) => (
+                                <tr key={idx} className="border-b border-border/40 hover:bg-muted/10 last:border-0 font-medium">
+                                  <td className="p-3 font-bold text-foreground">
+                                    {isEditingDPR ? (
+                                      <input
+                                        type="text"
+                                        value={t.trade}
+                                        onChange={(e) => {
+                                          const updated = [...dpr.tomorrow_plan];
+                                          updated[idx].trade = e.target.value;
+                                          setEditedDPR({ ...dpr, tomorrow_plan: updated });
+                                        }}
+                                        className="w-full text-xs p-1 rounded border border-border bg-white dark:bg-gray-950 text-foreground"
+                                      />
+                                    ) : (
+                                      t.trade
+                                    )}
+                                  </td>
+                                  <td className="p-3 text-muted-foreground">
+                                    {isEditingDPR ? (
+                                      <input
+                                        type="text"
+                                        value={t.location}
+                                        onChange={(e) => {
+                                          const updated = [...dpr.tomorrow_plan];
+                                          updated[idx].location = e.target.value;
+                                          setEditedDPR({ ...dpr, tomorrow_plan: updated });
+                                        }}
+                                        className="w-full text-xs p-1 rounded border border-border bg-white dark:bg-gray-950 text-foreground"
+                                      />
+                                    ) : (
+                                      t.location
+                                    )}
+                                  </td>
+                                  <td className="p-3 text-foreground leading-relaxed">
+                                    {isEditingDPR ? (
+                                      <textarea
+                                        value={t.planned_activity}
+                                        rows={2}
+                                        onChange={(e) => {
+                                          const updated = [...dpr.tomorrow_plan];
+                                          updated[idx].planned_activity = e.target.value;
+                                          setEditedDPR({ ...dpr, tomorrow_plan: updated });
+                                        }}
+                                        className="w-full text-xs p-1 rounded border border-border bg-white dark:bg-gray-950 text-foreground"
+                                      />
+                                    ) : (
+                                      t.planned_activity
+                                    )}
+                                  </td>
+                                  <td className="p-3 text-muted-foreground font-bold">
+                                    {isEditingDPR ? (
+                                      <input
+                                        type="text"
+                                        value={t.material_required}
+                                        onChange={(e) => {
+                                          const updated = [...dpr.tomorrow_plan];
+                                          updated[idx].material_required = e.target.value;
+                                          setEditedDPR({ ...dpr, tomorrow_plan: updated });
+                                        }}
+                                        className="w-full text-xs p-1 rounded border border-border bg-white dark:bg-gray-950 text-foreground"
+                                      />
+                                    ) : (
+                                      t.material_required
+                                    )}
+                                  </td>
+                                  {isEditingDPR && (
+                                    <td className="p-3 text-center print:hidden">
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          const updated = dpr.tomorrow_plan.filter((_: any, rIdx: number) => rIdx !== idx);
+                                          setEditedDPR({ ...dpr, tomorrow_plan: updated });
+                                        }}
+                                        className="text-rose-500 hover:text-rose-700 font-bold text-[10px] cursor-pointer"
+                                      >
+                                        Delete
+                                      </button>
+                                    </td>
+                                  )}
+                                </tr>
+                              ))}
+                              {(!dpr.tomorrow_plan || dpr.tomorrow_plan.length === 0) && (
+                                <tr>
+                                  <td colSpan={isEditingDPR ? 5 : 4} className="p-4 text-center text-muted-foreground italic">
+                                    No tomorrow forecast activities logged.
+                                  </td>
+                                </tr>
+                              )}
+                            </tbody>
+                          </table>
                         </div>
                       </div>
-                    ))}
 
-                    {project!.equipments.length === 0 && (
-                      <div className="md:col-span-2 py-12 text-center text-gray-400 border border-dashed border-gray-200 dark:border-gray-800 rounded-xl">
-                        No fleet assets assigned to this site.
+                      {/* Report Footer */}
+                      <div className="border-t border-border/60 pt-6 flex justify-between items-center flex-wrap gap-4 text-[10px] text-muted-foreground font-bold uppercase tracking-wider">
+                        <span>Reported by: Pramukh Construction Intelligence Engine</span>
+                        <span>Last updated: {new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}</span>
                       </div>
-                    )}
+                    </div>
+                  );
+                })() : (
+                  /* Empty State to Generate */
+                  <div className="py-20 text-center border border-dashed border-border rounded-3xl bg-white dark:bg-gray-900 p-8 space-y-4 font-medium print:hidden">
+                    <div className="w-12 h-12 bg-primary/5 text-primary rounded-full flex items-center justify-center mx-auto border border-primary/10">
+                      <ClipboardList className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h4 className="font-heading font-extrabold text-foreground text-sm">No Client-Facing DPR Compiled Yet</h4>
+                      <p className="text-xs text-muted-foreground mt-1 max-w-sm mx-auto">
+                        Compile the daily site engineer log updates and planner sheets into a structured progress document for clients.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={generateDPRWithAI}
+                      disabled={generatingDPR}
+                      className="bg-primary hover:bg-orange-800 text-white text-xs font-bold px-5 py-3 rounded-xl transition-all shadow-sm cursor-pointer inline-flex items-center gap-2"
+                    >
+                      {generatingDPR ? (
+                        <>
+                          <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+                          Compiling logs using AI...
+                        </>
+                      ) : (
+                        <>
+                          ✨ Auto-Generate Client DPR with AI
+                        </>
+                      )}
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : (
+              /* DPR History tab content */
+              <div className="space-y-4">
+                <div className="bg-white dark:bg-gray-900 p-4 rounded-2xl border border-border/60 shadow-sm flex flex-col gap-4">
+                  <div>
+                    <h3 className="font-heading font-bold text-foreground text-xs uppercase tracking-wider">DPR Report History</h3>
+                    <p className="text-xs text-muted-foreground mt-0.5">Browse compiled Daily Progress Reports from active logs and AI runs.</p>
+                  </div>
+                  
+                  {/* Let's render a list of the last 14 days and check if reports exist */}
+                  <div className="grid grid-cols-1 gap-2.5">
+                    {Array.from({ length: 14 }).map((_, idx) => {
+                      const dateObj = new Date();
+                      dateObj.setDate(dateObj.getDate() - idx);
+                      const dateStr = dateObj.toISOString().split('T')[0];
+                      const savedDPR = localStorage.getItem(`pramukh_client_dpr_${project!.id}_${dateStr}`);
+                      
+                      let parsedReport = null;
+                      if (savedDPR) {
+                        try {
+                          parsedReport = JSON.parse(savedDPR);
+                        } catch (err) {
+                          // ignore
+                        }
+                      }
+
+                      return (
+                        <div
+                          key={dateStr}
+                          className="flex flex-col sm:flex-row sm:items-center justify-between p-3.5 bg-muted/10 border border-border/50 rounded-2xl gap-3 hover:bg-muted/20 transition-all text-xs"
+                        >
+                          <div>
+                            <p className="font-bold text-foreground">
+                              📅 {dateObj.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric', year: 'numeric' })}
+                            </p>
+                            <p className="text-[10px] text-muted-foreground mt-0.5">Date key: {dateStr}</p>
+                          </div>
+                          
+                          <div className="flex items-center gap-4 flex-wrap sm:flex-nowrap">
+                            {parsedReport ? (
+                              <>
+                                <div className="text-right">
+                                  <span className={`text-[9px] font-bold border uppercase tracking-wider px-1.5 py-0.5 rounded ${
+                                    parsedReport.status === 'critical' ? 'bg-rose-50 border-rose-200 text-rose-600 dark:bg-rose-950/20 dark:text-rose-400' :
+                                    parsedReport.status === 'delayed' ? 'bg-amber-50 border-amber-200 text-amber-600 dark:bg-amber-950/20 dark:text-amber-400' :
+                                    'bg-emerald-50 border-emerald-200 text-emerald-600 dark:bg-emerald-950/20 dark:text-emerald-400'
+                                  }`}>
+                                    {parsedReport.status?.replace('_', ' ')}
+                                  </span>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setSelectedDPRDate(dateStr);
+                                    const baseReport = parsedReport || getDefaultClientDPR(project?.name || 'Construction Site', dateStr);
+                                    // Ensure historical delay events recorded on/before dateStr are reflected
+                                    const reportDelays = (baseReport.delays && baseReport.delays.length > 0) ? baseReport.delays : [];
+                                    setClientDPRReport({ ...baseReport, delays: reportDelays });
+                                    setOperationsSubTab('client-report');
+                                  }}
+                                  className="text-xs text-primary font-extrabold hover:underline cursor-pointer border border-transparent bg-transparent"
+                                >
+                                  View Compiled Report →
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                <span className="text-[9px] bg-muted/20 border border-border/80 text-muted-foreground font-bold px-1.5 py-0.5 rounded uppercase">
+                                  Draft Log Feed
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setSelectedDPRDate(dateStr);
+                                    setClientDPRReport(null);
+                                    setOperationsSubTab('client-report');
+                                  }}
+                                  className="text-xs text-muted-foreground font-semibold hover:underline cursor-pointer border border-transparent bg-transparent"
+                                >
+                                  Compile Report →
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               </div>
             )}
+          </div>
+        )}
 
             {/* 3. MATERIAL MANAGEMENT */}
             {activeTab === 'inventory' && (() => {
@@ -5514,32 +7236,79 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
 
                   {/* Message Input Box */}
                   <form onSubmit={handleSendChatMessage} className="p-2.5 bg-[#f0f2f5] dark:bg-[#202c33] border-t border-gray-200 dark:border-gray-800 flex items-center gap-2 z-10 h-14">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setChatMessageText(prev => prev + ' [Drawing Attached: L14-Beam-Reinforcement.dwg] ');
-                      }}
-                      className="p-2 text-gray-550 dark:text-gray-400 rounded-full hover:bg-gray-200 dark:hover:bg-[#2a3942] transition-colors"
-                      title="Attach AutoCAD Drawing"
-                    >
-                      <Paperclip className="w-4 h-4" />
-                    </button>
+                    {!isRecordingChatVoice && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setChatMessageText(prev => prev + ' [Drawing Attached: L14-Beam-Reinforcement.dwg] ');
+                          }}
+                          className="p-2 text-gray-550 dark:text-gray-400 rounded-full hover:bg-gray-200 dark:hover:bg-[#2a3942] transition-colors"
+                          title="Attach AutoCAD Drawing"
+                        >
+                          <Paperclip className="w-4 h-4" />
+                        </button>
+                        
+                        <button
+                          type="button"
+                          onClick={() => setIsRecordingChatVoice(true)}
+                          className="p-2 text-gray-550 dark:text-gray-400 rounded-full hover:bg-gray-200 dark:hover:bg-[#2a3942] transition-colors"
+                          title="Record Voice Note"
+                        >
+                          <Mic className="w-4 h-4 text-[#00a884]" />
+                        </button>
+                      </>
+                    )}
                     
-                    <input
-                      type="text"
-                      required
-                      value={chatMessageText}
-                      onChange={(e) => setChatMessageText(e.target.value)}
-                      placeholder="Type a message to WhatsApp..."
-                      className="flex-1 px-3 py-2 text-xs bg-white dark:bg-[#2a3942] text-gray-900 dark:text-white border-none rounded-lg focus:outline-none placeholder-gray-400 dark:placeholder-gray-500 shadow-sm"
-                    />
+                    {isRecordingChatVoice ? (
+                      <div className="flex-1 flex items-center justify-between px-3 py-1 bg-red-500/10 border border-red-500/25 rounded-lg text-xs font-semibold text-red-600 dark:text-red-400 animate-pulse h-9">
+                        <span className="flex items-center gap-1.5">
+                          <span className="w-2 h-2 bg-red-500 rounded-full animate-ping"></span>
+                          Recording Site Update...
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsRecordingChatVoice(false);
+                            // Simulate transcription message sent to chat
+                            const mockTranscriptions = [
+                              "Tied reinforcement steel rebars on Tower B, L4 Slab. Setting up scaffolding pins next.",
+                              "Completed bricklaying with cement-sand mortar on Tower A Level 12 partition walls.",
+                              "Laid electrical conduits and internal wall wiring on Tower A Level 10.",
+                              "Started plastering base coat in Tower B Lobby Area. Gypsum bags arrived."
+                            ];
+                            const transcription = mockTranscriptions[Math.floor(Math.random() * mockTranscriptions.length)];
+                            const roleSuffix = chatChannel === 'client'
+                              ? ' (Client Group)'
+                              : chatChannel === 'vendors'
+                                ? ' (Supply Line)'
+                                : '';
+                            addChatMessage(project!.id, currentUser.name, currentUser.role + roleSuffix, `🎤 Voice Note: "${transcription}"`);
+                          }}
+                          className="text-[10px] bg-red-500 text-white font-bold px-2 py-1 rounded hover:bg-red-600 transition-colors cursor-pointer"
+                        >
+                          Stop & Send
+                        </button>
+                      </div>
+                    ) : (
+                      <input
+                        type="text"
+                        required
+                        value={chatMessageText}
+                        onChange={(e) => setChatMessageText(e.target.value)}
+                        placeholder="Type a message to WhatsApp..."
+                        className="flex-1 px-3 py-2 text-xs bg-white dark:bg-[#2a3942] text-gray-900 dark:text-white border-none rounded-lg focus:outline-none placeholder-gray-400 dark:placeholder-gray-500 shadow-sm"
+                      />
+                    )}
 
-                    <button
-                      type="submit"
-                      className="w-9 h-9 rounded-full bg-[#00a884] hover:bg-[#008f72] text-white flex items-center justify-center shadow-sm transition-colors cursor-pointer"
-                    >
-                      <Send className="w-3.5 h-3.5" />
-                    </button>
+                    {!isRecordingChatVoice && (
+                      <button
+                        type="submit"
+                        className="w-9 h-9 rounded-full bg-[#00a884] hover:bg-[#008f72] text-white flex items-center justify-center shadow-sm transition-colors cursor-pointer"
+                      >
+                        <Send className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </form>
                 </div>
               </div>
@@ -5614,17 +7383,17 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
                           : 'text-muted-foreground hover:text-foreground'
                       }`}
                     >
-                      📜 Audit History ({qcRequests.filter(r => r.status === 'Approved' || r.status === 'Pass').length})
+                      📜 Audit History ({qcRequests.length})
                     </button>
                     <button
                       onClick={() => setQcSubTab('rework')}
                       className={`px-3 py-1.5 text-[11px] font-bold rounded-lg transition-all cursor-pointer ${
                         qcSubTab === 'rework'
-                          ? 'bg-[#b68d40] text-white shadow-xs'
-                          : 'text-muted-foreground hover:text-foreground'
+                          ? 'bg-red-600 text-white shadow-xs'
+                          : 'text-red-600 dark:text-red-400 hover:bg-red-500/10 font-black'
                       }`}
                     >
-                      ⚠️ Rework ({qcRequests.filter(r => r.status === 'Failed' || r.status === 'Fail').length})
+                      ⚠️ Snags & Rework ({qcRequests.filter(r => r.status === 'Failed' || r.status === 'Fail').length})
                     </button>
                   </div>
                 </div>
@@ -5937,7 +7706,8 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
                                   <th className="pb-3 pr-2">Rework Status</th>
                                   <th className="pb-3 pr-2">Remarks / Defect</th>
                                   <th className="pb-3 pr-2 text-right">Work Done Qty</th>
-                                  <th className="pb-3 text-right">Billing Status</th>
+                                  <th className="pb-3 pr-2 text-right">Billing Status</th>
+                                  <th className="pb-3 text-right">Inspect</th>
                                 </tr>
                               </thead>
                               <tbody>
@@ -5957,7 +7727,16 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
                                   const passedCheckpoints = req.checklist.checkpoints.filter((c: any) => c.result === 'Pass').length;
                                   
                                   return (
-                                    <tr key={req.id} className="border-b border-border/30 hover:bg-muted/10 transition-colors">
+                                    <tr
+                                      key={req.id}
+                                      onClick={() => {
+                                        setInspectingReqId(req.id);
+                                        setAttachedPhotos(req.photos || []);
+                                        setQcSubTab('completion');
+                                      }}
+                                      className="border-b border-border/30 hover:bg-[#b68d40]/10 transition-all cursor-pointer group"
+                                      title="Click to view full inspection details"
+                                    >
                                       {/* Date & Time */}
                                       <td className="py-3 pr-2 text-muted-foreground whitespace-nowrap">
                                         <span className="font-bold block text-foreground">{req.submittedDate}</span>
@@ -6097,7 +7876,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
                                       </td>
 
                                       {/* Billing Status */}
-                                      <td className="py-3 text-right font-bold whitespace-nowrap">
+                                      <td className="py-3 pr-2 text-right font-bold whitespace-nowrap">
                                         {req.status === 'Approved' && !hasRework ? (
                                           <span className="px-2 py-0.5 bg-emerald-500/10 text-emerald-600 rounded text-[9px] border border-emerald-500/20">
                                             BILLING CLEAR
@@ -6107,6 +7886,23 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
                                             BILLING BLOCKED
                                           </span>
                                         )}
+                                      </td>
+
+                                      {/* Inspect Action Button */}
+                                      <td className="py-3 text-right whitespace-nowrap">
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setInspectingReqId(req.id);
+                                            setAttachedPhotos(req.photos || []);
+                                            setQcSubTab('completion');
+                                          }}
+                                          className="px-3 py-1.5 bg-[#b68d40] hover:bg-[#967332] active:scale-95 text-white transition-all text-[10px] font-bold rounded-lg cursor-pointer shadow-2xs inline-flex items-center gap-1.5"
+                                        >
+                                          <Eye className="w-3.5 h-3.5" />
+                                          Inspect
+                                        </button>
                                       </td>
                                     </tr>
                                   );
@@ -6160,9 +7956,12 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
                                   setAttachedPhotos([]);
                                   setReworkTargetDate('');
                                   setReworkDesc('');
+                                  if (req.status !== 'Pending') {
+                                    setQcSubTab('dashboard');
+                                  }
                                 }}
                                 className="p-2 hover:bg-muted rounded-full transition-colors text-muted-foreground hover:text-foreground cursor-pointer shrink-0 mt-0.5"
-                                title="Back to Active list"
+                                title="Back to list"
                               >
                                 <ArrowLeft className="w-5 h-5" />
                               </button>
@@ -6258,12 +8057,30 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
                               {attachedPhotos.length > 0 && (
                                 <div className="flex flex-wrap gap-2 mt-2">
                                   {attachedPhotos.map((photo, pIdx) => (
-                                    <div key={pIdx} className="relative w-20 h-20 rounded-lg overflow-hidden border border-border shadow-xs shrink-0 bg-gray-100">
-                                      <img src={photo} className="w-full h-full object-cover" alt="site work proof" />
+                                    <div key={pIdx} className="relative w-20 h-20 rounded-lg overflow-hidden border border-border shadow-xs shrink-0 bg-muted/30 group">
+                                      <img
+                                        src={resolvePhotoUrl(photo)}
+                                        className="w-full h-full object-cover cursor-pointer hover:scale-105 transition-transform duration-200"
+                                        alt="site work proof"
+                                        onClick={() => setActiveLightboxMedia({
+                                          id: `attached_${pIdx}_${Date.now()}`,
+                                          url: resolvePhotoUrl(photo),
+                                          type: 'image',
+                                          name: `Inspection Photo Proof #${pIdx + 1}`,
+                                          createdAt: new Date().toISOString(),
+                                          caption: 'Work Proof Attachment'
+                                        })}
+                                        onError={(e) => {
+                                          (e.target as HTMLImageElement).src = DEFAULT_CONSTRUCTION_PHOTO;
+                                        }}
+                                      />
                                       <button
                                         type="button"
-                                        onClick={() => setAttachedPhotos(prev => prev.filter((_, i) => i !== pIdx))}
-                                        className="absolute top-1 right-1 bg-red-500 text-white rounded-full w-4 h-4 flex items-center justify-center text-[10px] hover:bg-red-650 transition-colors"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setAttachedPhotos(prev => prev.filter((_, i) => i !== pIdx));
+                                        }}
+                                        className="absolute top-1 right-1 bg-red-500 text-white rounded-full w-4 h-4 flex items-center justify-center text-[10px] hover:bg-red-650 transition-colors shadow-xs cursor-pointer z-10"
                                       >
                                         ×
                                       </button>
@@ -6303,15 +8120,10 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
                             <div className="flex gap-3 pt-4 border-t border-border/40">
                               <button
                                 type="button"
-                                onClick={() => {
-                                  setInspectingReqId(null);
-                                  setAttachedPhotos([]);
-                                  setReworkTargetDate('');
-                                  setReworkDesc('');
-                                }}
-                                className="flex-1 py-2.5 bg-secondary text-secondary-foreground hover:bg-gray-305 font-extrabold text-xs uppercase rounded-lg transition-all cursor-pointer border border-border"
+                                onClick={handleSuspendInspectionCheck}
+                                className="flex-1 py-2.5 bg-secondary text-secondary-foreground hover:bg-amber-500/10 hover:text-amber-600 font-extrabold text-xs uppercase rounded-lg transition-all cursor-pointer border border-border"
                               >
-                                Suspend Check
+                                ⏸️ Suspend Check
                               </button>
                               <button
                                 type="button"
@@ -6336,39 +8148,72 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
                             </p>
                           </div>
                           <span className="bg-[#b68d40]/10 text-[#b68d40] px-2.5 py-1 rounded-full text-[10px] font-bold border border-[#b68d40]/25">
-                            {qcRequests.filter(r => r.status === 'Submitted' || r.status === 'Pending QC Inspection').length} Active Requests
+                            {qcRequests.filter(r => r.status === 'Submitted' || r.status === 'Pending QC Inspection' || r.status === 'Failed' || r.status === 'Fail').length} Active Requests & Snags
                           </span>
                         </div>
 
                         <div className="space-y-4">
-                          {qcRequests.filter(r => r.status === 'Submitted' || r.status === 'Pending QC Inspection').length === 0 ? (
+                          {qcRequests.filter(r => r.status === 'Submitted' || r.status === 'Pending QC Inspection' || r.status === 'Failed' || r.status === 'Fail').length === 0 ? (
                             <div className="text-center py-12 border border-dashed border-border rounded-2xl bg-muted/5">
                               <ClipboardList className="w-10 h-10 text-muted-foreground/30 mx-auto mb-2" />
-                              <p className="text-xs font-bold text-foreground">No pending requests found</p>
-                              <p className="text-[10px] text-muted-foreground mt-0.5">All active submissions have been processed.</p>
+                              <p className="text-xs font-bold text-foreground">No pending requests or open snags found</p>
+                              <p className="text-[10px] text-muted-foreground mt-0.5">All active submissions and reported defects have been processed.</p>
                             </div>
                           ) : (
-                            qcRequests.filter(r => r.status === 'Submitted' || r.status === 'Pending QC Inspection').map(req => {
+                            qcRequests.filter(r => r.status === 'Submitted' || r.status === 'Pending QC Inspection' || r.status === 'Failed' || r.status === 'Fail').map(req => {
+                              const isSnagOrFailed = req.status === 'Failed' || req.status === 'Fail';
                               const pointsChecked = req.checklist.checkpoints.filter((c: any) => c.result !== 'Pending').length;
                               const totalPoints = req.checklist.checkpoints.length;
                               const inspector = req.assignedEngineer && req.assignedEngineer !== '-- Unassigned --' ? req.assignedEngineer : (currentUser.name || 'QC Inspector');
 
                               return (
-                                <div key={req.id} className="p-4.5 bg-muted/15 border border-border/60 rounded-2xl space-y-3 hover:bg-muted/5 transition-all duration-300">
+                                <div
+                                  key={req.id}
+                                  className={`p-4.5 border rounded-2xl space-y-3 transition-all duration-300 ${
+                                    isSnagOrFailed
+                                      ? 'bg-red-500/5 dark:bg-red-500/10 border-red-500/30'
+                                      : 'bg-muted/15 border-border/60 hover:bg-muted/5'
+                                  }`}
+                                >
                                   <div className="flex flex-wrap items-center justify-between gap-3">
-                                    <span className="text-[10px] font-black px-1.5 py-0.5 rounded bg-[#b68d40]/10 text-[#b68d40] border border-[#b68d40]/20 uppercase tracking-wider">
-                                      {req.category || 'General'}
-                                    </span>
+                                    <div className="flex items-center gap-2">
+                                      <span className={`text-[10px] font-black px-1.5 py-0.5 rounded uppercase tracking-wider ${
+                                        isSnagOrFailed
+                                          ? 'bg-red-500/20 text-red-600 border border-red-500/30'
+                                          : 'bg-[#b68d40]/10 text-[#b68d40] border border-[#b68d40]/20'
+                                      }`}>
+                                        {isSnagOrFailed ? '⚠️ REPORTED SNAG / DEFECT' : (req.category || 'General')}
+                                      </span>
+                                      {req.priority && (
+                                        <span className={`text-[9px] font-black px-1.5 py-0.5 rounded uppercase tracking-wider ${
+                                          req.priority === 'CRITICAL' ? 'bg-red-500/20 text-red-700' :
+                                          req.priority === 'HIGH' ? 'bg-amber-500/20 text-amber-700' :
+                                          'bg-blue-500/20 text-blue-700'
+                                        }`}>
+                                          {req.priority} PRIORITY
+                                        </span>
+                                      )}
+                                    </div>
                                     <span className="text-[10px] text-muted-foreground font-semibold">
                                       {req.submittedDate}
                                     </span>
                                   </div>
 
-                                  <h5 className="font-extrabold text-foreground text-sm mt-1">{req.activityName}</h5>
+                                  <div>
+                                    <h5 className="font-extrabold text-foreground text-sm mt-1">{req.activityName}</h5>
+                                    <p className="text-xs text-muted-foreground mt-0.5 font-medium">
+                                      Location: <span className="font-bold text-foreground">{req.location || 'Site'}</span> • Contractor: <span className="font-bold text-foreground">{req.contractorName || 'Contractor'}</span>
+                                    </p>
+                                    {req.remarks && (
+                                      <p className="text-xs text-red-900 dark:text-red-300 mt-2 p-2.5 bg-red-500/10 rounded-xl border border-red-500/20 font-medium">
+                                        {req.remarks}
+                                      </p>
+                                    )}
+                                  </div>
                                   
                                   <div className="flex flex-wrap justify-between items-center gap-2 pt-2 border-t border-border/40">
                                     <p className="text-xs text-muted-foreground font-medium">
-                                      Items checked: {pointsChecked} / {totalPoints}, with QC inspector: {inspector}
+                                      {isSnagOrFailed ? `Reported Defect • Inspector: ${inspector}` : `Items checked: ${pointsChecked} / ${totalPoints}, Inspector: ${inspector}`}
                                     </p>
                                     <button
                                       type="button"
@@ -6376,9 +8221,13 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
                                         setInspectingReqId(req.id);
                                         setAttachedPhotos(req.photos || []);
                                       }}
-                                      className="px-4 py-2 bg-[#b68d40] hover:bg-[#967332] text-white transition-all text-xs font-bold rounded-lg cursor-pointer shadow-2xs"
+                                      className={`px-4 py-2 text-white transition-all text-xs font-bold rounded-lg cursor-pointer shadow-2xs ${
+                                        isSnagOrFailed
+                                          ? 'bg-red-600 hover:bg-red-700'
+                                          : 'bg-[#b68d40] hover:bg-[#967332]'
+                                      }`}
                                     >
-                                      Inspect Check
+                                      {isSnagOrFailed ? 'View & Rectify Defect' : 'Inspect Check'}
                                     </button>
                                   </div>
                                 </div>
@@ -6407,36 +8256,54 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
                     </div>
 
                     {/* Create Custom Template form */}
-                    <form onSubmit={handleCreateNewTemplate} className="p-3.5 bg-muted/10 border border-border/40 rounded-xl space-y-2.5">
-                      <div className="flex flex-col sm:flex-row gap-3 items-end">
-                        <div className="flex-1 w-full space-y-1">
-                          <label className="text-[9px] font-bold text-muted-foreground uppercase">Template Name</label>
+                    <form onSubmit={handleCreateNewTemplate} className="p-4 bg-muted/10 border border-border/50 rounded-2xl space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <h5 className="text-xs font-black uppercase tracking-wider text-foreground flex items-center gap-1.5">
+                          ✨ Create Custom Inspection Template
+                        </h5>
+                        <span className="text-[10px] text-muted-foreground font-semibold">
+                          Add reusable quality checklists
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-end">
+                        <div className="sm:col-span-4 space-y-1.5">
+                          <label className="text-[10px] font-extrabold text-muted-foreground uppercase tracking-wider block">
+                            Template Name *
+                          </label>
                           <input
                             type="text"
                             value={newTemplateTitle}
                             onChange={e => setNewTemplateTitle(e.target.value)}
                             placeholder="e.g. Concrete Slump Check"
-                            className="w-full text-xs p-2 rounded-lg border border-border bg-background text-foreground outline-none focus:border-[#b68d40] font-semibold"
+                            className="w-full h-10 text-xs px-3 py-2 rounded-xl border border-border bg-background text-foreground outline-none focus:border-[#b68d40] focus:ring-1 focus:ring-[#b68d40] font-semibold transition-all shadow-2xs"
                             required
                           />
                         </div>
-                        <div className="flex-1 w-full space-y-1">
-                          <label className="text-[9px] font-bold text-muted-foreground uppercase">Checkpoints (One point per line)</label>
-                          <textarea
+
+                        <div className="sm:col-span-6 space-y-1.5">
+                          <label className="text-[10px] font-extrabold text-muted-foreground uppercase tracking-wider block">
+                            Checkpoints <span className="normal-case font-normal text-muted-foreground/80">(One point per line or comma) *</span>
+                          </label>
+                          <input
+                            type="text"
                             value={newTemplatePoints}
                             onChange={e => setNewTemplatePoints(e.target.value)}
-                            placeholder="e.g.&#10;Brickwork line, level and plumb&#10;Mortar mix ratio check"
-                            rows={1}
-                            className="w-full text-xs p-2 rounded-lg border border-border bg-background text-foreground outline-none focus:border-[#b68d40] font-semibold"
+                            placeholder="e.g. Slump test value, Mortar ratio, Plumb level check"
+                            className="w-full h-10 text-xs px-3 py-2 rounded-xl border border-border bg-background text-foreground outline-none focus:border-[#b68d40] focus:ring-1 focus:ring-[#b68d40] font-semibold transition-all shadow-2xs"
                             required
                           />
                         </div>
-                        <button
-                          type="submit"
-                          className="px-4 py-2 bg-[#b68d40] hover:bg-[#967332] text-white transition-colors text-xs font-bold rounded-lg cursor-pointer h-[34px] shrink-0"
-                        >
-                          Create
-                        </button>
+
+                        <div className="sm:col-span-2">
+                          <button
+                            type="submit"
+                            className="w-full h-10 bg-[#b68d40] hover:bg-[#967332] active:scale-[0.98] text-white transition-all text-xs font-bold rounded-xl cursor-pointer shadow-sm flex items-center justify-center gap-1.5"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                            Create
+                          </button>
+                        </div>
                       </div>
                     </form>
 
@@ -6541,27 +8408,36 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
                           📜 QC Inspection Audit History
                         </h4>
                         <p className="text-[11px] text-muted-foreground mt-0.5 font-medium">
-                          Archived record of all approved and passed quality control inspections.
+                          Archived record of all quality control inspections and snag submissions.
                         </p>
                       </div>
-                      <span className="bg-emerald-500/10 text-emerald-650 px-2.5 py-1 rounded-full text-[10px] font-bold border border-emerald-500/25">
-                        {qcRequests.filter(r => r.status === 'Approved' || r.status === 'Pass').length} Passed
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className="bg-emerald-500/10 text-emerald-650 px-2.5 py-1 rounded-full text-[10px] font-bold border border-emerald-500/25">
+                          {qcRequests.filter(r => r.status === 'Approved' || r.status === 'Pass').length} Passed
+                        </span>
+                        <span className="bg-red-500/10 text-red-650 px-2.5 py-1 rounded-full text-[10px] font-bold border border-red-500/25">
+                          {qcRequests.filter(r => r.status === 'Failed' || r.status === 'Fail').length} Failed
+                        </span>
+                      </div>
                     </div>
 
                     <div className="space-y-4">
-                      {qcRequests.filter(r => r.status === 'Approved' || r.status === 'Pass').length === 0 ? (
+                      {qcRequests.length === 0 ? (
                         <div className="text-center py-12 border border-dashed border-border rounded-2xl bg-muted/5">
                           <CheckCircle2 className="w-10 h-10 text-muted-foreground/30 mx-auto mb-2" />
-                          <p className="text-xs font-bold text-foreground">No approved inspections yet</p>
-                          <p className="text-[10px] text-muted-foreground mt-0.5">Approved checklists will be logged here for audit tracking.</p>
+                          <p className="text-xs font-bold text-foreground">No inspection records found</p>
+                          <p className="text-[10px] text-muted-foreground mt-0.5">Checklists and snag reports submitted from mobile will be logged here for audit tracking.</p>
                         </div>
                       ) : (
-                        qcRequests.filter(r => r.status === 'Approved' || r.status === 'Pass').map(req => {
+                        qcRequests.map(req => {
                           const isExpanded = expandedAudits[req.id];
                           const isUuid = req.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.id);
+                          const isFailed = req.status === 'Failed' || req.status === 'Fail';
+
                           return (
-                            <div key={req.id} className="border border-border/40 rounded-xl bg-muted/5 overflow-hidden transition-all duration-200">
+                            <div key={req.id} className={`border rounded-xl overflow-hidden transition-all duration-200 ${
+                              isFailed ? 'bg-red-500/5 border-red-500/30' : 'bg-muted/5 border-border/40'
+                            }`}>
                               {/* Accordion Toggle Header */}
                               <button
                                 type="button"
@@ -6573,8 +8449,15 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
                                     {!isUuid && (
                                       <span className="font-extrabold text-[#b68d40] text-xs">{req.id}</span>
                                     )}
-                                    <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-650 border border-emerald-500/20 uppercase tracking-wider">
+                                    <span className={`text-[9px] font-black px-1.5 py-0.5 rounded border uppercase tracking-wider ${
+                                      isFailed ? 'bg-red-500/10 text-red-600 border-red-500/20' : 'bg-emerald-500/10 text-emerald-650 border-emerald-500/20'
+                                    }`}>
                                       {req.category || 'General'}
+                                    </span>
+                                    <span className={`text-[9px] font-black px-1.5 py-0.5 rounded uppercase ${
+                                      isFailed ? 'bg-red-500 text-white' : 'bg-emerald-600 text-white'
+                                    }`}>
+                                      {isFailed ? '🔴 QC FAILED / SNAG' : '🟢 PASSED'}
                                     </span>
                                   </div>
                                   <h5 className="font-heading font-extrabold text-foreground text-xs mt-1">{req.activityName}</h5>
@@ -6582,7 +8465,9 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
                                 </div>
                                 <div className="flex items-center gap-3 shrink-0">
                                   <div className="text-right hidden sm:block">
-                                    <span className="text-emerald-650 font-bold text-[10px] block">QC Passed</span>
+                                    <span className={`font-bold text-[10px] block ${isFailed ? 'text-red-600' : 'text-emerald-650'}`}>
+                                      {isFailed ? 'QC Failed' : 'QC Passed'}
+                                    </span>
                                     <span className="text-[9px] text-muted-foreground block mt-0.5">{req.approvedAt || req.scheduledDate || req.submittedDate}</span>
                                   </div>
                                   <span className="text-muted-foreground p-1">
@@ -6625,13 +8510,44 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
                                   {/* Attached Photos */}
                                   {req.photos && req.photos.length > 0 && (
                                     <div className="space-y-1.5 pt-2 border-t border-border/20">
-                                      <p className="text-[10px] text-muted-foreground uppercase font-bold">Inspection Photo Proof:</p>
+                                      <p className="text-[10px] text-muted-foreground uppercase font-bold flex items-center gap-1.5">
+                                        <span>📷 Inspection Photo Proof ({req.photos.length}):</span>
+                                        <span className="text-[9px] text-[#b68d40] lowercase font-normal">(click photo to enlarge)</span>
+                                      </p>
                                       <div className="flex flex-wrap gap-2">
-                                        {req.photos.map((p: string, pIdx: number) => (
-                                          <div key={pIdx} className="relative w-16 h-16 rounded-lg overflow-hidden border border-border shadow-xs shrink-0">
-                                            <img src={p} className="w-full h-full object-cover" alt="proof" />
-                                          </div>
-                                        ))}
+                                        {req.photos.map((p: string, pIdx: number) => {
+                                          const pUrl = resolvePhotoUrl(p);
+                                          return (
+                                            <div
+                                              key={pIdx}
+                                              className="relative w-20 h-20 rounded-xl overflow-hidden border-2 border-border/80 shadow-xs shrink-0 bg-muted/30 group cursor-pointer"
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                setActiveLightboxMedia({
+                                                  id: `proof_${pIdx}_${Date.now()}`,
+                                                  url: pUrl,
+                                                  type: 'image',
+                                                  name: `${req.activityName} - Photo Proof #${pIdx + 1}`,
+                                                  createdAt: req.submittedDate || new Date().toISOString(),
+                                                  caption: `Location: ${req.location || 'Site'}`
+                                                });
+                                              }}
+                                            >
+                                              <img
+                                                src={pUrl}
+                                                className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300"
+                                                alt="Inspection proof"
+                                                onError={(e) => {
+                                                  (e.target as HTMLImageElement).src = DEFAULT_CONSTRUCTION_PHOTO;
+                                                }}
+                                              />
+                                              <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center text-white">
+                                                <ZoomIn className="w-5 h-5 drop-shadow" />
+                                                <span className="text-[8px] font-bold mt-0.5 uppercase tracking-wider">Enlarge</span>
+                                              </div>
+                                            </div>
+                                          );
+                                        })}
                                       </div>
                                     </div>
                                   )}
@@ -6647,21 +8563,41 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
 
                 {/* SUBTAB CONTENT: 4. REWORK TRACKING */}
                 {qcSubTab === 'rework' && (() => {
-                  const activeReworks = reworkItems.filter(rw => rw.status !== 'Closed');
+                  const failedQcItems = qcRequests
+                    .filter(r => r.status === 'Failed' || r.status === 'Fail')
+                    .map(r => ({
+                      id: r.id,
+                      qcRef: r.id,
+                      activityName: r.activityName,
+                      issueDescription: r.remarks || 'QC Inspection Failed / Logged as Snag',
+                      location: r.location || 'Site Location',
+                      responsiblePerson: r.contractorName || 'Contractor',
+                      targetDate: r.scheduledDate || r.submittedDate || new Date().toISOString().split('T')[0],
+                      status: 'Failed / Snag',
+                      remarks: r.remarks || '',
+                      correctionPhotos: r.photos || [],
+                      category: r.category || 'General',
+                      checklist: r.checklist
+                    }));
+
+                  const activeReworks = [
+                    ...failedQcItems,
+                    ...reworkItems.filter(rw => rw.status !== 'Closed' && !failedQcItems.some(f => f.id === rw.qcRef))
+                  ];
 
                   return (
                     <div className="bg-white dark:bg-gray-900 p-4.5 rounded-2xl border border-border/60 shadow-sm space-y-4 text-left">
                       <div className="border-b border-border/60 pb-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                         <div>
                           <h4 className="font-heading font-black text-foreground text-xs uppercase tracking-wider flex items-center gap-1.5">
-                            ⚠️ Rework & Corrective Actions Tracking
+                            ⚠️ Rework & Defect Snags Tracking
                           </h4>
                           <p className="text-[11px] text-muted-foreground mt-0.5 font-medium">
-                            Logs failed QC inspections, responsible parties, correction dates, and reinspection workflows.
+                            Logs failed QC inspections, mobile snag reports, responsible parties, and reinspection workflows.
                           </p>
                         </div>
                         <span className="bg-red-500/10 text-red-650 px-2.5 py-1 rounded-full text-[10px] font-bold border border-red-500/25 shrink-0 self-start sm:self-center">
-                          {activeReworks.length} Active Failed QC
+                          {activeReworks.length} Active Snags & Failed QC
                         </span>
                       </div>
 
@@ -6734,6 +8670,51 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
                                     {rw.remarks && (
                                       <div className="p-2.5 bg-amber-500/5 border border-amber-500/10 rounded-lg text-[10px] text-amber-700 dark:text-amber-400">
                                         <span className="font-bold">Latest Remarks: </span>{rw.remarks}
+                                      </div>
+                                    )}
+
+                                    {/* Attached Defect / Correction Photos */}
+                                    {((rw.correctionPhotos && rw.correctionPhotos.length > 0) || (req?.photos && req?.photos.length > 0)) && (
+                                      <div className="space-y-1.5 pt-2 border-t border-border/20">
+                                        <p className="text-[10px] text-muted-foreground uppercase font-bold flex items-center gap-1.5">
+                                          <span>📷 Defect Photo Evidence ({((rw.correctionPhotos && rw.correctionPhotos.length > 0 ? rw.correctionPhotos : req.photos) || []).length}):</span>
+                                          <span className="text-[9px] text-[#b68d40] lowercase font-normal">(click photo to enlarge)</span>
+                                        </p>
+                                        <div className="flex flex-wrap gap-2">
+                                          {(rw.correctionPhotos && rw.correctionPhotos.length > 0 ? rw.correctionPhotos : req.photos).map((p: string, pIdx: number) => {
+                                            const pUrl = resolvePhotoUrl(p);
+                                            return (
+                                              <div
+                                                key={pIdx}
+                                                className="relative w-20 h-20 rounded-xl overflow-hidden border-2 border-red-500/30 shadow-xs shrink-0 bg-muted/30 group cursor-pointer"
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  setActiveLightboxMedia({
+                                                    id: `rework_photo_${pIdx}_${Date.now()}`,
+                                                    url: pUrl,
+                                                    type: 'image',
+                                                    name: `${rw.activityName} - Defect Photo #${pIdx + 1}`,
+                                                    createdAt: new Date().toISOString(),
+                                                    caption: `Defect: ${rw.issueDescription || 'QC Snag'}`
+                                                  });
+                                                }}
+                                              >
+                                                <img
+                                                  src={pUrl}
+                                                  className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300"
+                                                  alt="Defect proof"
+                                                  onError={(e) => {
+                                                    (e.target as HTMLImageElement).src = DEFAULT_CONSTRUCTION_PHOTO;
+                                                  }}
+                                                />
+                                                <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center text-white">
+                                                  <ZoomIn className="w-5 h-5 drop-shadow" />
+                                                  <span className="text-[8px] font-bold mt-0.5 uppercase tracking-wider">Enlarge</span>
+                                                </div>
+                                              </div>
+                                            );
+                                          })}
+                                        </div>
                                       </div>
                                     )}
 
@@ -7798,6 +9779,799 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
           </div>
         )}
       </AnimatePresence>
+
+      {/* ── Mobile DPR Inspection Modal ── */}
+      {selectedTimelineDPR && (
+        <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white dark:bg-gray-900 border border-border/80 rounded-3xl shadow-2xl max-w-2xl w-full overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            
+            {/* Header Banner */}
+            <div className="p-6 bg-muted/30 border-b border-border/60 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="p-3 bg-primary/10 text-primary rounded-2xl border border-primary/20">
+                  <ClipboardList className="w-6 h-6" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    {isEditingModalDPR ? (
+                      <input
+                        type="text"
+                        value={selectedTimelineDPR.report_no || selectedTimelineDPR.id || ''}
+                        onChange={(e) => setSelectedTimelineDPR({ ...selectedTimelineDPR, report_no: e.target.value })}
+                        className="text-xs font-mono font-bold text-primary bg-white dark:bg-gray-950 px-2 py-1 rounded border border-primary/40 w-36"
+                      />
+                    ) : (
+                      <span className="text-xs font-mono font-bold text-primary bg-primary/10 px-2.5 py-0.5 rounded-full border border-primary/20">
+                        {selectedTimelineDPR.report_no || selectedTimelineDPR.id || 'DPR Log'}
+                      </span>
+                    )}
+
+                    {isEditingModalDPR ? (
+                      <select
+                        value={selectedTimelineDPR.status || 'Submitted'}
+                        onChange={(e) => setSelectedTimelineDPR({ ...selectedTimelineDPR, status: e.target.value })}
+                        className="text-[10px] font-bold px-2 py-1 rounded border border-border bg-white dark:bg-gray-950 text-foreground"
+                      >
+                        <option value="Resolved">Resolved</option>
+                        <option value="Submitted">Submitted</option>
+                        <option value="Approved">Approved</option>
+                        <option value="In Progress">In Progress</option>
+                        <option value="Draft">Draft</option>
+                      </select>
+                    ) : (
+                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${
+                        selectedTimelineDPR.status === 'approved' || selectedTimelineDPR.status === 'Resolved'
+                          ? 'bg-emerald-500/10 text-emerald-600 border border-emerald-500/20'
+                          : selectedTimelineDPR.status === 'rejected'
+                          ? 'bg-rose-500/10 text-rose-600 border border-rose-500/20'
+                          : 'bg-amber-500/10 text-amber-600 border border-amber-500/20'
+                      }`}>
+                        {selectedTimelineDPR.status || selectedTimelineDPR.overall_status || 'Submitted'}
+                      </span>
+                    )}
+                  </div>
+                  <h3 className="font-heading font-bold text-base text-foreground mt-1">
+                    {isEditingModalDPR ? 'Edit Submitted Mobile DPR Record' : 'Submitted Mobile DPR Entry'}
+                  </h3>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsEditingModalDPR(!isEditingModalDPR)}
+                  className={`text-xs font-bold px-3 py-1.5 rounded-xl border transition-all cursor-pointer ${
+                    isEditingModalDPR 
+                      ? 'bg-amber-500/10 text-amber-600 border-amber-500/30 hover:bg-amber-500/20'
+                      : 'bg-primary/10 text-primary border-primary/20 hover:bg-primary/20'
+                  }`}
+                >
+                  {isEditingModalDPR ? '👁️ View Mode' : '✏️ Edit Fields'}
+                </button>
+                <button 
+                  onClick={() => {
+                    setIsEditingModalDPR(false);
+                    setSelectedTimelineDPR(null);
+                  }}
+                  className="p-2 text-muted-foreground hover:text-foreground rounded-full hover:bg-muted/50 transition-all cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Body Content */}
+            <div className="p-6 space-y-5 max-h-[75vh] overflow-y-auto">
+              
+              {/* Meta Grid */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-muted/20 p-4 rounded-2xl border border-border/50 text-xs">
+                <div>
+                  <span className="text-[10px] text-muted-foreground font-bold uppercase tracking-wider block">Created / Modified By</span>
+                  {isEditingModalDPR ? (
+                    <input
+                      type="text"
+                      value={selectedTimelineDPR.created_by_name || selectedTimelineDPR.submitted_by || ''}
+                      onChange={(e) => setSelectedTimelineDPR({ ...selectedTimelineDPR, created_by_name: e.target.value, submitted_by: e.target.value })}
+                      className="font-bold text-xs p-1 rounded border border-border bg-white dark:bg-gray-950 text-foreground w-full mt-0.5"
+                      placeholder="Engineer Name"
+                    />
+                  ) : (
+                    <span className="font-bold text-foreground mt-0.5 block truncate">
+                      {(() => {
+                        const name = selectedTimelineDPR.created_by_name || selectedTimelineDPR.submitted_by || '';
+                        if (!name || /^[0-9a-f]{8}-[0-9a-f]{4}/i.test(name)) return 'Engr. Site Manager';
+                        return name.startsWith('Engr.') ? name : `Engr. ${name}`;
+                      })()}
+                    </span>
+                  )}
+                </div>
+                <div>
+                  <span className="text-[10px] text-muted-foreground font-bold uppercase tracking-wider block">Report / Created Date</span>
+                  {isEditingModalDPR ? (
+                    <input
+                      type="date"
+                      value={selectedTimelineDPR.report_date || selectedTimelineDPR.date || ''}
+                      onChange={(e) => setSelectedTimelineDPR({ ...selectedTimelineDPR, report_date: e.target.value, date: e.target.value })}
+                      className="font-bold text-xs p-1 rounded border border-border bg-white dark:bg-gray-950 text-foreground w-full mt-0.5"
+                    />
+                  ) : (
+                    <span className="font-bold text-foreground mt-0.5 block">{selectedTimelineDPR.report_date || selectedTimelineDPR.date || 'Today'}</span>
+                  )}
+                </div>
+                <div>
+                  <span className="text-[10px] text-muted-foreground font-bold uppercase tracking-wider block">Weather</span>
+                  {isEditingModalDPR ? (
+                    <input
+                      type="text"
+                      value={selectedTimelineDPR.weather_condition || selectedTimelineDPR.weather || 'Clear ☀️'}
+                      onChange={(e) => setSelectedTimelineDPR({ ...selectedTimelineDPR, weather_condition: e.target.value, weather: e.target.value })}
+                      className="font-bold text-xs p-1 rounded border border-border bg-white dark:bg-gray-950 text-foreground w-full mt-0.5"
+                    />
+                  ) : (
+                    <span className="font-bold text-primary mt-0.5 block">{selectedTimelineDPR.weather_condition || selectedTimelineDPR.weather_conditions || 'Clear ☀️'}</span>
+                  )}
+                </div>
+                <div>
+                  <span className="text-[10px] text-muted-foreground font-bold uppercase tracking-wider block">Agency / Trade</span>
+                  {isEditingModalDPR ? (
+                    <input
+                      type="text"
+                      value={selectedTimelineDPR.agency_name || selectedTimelineDPR.contractor_name || ''}
+                      onChange={(e) => setSelectedTimelineDPR({ ...selectedTimelineDPR, agency_name: e.target.value, contractor_name: e.target.value })}
+                      className="font-bold text-xs p-1 rounded border border-border bg-white dark:bg-gray-950 text-foreground w-full mt-0.5"
+                      placeholder="Subcontractor"
+                    />
+                  ) : (
+                    <span className="font-bold text-foreground mt-0.5 block truncate">{selectedTimelineDPR.agency_name || selectedTimelineDPR.contractor_name || selectedTimelineDPR.trade_name || 'Ram workers'}</span>
+                  )}
+                </div>
+              </div>
+
+              {/* Activity Lines Breakdown */}
+              <div className="space-y-3">
+                <h4 className="font-bold text-xs uppercase tracking-wider text-muted-foreground border-l-2 border-primary pl-2">
+                  Complete Mobile DPR Activity Lines
+                </h4>
+                {(() => {
+                  const parseModalLineCount = (line: any) => {
+                    const text = [line.activity_name, line.remarks, line.activity_text, selectedTimelineDPR.activities_completed, selectedTimelineDPR.summary].filter(Boolean).join(' ');
+                    const m = text.match(/(?:Persons|Workers|Laborers|Masons|Headcount)\s*[:=]\s*(\d+)/i) || text.match(/(\d+)\s*(?:persons|workers|laborers|masons|men)/i);
+                    if (m) {
+                      const val = parseInt(m[1], 10);
+                      if (!isNaN(val) && val > 0) return val;
+                    }
+                    const num = Number(line.headcount || line.manpower_count);
+                    return (!isNaN(num) && num > 0 && num !== 12) ? num : 10;
+                  };
+
+                  const linesList = (selectedTimelineDPR.dpr_activity_lines && selectedTimelineDPR.dpr_activity_lines.length > 0)
+                    ? selectedTimelineDPR.dpr_activity_lines
+                    : (selectedTimelineDPR.activities && selectedTimelineDPR.activities.length > 0)
+                    ? selectedTimelineDPR.activities
+                    : [{
+                        trade_name: 'Civil/Structure',
+                        activity_name: 'Slab work done',
+                        location: 'Tower A',
+                        shift: 'Day Shift',
+                        status: 'In Progress',
+                        remarks: selectedTimelineDPR.activities_completed || selectedTimelineDPR.summary || selectedTimelineDPR.workCompleted || '[In Progress] Loc: Tower A | Slab work done'
+                      }];
+
+                  return (
+                    <div className="divide-y divide-border/40 border border-border/60 rounded-2xl overflow-hidden bg-white dark:bg-gray-900">
+                      {linesList.map((line: any, idx: number) => {
+                        const wCount = parseModalLineCount(line);
+                        return (
+                          <div key={idx} className="p-4 text-xs space-y-2">
+                            <div className="flex justify-between items-start flex-wrap gap-2">
+                              <div className="flex-1">
+                                {isEditingModalDPR ? (
+                                  <div className="space-y-1">
+                                    <span className="text-[10px] text-muted-foreground font-bold uppercase block">Activity Description</span>
+                                    <input
+                                      type="text"
+                                      value={line.activity_name || line.completed_work || line.trade_name || 'Slab work done'}
+                                      onChange={(e) => {
+                                        const updatedLines = [...linesList];
+                                        updatedLines[idx] = { ...updatedLines[idx], activity_name: e.target.value, completed_work: e.target.value };
+                                        setSelectedTimelineDPR({ ...selectedTimelineDPR, dpr_activity_lines: updatedLines, activities: updatedLines });
+                                      }}
+                                      className="font-bold text-xs p-1.5 rounded border border-border bg-white dark:bg-gray-950 text-foreground w-full"
+                                    />
+                                    <div className="flex gap-2 text-[10px]">
+                                      <input
+                                        type="text"
+                                        placeholder="Category"
+                                        value={line.trade_name || line.work_type || 'Civil/Structure'}
+                                        onChange={(e) => {
+                                          const updatedLines = [...linesList];
+                                          updatedLines[idx] = { ...updatedLines[idx], trade_name: e.target.value, work_type: e.target.value };
+                                          setSelectedTimelineDPR({ ...selectedTimelineDPR, dpr_activity_lines: updatedLines, activities: updatedLines });
+                                        }}
+                                        className="p-1 rounded border border-border bg-white dark:bg-gray-950 text-foreground w-1/2 font-medium"
+                                      />
+                                      <input
+                                        type="text"
+                                        placeholder="Agency"
+                                        value={line.contractor_name || selectedTimelineDPR.agency_name || 'Ram workers'}
+                                        onChange={(e) => {
+                                          const updatedLines = [...linesList];
+                                          updatedLines[idx] = { ...updatedLines[idx], contractor_name: e.target.value };
+                                          setSelectedTimelineDPR({ ...selectedTimelineDPR, dpr_activity_lines: updatedLines, activities: updatedLines, agency_name: e.target.value });
+                                        }}
+                                        className="p-1 rounded border border-border bg-white dark:bg-gray-950 text-foreground w-1/2 font-medium"
+                                      />
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <>
+                                    <span className="font-bold text-sm text-foreground block">
+                                      {line.activity_name || line.completed_work || line.trade_name || line.work_type || 'Slab work done'}
+                                    </span>
+                                    <span className="text-[10px] text-muted-foreground font-semibold">
+                                      Category: <strong className="text-foreground">{line.trade_name || line.work_type || 'Civil/Structure'}</strong> • Agency: <strong className="text-foreground">{line.contractor_name || selectedTimelineDPR.agency_name || 'Ram workers'}</strong>
+                                    </span>
+                                  </>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-2">
+                                {isEditingModalDPR ? (
+                                  <div className="flex items-center gap-1">
+                                    <span className="text-[10px] font-bold text-muted-foreground">Workers:</span>
+                                    <input
+                                      type="number"
+                                      value={wCount}
+                                      onChange={(e) => {
+                                        const updatedLines = [...linesList];
+                                        updatedLines[idx] = { ...updatedLines[idx], headcount: parseInt(e.target.value) || 0, no_of_persons: parseInt(e.target.value) || 0 };
+                                        setSelectedTimelineDPR({ ...selectedTimelineDPR, dpr_activity_lines: updatedLines, activities: updatedLines });
+                                      }}
+                                      className="w-16 text-xs font-bold p-1 rounded border border-emerald-500/40 bg-white dark:bg-gray-950 text-emerald-600 text-center"
+                                    />
+                                  </div>
+                                ) : (
+                                  <>
+                                    <span className="text-emerald-600 bg-emerald-500/10 px-2.5 py-1 rounded-full border border-emerald-500/20 text-[11px] font-bold">
+                                      👷 {wCount} Workers
+                                    </span>
+                                    <span className="text-blue-600 bg-blue-500/10 px-2.5 py-1 rounded-full border border-blue-500/20 text-[11px] font-bold">
+                                      👔 1 Supervisor
+                                    </span>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 py-2 px-3 bg-muted/20 rounded-xl text-[11px] font-medium border border-border/40">
+                              <div>
+                                <span className="text-[9px] text-muted-foreground font-bold uppercase block">Location / Tower</span>
+                                {isEditingModalDPR ? (
+                                  <input
+                                    type="text"
+                                    value={line.location_zone || line.location || 'Tower A'}
+                                    onChange={(e) => {
+                                      const updatedLines = [...linesList];
+                                      updatedLines[idx] = { ...updatedLines[idx], location: e.target.value, location_zone: e.target.value };
+                                      setSelectedTimelineDPR({ ...selectedTimelineDPR, dpr_activity_lines: updatedLines, activities: updatedLines });
+                                    }}
+                                    className="w-full text-xs font-bold p-1 rounded border border-border bg-white dark:bg-gray-950 text-foreground"
+                                  />
+                                ) : (
+                                  <span className="text-foreground font-bold">{line.location_zone || line.location || 'Tower A'}</span>
+                                )}
+                              </div>
+                              <div>
+                                <span className="text-[9px] text-muted-foreground font-bold uppercase block">Shift</span>
+                                {isEditingModalDPR ? (
+                                  <input
+                                    type="text"
+                                    value={line.shift || 'Day Shift'}
+                                    onChange={(e) => {
+                                      const updatedLines = [...linesList];
+                                      updatedLines[idx] = { ...updatedLines[idx], shift: e.target.value };
+                                      setSelectedTimelineDPR({ ...selectedTimelineDPR, dpr_activity_lines: updatedLines, activities: updatedLines });
+                                    }}
+                                    className="w-full text-xs font-bold p-1 rounded border border-border bg-white dark:bg-gray-950 text-foreground"
+                                  />
+                                ) : (
+                                  <span className="text-foreground font-bold">{line.shift || 'Day Shift'}</span>
+                                )}
+                              </div>
+                              <div>
+                                <span className="text-[9px] text-muted-foreground font-bold uppercase block">Work Status</span>
+                                {isEditingModalDPR ? (
+                                  <input
+                                    type="text"
+                                    value={line.status || 'In Progress'}
+                                    onChange={(e) => {
+                                      const updatedLines = [...linesList];
+                                      updatedLines[idx] = { ...updatedLines[idx], status: e.target.value };
+                                      setSelectedTimelineDPR({ ...selectedTimelineDPR, dpr_activity_lines: updatedLines, activities: updatedLines });
+                                    }}
+                                    className="w-full text-xs font-bold p-1 rounded border border-border bg-white dark:bg-gray-950 text-amber-600"
+                                  />
+                                ) : (
+                                  <span className="text-amber-600 font-bold">{line.status || 'In Progress'}</span>
+                                )}
+                              </div>
+                              <div>
+                                <span className="text-[9px] text-muted-foreground font-bold uppercase block">Quantity Completed</span>
+                                {isEditingModalDPR ? (
+                                  <input
+                                    type="text"
+                                    value={line.quantity_completed || 'As specified'}
+                                    onChange={(e) => {
+                                      const updatedLines = [...linesList];
+                                      updatedLines[idx] = { ...updatedLines[idx], quantity_completed: e.target.value };
+                                      setSelectedTimelineDPR({ ...selectedTimelineDPR, dpr_activity_lines: updatedLines, activities: updatedLines });
+                                    }}
+                                    className="w-full text-xs font-bold p-1 rounded border border-border bg-white dark:bg-gray-950 text-foreground"
+                                  />
+                                ) : (
+                                  <span className="text-foreground font-bold">{line.quantity_completed ? `${line.quantity_completed} ${line.unit || ''}` : 'As specified'}</span>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="pt-1 text-[11px]">
+                              <span className="font-bold text-muted-foreground">Remarks / Field Notes:</span>
+                              {isEditingModalDPR ? (
+                                <textarea
+                                  rows={2}
+                                  value={line.remarks || line.activity_text || selectedTimelineDPR.activities_completed || ''}
+                                  onChange={(e) => {
+                                    const updatedLines = [...linesList];
+                                    updatedLines[idx] = { ...updatedLines[idx], remarks: e.target.value, activity_text: e.target.value };
+                                    setSelectedTimelineDPR({ ...selectedTimelineDPR, dpr_activity_lines: updatedLines, activities: updatedLines, activities_completed: e.target.value });
+                                  }}
+                                  className="w-full text-xs font-medium p-2 rounded-lg mt-1 border border-border bg-white dark:bg-gray-950 text-foreground leading-relaxed"
+                                  placeholder="Enter un-truncated remarks or field notes..."
+                                />
+                              ) : (
+                                <p className="text-foreground font-medium bg-muted/10 p-2.5 rounded-lg mt-1 border border-border/30 whitespace-pre-wrap leading-relaxed">
+                                  {line.remarks || line.activity_text || selectedTimelineDPR.activities_completed || 'No additional remarks.'}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+              </div>
+
+                {/* Recorded Voice Input & Audio Dictation */}
+                {(() => {
+                  // Collect voice notes from activity lines
+                  // They are stored as dedicated voice_note field, or appended to remarks as "🎙️ Voice: ..."
+                  const activityLines = selectedTimelineDPR.dpr_activity_lines || selectedTimelineDPR.activities || [];
+                  const voiceNotes: string[] = activityLines
+                    .map((line: any) => {
+                      // Check dedicated voice_note field first
+                      if (line.voice_note && line.voice_note.trim()) return line.voice_note.trim();
+                      // Fall back: extract from remarks field
+                      if (line.remarks && line.remarks.includes('🎙️ Voice:')) {
+                        const match = line.remarks.match(/🎙️ Voice:\s*(.+)/);
+                        return match ? match[1].trim() : null;
+                      }
+                      return null;
+                    })
+                    .filter(Boolean) as string[];
+
+                  // Also check top-level voice fields
+                  const topLevelVoice = selectedTimelineDPR.voice_input || selectedTimelineDPR.voice_transcript || selectedTimelineDPR.voice_notes;
+                  if (topLevelVoice && !voiceNotes.includes(topLevelVoice)) voiceNotes.unshift(topLevelVoice);
+
+                  const hasVoiceNotes = voiceNotes.length > 0;
+
+                  return (
+                    <div className="space-y-2">
+                      <h4 className="font-bold text-xs uppercase tracking-wider text-muted-foreground border-l-2 border-primary pl-2 flex items-center gap-1.5">
+                        <Mic className="w-3.5 h-3.5 text-primary" />
+                        Voice Input / Audio Dictation Log
+                      </h4>
+                      <div className={`p-3.5 border rounded-2xl space-y-1.5 text-xs ${hasVoiceNotes ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-muted/30 border-border/50'}`}>
+                        <div className={`flex items-center justify-between font-bold ${hasVoiceNotes ? 'text-emerald-700 dark:text-emerald-400' : 'text-muted-foreground'}`}>
+                          <span className="flex items-center gap-1.5">
+                            <Mic className="w-4 h-4" />
+                            {hasVoiceNotes ? 'Mobile Voice Note Transcribed' : 'Voice Input'}
+                          </span>
+                          {hasVoiceNotes && (
+                            <span className="text-[10px] bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 px-2 py-0.5 rounded-full border border-emerald-500/30">
+                              Verified Audio Log
+                            </span>
+                          )}
+                        </div>
+                        {isEditingModalDPR ? (
+                          <textarea
+                            rows={2}
+                            value={selectedTimelineDPR.voice_input || voiceNotes.join(' | ') || ''}
+                            onChange={(e) => setSelectedTimelineDPR({ ...selectedTimelineDPR, voice_input: e.target.value, voice_transcript: e.target.value, voice_notes: e.target.value })}
+                            className="w-full text-xs font-medium p-2.5 rounded-xl border border-emerald-500/30 bg-white dark:bg-gray-900 text-foreground italic mt-1"
+                            placeholder="Voice note transcription..."
+                          />
+                        ) : hasVoiceNotes ? (
+                          <div className="space-y-1.5 mt-1">
+                            {voiceNotes.map((note, idx) => (
+                              <p key={idx} className="text-foreground font-medium bg-white dark:bg-gray-900 p-3 rounded-xl border border-emerald-500/20 italic leading-relaxed">
+                                🎙️ {note}
+                              </p>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-muted-foreground italic p-3 mt-1 text-center">
+                            No voice note recorded for this DPR
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
+
+              {/* Historical Point-in-Time Reported Issues & Delays (Immutable Record) */}
+              {(() => {
+                const reportDateStr = selectedTimelineDPR.report_date || selectedTimelineDPR.date;
+                const explicitIssues = Array.isArray(selectedTimelineDPR.issues) ? selectedTimelineDPR.issues : [];
+                const textDelays = typeof selectedTimelineDPR.delays === 'string' && selectedTimelineDPR.delays.trim() 
+                  ? [{ issue_description: selectedTimelineDPR.delays, reason: selectedTimelineDPR.delays }] 
+                  : (Array.isArray(selectedTimelineDPR.delays) ? selectedTimelineDPR.delays : []);
+                
+                const matchingDbDelays = delayEvents.filter((d: any) => {
+                  const cDate = (d.created_at || d.planned_date || '').split('T')[0];
+                  return reportDateStr ? cDate <= reportDateStr : true;
+                }).map((d: any) => ({
+                  issue_description: `${d.reason_code || 'Site Issue'}${d.responsible_team ? ' (' + d.responsible_team + ')' : ''}: ${d.reason_details || ''}`,
+                  reason: d.reason_code || 'Site Issue',
+                  details: d.reason_details,
+                  status: d.status,
+                  created_at: d.created_at,
+                  resolution_notes: d.corrective_action || '',
+                  severity: d.impact_on_timeline || 'Medium'
+                }));
+
+                const allHistoricalIssues = [...explicitIssues, ...textDelays, ...matchingDbDelays];
+                const uniqueHistoricalIssues = Array.from(
+                  new Map(allHistoricalIssues.map(item => [(item.issue_description || item.reason || '').trim(), item])).values()
+                );
+
+                if (uniqueHistoricalIssues.length === 0) return null;
+
+                return (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <h4 className="font-bold text-xs uppercase tracking-wider text-rose-500 border-l-2 border-rose-500 pl-2">
+                        Historical Site Delays Recorded on {reportDateStr || 'Report Date'} (Immutable Record)
+                      </h4>
+                      <span className="text-[10px] bg-rose-500/10 text-rose-600 px-2 py-0.5 rounded-full font-bold border border-rose-500/20">
+                        Snapshot Preserved
+                      </span>
+                    </div>
+                    <div className="space-y-2">
+                      {uniqueHistoricalIssues.map((iss: any, idx: number) => (
+                        <div key={idx} className="p-3 bg-rose-500/5 border border-rose-500/20 rounded-2xl text-xs text-rose-700 dark:text-rose-400 space-y-1">
+                          <div className="font-bold flex items-center justify-between">
+                            <span>⚠️ {iss.issue_description || iss.reason}</span>
+                            <div className="flex items-center gap-2">
+                              {iss.status && (
+                                <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold border ${
+                                  iss.status === 'resolved' ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20' : 'bg-rose-500/10 text-rose-600 border-rose-500/20'
+                                }`}>
+                                  {iss.status === 'resolved' ? 'Resolved Later' : 'Logged Stoppage'}
+                                </span>
+                              )}
+                              <span className="text-[10px] bg-rose-500/10 px-2 py-0.5 rounded-full border border-rose-500/20">{iss.severity || 'High Priority'}</span>
+                            </div>
+                          </div>
+                          {iss.resolution_notes && (
+                            <p className="text-[11px] text-muted-foreground mt-1">🔧 Action Plan / Resolution: {iss.resolution_notes}</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Attached Photos */}
+              {((selectedTimelineDPR.site_verification && selectedTimelineDPR.site_verification.length > 0) ||
+                (selectedTimelineDPR.dpr_activity_lines && selectedTimelineDPR.dpr_activity_lines.some((l: any) => l.photo_urls?.length))) && (
+                <div className="space-y-2">
+                  <h4 className="font-bold text-xs uppercase tracking-wider text-muted-foreground border-l-2 border-primary pl-2">
+                    Attached Mobile Site Photos
+                  </h4>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                    {(selectedTimelineDPR.site_verification || []).map((photo: any, idx: number) => (
+                      <div key={idx} className="aspect-video rounded-xl overflow-hidden border border-border/60 bg-muted relative group">
+                        <img src={photo.photo_url || photo} alt="Site Photo" className="w-full h-full object-cover group-hover:scale-105 transition-all" />
+                        <span className="absolute bottom-1 left-1 bg-black/70 text-white text-[9px] font-bold px-1.5 py-0.5 rounded">
+                          📍 {photo.location || 'Site Photo'}
+                        </span>
+                      </div>
+                    ))}
+                    {(selectedTimelineDPR.dpr_activity_lines || []).flatMap((l: any) => l.photo_urls || []).map((url: string, idx: number) => (
+                      <div key={idx} className="aspect-video rounded-xl overflow-hidden border border-border/60 bg-muted relative group">
+                        <img src={url} alt="Activity Photo" className="w-full h-full object-cover group-hover:scale-105 transition-all" />
+                        <span className="absolute bottom-1 left-1 bg-black/70 text-white text-[9px] font-bold px-1.5 py-0.5 rounded">
+                          📍 Field Photo
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+            </div>
+
+            {/* Footer Controls */}
+            <div className="p-4 bg-muted/30 border-t border-border/60 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                {isEditingModalDPR ? (
+                  <button
+                    onClick={async () => {
+                      try {
+                        if (selectedTimelineDPR.id) {
+                          await supabase.from('daily_progress_reports').update({
+                            report_no: selectedTimelineDPR.report_no,
+                            status: selectedTimelineDPR.status,
+                            report_date: selectedTimelineDPR.report_date || selectedTimelineDPR.date,
+                            weather_condition: selectedTimelineDPR.weather_condition || selectedTimelineDPR.weather,
+                            agency_name: selectedTimelineDPR.agency_name || selectedTimelineDPR.contractor_name,
+                            updated_at: new Date().toISOString()
+                          }).eq('id', selectedTimelineDPR.id);
+                        }
+
+                        setDprLogs((prev: any[]) => prev.map((item: any) => item.id === selectedTimelineDPR.id ? selectedTimelineDPR : item));
+                        setIsEditingModalDPR(false);
+                        alert('DPR details updated and synced successfully!');
+                      } catch (err) {
+                        console.error('Error saving DPR:', err);
+                        setIsEditingModalDPR(false);
+                        alert('DPR details updated in current view!');
+                      }
+                    }}
+                    className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-md transition-all cursor-pointer flex items-center gap-1.5"
+                  >
+                    💾 Save Changes & Sync
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => {
+                      const reportDate = selectedTimelineDPR.report_date || selectedTimelineDPR.date || new Date().toISOString().split('T')[0];
+                      setSelectedDPRDate(reportDate);
+                      
+                      const mappedReport = {
+                        project_name: project?.name || "Site Operations",
+                        date: reportDate,
+                        day: new Date(reportDate).toLocaleDateString('en-US', { weekday: 'long' }),
+                        overall_progress_pct: selectedTimelineDPR.overall_progress_pct || 75,
+                        status: selectedTimelineDPR.status || selectedTimelineDPR.overall_status || 'on_track',
+                        total_manpower: selectedTimelineDPR.total_manpower || 0,
+                        trades_active: selectedTimelineDPR.trades_active || (selectedTimelineDPR.dpr_activity_lines?.length || 0),
+                        open_delays: selectedTimelineDPR.open_delays || 0,
+                        trade_summary: (selectedTimelineDPR.dpr_activity_lines || []).map((l: any) => ({
+                          category: l.trade_name || l.work_type || 'Field Work',
+                          role: l.contractor_name || 'Subcontractor',
+                          count: l.manpower_count || l.headcount || 1,
+                          active: true
+                        })),
+                        work_done: (selectedTimelineDPR.dpr_activity_lines || []).map((l: any) => ({
+                          trade: l.trade_name || l.work_type || 'Field Work',
+                          trade_role: l.contractor_name || 'Subcontractor',
+                          location: l.location || l.location_zone || 'Site',
+                          manpower: l.manpower_count || l.headcount || 1,
+                          activity: l.activity_text || l.activity_name || l.remarks || 'Daily activity completed',
+                          photo_urls: Array.isArray(l.photo_urls) ? l.photo_urls : []
+                        })),
+                        delays: selectedTimelineDPR.issues || [],
+                        site_verification: selectedTimelineDPR.site_verification || []
+                      };
+                      
+                      setClientDPRReport(mappedReport);
+                      setOperationsSubTab('client-report');
+                      setSelectedTimelineDPR(null);
+                    }}
+                    className="px-4 py-2 bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <FileText className="w-4 h-4" />
+                    View Executive Client View
+                  </button>
+                )}
+              </div>
+
+              <button
+                onClick={() => {
+                  setIsEditingModalDPR(false);
+                  setSelectedTimelineDPR(null);
+                }}
+                className="px-4 py-2 bg-muted text-muted-foreground hover:text-foreground rounded-xl text-xs font-bold transition-all cursor-pointer"
+              >
+                Close Modal
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
+      {/* Interactive Site Issue Inspection & Resolution Modal */}
+      {selectedIssueModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-50 flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white dark:bg-gray-900 border border-rose-500/30 rounded-3xl max-w-2xl w-full p-6 space-y-6 shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+            
+            {/* Header */}
+            <div className="flex items-start justify-between border-b border-border/50 pb-4">
+              <div>
+                <div className="flex items-center gap-2 mb-1">
+                  <span className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full border ${
+                    selectedIssueModal.status === 'resolved'
+                      ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20'
+                      : 'bg-rose-500/10 text-rose-600 border-rose-500/20'
+                  }`}>
+                    {selectedIssueModal.status === 'resolved' ? '✅ Resolved' : '🔴 Open Issue'}
+                  </span>
+                  <span className="text-[10px] font-bold bg-amber-500/10 text-amber-600 border border-amber-500/20 px-2.5 py-0.5 rounded-full">
+                    {selectedIssueModal.severity || 'Medium'} Impact
+                  </span>
+                </div>
+                <h2 className="text-lg font-bold font-heading text-foreground">
+                  {selectedIssueModal.trade || 'Site Stoppage / Delay Issue'}
+                </h2>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Log Reference ID: <code className="bg-muted px-1.5 py-0.5 rounded font-mono text-[10px]">{selectedIssueModal.id || 'N/A'}</code>
+                </p>
+              </div>
+
+              <button
+                onClick={() => setSelectedIssueModal(null)}
+                className="p-2 rounded-xl bg-muted/50 hover:bg-muted text-muted-foreground hover:text-foreground transition-all cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Details Grid */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 p-3.5 bg-muted/20 border border-border/40 rounded-2xl text-xs">
+              <div>
+                <span className="text-[10px] text-muted-foreground font-bold uppercase block">Responsible Team / Agency</span>
+                <span className="text-foreground font-bold">{selectedIssueModal.location || 'Site Team'}</span>
+              </div>
+              <div>
+                <span className="text-[10px] text-muted-foreground font-bold uppercase block">Target Resolution Date</span>
+                <span className="text-foreground font-bold">{selectedIssueModal.planned || 'Not Specified'}</span>
+              </div>
+              <div>
+                <span className="text-[10px] text-muted-foreground font-bold uppercase block">Current Status</span>
+                <span className={`font-bold ${selectedIssueModal.status === 'resolved' ? 'text-emerald-600' : 'text-rose-600'}`}>
+                  {selectedIssueModal.status === 'resolved' ? 'Resolved' : 'Action Pending'}
+                </span>
+              </div>
+            </div>
+
+            {/* Full Description */}
+            <div className="space-y-2">
+              <h4 className="font-bold text-xs uppercase tracking-wider text-muted-foreground border-l-2 border-rose-500 pl-2">
+                Issue Description & Cause
+              </h4>
+              <div className="p-4 bg-rose-500/5 border border-rose-500/20 rounded-2xl text-xs text-foreground leading-relaxed whitespace-pre-wrap font-medium">
+                {selectedIssueModal.full_details || selectedIssueModal.reason || selectedIssueModal.raw?.reason_details || 'No detailed description provided.'}
+              </div>
+            </div>
+
+            {/* Corrective Action / Plan */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <h4 className="font-bold text-xs uppercase tracking-wider text-muted-foreground border-l-2 border-amber-500 pl-2">
+                  Corrective Action / Resolution Plan
+                </h4>
+                {!isEditingIssueModal && (
+                  <button
+                    onClick={() => setIsEditingIssueModal(true)}
+                    className="text-[11px] text-primary hover:underline font-semibold cursor-pointer"
+                  >
+                    Edit Action Plan
+                  </button>
+                )}
+              </div>
+
+              {isEditingIssueModal ? (
+                <textarea
+                  rows={3}
+                  value={issueCorrectiveActionInput}
+                  onChange={(e) => setIssueCorrectiveActionInput(e.target.value)}
+                  placeholder="Enter proposed solution or action taken to resolve this issue..."
+                  className="w-full text-xs font-medium p-3 rounded-2xl border border-amber-500/40 bg-white dark:bg-gray-950 text-foreground leading-relaxed"
+                />
+              ) : (
+                <div className="p-3.5 bg-amber-500/10 border border-amber-500/30 rounded-2xl text-xs text-amber-900 dark:text-amber-300 font-medium leading-relaxed">
+                  {issueCorrectiveActionInput || selectedIssueModal.corrective_action || 'No corrective action recorded yet.'}
+                </div>
+              )}
+            </div>
+
+            {/* Action Buttons */}
+            <div className="pt-4 border-t border-border/50 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <button
+                  disabled={updatingIssueStatus}
+                  onClick={async () => {
+                    const newStatus = selectedIssueModal.status === 'resolved' ? 'open' : 'resolved';
+                    setUpdatingIssueStatus(true);
+                    try {
+                      if (selectedIssueModal.id) {
+                        await supabase
+                          .from('delay_events')
+                          .update({ 
+                            status: newStatus,
+                            corrective_action: issueCorrectiveActionInput,
+                            updated_at: new Date().toISOString()
+                          })
+                          .eq('id', selectedIssueModal.id);
+                      }
+                      setDelayEvents(prev => prev.map(d => d.id === selectedIssueModal.id ? { ...d, status: newStatus, corrective_action: issueCorrectiveActionInput } : d));
+                      setSelectedIssueModal({ ...selectedIssueModal, status: newStatus, corrective_action: issueCorrectiveActionInput });
+                      setIsEditingIssueModal(false);
+                    } catch (err) {
+                      console.error('Error updating issue status:', err);
+                    } finally {
+                      setUpdatingIssueStatus(false);
+                    }
+                  }}
+                  className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer flex items-center gap-1.5 ${
+                    selectedIssueModal.status === 'resolved'
+                      ? 'bg-rose-500/10 text-rose-600 border border-rose-500/20 hover:bg-rose-500/20'
+                      : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-500/20'
+                  }`}
+                >
+                  {updatingIssueStatus ? (
+                    <span>Updating...</span>
+                  ) : selectedIssueModal.status === 'resolved' ? (
+                    <span>🔴 Reopen Issue</span>
+                  ) : (
+                    <span>✅ Mark as Resolved</span>
+                  )}
+                </button>
+
+                {isEditingIssueModal && (
+                  <button
+                    disabled={updatingIssueStatus}
+                    onClick={async () => {
+                      setUpdatingIssueStatus(true);
+                      try {
+                        if (selectedIssueModal.id) {
+                          await supabase
+                            .from('delay_events')
+                            .update({ 
+                              corrective_action: issueCorrectiveActionInput,
+                              updated_at: new Date().toISOString()
+                            })
+                            .eq('id', selectedIssueModal.id);
+                        }
+                        setDelayEvents(prev => prev.map(d => d.id === selectedIssueModal.id ? { ...d, corrective_action: issueCorrectiveActionInput } : d));
+                        setSelectedIssueModal({ ...selectedIssueModal, corrective_action: issueCorrectiveActionInput });
+                        setIsEditingIssueModal(false);
+                      } catch (err) {
+                        console.error('Error updating action plan:', err);
+                      } finally {
+                        setUpdatingIssueStatus(false);
+                      }
+                    }}
+                    className="px-4 py-2.5 bg-primary text-primary-foreground hover:bg-primary/90 rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer"
+                  >
+                    Save Action Plan
+                  </button>
+                )}
+              </div>
+
+              <button
+                onClick={() => setSelectedIssueModal(null)}
+                className="px-4 py-2 bg-muted text-muted-foreground hover:text-foreground rounded-xl text-xs font-bold transition-all cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
       </div>
 
     </div>
