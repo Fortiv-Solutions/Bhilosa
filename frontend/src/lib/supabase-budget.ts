@@ -52,27 +52,40 @@ export interface SupabaseBudgetRevision {
 // ----------------------------------------------------------------------------
 // 1. FETCH FULL MASTER BUDGET CATEGORIES FROM SUPABASE
 // ----------------------------------------------------------------------------
+export function shortenProjectName(name: string): string {
+  if (!name) return 'All Projects';
+  return name
+    .replace(/Pramukh /gi, '')
+    .replace(/ Residential Project/gi, '')
+    .replace(/ Project/gi, '')
+    .replace(/ Commercial Tower/gi, ' Commercial')
+    .trim();
+}
+
 export async function fetchFullMasterBudgetCategoriesFromSupabase(projectId: string = CENTRAL_PARK_PROJECT_ID): Promise<MasterBudgetCategory[]> {
   try {
+    const isAll = !projectId || projectId === 'all' || projectId === 'ALL';
+
     // A. Fetch Categories
-    const { data: dbCategories, error: catErr } = await supabase
-      .from('budget_categories')
-      .select('*')
-      .eq('project_id', projectId)
-      .order('sort_order', { ascending: true });
+    let catQuery = supabase.from('budget_categories').select('*').order('sort_order', { ascending: true });
+    if (!isAll) {
+      catQuery = catQuery.eq('project_id', projectId);
+    }
+    const { data: dbCategories, error: catErr } = await catQuery;
 
     // B. Fetch Master Items
-    const { data: dbItems, error: itemErr } = await supabase
-      .from('master_budget_items')
-      .select('*')
-      .eq('project_id', projectId)
-      .order('sr_no', { ascending: true });
+    let itemQuery = supabase.from('master_budget_items').select('*').order('sr_no', { ascending: true });
+    if (!isAll) {
+      itemQuery = itemQuery.eq('project_id', projectId);
+    }
+    const { data: dbItems, error: itemErr } = await itemQuery;
 
     // C. Fetch Variance Items for Real Actual Billed Spend
-    const { data: dbVarianceItems } = await supabase
-      .from('budget_variance_items')
-      .select('*')
-      .eq('project_id', projectId);
+    let varQuery = supabase.from('budget_variance_items').select('*');
+    if (!isAll) {
+      varQuery = varQuery.eq('project_id', projectId);
+    }
+    const { data: dbVarianceItems } = await varQuery;
 
     const varianceMap = new Map<string, any>();
     if (dbVarianceItems) {
@@ -208,26 +221,29 @@ export async function fetchRevisionHistoryFromSupabase(projectId: string = CENTR
 // 4. REAL-TIME SUBSCRIPTION LISTENER FOR CROSS-MODULE BUDGET SYNC
 // ----------------------------------------------------------------------------
 export function subscribeToBudgetRealtimeChanges(projectId: string = CENTRAL_PARK_PROJECT_ID, onUpdate: () => void) {
+  const isAll = !projectId || projectId === 'all' || projectId === 'ALL';
+  const filterStr = isAll ? undefined : `project_id=eq.${projectId}`;
+
   const channel = supabase
-    .channel(`realtime-budget-${projectId}`)
+    .channel(`realtime-budget-${projectId || 'all'}`)
     .on(
       'postgres_changes',
-      { event: '*', schema: 'public', table: 'budget_allocations', filter: `project_id=eq.${projectId}` },
+      { event: '*', schema: 'public', table: 'budget_allocations', filter: filterStr },
       () => onUpdate()
     )
     .on(
       'postgres_changes',
-      { event: '*', schema: 'public', table: 'budget_ledger', filter: `project_id=eq.${projectId}` },
+      { event: '*', schema: 'public', table: 'budget_ledger', filter: filterStr },
       () => onUpdate()
     )
     .on(
       'postgres_changes',
-      { event: '*', schema: 'public', table: 'master_budget_items', filter: `project_id=eq.${projectId}` },
+      { event: '*', schema: 'public', table: 'master_budget_items', filter: filterStr },
       () => onUpdate()
     )
     .on(
       'postgres_changes',
-      { event: '*', schema: 'public', table: 'budget_variance_items', filter: `project_id=eq.${projectId}` },
+      { event: '*', schema: 'public', table: 'budget_variance_items', filter: filterStr },
       () => onUpdate()
     )
     .subscribe();

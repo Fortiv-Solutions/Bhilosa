@@ -9,6 +9,7 @@ import BillWiseLedgerTab from '@/components/budget/bill-wise-ledger-tab';
 import BudgetCashFlowChart from '@/components/budget-cash-flow-chart';
 import BudgetSettingsTab from '@/components/budget/budget-settings-tab';
 import { DEFAULT_VARIANCE_CATEGORIES } from '@/lib/variance-data';
+import { shortenProjectName } from '@/lib/supabase-budget';
 import { formatIndianCurrency } from '@/utils/format-currency';
 import {
   AlertTriangle,
@@ -49,6 +50,14 @@ export default function BudgetPage() {
   } = store;
 
   const [activeTab, setActiveTab] = useState<BudgetTab>('dashboard');
+
+  const safeProjects = Array.isArray(projects) ? projects : [];
+
+  const activeProjectName = useMemo(() => {
+    if (!selectedProjectId || selectedProjectId === 'all') return 'All Projects';
+    const found = safeProjects.find((p: any) => p.id === selectedProjectId);
+    return found ? found.name : 'Central Park Residential Project';
+  }, [selectedProjectId, safeProjects]);
 
   const canManageBudget = useMemo(() => {
     return userRole === 'admin' || userRole === 'management' || userRole === 'project_manager';
@@ -173,7 +182,12 @@ export default function BudgetPage() {
 
       {/* TAB 3: VARIANCE RECONCILIATION */}
       {activeTab === 'variance' && (
-        <VarianceAnalysisTab categories={DEFAULT_VARIANCE_CATEGORIES} canManage={true} />
+        <VarianceAnalysisTab 
+          projectId={selectedProjectId || 'all'}
+          projectName={activeProjectName}
+          categories={DEFAULT_VARIANCE_CATEGORIES} 
+          canManage={true} 
+        />
       )}
 
       {/* TAB 4: BILL-WISE LEDGER (28-Column Construction ERP Ledger) */}

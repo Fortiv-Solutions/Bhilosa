@@ -30,12 +30,16 @@ interface BudgetRevisionAuditLog {
 }
 
 interface MasterSheetTabProps {
+  projectId?: string;
+  projectName?: string;
   categories?: MasterBudgetCategory[];
   onAddLineItem?: () => void;
   canManage?: boolean;
 }
 
 export default function MasterSheetTab({
+  projectId = CENTRAL_PARK_PROJECT_ID,
+  projectName = 'Central Park Residential Project',
   categories: initialCategories = CENTRAL_PARK_MASTER_BUDGET_CATEGORIES,
   canManage = true,
 }: MasterSheetTabProps) {
@@ -82,7 +86,8 @@ export default function MasterSheetTab({
   // Live Supabase Sync Hook
   useEffect(() => {
     async function loadLiveData() {
-      const liveCats = await fetchFullMasterBudgetCategoriesFromSupabase(CENTRAL_PARK_PROJECT_ID);
+      const activeProjId = projectId || CENTRAL_PARK_PROJECT_ID;
+      const liveCats = await fetchFullMasterBudgetCategoriesFromSupabase(activeProjId);
       if (liveCats && liveCats.length > 0) {
         setCategories(liveCats);
         const openMap: Record<string, boolean> = {};
@@ -90,7 +95,7 @@ export default function MasterSheetTab({
         setOpenCategories(openMap);
       }
 
-      const revLogs = await fetchRevisionHistoryFromSupabase(CENTRAL_PARK_PROJECT_ID);
+      const revLogs = await fetchRevisionHistoryFromSupabase(activeProjId);
       if (revLogs && revLogs.length > 0) {
         setRevisionHistoryLogs(revLogs.map(r => ({
           id: r.id,
@@ -109,14 +114,15 @@ export default function MasterSheetTab({
 
     loadLiveData();
 
-    const unsubscribe = subscribeToBudgetRealtimeChanges(CENTRAL_PARK_PROJECT_ID, () => {
+    const activeProjId = projectId || CENTRAL_PARK_PROJECT_ID;
+    const unsubscribe = subscribeToBudgetRealtimeChanges(activeProjId, () => {
       loadLiveData();
     });
 
     return () => {
       unsubscribe();
     };
-  }, []);
+  }, [projectId]);
 
   function toggleCategory(catId: string) {
     setOpenCategories((prev) => ({ ...prev, [catId]: !prev[catId] }));
@@ -320,7 +326,7 @@ export default function MasterSheetTab({
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h2 className="font-heading text-lg font-bold text-foreground tracking-tight">Central Park Master Budget</h2>
+              <h2 className="font-heading text-lg font-bold text-foreground tracking-tight">{projectName} — Master Budget</h2>
               <span className="rounded-full bg-primary/10 px-2.5 py-0.5 text-[10px] font-extrabold uppercase text-primary">
                 Version v{versionNumber}
               </span>
