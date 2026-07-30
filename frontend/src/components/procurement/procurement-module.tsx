@@ -449,64 +449,28 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
       return;
     }
 
-    setSelectedMrForPr(mr);
-    setPrTitle(`PR for ${mr.justification || mr.mr_number}`);
-    setPrRequiredDate(mr.required_date || new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0]);
-    setPrFinanceRequired(false);
-    setPrApprovalStage('pr_team');
-    setPrRemarks('');
-    setPrAttachments([]);
+    const titleText = mr.title || mr.justification || `PR for ${mr.mr_number}`;
+    const requiredDateText = mr.required_date || new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0];
 
-    // Carry the MR's own lines across. A placeholder "General Material
-    // Requirement" line used to be invented when the MR had none, which put a
-    // fictitious item onto a real requisition.
-    setPrLines(
-      lines.map((l) => ({
-        item_description: l.item_description,
-        quantity: Number(l.quantity) || 0,
-        estimated_rate: Number(l.estimated_rate) || 0,
-        item_id: l.item_id || null,
-      })),
-    );
+    const prLinesToSave = lines.map((l) => ({
+      item_description: l.item_description,
+      quantity: Number(l.quantity) || 0,
+      estimated_rate: Number(l.estimated_rate) || 0,
+      item_id: l.item_id || undefined,
+    }));
 
-    setPrModalOpen(true);
-  }
-
-  async function handleSavePr(event: FormEvent) {
-    event.preventDefault();
-    if (!selectedMrForPr) return;
-
-    if (!prTitle.trim()) {
-      setError('Enter a title or specification for the purchase requisition.');
-      return;
-    }
-    if (prLines.some((line) => !(line.quantity > 0))) {
-      setError('Every requisition line needs a quantity greater than zero.');
-      return;
-    }
-
-    const created = await runAction('Purchase requisition creation', () =>
+    await runAction(`Auto-draft PR for MR ${mr.mr_number}`, () =>
       convertMaterialRequestToPr({
-        materialRequest: selectedMrForPr,
-        title: prTitle,
-        requiredDate: prRequiredDate,
-        financeRequired: prFinanceRequired,
-        approvalStage: prApprovalStage,
-        remarks: prRemarks,
-        lines: prLines.map((l) => ({
-          item_description: l.item_description,
-          quantity: l.quantity,
-          estimated_rate: l.estimated_rate,
-          item_id: l.item_id || undefined,
-        })),
-        attachments: prAttachments,
+        materialRequest: mr,
+        title: titleText,
+        requiredDate: requiredDateText,
+        financeRequired: false,
+        approvalStage: 'pr_team',
+        remarks: mr.justification || '',
+        lines: prLinesToSave,
+        attachments: [],
       }),
     );
-
-    if (created) {
-      setPrModalOpen(false);
-      setSelectedMrForPr(null);
-    }
   }
 
   async function handleOpenRfqModal(pr: PurchaseRequisitionRow) {
@@ -1304,48 +1268,6 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
       )}
 
       {/* MODALS */}
-      {/* 1. Convert MR to PR Modal */}
-      {prModalOpen && selectedMrForPr && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-2xl rounded-xl border border-border bg-card p-6 shadow-xl">
-            <div className="flex items-center justify-between border-b border-border pb-3">
-              <h3 className="text-lg font-bold text-foreground">Create Purchase Requisition (PR)</h3>
-              <button type="button" onClick={() => setPrModalOpen(false)} className="rounded-md p-1 hover:bg-muted"><X className="h-5 w-5" /></button>
-            </div>
-            <form onSubmit={handleSavePr} className="mt-4 space-y-4">
-              <div>
-                <label className="text-xs font-bold text-foreground">PR Title / Specification</label>
-                <input type="text" required value={prTitle} onChange={(e) => setPrTitle(e.target.value)} className="mt-1 w-full rounded-md border border-border bg-card p-2 text-sm text-foreground outline-none" />
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="text-xs font-bold text-foreground">Target Required Date</label>
-                  <input type="date" required value={prRequiredDate} onChange={(e) => setPrRequiredDate(e.target.value)} className="mt-1 w-full rounded-md border border-border bg-card p-2 text-sm text-foreground outline-none" />
-                </div>
-                <div>
-                  <label className="text-xs font-bold text-foreground">Approval Stage</label>
-                  <select value={prApprovalStage} onChange={(e) => setPrApprovalStage(e.target.value)} className="mt-1 w-full rounded-md border border-border bg-card p-2 text-sm text-foreground outline-none">
-                    <option value="pr_team">PR Team Verification</option>
-                    <option value="management_review">Management Approval Required</option>
-                    <option value="approved">Direct Approved</option>
-                  </select>
-                </div>
-              </div>
-              <div>
-                <label className="text-xs font-bold text-foreground">Remarks / Justification</label>
-                <textarea rows={2} value={prRemarks} onChange={(e) => setPrRemarks(e.target.value)} placeholder="Specify brand, grade, or delivery notes" className="mt-1 w-full rounded-md border border-border bg-card p-2 text-sm text-foreground outline-none" />
-              </div>
-              <div className="flex justify-between items-center border-t border-border pt-4">
-                <input type="file" multiple onChange={(e) => setPrAttachments(Array.from(e.target.files || []))} className="text-sm file:mr-4 file:py-1 file:px-3 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-primary/10 file:text-primary hover:file:bg-primary/20" />
-                <div className="flex gap-2">
-                  <button type="button" onClick={() => setPrModalOpen(false)} className="rounded-md border border-border px-4 py-2 text-sm font-bold hover:bg-muted">Cancel</button>
-                  <button type="submit" className="rounded-md bg-primary px-4 py-2 text-sm font-bold text-primary-foreground hover:bg-primary/90">Generate PR</button>
-                </div>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
 
       {/* 2. Publish RFQ Modal */}
       {rfqModalOpen && selectedPrForRfq && (
