@@ -2,14 +2,13 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from .routers import ai, ocr, qc, users, procurement
+from .routers import ai, ocr, qc, users, procurement, budget
 
 app = FastAPI(
     title="Pramukh ERP API",
     description="Python FastAPI backend serving Pramukh ERP modules",
     version="1.0.0"
 )
-
 
 # Always return JSON (never Starlette's plain-text "Internal Server Error"), so
 # clients can parse the real error instead of failing on `response.json()`.
@@ -38,6 +37,7 @@ app.include_router(qc.router, prefix="/api", tags=["QC"])
 app.include_router(users.router, prefix="/api", tags=["Users"])
 app.include_router(procurement.router, prefix="/api", tags=["Procurement"])
 app.include_router(ocr.router, prefix="/api", tags=["OCR"])
+app.include_router(budget.router, prefix="/api", tags=["Budget"])
 
 # Create tables if using SQLite fallback (local development ease)
 from . import config

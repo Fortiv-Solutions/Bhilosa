@@ -240,7 +240,7 @@ export default function MasterSheetTab({
         const matchesQuery =
           item.item.toLowerCase().includes(searchQuery.toLowerCase()) ||
           cat.categoryName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          item.srNo.toLowerCase().includes(searchQuery.toLowerCase());
+          String(item.srNo).toLowerCase().includes(searchQuery.toLowerCase());
 
         let matchesScope = true;
         if (scopeFilter === 'building_rcc') matchesScope = (item.qtyRcc || 0) > 0;
@@ -529,7 +529,7 @@ export default function MasterSheetTab({
 
                           {/* COST / BUA */}
                           <td className="px-4 py-2 text-right font-mono font-bold text-primary">
-                            ₹{item.costPerBua.toFixed(2)}
+                            ₹{(item.costPerBua || 0).toFixed(2)}
                           </td>
                         </tr>
                       ))}

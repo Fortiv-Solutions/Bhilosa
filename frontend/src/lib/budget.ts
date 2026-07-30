@@ -46,8 +46,8 @@ export type MasterBudgetCategory = {
   items: MasterBudgetItem[];
   totalCost: number;
   totalCostPerBua: number;
-  totalCommitted: number;
-  totalSpent: number;
+  totalCommitted?: number;
+  totalSpent?: number;
 };
 
 export type BudgetAllocationRow = {
