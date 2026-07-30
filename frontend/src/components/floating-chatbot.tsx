@@ -177,7 +177,7 @@ const renderMessageContent = (content: string) => {
   return <div className="space-y-1">{elements}</div>;
 };
 
-const WELCOME_MSG = 'Hello! I am your Pramukh Group Project Intelligence Assistant. Ask me anything about project schedules, delays, budget burn, or inventory stock levels.';
+const WELCOME_MSG = 'Hello! I am your Pragati AI Assistant. Ask me anything about project schedules, delays, budget burn, or inventory stock levels.';
 
 export default function FloatingChatbot() {
   const [isOpen, setIsOpen] = useState(false);
@@ -422,7 +422,7 @@ export default function FloatingChatbot() {
                   <Sparkles className="h-4.5 w-4.5 animate-pulse" />
                 </div>
                 <div>
-                  <h3 className="text-sm font-bold tracking-wide">Pramukh AI Assistant</h3>
+                  <h3 className="text-sm font-bold tracking-wide">Pragati AI Assistant</h3>
                   <span className="block text-[10px] text-white/80">ERP Intelligence Engine</span>
                 </div>
               </div>
@@ -557,7 +557,7 @@ export default function FloatingChatbot() {
                   type="text"
                   value={inputValue}
                   onChange={(e) => setInputValue(e.target.value)}
-                  placeholder="Ask Pramukh AI..."
+                  placeholder="Ask Pragati AI..."
                   className="flex-1 bg-transparent text-xs text-gray-800 placeholder-gray-400 focus:outline-none dark:text-gray-100"
                 />
                 <button
