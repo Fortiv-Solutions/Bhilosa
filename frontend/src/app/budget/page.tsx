@@ -67,16 +67,16 @@ export default function BudgetPage() {
   const safeProjects = Array.isArray(projects) ? projects : [];
 
   const totals = useMemo(() => {
-    const allocated = safeDashboard.summaries.reduce((sum, row) => sum + numberValue(row?.allocated_amount), 0);
-    const committed = safeDashboard.summaries.reduce((sum, row) => sum + numberValue(row?.committed_amount), 0);
-    const spent = safeDashboard.summaries.reduce((sum, row) => sum + numberValue(row?.spent_amount), 0);
-    const available = safeDashboard.summaries.reduce((sum, row) => sum + numberValue(row?.remaining_amount), 0);
+    const allocated = safeDashboard.summaries.reduce((sum: number, row: any) => sum + numberValue(row?.allocated_amount), 0);
+    const committed = safeDashboard.summaries.reduce((sum: number, row: any) => sum + numberValue(row?.committed_amount), 0);
+    const spent = safeDashboard.summaries.reduce((sum: number, row: any) => sum + numberValue(row?.spent_amount), 0);
+    const available = safeDashboard.summaries.reduce((sum: number, row: any) => sum + numberValue(row?.remaining_amount), 0);
     const utilization = allocated > 0 ? ((committed + spent) / allocated) * 100 : 0;
     return { allocated, committed, spent, available, utilization };
   }, [safeDashboard.summaries]);
 
   const openAlertsCount = useMemo(() => {
-    return safeDashboard.alerts.filter((alert) => alert?.status === 'pending').length.toString();
+    return safeDashboard.alerts.filter((alert: any) => alert?.status === 'pending').length.toString();
   }, [safeDashboard.alerts]);
 
   return (
@@ -95,7 +95,7 @@ export default function BudgetPage() {
             <span>Project:</span>
             <select
               value={selectedProjectId || ''}
-              onChange={(event) => setSelectedProjectId(event.target.value || null)}
+              onChange={(event) => setSelectedProjectId(event.target.value || '')}
               className="bg-transparent font-bold text-primary outline-none"
             >
               <option value="">All Projects Portfolio</option>

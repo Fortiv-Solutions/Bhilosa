@@ -141,6 +141,7 @@ interface AppState {
     taskId: string,
     updates: Partial<Pick<GanttTask, 'assigneeId' | 'assigneeName' | 'priority' | 'status' | 'progress'>>
   ) => void;
+  deleteTask: (projectId: string, taskId: string) => void;
   
   addVendor: (vendor: Omit<Vendor, 'id' | 'rating'>) => { error?: string; success: boolean };
   addQuotation: (quote: Omit<VendorQuotation, 'id' | 'submittedAt'>) => void;
@@ -699,21 +700,27 @@ export const useAppStore = create<AppState>((set) => ({
 
       set((state) => {
         const updatedProjects = state.projects.map((proj) => {
+          const isCentralPark = proj.id === 'central-park' || proj.id === 'f6704467-df8c-4f51-a49b-ddfdc40c39af' || proj.id === '00000000-0000-0000-0000-000000000001';
           const dbTasks = (data ?? [])
-            .filter((t: any) => getFrontendProjectId(t.project_id) === proj.id)
+            .filter((t: any) => {
+              if (isCentralPark) {
+                return t.project_id === '00000000-0000-0000-0000-000000000001' || t.project_id === 'f6704467-df8c-4f51-a49b-ddfdc40c39af' || getFrontendProjectId(t.project_id) === proj.id;
+              }
+              return getFrontendProjectId(t.project_id) === proj.id;
+            })
             .map((t: any) => ({
               id: t.id,
               projectId: proj.id,
-              name: t.title,
+              name: t.title || t.name,
               startDate: t.start_date || '',
-              endDate: t.due_date || '',
-              progress: t.progress,
+              endDate: t.due_date || t.end_date || '',
+              progress: Number(t.progress ?? 0),
               dependencies: t.dependencies || null,
               isCriticalPath: t.priority === 'HIGH',
-              assigneeId: t.assignee_id || null,
-              assigneeName: t.assignee_name || null,
-              priority: t.priority,
-              status: t.status,
+              assigneeId: t.assignee_id || t.assigned_to || null,
+              assigneeName: t.assignee_name || t.assigned_name || null,
+              priority: (t.priority || 'MEDIUM').toUpperCase(),
+              status: (t.status || 'TODO').toUpperCase(),
             }));
           return { ...proj, tasks: dbTasks };
         });
@@ -728,27 +735,38 @@ export const useAppStore = create<AppState>((set) => ({
     if (!isLiveSupabase()) return;
 
     try {
-      const { data, error } = await supabase
-        .from('project_members')
-        .select('project_id, user_id, profiles(id, name, email, role)')
-        .eq('is_active', true);
+      const [membersRes, profilesRes] = await Promise.all([
+        supabase.from('project_members').select('project_id, user_id, profiles(id, name, email, role)').eq('is_active', true),
+        supabase.from('profiles').select('id, name, email, role')
+      ]);
 
-      if (error) {
-        console.warn('[store] Team members query skipped:', error.message);
-        return;
-      }
+      const allProfiles = (profilesRes.data ?? []).map((p: any) => ({
+        id: p.id,
+        name: p.name || p.email || 'Team Member',
+        role: p.role || 'Member'
+      }));
 
       set((state) => {
         const updatedProjects = state.projects.map((proj) => {
-          const dbSiteId = getDbSiteId(proj.id);
-          const members = (data ?? [])
-            .filter((m: any) => m.project_id === dbSiteId)
-            .map((m: any) => ({
-              id: m.user_id,
-              projectId: proj.id,
-              name: 'Team Member',
-              role: 'member',
-            }));
+          const targetIds = [getDbSiteId(proj.id), '00000000-0000-0000-0000-000000000001', 'f6704467-df8c-4f51-a49b-ddfdc40c39af', proj.id];
+          const projectMembersData = (membersRes.data ?? []).filter((m: any) => targetIds.includes(m.project_id));
+          
+          let members = projectMembersData.map((m: any) => ({
+            id: m.user_id || m.profiles?.id,
+            projectId: proj.id,
+            name: m.profiles?.name || m.profiles?.email || 'Team Member',
+            role: m.profiles?.role || m.project_role || 'Member',
+          }));
+
+          if (members.length === 0) {
+            members = allProfiles.length > 0 ? allProfiles : [
+              { id: 'u3', projectId: proj.id, name: 'Rohan Mehta', role: 'Site Manager' },
+              { id: 'u5', projectId: proj.id, name: 'Dhruv Shah', role: 'QA/QC Engineer' },
+              { id: 'u4', projectId: proj.id, name: 'Ramesh Patel', role: 'Site Engineer' },
+              { id: 'u2', projectId: proj.id, name: 'Shreya Shinde', role: 'Project Manager' },
+              { id: 'u6', projectId: proj.id, name: 'Priya Mehta', role: 'Purchase Manager' },
+            ];
+          }
           return { ...proj, teamMembers: members };
         });
         return { projects: updatedProjects };
@@ -1601,6 +1619,25 @@ A draft purchase request has been prepared in the Procurement Module.
   },
 
   addTask: (projectId, task) => {
+    const newTask: GanttTask = {
+      id: task.id || `task_${Date.now()}`,
+      projectId,
+      name: task.name,
+      startDate: task.startDate || '',
+      endDate: task.endDate || '',
+      progress: task.status === 'COMPLETED' ? 100 : 0,
+      dependencies: null,
+      isCriticalPath: task.priority === 'HIGH',
+      assigneeId: task.assigneeId || null,
+      assigneeName: task.assigneeName || null,
+      priority: task.priority,
+      status: task.status,
+    };
+
+    set((state) => ({
+      projects: state.projects.map((p) => p.id === projectId ? { ...p, tasks: [newTask, ...p.tasks] } : p)
+    }));
+
     if (!isLiveSupabase()) return;
 
     (async () => {
@@ -1619,19 +1656,30 @@ A draft purchase request has been prepared in the Procurement Module.
           assigneeId = profileData?.id || null;
         }
 
-        const { error } = await supabase.from('tasks').insert({
+        const { data: inserted, error } = await supabase.from('tasks').insert({
+          id: uuidRegex.test(task.id || '') ? task.id : undefined,
           project_id: dbSiteId,
+          name: task.name,
           title: task.name,
           start_date: task.startDate || null,
           due_date: task.endDate || null,
-          assignee_id: assigneeId,
-          assignee_name: task.assigneeName || null,
+          assigned_to: assigneeId,
+          assigned_name: task.assigneeName || null,
           priority: task.priority,
           status: task.status,
-          done: task.status === 'COMPLETED',
           progress: task.status === 'COMPLETED' ? 100 : 0,
-        });
+        }).select().single();
+
         if (error) throw error;
+
+        if (inserted) {
+          set((state) => ({
+            projects: state.projects.map((p) => p.id === projectId ? {
+              ...p,
+              tasks: p.tasks.map(t => t.id === newTask.id ? { ...t, id: inserted.id } : t)
+            } : p)
+          }));
+        }
       } catch (err) {
         console.error('Failed to add task to Supabase:', err);
       }
@@ -1667,8 +1715,8 @@ A draft purchase request has been prepared in the Procurement Module.
         }
         if (progress !== undefined) payload.progress = progress;
         if (updates.priority !== undefined) payload.priority = updates.priority;
-        if (assigneeId !== undefined) payload.assignee_id = assigneeId;
-        if (updates.assigneeName !== undefined) payload.assignee_name = updates.assigneeName;
+        if (assigneeId !== undefined) payload.assigned_to = assigneeId;
+        if (updates.assigneeName !== undefined) payload.assigned_name = updates.assigneeName;
 
         const { error } = await supabase
           .from('tasks')
@@ -1677,6 +1725,34 @@ A draft purchase request has been prepared in the Procurement Module.
         if (error) throw error;
       } catch (err) {
         console.error('Failed to update task in Supabase:', err);
+      }
+    })();
+  },
+
+  deleteTask: (projectId, taskId) => {
+    set((state) => ({
+      projects: state.projects.map((p) => {
+        const isCentralPark = p.id === 'central-park' || p.id === 'f6704467-df8c-4f51-a49b-ddfdc40c39af' || p.id === '00000000-0000-0000-0000-000000000001';
+        const targetIds = isCentralPark ? ['central-park', 'f6704467-df8c-4f51-a49b-ddfdc40c39af', '00000000-0000-0000-0000-000000000001', projectId] : [projectId];
+        if (!targetIds.includes(p.id)) return p;
+        return {
+          ...p,
+          tasks: p.tasks.filter((t) => t.id !== taskId)
+        };
+      })
+    }));
+
+    if (!isLiveSupabase()) return;
+
+    (async () => {
+      try {
+        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        if (uuidRegex.test(taskId)) {
+          const { error } = await supabase.from('tasks').delete().eq('id', taskId);
+          if (error) throw error;
+        }
+      } catch (err) {
+        console.error('Failed to delete task from Supabase:', err);
       }
     })();
   },
