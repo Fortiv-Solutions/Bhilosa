@@ -39,6 +39,8 @@ export default function BudgetPage() {
   const store = useAppStore() as any;
   const {
     projects = [],
+    activeProjectId,
+    setActiveProjectId,
     selectedProjectId,
     setSelectedProjectId,
     liveMode = false,
@@ -50,14 +52,28 @@ export default function BudgetPage() {
   } = store;
 
   const [activeTab, setActiveTab] = useState<BudgetTab>('dashboard');
+  const [localProjectId, setLocalProjectId] = useState<string | null>(null);
+
+  const currentProjectId = localProjectId !== null 
+    ? localProjectId 
+    : (activeProjectId || selectedProjectId || '');
 
   const safeProjects = Array.isArray(projects) ? projects : [];
 
   const activeProjectName = useMemo(() => {
-    if (!selectedProjectId || selectedProjectId === 'all') return 'All Projects';
-    const found = safeProjects.find((p: any) => p.id === selectedProjectId);
+    if (!currentProjectId || currentProjectId === 'all') return 'All Projects';
+    const found = safeProjects.find((p: any) => p.id === currentProjectId);
     return found ? found.name : 'Central Park Residential Project';
-  }, [selectedProjectId, safeProjects]);
+  }, [currentProjectId, safeProjects]);
+
+  const handleProjectChange = (val: string) => {
+    setLocalProjectId(val);
+    if (typeof setActiveProjectId === 'function') {
+      setActiveProjectId(val);
+    } else if (typeof setSelectedProjectId === 'function') {
+      setSelectedProjectId(val);
+    }
+  };
 
   const canManageBudget = useMemo(() => {
     return userRole === 'admin' || userRole === 'management' || userRole === 'project_manager';
@@ -102,8 +118,8 @@ export default function BudgetPage() {
           <label className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-semibold text-foreground">
             <span>Project:</span>
             <select
-              value={selectedProjectId || ''}
-              onChange={(event) => setSelectedProjectId(event.target.value || null)}
+              value={currentProjectId || ''}
+              onChange={(event) => handleProjectChange(event.target.value)}
               className="bg-transparent font-bold text-primary outline-none"
             >
               <option value="">All Projects Portfolio</option>
@@ -171,7 +187,7 @@ export default function BudgetPage() {
       {/* TAB 1: EXECUTIVE OVERVIEW DASHBOARD */}
       {activeTab === 'dashboard' && (
         <BudgetOverviewDashboard 
-          projectId={selectedProjectId || 'all'}
+          projectId={currentProjectId || 'all'}
           projectName={activeProjectName}
         />
       )}
@@ -179,7 +195,7 @@ export default function BudgetPage() {
       {/* TAB 2: MASTER BUDGET */}
       {activeTab === 'master-sheet' && (
         <MasterSheetTab 
-          projectId={selectedProjectId || 'all'}
+          projectId={currentProjectId || 'all'}
           projectName={activeProjectName}
           canManage={true} 
         />
@@ -188,7 +204,7 @@ export default function BudgetPage() {
       {/* TAB 3: VARIANCE RECONCILIATION */}
       {activeTab === 'variance' && (
         <VarianceAnalysisTab 
-          projectId={selectedProjectId || 'all'}
+          projectId={currentProjectId || 'all'}
           projectName={activeProjectName}
           categories={DEFAULT_VARIANCE_CATEGORIES} 
           canManage={true} 
