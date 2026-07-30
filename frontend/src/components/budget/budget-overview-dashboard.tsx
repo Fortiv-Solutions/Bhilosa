@@ -36,11 +36,23 @@ interface CategoryCostBreakdown {
   category: string;
   budget: number;
   actual: number;
+  committed: number;
+  balance: number;
   variance: number;
   utilization: number;
 }
 
-export default function BudgetOverviewDashboard() {
+interface BudgetOverviewDashboardProps {
+  projectId?: string;
+  projectName?: string;
+  buaSqft?: number;
+}
+
+export default function BudgetOverviewDashboard({
+  projectId = CENTRAL_PARK_PROJECT_ID,
+  projectName = 'Central Park Residential Project',
+  buaSqft = 615000,
+}: BudgetOverviewDashboardProps) {
   const [selectedFilter, setSelectedFilter] = useState<'all' | 'overruns' | 'savings'>('all');
   const [showAiStrategyModal, setShowAiStrategyModal] = useState(false);
   const [aiPromptInput, setAiPromptInput] = useState('');
@@ -52,73 +64,101 @@ export default function BudgetOverviewDashboard() {
   const [varianceDrivers, setVarianceDrivers] = useState<any[]>([]);
 
   // Dynamic Metrics State from Supabase
-  const [totalBAC, setTotalBAC] = useState<number>(1453638820);
-  const [totalActual, setTotalActual] = useState<number>(329480000);
-  const [totalEAC, setTotalEAC] = useState<number>(1478000000);
-  const buaSqft = 615000;
+  const [totalBAC, setTotalBAC] = useState<number>(0);
+  const [totalActual, setTotalActual] = useState<number>(0);
+  const [totalCommitted, setTotalCommitted] = useState<number>(0);
+  const [totalEAC, setTotalEAC] = useState<number>(0);
 
   // Live Supabase Sync Hook
   useEffect(() => {
     async function loadOverviewData() {
-      const masterCats = await fetchFullMasterBudgetCategoriesFromSupabase(CENTRAL_PARK_PROJECT_ID);
+      const activeProjId = projectId || CENTRAL_PARK_PROJECT_ID;
+      const masterCats = await fetchFullMasterBudgetCategoriesFromSupabase(activeProjId);
       if (masterCats && masterCats.length > 0) {
         setCategories(masterCats);
-        const bac = masterCats.reduce((sum, cat) => sum + cat.totalCost, 0);
-        setTotalBAC(bac);
+
+        let grandBAC = 0;
+        let grandActual = 0;
+        let grandCommitted = 0;
+        let grandOverrun = 0;
 
         const computedBreakdown = masterCats.map((cat) => {
-          const budget = cat.totalCost;
-          let actualMultiplier = 0.22;
-          if (cat.categoryName.toLowerCase().includes('site') || cat.categoryName.toLowerCase().includes('excavation')) {
-            actualMultiplier = 0.88;
-          } else if (cat.categoryName.toLowerCase().includes('civil') || cat.categoryName.toLowerCase().includes('steel')) {
-            actualMultiplier = 0.65;
-          } else if (cat.categoryName.toLowerCase().includes('concrete') || cat.categoryName.toLowerCase().includes('rc')) {
-            actualMultiplier = 0.55;
-          }
+          const budget = cat.items.reduce((s, i) => s + (i.cost || 0), 0);
+          const actual = cat.items.reduce((s, i) => s + (i.actualTotalCost || 0), 0);
+          const committed = cat.items.reduce((s, i) => s + (i.poAmount || i.committedAmount || 0), 0);
+          const balance = Math.max(0, budget - actual);
+          const rawDiff = budget - actual;
+          const costVarianceAmount = rawDiff < 0 ? rawDiff : 0;
+          const utilization = budget > 0 ? Number(((actual / budget) * 100).toFixed(1)) : 0;
 
-          const actual = Math.round(budget * actualMultiplier);
-          const variance = budget - actual;
-          const utilization = Number(((actual / (budget || 1)) * 100).toFixed(1));
+          grandBAC += budget;
+          grandActual += actual;
+          grandCommitted += committed;
+
+          cat.items.forEach((item) => {
+            const itemDiff = (item.actualTotalCost || 0) - (item.cost || 0);
+            if (itemDiff > 0) grandOverrun += itemDiff;
+          });
+
           return {
             category: cat.categoryName,
             budget,
             actual,
-            variance,
+            committed,
+            balance,
+            variance: costVarianceAmount,
             utilization,
           };
         });
+
         setCategoryData(computedBreakdown);
+        setTotalBAC(grandBAC);
+        setTotalActual(grandActual);
+        setTotalCommitted(grandCommitted);
+        setTotalEAC(grandBAC + grandOverrun);
 
-        const actualSum = computedBreakdown.reduce((sum, item) => sum + item.actual, 0);
-        setTotalActual(actualSum);
-        setTotalEAC(bac + 24361180);
+        // Derive top item-level variance drivers dynamically from live Supabase data
+        const allItems = masterCats.flatMap((cat) =>
+          cat.items.map((i) => {
+            const itemDiff = (i.actualTotalCost || 0) - (i.cost || 0);
+            return {
+              name: i.item,
+              category: cat.categoryName,
+              budgetCost: i.cost || 0,
+              actualTotalCost: i.actualTotalCost || 0,
+              diff: itemDiff,
+              type: itemDiff > 0 ? 'Overrun' : itemDiff < 0 ? 'Savings' : 'Baseline',
+            };
+          })
+        );
 
-        // Derive top variance drivers dynamically
-        const drivers = computedBreakdown
-          .filter((item) => item.utilization > 0)
-          .slice(0, 5)
-          .map((item) => ({
-            name: `${item.category} Activity Status`,
-            category: item.category,
-            type: item.variance < 0 ? 'Overrun' : 'Savings',
-            amount: Math.abs(item.variance),
-            pct: `${item.utilization}%`,
+        const drivers = allItems
+          .filter((i) => i.actualTotalCost > 0 || i.diff !== 0)
+          .sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff))
+          .slice(0, 8)
+          .map((i) => ({
+            name: i.name,
+            category: i.category,
+            type: i.diff > 0 ? 'Overrun' : 'Savings',
+            amount: Math.abs(i.diff),
+            pct: i.budgetCost > 0 ? `${((Math.abs(i.diff) / i.budgetCost) * 100).toFixed(1)}%` : '0%',
           }));
+
         setVarianceDrivers(drivers);
       }
     }
 
     loadOverviewData();
 
-    const unsubscribe = subscribeToBudgetRealtimeChanges(CENTRAL_PARK_PROJECT_ID, () => {
+    const activeProjId = projectId || CENTRAL_PARK_PROJECT_ID;
+    const unsubscribe = subscribeToBudgetRealtimeChanges(activeProjId, () => {
       loadOverviewData();
     });
 
     return () => {
       unsubscribe();
     };
-  }, []);
+  }, [projectId]);
 
   const netVariance = totalActual - totalBAC;
   const costPerSqftBAC = Number((totalBAC / buaSqft).toFixed(2));

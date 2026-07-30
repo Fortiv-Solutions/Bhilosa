@@ -170,12 +170,19 @@ export default function BudgetPage() {
 
       {/* TAB 1: EXECUTIVE OVERVIEW DASHBOARD */}
       {activeTab === 'dashboard' && (
-        <BudgetOverviewDashboard />
+        <BudgetOverviewDashboard 
+          projectId={selectedProjectId || 'all'}
+          projectName={activeProjectName}
+        />
       )}
 
-      {/* TAB 2: MASTER BUDGET (Central Park 24 Categories, 191 Items) */}
+      {/* TAB 2: MASTER BUDGET */}
       {activeTab === 'master-sheet' && (
-        <MasterSheetTab canManage={true} />
+        <MasterSheetTab 
+          projectId={selectedProjectId || 'all'}
+          projectName={activeProjectName}
+          canManage={true} 
+        />
       )}
 
       {/* TAB 3: VARIANCE RECONCILIATION */}
