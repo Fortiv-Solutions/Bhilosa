@@ -195,6 +195,11 @@ export default function FloatingChatbot() {
 
   // ── Bootstrap: create/load Supabase session on mount ──────────────────────
   useEffect(() => {
+    // Clear old localStorage cache from previous version
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('pramukh_chat_history');
+    }
+
     async function initSession() {
       if (!currentUser?.id) {
         setSessionReady(true);
