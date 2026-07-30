@@ -123,17 +123,17 @@ The core field operations module that tracks site activities, daily work submitt
 ## 4. Procurement & Supply Chain Pipeline
 
 ### 4.1 Pipeline Architecture & Workbench Structure
-The platform's largest module (over 3,700 lines of frontend logic and backend services) managing the end-to-end purchasing lifecycle from requisition to physical receiving.
+The platform's core purchasing module managing the purchasing lifecycle from requisition to physical receiving.
 
 * **Primary Route**: `/procurement`
 * **Source Files**: 
-  - Page: [frontend/src/app/procurement/page.tsx](file:///c:/Users/meetk/Pramukh-Group-AI-System-V2/frontend/src/app/procurement/page.tsx) (1,813 lines)
-  - Service: [frontend/src/lib/procurement.ts](file:///c:/Users/meetk/Pramukh-Group-AI-System-V2/frontend/src/lib/procurement.ts) (1,956 lines)
+  - Page: [frontend/src/app/procurement/page.tsx](file:///c:/Users/meetk/Pramukh-Group-AI-System-V2/frontend/src/app/procurement/page.tsx)
+  - Service: [frontend/src/lib/procurement.ts](file:///c:/Users/meetk/Pramukh-Group-AI-System-V2/frontend/src/lib/procurement.ts)
   - Backend PDF Router: [backend/app/routers/procurement.py](file:///c:/Users/meetk/Pramukh-Group-AI-System-V2/backend/app/routers/procurement.py)
   - PDF Engine: [backend/app/services/pdf_generator.py](file:///c:/Users/meetk/Pramukh-Group-AI-System-V2/backend/app/services/pdf_generator.py)
 * **Target Personas**: `UPPER_MANAGEMENT`, `PR_TEAM`
 
-### 4.2 7-Stage Procurement Pipeline
+### 4.2 6-Stage Procurement Pipeline
 
 ```
 ┌────────────────────────┐    Stock Check    ┌────────────────────────┐
@@ -148,16 +148,10 @@ The platform's largest module (over 3,700 lines of frontend logic and backend se
 └───────────┬────────────┘                   └────────────────────────┘
             │
             ▼
-┌────────────────────────┐   Dispatch Log    ┌────────────────────────┐
-│   5. Purchase Order    ├──────────────────►│  6. Delivery Tracking  │
-│  (PO & Budget Commit)  │                   │       & Logistics      │
-└────────────────────────┘                   └───────────┬────────────┘
-                                                         │ Receiving
-                                                         ▼
-                                             ┌────────────────────────┐
-                                             │ 7. Goods Receipt Note  │
-                                             │   (GRN & Stock Post)   │
-                                             └────────────────────────┘
+┌────────────────────────┐   Receiving &     ┌────────────────────────┐
+│   5. Purchase Order    ├──────────────────►│ 6. Goods Receipt Note  │
+│  (PO & Budget Commit)  │   Stock Post      │   (GRN & Stock Post)   │
+└────────────────────────┘                   └────────────────────────┘
 ```
 
 #### Detailed Stage Breakdown:
@@ -166,11 +160,10 @@ The platform's largest module (over 3,700 lines of frontend logic and backend se
 3. **Request for Quotation (RFQ)**: Buyer selects qualified vendor categories (`rfqs`, `rfq_vendors`) and dispatches RFQ packages.
 4. **Vendor Quotations & Finalization**: Vendor proposals logged (`vendor_quotations`). System computes automated multi-vendor comparison matrix (`quotation_scores`) assessing unit rate, payment terms, delivery timelines, and vendor historical rating. Winning vendor selected (`vendor_selections`).
 5. **Purchase Order (PO)**: PO issued (`purchase_orders`, `purchase_order_lines`). **Crucial Integration**: RPC `approve_and_send_purchase_order` posts a **Budget Commitment** to `budget_ledger` (`transaction_type = 'commitment'`). Python backend generates formal Gold-Branded (`#b68d40`) PO PDF document.
-6. **Delivery Tracking**: Tracks dispatch details, expected delivery dates, transporter names, LR/Bilty numbers, and transit statuses (`delivery_trackings`).
-7. **Goods Receipt Note (GRN)**: Site store manager inspects shipment, logging accepted vs rejected quantities (`goods_receipt_notes`). Submitting GRN triggers DB trigger `post_grn_stock` to auto-post stock balances.
+6. **Goods Receipt Note (GRN)**: Site store manager inspects shipment, logging accepted vs rejected quantities (`goods_receipt_notes`). Submitting GRN triggers DB trigger `post_grn_stock` to auto-post stock balances.
 
 ### 4.3 Key Database Tables
-`material_requests`, `material_request_lines`, `purchase_requisitions`, `purchase_requisition_lines`, `purchase_requisition_assignments`, `rfqs`, `rfq_vendors`, `vendor_quotations`, `quotation_lines`, `quotation_scores`, `vendor_selections`, `purchase_orders`, `purchase_order_lines`, `delivery_trackings`, `goods_receipt_notes`, `goods_receipt_note_lines`
+`material_requests`, `material_request_lines`, `purchase_requisitions`, `purchase_requisition_lines`, `purchase_requisition_assignments`, `rfqs`, `rfq_vendors`, `vendor_quotations`, `quotation_lines`, `quotation_scores`, `vendor_selections`, `purchase_orders`, `purchase_order_lines`, `goods_receipt_notes`, `goods_receipt_note_lines`
 
 ---
 

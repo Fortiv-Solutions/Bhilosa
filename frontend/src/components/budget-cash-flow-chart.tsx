@@ -1,297 +1,488 @@
 'use client';
 
-import React, { useState } from 'react';
+// ============================================================================
+// PRAMUKH GROUP ERP V2 — BUDGET CASH-FLOW S-CURVE
+// File: frontend/src/components/budget-cash-flow-chart.tsx
+//
+// What was wrong before:
+//   * FULL_LIFECYCLE_SCURVE_DATA — a hardcoded 12-month Jan–Dec 2026 curve with
+//     invented milestones ("RA Bill 14 Slab 12 & Civil Labour") used as the data.
+//   * It then tried to overwrite that from `http://localhost:8000/api/budget/scurve`
+//     — a hardcoded localhost URL that cannot resolve in any deployed environment
+//     and is mixed-content blocked over HTTPS — and that endpoint returned the same
+//     hardcoded constants anyway.
+//   * KPI cards printed "₹32.95 Cr", "Jul 26 (₹7.30 Cr)", "₹4.85 Cr / mo" and
+//     "SPI 1.02 (On Schedule)" as literal strings.
+//   * It accepted `ledger` and `totalSpend` props and used neither.
+//
+// Now: the actual curve is built from budget_monthly_cashflow_view (real posted
+// ledger transactions) and the planned curve is a straight-line spread of the
+// baseline across the project's actual transaction window — labelled as such, with
+// no invented forecast confidence.
+// ============================================================================
+
+import React, { useMemo, useState } from 'react';
 import {
-  AreaChart,
   Area,
-  LineChart,
+  AreaChart,
+  CartesianGrid,
+  Legend,
   Line,
+  ResponsiveContainer,
+  Tooltip,
   XAxis,
   YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-  ResponsiveContainer,
 } from 'recharts';
-import type { BudgetLedgerRow } from '@/lib/budget';
-import {
-  CircleDollarSign,
-  TrendingUp,
-  Calendar,
-  Layers,
-  ArrowUpRight,
-  ArrowDownRight,
-  Sparkles,
-  Download,
-  Filter,
-  CheckCircle2,
-  Clock,
-} from 'lucide-react';
+import { Calendar, Download, Info, TrendingUp } from 'lucide-react';
+import { downloadCsv, toCsv } from '@/lib/supabase-budget';
+import type { BudgetPermissions } from '@/lib/budget-permissions';
+import { useBudgetData } from './budget/budget-data-context';
+import { BudgetEmpty, BudgetGate } from './budget/budget-states';
 
-interface MonthlyCashFlowPoint {
+interface CurvePoint {
   month: string;
-  plannedCumulative: number; // Planned S-Curve (₹ Cr)
-  actualCumulative: number | null; // Actual Billed Outflow (₹ Cr)
-  forecastCumulative: number; // AI Projected Forecast (₹ Cr)
-  monthlyPlanned: number; // Monthly Outflow (₹ Lakhs)
-  monthlyActual: number | null; // Monthly Billed (₹ Lakhs)
-  milestones: string;
-  varianceStatus: 'On Track' | 'Ahead' | 'Behind';
+  monthKey: string;
+  /** Cumulative straight-line baseline spread, ₹ Cr. */
+  plannedCumulative: number;
+  /** Cumulative posted actuals, ₹ Cr. Null for months with no data yet. */
+  actualCumulative: number | null;
+  /** Cumulative commitments, ₹ Cr. */
+  committedCumulative: number | null;
+  /** Actual posted in the month, ₹ Lakhs. */
+  monthlyActual: number | null;
+  monthlyCommitted: number | null;
+  monthlyPlanned: number;
 }
 
-const FULL_LIFECYCLE_SCURVE_DATA: MonthlyCashFlowPoint[] = [
-  { month: 'Jan 26', plannedCumulative: 2.5, actualCumulative: 2.4, forecastCumulative: 2.4, monthlyPlanned: 250, monthlyActual: 240, milestones: 'Site Excavation & D-Wall Start', varianceStatus: 'On Track' },
-  { month: 'Feb 26', plannedCumulative: 5.8, actualCumulative: 5.6, forecastCumulative: 5.6, monthlyPlanned: 330, monthlyActual: 320, milestones: 'Piling & Substructure Concreting', varianceStatus: 'On Track' },
-  { month: 'Mar 26', plannedCumulative: 10.2, actualCumulative: 10.5, forecastCumulative: 10.5, monthlyPlanned: 440, monthlyActual: 490, milestones: 'Basement Slab Pouring', varianceStatus: 'Ahead' },
-  { month: 'Apr 26', plannedCumulative: 15.6, actualCumulative: 15.9, forecastCumulative: 15.9, monthlyPlanned: 540, monthlyActual: 540, milestones: 'Ground & Podium Floor RCC', varianceStatus: 'On Track' },
-  { month: 'May 26', plannedCumulative: 21.8, actualCumulative: 22.1, forecastCumulative: 22.1, monthlyPlanned: 620, monthlyActual: 620, milestones: 'Tower A Slab 1 to 5 RCC', varianceStatus: 'On Track' },
-  { month: 'Jun 26', plannedCumulative: 28.5, actualCumulative: 29.2, forecastCumulative: 29.2, monthlyPlanned: 670, monthlyActual: 710, milestones: 'Tower A Slab 6 to 10 & Masonry', varianceStatus: 'Ahead' },
-  { month: 'Jul 26', plannedCumulative: 35.8, actualCumulative: 32.95, forecastCumulative: 35.9, monthlyPlanned: 730, monthlyActual: 375, milestones: 'RA Bill 14 Slab 12 & Civil Labour', varianceStatus: 'On Track' },
-  { month: 'Aug 26', plannedCumulative: 42.4, actualCumulative: null, forecastCumulative: 43.1, monthlyPlanned: 660, monthlyActual: null, milestones: 'Top Slab Pour & MEP Rough-Ins', varianceStatus: 'On Track' },
-  { month: 'Sep 26', plannedCumulative: 48.6, actualCumulative: null, forecastCumulative: 49.5, monthlyPlanned: 620, monthlyActual: null, milestones: 'External Façade Glazing Launch', varianceStatus: 'On Track' },
-  { month: 'Oct 26', plannedCumulative: 53.8, actualCumulative: null, forecastCumulative: 54.8, monthlyPlanned: 520, monthlyActual: null, milestones: 'Plumbing, Electrical & Elevator Install', varianceStatus: 'On Track' },
-  { month: 'Nov 26', plannedCumulative: 57.5, actualCumulative: null, forecastCumulative: 58.6, monthlyPlanned: 370, monthlyActual: null, milestones: 'Internal Finishes & Flooring', varianceStatus: 'On Track' },
-  { month: 'Dec 26', plannedCumulative: 60.0, actualCumulative: null, forecastCumulative: 61.2, monthlyPlanned: 250, monthlyActual: null, milestones: 'Handover & Final Retention Release', varianceStatus: 'On Track' },
-];
+const CR = 10_000_000;
+const LAKH = 100_000;
 
-interface BudgetCashFlowChartProps {
-  totalSpend?: number;
-  ledger?: BudgetLedgerRow[];
+function monthLabel(iso: string): string {
+  const date = new Date(iso);
+  return date.toLocaleDateString('en-GB', { month: 'short', year: '2-digit' });
 }
 
-export default function BudgetCashFlowChart({ totalSpend, ledger = [] }: BudgetCashFlowChartProps) {
+export default function BudgetCashFlowChart({
+  permissions,
+}: {
+  permissions: BudgetPermissions;
+}) {
+  const { cashflow, totals, projectName, isPortfolio } = useBudgetData();
   const [viewMode, setViewMode] = useState<'cumulative' | 'monthly'>('cumulative');
-  const [timeRange, setTimeRange] = useState<'all' | 'q1' | 'q2' | 'q3' | 'q4'>('all');
-  const [scurveData, setScurveData] = useState<MonthlyCashFlowPoint[]>(FULL_LIFECYCLE_SCURVE_DATA);
 
-  React.useEffect(() => {
-    async function loadSCurve() {
-      try {
-        const res = await fetch('http://localhost:8000/api/budget/scurve');
-        if (res.ok) {
-          const json = await res.json();
-          if (json.lifecycle_data && Array.isArray(json.lifecycle_data)) {
-            setScurveData(json.lifecycle_data);
-          }
-        }
-      } catch (err) {
-        // Fallback to initial S-curve data
-      }
+  const curve = useMemo<CurvePoint[]>(() => {
+    if (cashflow.length === 0) return [];
+
+    // Aggregate across projects when viewing the portfolio.
+    const byMonth = new Map<string, { actual: number; committed: number }>();
+    for (const row of cashflow) {
+      const key = row.month_start.slice(0, 7);
+      const bucket = byMonth.get(key) ?? { actual: 0, committed: 0 };
+      bucket.actual += row.actual_amount ?? 0;
+      bucket.committed += row.committed_amount ?? 0;
+      byMonth.set(key, bucket);
     }
-    loadSCurve();
-  }, []);
 
-  const filteredData = scurveData.filter((item) => {
-    if (timeRange === 'q1') return ['Jan 26', 'Feb 26', 'Mar 26'].includes(item.month);
-    if (timeRange === 'q2') return ['Apr 26', 'May 26', 'Jun 26'].includes(item.month);
-    if (timeRange === 'q3') return ['Jul 26', 'Aug 26', 'Sep 26'].includes(item.month);
-    if (timeRange === 'q4') return ['Oct 26', 'Nov 26', 'Dec 26'].includes(item.month);
-    return true;
-  });
+    const months = [...byMonth.keys()].sort();
+    // Straight-line planned spread across the observed window. Labelled as a
+    // straight-line spread in the UI — it is not a schedule-derived forecast.
+    const plannedPerMonth = months.length > 0 ? totals.baseline / months.length : 0;
 
-  const peakOutflowItem = scurveData.reduce((prev, current) =>
-    (current.monthlyPlanned > prev.monthlyPlanned) ? current : prev, scurveData[0] || FULL_LIFECYCLE_SCURVE_DATA[0]
-  );
+    let cumulativeActual = 0;
+    let cumulativeCommitted = 0;
+    let cumulativePlanned = 0;
+
+    return months.map((key) => {
+      const bucket = byMonth.get(key)!;
+      cumulativeActual += bucket.actual;
+      cumulativeCommitted += bucket.committed;
+      cumulativePlanned += plannedPerMonth;
+
+      return {
+        month: monthLabel(`${key}-01`),
+        monthKey: key,
+        plannedCumulative: Number((cumulativePlanned / CR).toFixed(2)),
+        actualCumulative: Number((cumulativeActual / CR).toFixed(2)),
+        committedCumulative: Number((cumulativeCommitted / CR).toFixed(2)),
+        monthlyActual: Number((bucket.actual / LAKH).toFixed(2)),
+        monthlyCommitted: Number((bucket.committed / LAKH).toFixed(2)),
+        monthlyPlanned: Number((plannedPerMonth / LAKH).toFixed(2)),
+      };
+    });
+  }, [cashflow, totals.baseline]);
+
+  const stats = useMemo(() => {
+    if (curve.length === 0) {
+      return { peakMonth: null as CurvePoint | null, averageMonthly: 0, billedPercent: 0 };
+    }
+    const peakMonth = curve.reduce((prev, cur) =>
+      (cur.monthlyActual ?? 0) > (prev.monthlyActual ?? 0) ? cur : prev,
+    );
+    const monthsWithSpend = curve.filter((p) => (p.monthlyActual ?? 0) > 0).length || 1;
+    return {
+      peakMonth,
+      averageMonthly: totals.spent / monthsWithSpend,
+      billedPercent: totals.baseline > 0 ? (totals.spent / totals.baseline) * 100 : 0,
+    };
+  }, [curve, totals.spent, totals.baseline]);
+
+  function handleExport() {
+    const headers = [
+      'Month', 'Planned Cumulative (Cr)', 'Actual Cumulative (Cr)', 'Committed Cumulative (Cr)',
+      'Monthly Planned (L)', 'Monthly Actual (L)', 'Monthly Committed (L)',
+    ];
+    const body = curve.map((p) => [
+      p.month, p.plannedCumulative, p.actualCumulative, p.committedCumulative,
+      p.monthlyPlanned, p.monthlyActual, p.monthlyCommitted,
+    ]);
+    downloadCsv(
+      `cash-flow-${isPortfolio ? 'all-projects' : projectName.replace(/\s+/g, '-').toLowerCase()}-${new Date().toISOString().slice(0, 10)}.csv`,
+      toCsv(headers, body),
+    );
+  }
 
   return (
-    <div className="space-y-6 select-none font-sans">
-      {/* 1. TOP CASH FLOW EXECUTIVE METRICS */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <div className="rounded-xl border border-border bg-card p-4 shadow-2xs">
-          <p className="text-[11px] font-extrabold uppercase tracking-wider text-muted-foreground">Cumulative Billed Outflow</p>
-          <p className="mt-1 text-xl font-mono font-black text-emerald-600">₹32.95 Cr</p>
-          <p className="mt-0.5 text-xs text-muted-foreground">54.9% of total lifecycle budget</p>
-        </div>
-
-        <div className="rounded-xl border border-border bg-card p-4 shadow-2xs">
-          <p className="text-[11px] font-extrabold uppercase tracking-wider text-primary">Peak Cash Outflow Month</p>
-          <p className="mt-1 text-xl font-mono font-black text-foreground">Jul 26 (₹7.30 Cr)</p>
-          <p className="mt-0.5 text-xs text-muted-foreground">{peakOutflowItem.milestones}</p>
-        </div>
-
-        <div className="rounded-xl border border-border bg-card p-4 shadow-2xs">
-          <p className="text-[11px] font-extrabold uppercase tracking-wider text-muted-foreground">Average Monthly Outflow</p>
-          <p className="mt-1 text-xl font-mono font-black text-foreground">₹4.85 Cr / mo</p>
-          <p className="mt-0.5 text-xs text-muted-foreground">Project lifecycle run rate</p>
-        </div>
-
-        <div className="rounded-xl border border-border bg-card p-4 shadow-2xs">
-          <p className="text-[11px] font-extrabold uppercase tracking-wider text-amber-700 dark:text-amber-400">Schedule Performance (SPI)</p>
-          <p className="mt-1 text-xl font-mono font-black text-amber-800 dark:text-amber-300">1.02 (On Schedule)</p>
-          <p className="mt-0.5 text-xs text-muted-foreground">Outflow tracking baseline curve</p>
-        </div>
-      </div>
-
-      {/* 2. CHART CONTROLS & HEADER */}
-      <div className="rounded-xl border border-border bg-card p-5 shadow-sm space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-border pb-3">
-          <div>
-            <h3 className="font-heading text-base font-bold text-foreground flex items-center gap-2">
-              <TrendingUp className="h-5 w-5 text-primary" />
-              Project Cash Outflow S-Curve &amp; Forecast
-            </h3>
-            <p className="text-xs text-muted-foreground">Planned Baseline S-Curve (Blue) vs Actual Verified Billed Outflow (Green) vs AI Forecast (Amber Dotted)</p>
+    <BudgetGate requireCategories={false} loadingLabel="Loading cash-flow data from Supabase…">
+      {curve.length === 0 ? (
+        <BudgetEmpty
+          title="No cash-flow history yet"
+          detail="The S-curve is built from posted budget ledger transactions. It will populate as purchase orders are approved and vendor bills verified."
+        />
+      ) : (
+        <div className="space-y-6 font-sans">
+          {/* KPI ROW — all derived */}
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <Kpi
+              label="Cumulative Billed Outflow"
+              value={`₹${(totals.spent / CR).toFixed(2)} Cr`}
+              detail={`${stats.billedPercent.toFixed(1)}% of the ₹${(totals.baseline / CR).toFixed(2)} Cr baseline`}
+              tone="emerald"
+            />
+            <Kpi
+              label="Peak Outflow Month"
+              value={
+                stats.peakMonth && (stats.peakMonth.monthlyActual ?? 0) > 0
+                  ? `${stats.peakMonth.month} (₹${((stats.peakMonth.monthlyActual ?? 0) / 100).toFixed(2)} Cr)`
+                  : '—'
+              }
+              detail="Highest single month of verified bills"
+              tone="primary"
+            />
+            <Kpi
+              label="Average Monthly Outflow"
+              value={`₹${(stats.averageMonthly / CR).toFixed(2)} Cr`}
+              detail="Across months with posted spend"
+            />
+            <Kpi
+              label="Committed Not Yet Billed"
+              value={`₹${(totals.committed / CR).toFixed(2)} Cr`}
+              detail="Approved POs awaiting vendor bills"
+              tone="amber"
+            />
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            {/* View Mode Switcher */}
-            <div className="flex items-center rounded-lg border border-border bg-muted/40 p-0.5 text-xs">
-              <button
-                type="button"
-                onClick={() => setViewMode('cumulative')}
-                className={`rounded-md px-3 py-1 text-xs font-bold transition-all ${viewMode === 'cumulative' ? 'bg-card text-primary shadow-2xs' : 'text-muted-foreground hover:text-foreground'}`}
-              >
-                Cumulative S-Curve (₹ Cr)
-              </button>
-              <button
-                type="button"
-                onClick={() => setViewMode('monthly')}
-                className={`rounded-md px-3 py-1 text-xs font-bold transition-all ${viewMode === 'monthly' ? 'bg-card text-primary shadow-2xs' : 'text-muted-foreground hover:text-foreground'}`}
-              >
-                Monthly Outflow (₹ Lakhs)
-              </button>
+          <div className="flex items-start gap-2 rounded-xl border border-blue-300 bg-blue-50 p-3 text-xs text-blue-900 dark:border-blue-900/40 dark:bg-blue-950/25 dark:text-blue-300">
+            <Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" aria-hidden="true" />
+            <p>
+              <strong>Actual</strong> and <strong>Committed</strong> curves are posted ledger
+              transactions. The <strong>Planned</strong> curve is a straight-line spread of the
+              approved baseline across the months that have activity — it is a reference line, not a
+              schedule-derived forecast. Connect a project schedule to produce a true planned S-curve.
+            </p>
+          </div>
+
+          {/* CHART */}
+          <div className="space-y-4 rounded-xl border border-border bg-card p-5 shadow-sm">
+            <div className="flex flex-col gap-3 border-b border-border pb-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h3 className="flex items-center gap-2 font-heading text-base font-bold text-foreground">
+                  <TrendingUp className="h-5 w-5 text-primary" aria-hidden="true" />
+                  Cash Outflow S-Curve
+                </h3>
+                <p className="text-xs text-muted-foreground">
+                  {curve.length} month(s) of posted ledger activity
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex items-center rounded-lg border border-border bg-muted/40 p-0.5 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setViewMode('cumulative')}
+                    className={`rounded-md px-3 py-1 text-xs font-bold transition-all ${
+                      viewMode === 'cumulative'
+                        ? 'bg-card text-primary shadow-2xs'
+                        : 'text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    Cumulative (₹ Cr)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setViewMode('monthly')}
+                    className={`rounded-md px-3 py-1 text-xs font-bold transition-all ${
+                      viewMode === 'monthly'
+                        ? 'bg-card text-primary shadow-2xs'
+                        : 'text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    Monthly (₹ Lakhs)
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleExport}
+                  disabled={!permissions.canExport}
+                  className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-xs font-bold text-foreground hover:bg-muted disabled:opacity-50"
+                >
+                  <Download className="h-3.5 w-3.5" aria-hidden="true" /> CSV
+                </button>
+              </div>
             </div>
 
-            {/* Time Range Filter */}
-            <select
-              value={timeRange}
-              onChange={(e) => setTimeRange(e.target.value as any)}
-              className="h-8 rounded-lg border border-border bg-card px-2.5 text-xs font-bold text-foreground outline-none"
-            >
-              <option value="all">Full Lifecycle (12 Mo)</option>
-              <option value="q1">Q1 2026 (Jan - Mar)</option>
-              <option value="q2">Q2 2026 (Apr - Jun)</option>
-              <option value="q3">Q3 2026 (Jul - Sep)</option>
-              <option value="q4">Q4 2026 (Oct - Dec)</option>
-            </select>
+            <div className="h-[380px] w-full pt-2">
+              <ResponsiveContainer width="100%" height="100%">
+                {viewMode === 'cumulative' ? (
+                  <AreaChart data={curve} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                    <defs>
+                      <linearGradient id="cfActual" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#10b981" stopOpacity={0.25} />
+                        <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
+                      </linearGradient>
+                      <linearGradient id="cfPlanned" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#2563eb" stopOpacity={0.14} />
+                        <stop offset="95%" stopColor="#2563eb" stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="currentColor" opacity={0.12} />
+                    <XAxis dataKey="month" tick={{ fontSize: 11, fontWeight: 600 }} />
+                    <YAxis tick={{ fontSize: 11, fontWeight: 600 }} unit=" Cr" />
+                    <Tooltip
+                      formatter={(value: unknown, name: unknown) => [
+                        `₹${Number(value).toFixed(2)} Cr`,
+                        name === 'plannedCumulative'
+                          ? 'Planned (straight-line baseline)'
+                          : name === 'actualCumulative'
+                            ? 'Actual billed'
+                            : 'Committed',
+                      ]}
+                      contentStyle={{
+                        borderRadius: '12px',
+                        border: '1px solid var(--border)',
+                        fontSize: '12px',
+                        fontWeight: 'bold',
+                      }}
+                    />
+                    <Legend
+                      formatter={(value) =>
+                        value === 'plannedCumulative'
+                          ? 'Planned (straight-line)'
+                          : value === 'actualCumulative'
+                            ? 'Actual billed'
+                            : 'Committed'
+                      }
+                      wrapperStyle={{ fontSize: '11px', fontWeight: 700, paddingTop: '10px' }}
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="plannedCumulative"
+                      stroke="#2563eb"
+                      strokeWidth={2.5}
+                      strokeDasharray="4 4"
+                      fill="url(#cfPlanned)"
+                      fillOpacity={1}
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="actualCumulative"
+                      stroke="#10b981"
+                      strokeWidth={3}
+                      fill="url(#cfActual)"
+                      fillOpacity={1}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="committedCumulative"
+                      stroke="#f59e0b"
+                      strokeWidth={2.5}
+                      strokeDasharray="3 3"
+                      dot={{ r: 3 }}
+                    />
+                  </AreaChart>
+                ) : (
+                  <AreaChart data={curve} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                    <defs>
+                      <linearGradient id="cfMonthly" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#10b981" stopOpacity={0.25} />
+                        <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="currentColor" opacity={0.12} />
+                    <XAxis dataKey="month" tick={{ fontSize: 11, fontWeight: 600 }} />
+                    <YAxis tick={{ fontSize: 11, fontWeight: 600 }} unit=" L" />
+                    <Tooltip
+                      formatter={(value: unknown, name: unknown) => [
+                        `₹${Number(value).toFixed(2)} Lakhs`,
+                        name === 'monthlyPlanned'
+                          ? 'Planned (straight-line)'
+                          : name === 'monthlyActual'
+                            ? 'Actual billed'
+                            : 'Committed',
+                      ]}
+                      contentStyle={{
+                        borderRadius: '12px',
+                        border: '1px solid var(--border)',
+                        fontSize: '12px',
+                        fontWeight: 'bold',
+                      }}
+                    />
+                    <Legend wrapperStyle={{ fontSize: '11px', fontWeight: 700, paddingTop: '10px' }} />
+                    <Area
+                      type="monotone"
+                      dataKey="monthlyActual"
+                      name="Actual billed (L)"
+                      stroke="#10b981"
+                      strokeWidth={3}
+                      fill="url(#cfMonthly)"
+                      fillOpacity={1}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="monthlyCommitted"
+                      name="Committed (L)"
+                      stroke="#f59e0b"
+                      strokeWidth={2.5}
+                      dot={{ r: 3 }}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="monthlyPlanned"
+                      name="Planned straight-line (L)"
+                      stroke="#2563eb"
+                      strokeWidth={2}
+                      strokeDasharray="4 4"
+                      dot={false}
+                    />
+                  </AreaChart>
+                )}
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          {/* MONTHLY TABLE */}
+          <div className="space-y-3 rounded-xl border border-border bg-card p-5 shadow-sm">
+            <div className="flex items-center justify-between border-b border-border pb-3">
+              <div>
+                <h3 className="flex items-center gap-2 font-heading text-sm font-bold text-foreground">
+                  <Calendar className="h-4 w-4 text-emerald-600" aria-hidden="true" />
+                  Monthly Disbursement Schedule
+                </h3>
+                <p className="text-xs text-muted-foreground">
+                  Posted budget ledger transactions by month
+                </p>
+              </div>
+              <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-[10px] font-extrabold uppercase text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300">
+                {curve.length} month(s)
+              </span>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-left text-xs whitespace-nowrap">
+                <thead>
+                  <tr className="border-b border-border bg-muted/60 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                    <th className="border-r border-border px-3.5 py-2.5">Month</th>
+                    <th className="border-r border-border px-4 py-2.5 text-right font-mono">
+                      Planned Cum. (₹ Cr)
+                    </th>
+                    <th className="border-r border-border px-4 py-2.5 text-right font-mono">
+                      Actual Cum. (₹ Cr)
+                    </th>
+                    <th className="border-r border-border px-4 py-2.5 text-right font-mono">
+                      Committed Cum. (₹ Cr)
+                    </th>
+                    <th className="border-r border-border px-4 py-2.5 text-right font-mono">
+                      Month Actual (₹ L)
+                    </th>
+                    <th className="px-3.5 py-2.5 text-center">Variance vs Planned</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {curve.map((row) => {
+                    const delta = (row.actualCumulative ?? 0) - row.plannedCumulative;
+                    return (
+                      <tr key={row.monthKey} className="align-middle transition-colors hover:bg-muted/30">
+                        <td className="border-r border-border px-3.5 py-2.5 font-bold text-foreground">
+                          {row.month}
+                        </td>
+                        <td className="border-r border-border px-4 py-2.5 text-right font-mono font-semibold text-blue-700 dark:text-blue-300">
+                          ₹{row.plannedCumulative.toFixed(2)}
+                        </td>
+                        <td className="border-r border-border px-4 py-2.5 text-right font-mono font-black text-emerald-700 dark:text-emerald-300">
+                          ₹{(row.actualCumulative ?? 0).toFixed(2)}
+                        </td>
+                        <td className="border-r border-border px-4 py-2.5 text-right font-mono font-semibold text-amber-700 dark:text-amber-300">
+                          ₹{(row.committedCumulative ?? 0).toFixed(2)}
+                        </td>
+                        <td className="border-r border-border px-4 py-2.5 text-right font-mono font-bold text-foreground">
+                          ₹{(row.monthlyActual ?? 0).toFixed(2)}
+                        </td>
+                        <td className="px-3.5 py-2.5 text-center">
+                          <span
+                            className={`inline-flex rounded-full px-2.5 py-0.5 text-[10px] font-extrabold uppercase ${
+                              delta > 0
+                                ? 'bg-red-100 text-red-800 dark:bg-red-950/40 dark:text-red-300'
+                                : 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300'
+                            }`}
+                          >
+                            {delta > 0 ? '+' : ''}
+                            {delta.toFixed(2)} Cr
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
+      )}
+    </BudgetGate>
+  );
+}
 
-        {/* 3. RECHARTS S-CURVE CANVAS */}
-        <div className="h-[380px] w-full pt-2">
-          <ResponsiveContainer width="100%" height="100%">
-            {viewMode === 'cumulative' ? (
-              <AreaChart data={filteredData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="actualGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#10b981" stopOpacity={0.25} />
-                    <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
-                  </linearGradient>
-                  <linearGradient id="plannedGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#2563eb" stopOpacity={0.15} />
-                    <stop offset="95%" stopColor="#2563eb" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E2E8F0" />
-                <XAxis dataKey="month" tick={{ fontSize: 11, fontWeight: 600 }} />
-                <YAxis tick={{ fontSize: 11, fontWeight: 600 }} unit=" Cr" />
-                <Tooltip
-                  formatter={(value: any, name: any) => [
-                    `₹${Number(value).toFixed(2)} Cr`,
-                    name === 'plannedCumulative' ? 'Planned Baseline S-Curve' : name === 'actualCumulative' ? 'Actual Verified Outflow' : 'AI Projected Forecast',
-                  ]}
-                  contentStyle={{ borderRadius: '12px', border: '1px solid #E2E8F0', fontSize: '12px', fontWeight: 'bold' }}
-                />
-                <Legend
-                  formatter={(value) =>
-                    value === 'plannedCumulative' ? 'Planned Baseline S-Curve' : value === 'actualCumulative' ? 'Actual Verified Outflow' : 'AI Projected Forecast'
-                  }
-                  wrapperStyle={{ fontSize: '11px', fontWeight: 700, paddingTop: '10px' }}
-                />
+function Kpi({
+  label,
+  value,
+  detail,
+  tone = 'default',
+}: {
+  label: string;
+  value: string;
+  detail: string;
+  tone?: 'default' | 'emerald' | 'amber' | 'primary';
+}) {
+  const valueTone =
+    tone === 'emerald'
+      ? 'text-emerald-600'
+      : tone === 'amber'
+        ? 'text-amber-800 dark:text-amber-300'
+        : tone === 'primary'
+          ? 'text-foreground'
+          : 'text-foreground';
+  const labelTone =
+    tone === 'primary'
+      ? 'text-primary'
+      : tone === 'amber'
+        ? 'text-amber-700 dark:text-amber-400'
+        : 'text-muted-foreground';
 
-                <Area type="monotone" dataKey="plannedCumulative" stroke="#2563eb" strokeWidth={2.5} strokeDasharray="4 4" fill="url(#plannedGrad)" fillOpacity={1} name="plannedCumulative" />
-                <Area type="monotone" dataKey="actualCumulative" stroke="#10b981" strokeWidth={3} fill="url(#actualGrad)" fillOpacity={1} name="actualCumulative" />
-                <Line type="monotone" dataKey="forecastCumulative" stroke="#f59e0b" strokeWidth={2.5} strokeDasharray="3 3" dot={{ r: 3 }} name="forecastCumulative" />
-              </AreaChart>
-            ) : (
-              <AreaChart data={filteredData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="monthlyGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.25} />
-                    <stop offset="95%" stopColor="#f59e0b" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E2E8F0" />
-                <XAxis dataKey="month" tick={{ fontSize: 11, fontWeight: 600 }} />
-                <YAxis tick={{ fontSize: 11, fontWeight: 600 }} unit=" L" />
-                <Tooltip
-                  formatter={(value: any, name: any) => [
-                    `₹${Number(value).toFixed(0)} Lakhs`,
-                    name === 'monthlyPlanned' ? 'Monthly Planned Outflow' : 'Monthly Actual Billed',
-                  ]}
-                  contentStyle={{ borderRadius: '12px', border: '1px solid #E2E8F0', fontSize: '12px', fontWeight: 'bold' }}
-                />
-                <Legend wrapperStyle={{ fontSize: '11px', fontWeight: 700, paddingTop: '10px' }} />
-                <Area type="monotone" dataKey="monthlyPlanned" stroke="#f59e0b" strokeWidth={2.5} fill="url(#monthlyGrad)" fillOpacity={1} name="Monthly Planned (Lakhs)" />
-                <Line type="monotone" dataKey="monthlyActual" stroke="#10b981" strokeWidth={3} dot={{ r: 4 }} name="Monthly Actual (Lakhs)" />
-              </AreaChart>
-            )}
-          </ResponsiveContainer>
-        </div>
-      </div>
-
-      {/* 4. DISBURSEMENT SCHEDULE & MILESTONES TABLE */}
-      <div className="rounded-xl border border-border bg-card p-5 shadow-sm space-y-3">
-        <div className="flex items-center justify-between border-b border-border pb-3">
-          <div>
-            <h3 className="font-heading text-sm font-bold text-foreground flex items-center gap-2">
-              <Calendar className="h-4 w-4 text-emerald-600" />
-              Monthly Disbursement Schedule &amp; Major Milestones
-            </h3>
-            <p className="text-xs text-muted-foreground">Itemized month-by-month cash outflow schedule mapped to major site construction milestones</p>
-          </div>
-          <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-[10px] font-extrabold text-emerald-800 uppercase">
-            12-Month Schedule
-          </span>
-        </div>
-
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs whitespace-nowrap border-collapse">
-            <thead>
-              <tr className="border-b border-border bg-muted/60 text-[10px] font-bold uppercase tracking-wider text-muted-foreground select-none">
-                <th className="px-3.5 py-2.5 border-r border-border">Month</th>
-                <th className="px-4 py-2.5 text-right font-mono border-r border-border">Planned S-Curve (₹ Cr)</th>
-                <th className="px-4 py-2.5 text-right font-mono border-r border-border">Actual Billed (₹ Cr)</th>
-                <th className="px-4 py-2.5 text-right font-mono border-r border-border">Monthly Outflow (₹ L)</th>
-                <th className="px-4 py-2.5 min-w-[260px] border-r border-border">Major Construction Milestone</th>
-                <th className="px-3.5 py-2.5 text-center">Status</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border">
-              {filteredData.map((row, idx) => (
-                <tr key={idx} className="hover:bg-muted/30 transition-colors align-middle">
-                  <td className="px-3.5 py-2.5 font-bold text-foreground border-r border-border">{row.month}</td>
-                  <td className="px-4 py-2.5 text-right font-mono font-semibold text-blue-700 dark:text-blue-300 border-r border-border">
-                    ₹{row.plannedCumulative.toFixed(2)} Cr
-                  </td>
-                  <td className="px-4 py-2.5 text-right font-mono font-black border-r border-border">
-                    {row.actualCumulative !== null ? (
-                      <span className="text-emerald-700 dark:text-emerald-300">₹{row.actualCumulative.toFixed(2)} Cr</span>
-                    ) : (
-                      <span className="text-muted-foreground font-normal italic">Forecast ₹{row.forecastCumulative.toFixed(2)} Cr</span>
-                    )}
-                  </td>
-                  <td className="px-4 py-2.5 text-right font-mono font-bold text-foreground border-r border-border">
-                    ₹{row.monthlyPlanned} Lakhs
-                  </td>
-                  <td className="px-4 py-2.5 text-muted-foreground font-semibold border-r border-border">
-                    {row.milestones}
-                  </td>
-                  <td className="px-3.5 py-2.5 text-center">
-                    <span className={`inline-flex rounded-full px-2.5 py-0.5 text-[10px] font-extrabold uppercase ${
-                      row.actualCumulative !== null
-                        ? 'bg-emerald-100 text-emerald-800'
-                        : 'bg-amber-100 text-amber-800'
-                    }`}>
-                      {row.actualCumulative !== null ? 'Verified' : 'Projected'}
-                    </span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
+  return (
+    <div className="rounded-xl border border-border bg-card p-4 shadow-2xs">
+      <p className={`text-[11px] font-extrabold uppercase tracking-wider ${labelTone}`}>{label}</p>
+      <p className={`mt-1 font-mono text-xl font-black ${valueTone}`}>{value}</p>
+      <p className="mt-0.5 text-xs text-muted-foreground">{detail}</p>
     </div>
   );
 }

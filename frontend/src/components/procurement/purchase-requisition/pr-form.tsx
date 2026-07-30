@@ -179,7 +179,6 @@ function SearchableApprovedMrDropdown({
 }
 
 import VarianceResolutionDrawer from '@/components/budget/variance-resolution-drawer';
-import type { MasterBudgetItem } from '@/lib/budget';
 
 export function PrForm(props: PrFormProps) {
   const { form, update, sourceChips, approvedMrs, onSelectMrFromDropdown, onOpenAddMr, onRemoveMr, budgetSnapshot, projectOptions } = props;
@@ -196,18 +195,27 @@ export function PrForm(props: PrFormProps) {
   const validation = useMemo(() => validatePrForm(form, isOverBudget), [form, isOverBudget]);
   const readOnly = Boolean(props.readOnly);
 
-  const sampleVarianceItem: MasterBudgetItem = {
-    id: 'pr-item-var',
-    srNo: 1,
-    category: form.activity_name || 'PR Scope Budget',
-    item: form.lines[0]?.item_description || 'PR Requested Items',
-    qtyTotal: form.lines[0]?.pr_quantity || 1,
-    unit: form.lines[0]?.unit || 'LS',
-    rate: form.lines[0]?.estimated_rate || 1000,
-    cost: summary.totalEstimatedCost,
-    costPerBua: Number((summary.totalEstimatedCost / 615000).toFixed(2)),
-    scopeTag: 'building_finishes',
-  };
+  // Real figures for the variance drawer. Previously this built a synthetic
+  // `sampleVarianceItem` whose "actual" rate was the estimate x 1.2 and whose
+  // cost/BUA divided by a hardcoded 615000 — a fabricated 20% overrun.
+  const varianceContext = useMemo(() => {
+    const firstLine = form.lines[0];
+    const requestedQuantity = form.lines.reduce((sum, line) => sum + (line.pr_quantity || 0), 0);
+    const requestedAmount = summary.totalEstimatedCost;
+    return {
+      scopeLabel:
+        form.lines.length > 1
+          ? `${form.lines.length} requested items (${firstLine?.item_description ?? 'PR scope'} + ${form.lines.length - 1} more)`
+          : (firstLine?.item_description ?? 'PR requested items'),
+      categoryLabel: form.activity_name || 'Purchase requisition scope',
+      unit: firstLine?.unit || 'LS',
+      availableBudget: Math.max(0, budgetSnapshot?.available ?? 0),
+      requestedAmount,
+      requestedQuantity: requestedQuantity || 1,
+      requestedRate:
+        requestedQuantity > 0 ? requestedAmount / requestedQuantity : (firstLine?.estimated_rate ?? 0),
+    };
+  }, [form.lines, form.activity_name, summary.totalEstimatedCost, budgetSnapshot?.available]);
 
   return (
     <>
@@ -518,21 +526,41 @@ export function PrForm(props: PrFormProps) {
         </div>
       </div>
 
+      {/* Mounted only while open: the drawer has no isOpen prop, so its hooks can
+          never change order between renders (that was the original crash). */}
+      {isVarianceDrawerOpen && (
       <VarianceResolutionDrawer
-        isOpen={isVarianceDrawerOpen}
         onClose={() => setIsVarianceDrawerOpen(false)}
-        item={sampleVarianceItem}
-        actualRate={sampleVarianceItem.rate * 1.2}
-        actualQuantity={sampleVarianceItem.qtyTotal}
+        scopeLabel={varianceContext.scopeLabel}
+        categoryLabel={varianceContext.categoryLabel}
+        unit={varianceContext.unit}
+        availableBudget={varianceContext.availableBudget}
+        requestedAmount={varianceContext.requestedAmount}
+        requestedQuantity={varianceContext.requestedQuantity}
+        requestedRate={varianceContext.requestedRate}
         onSelectAction={(action, details) => {
+          // The resolution is captured on the PR itself, so it travels with the
+          // document through approval instead of only firing an alert().
           if (action === 'revise_budget') {
-            update({ over_budget_justification: details.remarks || 'Budget revision requested' });
-          } else if (action === 'update_quantity' && details.newQuantity) {
-            update({ general_remarks: `Adjusted quantity to ${details.newQuantity} ${sampleVarianceItem.unit}` });
+            update({
+              over_budget_justification:
+                details.remarks || 'Budget revision requested for over-budget PR.',
+            });
+          } else if (action === 'update_quantity' && details.newQuantity !== undefined) {
+            update({
+              general_remarks: [form.general_remarks, details.remarks].filter(Boolean).join(' '),
+              over_budget_justification:
+                details.remarks || `Quantity reduced to ${details.newQuantity} ${varianceContext.unit}.`,
+            });
+          } else {
+            update({
+              general_remarks: [form.general_remarks, details.remarks].filter(Boolean).join(' '),
+              over_budget_justification: details.remarks || 'Value engineering / vendor change.',
+            });
           }
-          alert(`Selected resolution option: ${action.replaceAll('_', ' ')}.`);
         }}
       />
+      )}
     </>
   );
 }

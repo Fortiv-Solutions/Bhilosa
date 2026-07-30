@@ -55,10 +55,8 @@ import {
   recommendVendorSelection,
   reviewMaterialRequestInventory,
   issueMaterialFromStock,
-  trackDelivery,
   submitGrn,
   postGrnToInventory,
-  updateDeliveryTrackingStatus,
   updateFullPurchaseOrder,
   approvePurchaseOrder,
   rejectPurchaseOrder,
@@ -85,7 +83,6 @@ import { RFQWorkspace } from '@/components/procurement/rfq/rfq-workspace';
 import { RfqWorkbench } from '@/components/procurement/rfq-workbench';
 import MaterialRequestWorkQueue from '@/components/procurement/material-request-work-queue';
 import { PurchaseOrderWorkbench } from '@/components/procurement/purchase-order-workbench';
-import { DeliveryTrackingWorkbench } from '@/components/procurement/delivery-tracking-workbench';
 import { GrnWorkbench } from '@/components/procurement/grn-workbench';
 import { InventoryWorkbench } from '@/components/procurement/inventory-workbench';
 import { POWorkspace } from '@/components/procurement/po/po-workspace';
@@ -116,7 +113,6 @@ const emptyData: ProcurementDashboardData = {
   inventorySnapshots: [],
   vendors: [],
   prAttachments: [],
-  deliveryTrackings: [],
 };
 
 export interface ProcurementModuleProps {
@@ -133,12 +129,6 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState(initialProjectId || 'all');
-  const [mrTitle, setMrTitle] = useState('Cement and steel requirement for upcoming slab');
-  const [mrItem, setMrItem] = useState('OPC Cement');
-  const [mrQuantity, setMrQuantity] = useState(500);
-  const [mrRate, setMrRate] = useState(380);
-  const [mrSiteId, setMrSiteId] = useState('');
-  const [mrAttachments, setMrAttachments] = useState<File[]>([]);
 
   // PR Generation Modal State
   const [prModalOpen, setPrModalOpen] = useState(false);
@@ -323,41 +313,7 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
 
   const canApprove = activeRole === 'UPPER_MANAGEMENT' || activeRole === 'PROJECT_MANAGER';
 
-  async function handleCreateMr(event: FormEvent) {
-    event.preventDefault();
-    setError(null);
-    setMessage(null);
 
-    if (!selectedProject || selectedProjectId === 'all') {
-      setError('Please select a project to raise a material request.');
-      return;
-    }
-
-    try {
-      await createMaterialRequest({
-        projectId: selectedProject.id,
-        siteId: mrSiteId || undefined,
-        title: mrTitle,
-        priority: 'high',
-        requiredDate: new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0],
-        lines: [
-          {
-            itemDescription: mrItem,
-            quantity: Number(mrQuantity),
-            estimatedRate: Number(mrRate),
-          },
-        ],
-        attachments: mrAttachments,
-      });
-
-      setMessage(`Material Request created successfully.`);
-      setMrTitle('Cement and steel requirement for upcoming slab');
-      setMrAttachments([]);
-      await refresh();
-    } catch (mrError) {
-      setError(mrError instanceof Error ? mrError.message : 'Failed to create material request.');
-    }
-  }
 
   async function handleReviewMr(mr: MaterialRequestRow) {
     setError(null);
@@ -884,46 +840,19 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
 
       {/* Tab Panels */}
       {activeTab === 'requests' && (
-        <div className="space-y-6">
-          <Panel title="Raise Material Request (Site Engineer)" icon={ClipboardList}>
-            <form onSubmit={handleCreateMr} className="space-y-4">
-              <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
-                <div className="space-y-1 md:col-span-2">
-                  <label className="text-xs font-bold text-foreground">Justification / Purpose</label>
-                  <input type="text" required value={mrTitle} onChange={(e) => setMrTitle(e.target.value)} className="w-full rounded-md border border-border bg-card p-2 text-sm text-foreground outline-none" />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-bold text-foreground">Material Item</label>
-                  <input type="text" required value={mrItem} onChange={(e) => setMrItem(e.target.value)} className="w-full rounded-md border border-border bg-card p-2 text-sm text-foreground outline-none" />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-bold text-foreground">Quantity Required</label>
-                  <input type="number" required min="1" value={mrQuantity} onChange={(e) => setMrQuantity(Number(e.target.value))} className="w-full rounded-md border border-border bg-card p-2 text-sm text-foreground outline-none" />
-                </div>
-              </div>
-              <div className="flex justify-between items-center pt-2">
-                <input type="file" multiple onChange={(e) => setMrAttachments(Array.from(e.target.files || []))} className="text-xs file:mr-2 file:py-1 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-muted file:text-foreground hover:file:bg-muted/80" />
-                <button type="submit" className="rounded-md bg-primary px-4 py-2 text-sm font-bold text-primary-foreground hover:bg-primary/90">
-                  Submit Material Request
-                </button>
-              </div>
-            </form>
-          </Panel>
-
-          <MaterialRequestWorkQueue
-            materialRequests={data.materialRequests}
-            purchaseRequisitions={data.purchaseRequisitions}
-            inventorySnapshots={data.inventorySnapshots}
-            projectOptions={projectOptions as any}
-            lockedProjectId={selectedProjectId !== 'all' ? selectedProjectId : undefined}
-            activeRole={(activeRole as any) || 'PROJECT_MANAGER'}
-            onConvertToPr={handleConvertMr}
-            onPrintMr={printMaterialRequestReport}
-            onRefresh={refresh}
-            onMessage={setMessage}
-            onError={setError}
-          />
-        </div>
+        <MaterialRequestWorkQueue
+          materialRequests={data.materialRequests}
+          purchaseRequisitions={data.purchaseRequisitions}
+          inventorySnapshots={data.inventorySnapshots}
+          projectOptions={projectOptions as any}
+          lockedProjectId={selectedProjectId !== 'all' ? selectedProjectId : undefined}
+          activeRole={(activeRole as any) || 'PROJECT_MANAGER'}
+          onConvertToPr={handleConvertMr}
+          onPrintMr={printMaterialRequestReport}
+          onRefresh={refresh}
+          onMessage={setMessage}
+          onError={setError}
+        />
       )}
 
       {activeTab === 'requisitions' && (

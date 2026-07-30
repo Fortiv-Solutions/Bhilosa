@@ -171,13 +171,19 @@ export const useAppStore = create<AppState>((set) => ({
   vendorPayments: [],
   vendorPerformances: [],
 
+  // Resolves the signed-in identity from the live Supabase session.
+  //
+  // No session => isLoggedIn: false. Previously both the "no profile" branch and the
+  // catch block set `isLoggedIn: true, activeRole: 'UPPER_MANAGEMENT'`, so any visitor
+  // was silently granted full upper-management access to every module without signing
+  // in. That also made a login page unreachable by design.
   checkLogin: async () => {
     try {
       const profile = await getSessionProfile();
       if (!profile) {
         set({
-          isLoggedIn: true,
-          activeRole: 'UPPER_MANAGEMENT',
+          isLoggedIn: false,
+          activeRole: 'PROJECT_MANAGER',
           currentUser: DEFAULT_USER,
         });
         return;
@@ -197,9 +203,10 @@ export const useAppStore = create<AppState>((set) => ({
         },
       });
     } catch {
+      // A failed session lookup must fail closed, never open.
       set({
-        isLoggedIn: true,
-        activeRole: 'UPPER_MANAGEMENT',
+        isLoggedIn: false,
+        activeRole: 'PROJECT_MANAGER',
         currentUser: DEFAULT_USER,
       });
     }

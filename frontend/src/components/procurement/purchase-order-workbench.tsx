@@ -2,8 +2,7 @@ import React, { useState } from 'react';
 import { 
   PurchaseOrderRow, 
   PurchaseRequisitionRow, 
-  VendorSelectionRow,
-  DeliveryTrackingRow 
+  VendorSelectionRow
 } from '@/lib/procurement';
 import { formatCurrency, StatusBadge, EmptyState } from './shared';
 import { 
@@ -13,7 +12,6 @@ import {
   Send, 
   FileDown, 
   Eye, 
-  Truck, 
   AlertTriangle 
 } from 'lucide-react';
 
@@ -38,7 +36,6 @@ export function PurchaseOrderWorkbench({
   onAcknowledgePo,
   onPdf,
   onOpenPdf,
-  onTrackDelivery,
   canApprove,
 }: {
   purchaseOrders: PurchaseOrderRow[];
@@ -52,7 +49,6 @@ export function PurchaseOrderWorkbench({
   onAcknowledgePo: (po: PurchaseOrderRow) => void;
   onPdf: (po: PurchaseOrderRow) => void;
   onOpenPdf: (po: PurchaseOrderRow) => void;
-  onTrackDelivery: (po: PurchaseOrderRow) => void;
   canApprove: boolean;
 }) {
   const [rejectReason, setRejectReason] = useState('');
@@ -225,15 +221,6 @@ export function PurchaseOrderWorkbench({
                   className="rounded-md border border-border bg-card px-6 py-2.5 text-sm font-bold hover:bg-muted"
                 >
                   Mark as Acknowledged
-                </button>
-              )}
-              {((selectedPo.status as string) === 'sent_to_vendor' || (selectedPo.status as string) === 'acknowledged') && (
-                <button 
-                  onClick={() => onTrackDelivery(selectedPo)}
-                  className="rounded-md bg-indigo-600 px-6 py-2.5 text-sm font-bold text-white hover:bg-indigo-700 flex items-center gap-2"
-                >
-                  <Truck className="w-4 h-4" />
-                  Start Delivery Tracking
                 </button>
               )}
             </div>

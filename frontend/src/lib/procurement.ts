@@ -467,19 +467,6 @@ export type EntityAttachmentRow = {
   size_bytes: number;
 };
 
-export type DeliveryTrackingRow = {
-  id: string;
-  purchase_order_id: string;
-  vendor_id: string;
-  expected_delivery_date: string;
-  actual_delivery_date?: string | null;
-  status: string;
-  transit_status?: string | null;
-  delay_reason?: string | null;
-  vehicle_number?: string | null;
-  purchase_orders?: { po_number: string, vendor_id: string } | null;
-};
-
 export type ProcurementDashboardData = {
   materialRequests: MaterialRequestRow[];
   purchaseRequisitions: PurchaseRequisitionRow[];
@@ -492,7 +479,6 @@ export type ProcurementDashboardData = {
   inventorySnapshots: InventorySnapshotRow[];
   vendors: VendorRow[];
   prAttachments: EntityAttachmentRow[];
-  deliveryTrackings: DeliveryTrackingRow[];
 };
 
 export type ProcurementProjectOption = {
@@ -590,7 +576,6 @@ export async function listProcurementDashboard(projectId?: string): Promise<Proc
     inventorySnapshots,
     vendors,
     prAttachments,
-    deliveryTrackings,
   ] = await Promise.all([
     projectFilter(
       supabase
@@ -670,13 +655,6 @@ export async function listProcurementDashboard(projectId?: string): Promise<Proc
         .order('created_at', { ascending: false })
         .limit(100),
     ),
-    projectFilter(
-      supabase
-        .from('delivery_trackings')
-        .select('*, purchase_orders(po_number, vendor_id)')
-        .order('created_at', { ascending: false })
-        .limit(50),
-    ),
   ]);
 
   // Only the core MR/PR queries are fatal — a genuine auth/RLS failure there must surface.
@@ -689,7 +667,7 @@ export async function listProcurementDashboard(projectId?: string): Promise<Proc
     ['rfqs', rfqs], ['quotations', quotations], ['vendorSelections', vendorSelections],
     ['purchaseOrders', purchaseOrders], ['grns', grns], ['vendorBills', vendorBills],
     ['inventorySnapshots', inventorySnapshots], ['vendors', vendors],
-    ['prAttachments', prAttachments], ['deliveryTrackings', deliveryTrackings],
+    ['prAttachments', prAttachments],
   ];
   for (const [name, response] of optional) {
     if (response.error) console.warn(`[procurement] optional dashboard query "${name}" failed: ${response.error.message}`);
@@ -707,7 +685,6 @@ export async function listProcurementDashboard(projectId?: string): Promise<Proc
     inventorySnapshots: (inventorySnapshots.data ?? []) as InventorySnapshotRow[],
     vendors: (vendors.data ?? []) as VendorRow[],
     prAttachments: (prAttachments.data ?? []) as EntityAttachmentRow[],
-    deliveryTrackings: (deliveryTrackings.data ?? []) as DeliveryTrackingRow[],
   };
 }
 
@@ -2030,26 +2007,7 @@ export async function approveAndSendPurchaseOrder(po: PurchaseOrderRow): Promise
   }
 }
 
-export async function trackDelivery(po: PurchaseOrderRow): Promise<MutationResult> {
-  try {
-    const profileId = await currentProfileId();
-    const { error } = await supabase.from('delivery_trackings').insert({
-      project_id: po.project_id,
-      purchase_order_id: po.id,
-      dispatch_date: today(),
-      expected_arrival_date: po.delivery_date,
-      transit_status: 'dispatched',
-      alert_message: 'Delivery tracking started.',
-      documents: ['Invoice', 'Delivery Challan'],
-      created_by: profileId,
-      updated_by: profileId,
-    });
-    if (error) throw new Error(error.message);
-    return { data: null, error: null };
-  } catch (error) {
-    return { data: null, error: asError(error) };
-  }
-}
+
 
 export async function createGrnFromPo(po: PurchaseOrderRow): Promise<MutationResult<{ grnId: string }>> {
   try {
@@ -2956,34 +2914,7 @@ export async function updatePurchaseOrderStatus(poId: string, status: string): P
   }
 }
 
-export type UpdateDeliveryTrackingStatusInput = {
-  id: string;
-  status: string;
-  reason?: string;
-  vehicleNumber?: string;
-};
 
-export async function updateDeliveryTrackingStatus(input: UpdateDeliveryTrackingStatusInput): Promise<MutationResult> {
-  try {
-    const profileId = await currentProfileId();
-    if (!profileId) throw new Error('Authentication required');
-
-    const payload: Record<string, unknown> = {
-      transit_status: input.status,
-      updated_by: profileId,
-      updated_at: new Date().toISOString()
-    };
-    if (input.reason) payload.alert_message = input.reason;
-    if (input.vehicleNumber) payload.tracking_reference = input.vehicleNumber;
-
-    const { error } = await supabase.from('delivery_trackings').update(payload).eq('id', input.id);
-    if (error) throw new Error(error.message);
-
-    return { data: null, error: null };
-  } catch (error) {
-    return { data: null, error: asError(error) };
-  }
-}
 
 export type CreateGrnInput = {
   purchaseOrderId: string;

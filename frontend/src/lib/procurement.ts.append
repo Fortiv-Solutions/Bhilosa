@@ -1,32 +1,3 @@
-export type UpdateDeliveryTrackingStatusInput = {
-  id: string;
-  status: string;
-  reason?: string;
-  vehicleNumber?: string;
-};
-
-export async function updateDeliveryTrackingStatus(input: UpdateDeliveryTrackingStatusInput): Promise<MutationResult> {
-  try {
-    const profileId = await currentProfileId();
-    if (!profileId) throw new Error('Authentication required');
-
-    const payload: any = {
-      status: input.status,
-      updated_by: profileId,
-      updated_at: new Date().toISOString()
-    };
-    if (input.reason) payload.delay_reason = input.reason;
-    if (input.vehicleNumber) payload.vehicle_number = input.vehicleNumber;
-
-    const { error } = await supabase.from('delivery_trackings').update(payload).eq('id', input.id);
-    if (error) throw new Error(error.message);
-
-    return { data: null, error: null };
-  } catch (error) {
-    return { data: null, error: asError(error) };
-  }
-}
-
 export type CreateGrnInput = {
   purchaseOrderId: string;
   receiptDate: string;

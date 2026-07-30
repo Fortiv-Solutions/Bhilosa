@@ -42,6 +42,7 @@ CREATE TABLE public.projects (
   deleted_at timestamp with time zone,
   organization_id uuid,
   completed_at timestamp with time zone,
+  bua_sqft numeric DEFAULT 615000,
   CONSTRAINT projects_pkey PRIMARY KEY (id),
   CONSTRAINT projects_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.profiles(id),
   CONSTRAINT projects_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.profiles(id),
@@ -78,10 +79,18 @@ CREATE TABLE public.tasks (
   completed_at timestamp with time zone,
   deleted_at timestamp with time zone,
   description text,
+  title text,
+  assigned_to uuid,
+  assigned_name text,
+  due_date date,
+  priority text DEFAULT 'MEDIUM'::text,
+  status text DEFAULT 'TODO'::text,
+  location_block text,
   CONSTRAINT tasks_pkey PRIMARY KEY (id),
   CONSTRAINT tasks_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.projects(id),
   CONSTRAINT tasks_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.profiles(id),
   CONSTRAINT tasks_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.profiles(id),
+  CONSTRAINT tasks_assigned_to_fkey FOREIGN KEY (assigned_to) REFERENCES public.profiles(id),
   CONSTRAINT tasks_activity_id_fkey FOREIGN KEY (activity_id) REFERENCES public.construction_activities(id),
   CONSTRAINT tasks_work_order_id_fkey FOREIGN KEY (work_order_id) REFERENCES public.work_orders(id)
 );
@@ -446,12 +455,20 @@ CREATE TABLE public.budget_allocations (
   created_by uuid,
   updated_by uuid,
   deleted_at timestamp with time zone,
+  category_id uuid,
+  master_budget_item_id uuid,
+  advance_amount numeric NOT NULL DEFAULT 0 CHECK (advance_amount >= 0::numeric),
+  retention_held numeric NOT NULL DEFAULT 0 CHECK (retention_held >= 0::numeric),
+  financial_year text,
+  is_auto_provisioned boolean NOT NULL DEFAULT false,
   CONSTRAINT budget_allocations_pkey PRIMARY KEY (id),
   CONSTRAINT budget_allocations_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.projects(id),
   CONSTRAINT budget_allocations_site_id_fkey FOREIGN KEY (site_id) REFERENCES public.project_sites(id),
   CONSTRAINT budget_allocations_budget_head_id_fkey FOREIGN KEY (budget_head_id) REFERENCES public.budget_heads(id),
   CONSTRAINT budget_allocations_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.profiles(id),
   CONSTRAINT budget_allocations_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.profiles(id),
+  CONSTRAINT budget_allocations_category_id_fkey FOREIGN KEY (category_id) REFERENCES public.budget_categories(id),
+  CONSTRAINT budget_allocations_master_budget_item_id_fkey FOREIGN KEY (master_budget_item_id) REFERENCES public.master_budget_items(id),
   CONSTRAINT budget_allocations_activity_id_fkey FOREIGN KEY (activity_id) REFERENCES public.construction_activities(id),
   CONSTRAINT budget_allocations_vendor_id_fkey FOREIGN KEY (vendor_id) REFERENCES public.vendors(id)
 );
@@ -467,10 +484,13 @@ CREATE TABLE public.budget_ledger (
   posted_at timestamp with time zone NOT NULL DEFAULT now(),
   created_at timestamp with time zone NOT NULL DEFAULT now(),
   created_by uuid,
+  financial_year text,
+  category_id uuid,
   CONSTRAINT budget_ledger_pkey PRIMARY KEY (id),
   CONSTRAINT budget_ledger_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.projects(id),
   CONSTRAINT budget_ledger_budget_allocation_id_fkey FOREIGN KEY (budget_allocation_id) REFERENCES public.budget_allocations(id),
-  CONSTRAINT budget_ledger_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.profiles(id)
+  CONSTRAINT budget_ledger_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.profiles(id),
+  CONSTRAINT budget_ledger_category_id_fkey FOREIGN KEY (category_id) REFERENCES public.budget_categories(id)
 );
 CREATE TABLE public.budget_alerts (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -487,6 +507,7 @@ CREATE TABLE public.budget_alerts (
   updated_at timestamp with time zone NOT NULL DEFAULT now(),
   created_by uuid,
   updated_by uuid,
+  severity text NOT NULL DEFAULT 'warning'::text CHECK (severity = ANY (ARRAY['info'::text, 'warning'::text, 'critical'::text, 'overrun'::text])),
   CONSTRAINT budget_alerts_pkey PRIMARY KEY (id),
   CONSTRAINT budget_alerts_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.projects(id),
   CONSTRAINT budget_alerts_budget_allocation_id_fkey FOREIGN KEY (budget_allocation_id) REFERENCES public.budget_allocations(id),
@@ -1613,6 +1634,12 @@ CREATE TABLE public.vendor_bills (
   match_status text,
   match_remarks text,
   master_budget_item_id uuid,
+  retention_percent numeric NOT NULL DEFAULT 0 CHECK (retention_percent >= 0::numeric AND retention_percent <= 100::numeric),
+  retention_amount numeric NOT NULL DEFAULT 0 CHECK (retention_amount >= 0::numeric),
+  advance_adjusted numeric NOT NULL DEFAULT 0 CHECK (advance_adjusted >= 0::numeric),
+  other_deductions numeric NOT NULL DEFAULT 0 CHECK (other_deductions >= 0::numeric),
+  net_payable_amount numeric NOT NULL DEFAULT 0,
+  ledger_remarks text,
   CONSTRAINT vendor_bills_pkey PRIMARY KEY (id),
   CONSTRAINT vendor_bills_master_budget_item_id_fkey FOREIGN KEY (master_budget_item_id) REFERENCES public.master_budget_items(id),
   CONSTRAINT vendor_bills_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.projects(id),
@@ -1859,7 +1886,7 @@ CREATE TABLE public.master_budget_items (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   project_id uuid NOT NULL,
   budget_head_id uuid,
-  category_name text NOT NULL,
+  category_name text,
   sr_no text NOT NULL,
   item_description text NOT NULL,
   qty_rcc numeric DEFAULT 0 CHECK (qty_rcc >= 0::numeric),
@@ -1876,11 +1903,17 @@ CREATE TABLE public.master_budget_items (
   updated_at timestamp with time zone NOT NULL DEFAULT now(),
   created_by uuid,
   updated_by uuid,
+  category_id uuid,
+  scope_tag text DEFAULT 'site_infra'::text CHECK (scope_tag = ANY (ARRAY['building_rcc'::text, 'building_finishes'::text, 'site_infra'::text])),
+  item_type text DEFAULT 'material'::text CHECK (item_type = ANY (ARRAY['material'::text, 'labour'::text, 'service'::text, 'equipment'::text, 'subcontract'::text, 'mixed'::text])),
+  sort_order integer NOT NULL DEFAULT 0,
+  deleted_at timestamp with time zone,
   CONSTRAINT master_budget_items_pkey PRIMARY KEY (id),
   CONSTRAINT master_budget_items_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.projects(id),
   CONSTRAINT master_budget_items_budget_head_id_fkey FOREIGN KEY (budget_head_id) REFERENCES public.budget_heads(id),
   CONSTRAINT master_budget_items_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.profiles(id),
-  CONSTRAINT master_budget_items_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.profiles(id)
+  CONSTRAINT master_budget_items_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.profiles(id),
+  CONSTRAINT master_budget_items_category_id_fkey FOREIGN KEY (category_id) REFERENCES public.budget_categories(id)
 );
 CREATE TABLE public.budget_revisions (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -1894,9 +1927,14 @@ CREATE TABLE public.budget_revisions (
   edited_by uuid,
   edited_by_name text NOT NULL DEFAULT 'Pramukh ERP User'::text,
   created_at timestamp with time zone NOT NULL DEFAULT now(),
+  status text NOT NULL DEFAULT 'approved'::text CHECK (status = ANY (ARRAY['draft'::text, 'submitted'::text, 'approved'::text, 'rejected'::text])),
+  approved_by uuid,
+  approved_at timestamp with time zone,
+  scope text NOT NULL DEFAULT 'master_budget'::text CHECK (scope = ANY (ARRAY['master_budget'::text, 'variance_reconciliation'::text, 'excel_import'::text])),
   CONSTRAINT budget_revisions_pkey PRIMARY KEY (id),
   CONSTRAINT budget_revisions_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.projects(id),
-  CONSTRAINT budget_revisions_edited_by_fkey FOREIGN KEY (edited_by) REFERENCES public.profiles(id)
+  CONSTRAINT budget_revisions_edited_by_fkey FOREIGN KEY (edited_by) REFERENCES public.profiles(id),
+  CONSTRAINT budget_revisions_approved_by_fkey FOREIGN KEY (approved_by) REFERENCES public.profiles(id)
 );
 CREATE TABLE public.budget_revision_items (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -1941,8 +1979,42 @@ CREATE TABLE public.budget_variance_items (
   remark text,
   updated_at timestamp with time zone NOT NULL DEFAULT now(),
   updated_by uuid,
+  category_id uuid,
   CONSTRAINT budget_variance_items_pkey PRIMARY KEY (id),
   CONSTRAINT budget_variance_items_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.projects(id),
   CONSTRAINT budget_variance_items_master_budget_item_id_fkey FOREIGN KEY (master_budget_item_id) REFERENCES public.master_budget_items(id),
-  CONSTRAINT budget_variance_items_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.profiles(id)
+  CONSTRAINT budget_variance_items_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.profiles(id),
+  CONSTRAINT budget_variance_items_category_id_fkey FOREIGN KEY (category_id) REFERENCES public.budget_categories(id)
+);
+CREATE TABLE public.budget_categories (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  project_id uuid NOT NULL,
+  category_name text NOT NULL,
+  category_code text,
+  sort_order integer NOT NULL DEFAULT 0,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  is_active boolean NOT NULL DEFAULT true,
+  deleted_at timestamp with time zone,
+  CONSTRAINT budget_categories_pkey PRIMARY KEY (id),
+  CONSTRAINT budget_categories_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.projects(id)
+);
+CREATE TABLE public.budget_config (
+  project_id uuid NOT NULL,
+  caution_threshold_percent numeric NOT NULL DEFAULT 50,
+  warning_threshold_percent numeric NOT NULL DEFAULT 75,
+  critical_threshold_percent numeric NOT NULL DEFAULT 90,
+  hard_limit_percent numeric NOT NULL DEFAULT 100,
+  hard_limit_enforcement text NOT NULL DEFAULT 'block'::text CHECK (hard_limit_enforcement = ANY (ARRAY['block'::text, 'warn_only'::text])),
+  require_justification_over_budget boolean NOT NULL DEFAULT true,
+  current_fy text NOT NULL DEFAULT '2026-27'::text,
+  budget_lock_enabled boolean NOT NULL DEFAULT false,
+  default_retention_percent numeric NOT NULL DEFAULT 5 CHECK (default_retention_percent >= 0::numeric AND default_retention_percent <= 100::numeric),
+  default_gst_percent numeric NOT NULL DEFAULT 18 CHECK (default_gst_percent >= 0::numeric AND default_gst_percent <= 100::numeric),
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_by uuid,
+  CONSTRAINT budget_config_pkey PRIMARY KEY (project_id),
+  CONSTRAINT budget_config_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.projects(id),
+  CONSTRAINT budget_config_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.profiles(id)
 );

@@ -1,942 +1,822 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
-import { Search, Filter, FileSpreadsheet, Upload, Download, CheckCircle2, Clock, AlertTriangle, ShieldCheck, Database, Calendar, Layers, ArrowUpRight, Edit3, Save, RotateCcw, Plus, Trash2, X } from 'lucide-react';
-import { subscribeToBudgetRealtimeChanges, CENTRAL_PARK_PROJECT_ID, supabase } from '@/lib/supabase-budget';
-import ExcelImporterModal from './excel-importer-modal';
+// ============================================================================
+// PRAMUKH GROUP ERP V2 — BILL-WISE CONSTRUCTION LEDGER
+// File: frontend/src/components/budget/bill-wise-ledger-tab.tsx
+//
+// Fully rebuilt on live Supabase data (budget_bill_ledger_view), project-wise.
+//
+// What was wrong before:
+//   * SAMPLE_BILL_WISE_LEDGER_ROWS — three hardcoded bills (UltraTech / Keller /
+//     Shree Ram) held as initial state. budget_ledger is empty, so `data.length > 0`
+//     was never true and those three fake rows were what every user saw.
+//   * The mapper read columns that do not exist on budget_ledger (category_name,
+//     vendor_name, gross_bill_amount, retention_deduction, net_payable_amount,
+//     payment_status...). Even with data, every field fell back to a literal.
+//   * runningAvailableBudget was `1453638820 - net` — the project total hardcoded.
+//   * Add / Delete / Save were pure React state. Nothing was ever written, yet the
+//     UI announced "saved to Backend Database!".
+//   * The component took no props and was pinned to CENTRAL_PARK_PROJECT_ID, so
+//     the page's project selector did not filter it.
+//   * "Import Excel" opened the master-budget importer and alerted a false
+//     "synced to Backend Database successfully!".
+//
+// Now: reads the project-scoped view, filters server-side, persists the genuinely
+// editable settlement fields to vendor_bills, and exports CSV.
+// ============================================================================
 
-export interface BillWiseLedgerRow {
-  id: string;
-  headActivity: string;
-  subActivityLedger: string;
-  costCode: string;
-  supplierName: string;
-  accountingDate: string;
-  billDateOfSupplier: string;
-  billNo: string;
-  billNoOfSupplier: string;
-  remarks: string;
-  itemGroup: string;
-  itemDesc: string;
-  unit: string;
-  receivedQty: number;
-  finalBillRate: number;
-  billItemAmt: number;
-  gstRate: number;
-  retentionDeduction: number;
-  finalBillAmount: number;
-  advancePayment: number;
-  expectedPayment: number;
-  jvPayment: number;
-  poWoNo: string;
-  poWoRate: number;
-  noteOnPo: string;
-  prNo: string;
-  lineRemarks: string;
-  paymentStatus: 'Paid' | 'Partially Paid' | 'Pending Approval' | 'On Hold';
-  runningAvailableBudget: number;
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Download,
+  Edit3,
+  FileSpreadsheet,
+  Info,
+  Loader2,
+  RotateCcw,
+  Save,
+  Search,
+} from 'lucide-react';
+import {
+  BudgetDataError,
+  downloadCsv,
+  fetchBillLedger,
+  toCsv,
+  updateBillLedgerEntry,
+  type BillLedgerFilters,
+  type BillLedgerRow,
+} from '@/lib/supabase-budget';
+import type { BudgetPermissions } from '@/lib/budget-permissions';
+import { useBudgetData } from './budget-data-context';
+import { BudgetAuthRequired, BudgetEmpty, BudgetError, BudgetLoading } from './budget-states';
+
+/** Fields a user may actually change on a bill from the ledger. */
+interface LedgerEdit {
+  retention_percent?: number;
+  retention_amount?: number;
+  advance_adjusted?: number;
+  other_deductions?: number;
+  ledger_remarks?: string;
+  payment_status?: string;
 }
 
-const SAMPLE_BILL_WISE_LEDGER_ROWS: BillWiseLedgerRow[] = [
-  {
-    id: 'ledg-001',
-    headActivity: 'Civil and Misc Work',
-    subActivityLedger: 'Civil Labour Cost',
-    costCode: 'CIV-001',
-    supplierName: 'Shree Ram Construction Pvt Ltd',
-    accountingDate: '28-07-2026',
-    billDateOfSupplier: '25-07-2026',
-    billNo: 'ERP-BILL-2026-089',
-    billNoOfSupplier: 'SRC/26-27/RA-14',
-    remarks: 'RA Bill 14 Passed for Slab 12 Pour',
-    itemGroup: 'Labour Services',
-    itemDesc: 'RCC Labour work including shuttering, steel bending & concrete pouring',
-    unit: 'Sqft',
-    receivedQty: 15000,
-    finalBillRate: 826,
-    billItemAmt: 12390000,
-    gstRate: 18,
-    retentionDeduction: 619500, // 5% Retention
-    finalBillAmount: 14000700,
-    advancePayment: 2000000,
-    expectedPayment: 12000700,
-    jvPayment: 0,
-    poWoNo: 'WO-CP-001-CIV-004',
-    poWoRate: 826,
-    noteOnPo: '5% retention to be released after 6 months of RCC completion',
-    prNo: 'PR-2026-012',
-    lineRemarks: 'Verified against MB Book Page 45-52',
-    paymentStatus: 'Paid',
-    runningAvailableBudget: 171849300,
-  },
-  {
-    id: 'ledg-002',
-    headActivity: 'Civil Materials',
-    subActivityLedger: 'Cement-Flooring, Dado, Frame, Trimix & Water Proofing Work',
-    costCode: 'MAT-001',
-    supplierName: 'UltraTech Cement Limited',
-    accountingDate: '26-07-2026',
-    billDateOfSupplier: '24-07-2026',
-    billNo: 'ERP-BILL-2026-078',
-    billNoOfSupplier: 'UTC/GJ/98231',
-    remarks: '500 Bags PPC Cement Delivered to Site Store',
-    itemGroup: 'Civil Material',
-    itemDesc: 'UltraTech PPC Cement 50kg Bags Grade 53',
-    unit: 'Bags',
-    receivedQty: 500,
-    finalBillRate: 385,
-    billItemAmt: 192500,
-    gstRate: 28,
-    retentionDeduction: 0,
-    finalBillAmount: 246400,
-    advancePayment: 0,
-    expectedPayment: 246400,
-    jvPayment: 0,
-    poWoNo: 'PO-CP-001-MAT-019',
-    poWoRate: 385,
-    noteOnPo: 'Payment terms 15 days from GRN verification',
-    prNo: 'PR-2026-089',
-    lineRemarks: 'GRN #GRN-2026-441 attached',
-    paymentStatus: 'Pending Approval',
-    runningAvailableBudget: 4808715,
-  },
-  {
-    id: 'ledg-003',
-    headActivity: 'Excavation/Backfilling and D-Wall Works',
-    subActivityLedger: 'D-Wall ',
-    costCode: 'EXC-002',
-    supplierName: 'Keller Ground Engineering India',
-    accountingDate: '22-07-2026',
-    billDateOfSupplier: '20-07-2026',
-    billNo: 'ERP-BILL-2026-062',
-    billNoOfSupplier: 'KGE/RA-02/2026',
-    remarks: 'Diaphragm Wall Panel 1 to 15 Completion',
-    itemGroup: 'Substructure Works',
-    itemDesc: 'Constructing 600mm thick RCC Diaphragm Wall including trenching',
-    unit: 'Lum',
-    receivedQty: 1,
-    finalBillRate: 13500000,
-    billItemAmt: 13500000,
-    gstRate: 18,
-    retentionDeduction: 675000,
-    finalBillAmount: 15255000,
-    advancePayment: 3000000,
-    expectedPayment: 12255000,
-    jvPayment: 0,
-    poWoNo: 'WO-CP-001-SUB-001',
-    poWoRate: 13500000,
-    noteOnPo: 'Milestone 2 payment on bentonite slurry test approval',
-    prNo: 'PR-2026-004',
-    lineRemarks: 'Slurry test report verified by Structural Consultant',
-    paymentStatus: 'Partially Paid',
-    runningAvailableBudget: 2745000,
-  },
-];
+const PAYMENT_STATUSES = ['pending', 'approved', 'paid', 'failed', 'cancelled'] as const;
+const PAGE_STEP = 100;
 
-export default function BillWiseLedgerTab() {
-  const [ledgerRows, setLedgerRows] = useState<BillWiseLedgerRow[]>(SAMPLE_BILL_WISE_LEDGER_ROWS);
+function inr(value: number): string {
+  return `₹${Math.round(value).toLocaleString('en-IN')}`;
+}
+
+function dmy(value: string | null): string {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return date.toLocaleDateString('en-GB');
+}
+
+function statusPill(status: string): string {
+  switch (status) {
+    case 'paid':
+      return 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300';
+    case 'approved':
+      return 'bg-blue-100 text-blue-800 dark:bg-blue-950/40 dark:text-blue-300';
+    case 'pending':
+      return 'bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300';
+    default:
+      return 'bg-red-100 text-red-800 dark:bg-red-950/40 dark:text-red-300';
+  }
+}
+
+export default function BillWiseLedgerTab({ permissions }: { permissions: BudgetPermissions }) {
+  const { projectId, isPortfolio, categories, realtimeTick, needsAuth, setEditing } = useBudgetData();
+
+  const [rows, setRows] = useState<BillLedgerRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [savedMessage, setSavedMessage] = useState<string | null>(null);
+  const [visibleCount, setVisibleCount] = useState(PAGE_STEP);
+
+  // Filters are applied by Postgres, not in the browser.
+  const [searchInput, setSearchInput] = useState('');
+  const [search, setSearch] = useState('');
+  const [paymentStatus, setPaymentStatus] = useState('All');
+  const [categoryId, setCategoryId] = useState('All');
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
+
   const [isEditMode, setIsEditMode] = useState(false);
-  const [editedRowsMap, setEditedRowsMap] = useState<Record<string, BillWiseLedgerRow>>({});
-  const [searchQuery, setSearchQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState<string>('All');
-  const [showUploadModal, setShowUploadModal] = useState(false);
-  const [showUnsavedConfirmModal, setShowUnsavedConfirmModal] = useState(false);
-  const [savedMsg, setSavedMsg] = useState(false);
+  const [edits, setEdits] = useState<Record<string, LedgerEdit>>({});
 
-  // Live Supabase Sync Hook
+  // Debounce the search box so typing does not fire a query per keystroke.
   useEffect(() => {
-    async function loadLiveLedger() {
-      const { data, error } = await supabase
-        .from('budget_ledger')
-        .select('*')
-        .eq('project_id', CENTRAL_PARK_PROJECT_ID)
-        .order('created_at', { ascending: false });
+    const timer = setTimeout(() => setSearch(searchInput), 350);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
 
-      if (data && data.length > 0) {
-        setLedgerRows(data.map((r: any) => ({
-          id: r.id,
-          headActivity: r.category_name || 'Civil Works',
-          subActivityLedger: r.sub_activity || 'Contractor Work',
-          costCode: r.cost_code || 'CIV-001',
-          supplierName: r.vendor_name || 'Vendor',
-          accountingDate: new Date(r.created_at).toLocaleDateString('en-GB'),
-          billDateOfSupplier: new Date(r.created_at).toLocaleDateString('en-GB'),
-          billNo: r.bill_number || 'BILL-001',
-          billNoOfSupplier: r.bill_number || 'BILL-001',
-          remarks: r.remarks || 'Verified',
-          itemGroup: 'Civil Material',
-          itemDesc: r.sub_activity || 'Supply',
-          unit: 'LS',
-          receivedQty: 1,
-          finalBillRate: Number(r.gross_bill_amount || 0),
-          billItemAmt: Number(r.gross_bill_amount || 0),
-          gstRate: 18,
-          retentionDeduction: Number(r.retention_deduction || 0),
-          finalBillAmount: Number(r.net_payable_amount || 0),
-          advancePayment: Number(r.mob_advance_deduction || 0),
-          expectedPayment: Number(r.net_payable_amount || 0),
-          jvPayment: 0,
-          poWoNo: 'PO-CP-001',
-          poWoRate: Number(r.gross_bill_amount || 0),
-          noteOnPo: 'Verified against PO',
-          prNo: 'PR-CP-001',
-          lineRemarks: 'Verified',
-          paymentStatus: r.payment_status || 'Paid',
-          runningAvailableBudget: 1453638820 - Number(r.net_payable_amount || 0),
-        })));
-      }
+  const filters: BillLedgerFilters = useMemo(
+    () => ({
+      search: search || undefined,
+      paymentStatus,
+      categoryId,
+      fromDate: fromDate || undefined,
+      toDate: toDate || undefined,
+    }),
+    [search, paymentStatus, categoryId, fromDate, toDate],
+  );
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await fetchBillLedger(projectId, filters);
+      setRows(data);
+      setError(null);
+    } catch (err) {
+      const message =
+        err instanceof BudgetDataError || err instanceof Error
+          ? err.message
+          : 'Unexpected error loading the bill ledger.';
+      setError(message);
+      setRows([]);
+    } finally {
+      setLoading(false);
     }
+  }, [projectId, filters]);
 
-    loadLiveLedger();
+  useEffect(() => {
+    if (needsAuth) {
+      setLoading(false);
+      return;
+    }
+    // Do not reload underneath someone who is mid-edit.
+    if (isEditMode) return;
+    void load();
+  }, [load, needsAuth, realtimeTick, isEditMode]);
 
-    const unsubscribe = subscribeToBudgetRealtimeChanges(CENTRAL_PARK_PROJECT_ID, () => {
-      loadLiveLedger();
-    });
+  useEffect(() => {
+    setVisibleCount(PAGE_STEP);
+  }, [projectId, search, paymentStatus, categoryId, fromDate, toDate]);
 
-    return () => {
-      unsubscribe();
-    };
-  }, []);
+  const hasEdits = Object.keys(edits).length > 0;
 
-  // Handle cell editing in Edit Mode
-  function handleCellChange(rowId: string, field: keyof BillWiseLedgerRow, value: any) {
-    setEditedRowsMap((prev) => {
-      const targetRow = prev[rowId] || ledgerRows.find((r) => r.id === rowId)!;
-      const updatedRow = { ...targetRow, [field]: value };
+  function beginEdit() {
+    setIsEditMode(true);
+    setEditing(true);
+  }
 
-      // Auto-recalculate amounts
-      if (field === 'receivedQty' || field === 'finalBillRate' || field === 'gstRate' || field === 'retentionDeduction' || field === 'advancePayment') {
-        const qty = Number(updatedRow.receivedQty) || 0;
-        const rate = Number(updatedRow.finalBillRate) || 0;
-        const gst = Number(updatedRow.gstRate) || 0;
-        const retention = Number(updatedRow.retentionDeduction) || 0;
-        const advance = Number(updatedRow.advancePayment) || 0;
+  function cancelEdit() {
+    setIsEditMode(false);
+    setEditing(false);
+    setEdits({});
+  }
 
-        const billItemAmt = Math.round(qty * rate);
-        const gstAmt = Math.round((billItemAmt * gst) / 100);
-        const finalBillAmt = Math.round(billItemAmt + gstAmt - retention);
-        const expectedPay = Math.max(0, finalBillAmt - advance);
+  function patchRow(row: BillLedgerRow, field: keyof LedgerEdit, rawValue: string) {
+    setEdits((prev) => {
+      const current: LedgerEdit = { ...(prev[row.bill_id] ?? {}) };
 
-        updatedRow.billItemAmt = billItemAmt;
-        updatedRow.finalBillAmount = finalBillAmt;
-        updatedRow.expectedPayment = expectedPay;
+      if (field === 'ledger_remarks' || field === 'payment_status') {
+        current[field] = rawValue;
+      } else {
+        const parsed = Number(rawValue);
+        current[field] = Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
       }
 
-      return { ...prev, [rowId]: updatedRow };
+      // Keep retention_amount and retention_percent mutually consistent so the
+      // preview matches what the database trigger will recompute.
+      if (field === 'retention_percent') {
+        const pct = current.retention_percent ?? 0;
+        current.retention_amount = Math.round((row.bill_item_amt * pct) / 100);
+      }
+      if (field === 'retention_amount' && row.bill_item_amt > 0) {
+        const amt = current.retention_amount ?? 0;
+        current.retention_percent = Number(((amt / row.bill_item_amt) * 100).toFixed(2));
+      }
+
+      return { ...prev, [row.bill_id]: current };
     });
   }
 
-  const hasUnsavedEdits = isEditMode && Object.keys(editedRowsMap).length > 0;
+  /** Row with pending edits applied, so totals and previews stay truthful. */
+  const withEdits = useCallback(
+    (row: BillLedgerRow): BillLedgerRow => {
+      const edit = edits[row.bill_id];
+      if (!edit) return row;
 
-  function handleCancelAttempt() {
-    if (hasUnsavedEdits) {
-      setShowUnsavedConfirmModal(true);
-    } else {
-      handleCancelEdits();
+      const retention = edit.retention_amount ?? row.retention_deduction;
+      const advance = edit.advance_adjusted ?? row.advance_payment;
+      const other = edit.other_deductions ?? 0;
+      const finalAmount = Math.max(0, row.gross_bill_amount - retention - advance - other);
+
+      return {
+        ...row,
+        retention_percent: edit.retention_percent ?? row.retention_percent,
+        retention_deduction: retention,
+        advance_payment: advance,
+        final_bill_amount: finalAmount,
+        expected_payment: Math.max(0, finalAmount - row.jv_payment),
+        remarks: edit.ledger_remarks ?? row.remarks,
+        payment_status: edit.payment_status ?? row.payment_status,
+      };
+    },
+    [edits],
+  );
+
+  const displayRows = useMemo(() => rows.map(withEdits), [rows, withEdits]);
+  const visibleRows = useMemo(() => displayRows.slice(0, visibleCount), [displayRows, visibleCount]);
+
+  const kpis = useMemo(() => {
+    const gross = displayRows.reduce((s, r) => s + r.gross_bill_amount, 0);
+    const net = displayRows.reduce((s, r) => s + r.final_bill_amount, 0);
+    const retention = displayRows.reduce((s, r) => s + r.retention_deduction, 0);
+    const advances = displayRows.reduce((s, r) => s + r.advance_payment, 0);
+    const paid = displayRows.reduce((s, r) => s + r.jv_payment, 0);
+    const outstanding = displayRows.reduce((s, r) => s + r.expected_payment, 0);
+    const billCount = new Set(displayRows.map((r) => r.bill_id)).size;
+    return { gross, net, retention, advances, paid, outstanding, billCount };
+  }, [displayRows]);
+
+  async function handleSave() {
+    setSaving(true);
+    setError(null);
+    try {
+      const entries = Object.entries(edits);
+      const results = await Promise.allSettled(
+        entries.map(([billId, patch]) => updateBillLedgerEntry(billId, patch)),
+      );
+
+      const failures = results.filter((r) => r.status === 'rejected');
+      if (failures.length > 0) {
+        const first = failures[0] as PromiseRejectedResult;
+        throw new Error(
+          `${failures.length} of ${entries.length} bill(s) failed to save. First error: ${
+            first.reason instanceof Error ? first.reason.message : String(first.reason)
+          }`,
+        );
+      }
+
+      setEdits({});
+      setIsEditMode(false);
+      setEditing(false);
+      // Re-read so the displayed net payable is the database's value, not ours.
+      await load();
+      setSavedMessage(`${entries.length} bill(s) updated in Supabase.`);
+      setTimeout(() => setSavedMessage(null), 4000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to save ledger changes.');
+    } finally {
+      setSaving(false);
     }
   }
 
-  // Add New Row
-  function handleAddNewRow() {
-    const newId = `ledg-${Date.now()}`;
-    const newRow: BillWiseLedgerRow = {
-      id: newId,
-      headActivity: 'Civil Materials',
-      subActivityLedger: 'New Material Supply',
-      costCode: 'MAT-002',
-      supplierName: 'New Supplier Ltd',
-      accountingDate: new Date().toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }).replace(/\//g, '-'),
-      billDateOfSupplier: new Date().toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }).replace(/\//g, '-'),
-      billNo: `ERP-BILL-2026-${Math.floor(100 + Math.random() * 900)}`,
-      billNoOfSupplier: 'SUP/INV-001',
-      remarks: 'New Ledger Entry',
-      itemGroup: 'Civil Material',
-      itemDesc: 'Material description...',
-      unit: 'Bags',
-      receivedQty: 100,
-      finalBillRate: 350,
-      billItemAmt: 35000,
-      gstRate: 18,
-      retentionDeduction: 0,
-      finalBillAmount: 41300,
-      advancePayment: 0,
-      expectedPayment: 41300,
-      jvPayment: 0,
-      poWoNo: 'PO-2026-NEW',
-      poWoRate: 350,
-      noteOnPo: 'Standard terms',
-      prNo: 'PR-2026-NEW',
-      lineRemarks: 'New line item',
-      paymentStatus: 'Pending Approval',
-      runningAvailableBudget: 5000000,
-    };
-
-    setLedgerRows((prev) => [newRow, ...prev]);
-    setEditedRowsMap((prev) => ({ ...prev, [newId]: newRow }));
+  function handleExport() {
+    const headers = [
+      'Project', 'Head Activity', 'Sub Activity', 'Cost Code', 'Item Group', 'Item Description',
+      'Unit', 'Supplier', 'Supplier GST', 'Accounting Date', 'Bill Date', 'Bill No (ERP)',
+      'Bill No (Supplier)', 'Received Qty', 'Bill Rate', 'Bill Item Amount', 'GST %',
+      'Retention %', 'Retention Amount', 'Gross Bill Amount', 'Net Payable', 'Advance Adjusted',
+      'Paid To Date', 'Outstanding', 'Bill Status', 'Payment Status', 'Match Status',
+      'PO/WO No', 'PO Rate', 'PO Terms', 'PR No', 'GRN No', 'Running Available Budget', 'Remarks',
+    ];
+    const body = displayRows.map((r) => [
+      r.project_name, r.head_activity, r.sub_activity_ledger, r.cost_code, r.item_group,
+      r.item_desc, r.unit, r.supplier_name, r.supplier_gst, dmy(r.accounting_date),
+      dmy(r.bill_date_of_supplier), r.bill_no, r.bill_no_of_supplier, r.received_qty,
+      r.final_bill_rate, r.bill_item_amt, r.gst_rate, r.retention_percent, r.retention_deduction,
+      r.gross_bill_amount, r.final_bill_amount, r.advance_payment, r.jv_payment,
+      r.expected_payment, r.bill_status, r.payment_status, r.match_status, r.po_wo_no,
+      r.po_wo_rate, r.note_on_po, r.pr_no, r.grn_no, r.running_available_budget, r.remarks,
+    ]);
+    downloadCsv(
+      `bill-wise-ledger-${isPortfolio ? 'all-projects' : displayRows[0]?.project_code ?? 'project'}-${new Date().toISOString().slice(0, 10)}.csv`,
+      toCsv(headers, body),
+    );
   }
 
-  // Delete Row
-  function handleDeleteRow(rowId: string) {
-    if (confirm('Are you sure you want to remove this ledger entry?')) {
-      setLedgerRows((prev) => prev.filter((r) => r.id !== rowId));
-      setEditedRowsMap((prev) => {
-        const copy = { ...prev };
-        delete copy[rowId];
-        return copy;
-      });
-    }
-  }
-
-  // Save Edits
-  function handleSaveEdits() {
-    const updatedRows = ledgerRows.map((r) => editedRowsMap[r.id] || r);
-    setLedgerRows(updatedRows);
-    setIsEditMode(false);
-    setShowUnsavedConfirmModal(false);
-    setEditedRowsMap({});
-    setSavedMsg(true);
-    setTimeout(() => setSavedMsg(false), 3000);
-  }
-
-  // Cancel Edits
-  function handleCancelEdits() {
-    setIsEditMode(false);
-    setShowUnsavedConfirmModal(false);
-    setEditedRowsMap({});
-  }
-
-  // Current Working Rows
-  const workingRows = ledgerRows.map((r) => editedRowsMap[r.id] || r);
-
-  // Filter Rows
-  const filteredRows = workingRows.filter((row) => {
-    const matchesSearch =
-      row.supplierName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      row.billNo.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      row.billNoOfSupplier.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      row.poWoNo.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      row.costCode.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      row.headActivity.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      row.subActivityLedger.toLowerCase().includes(searchQuery.toLowerCase());
-
-    const matchesStatus = statusFilter === 'All' || row.paymentStatus === statusFilter;
-
-    return matchesSearch && matchesStatus;
-  });
-
-  const totalBilledAmount = filteredRows.reduce((s, r) => s + r.finalBillAmount, 0);
-  const totalRetentions = filteredRows.reduce((s, r) => s + r.retentionDeduction, 0);
-  const totalAdvances = filteredRows.reduce((s, r) => s + r.advancePayment, 0);
-  const totalExpectedOutflow = filteredRows.reduce((s, r) => s + r.expectedPayment, 0);
+  if (needsAuth) return <BudgetAuthRequired />;
 
   return (
-    <div className="space-y-5 select-none font-sans">
-      {/* LEDGER KPI SUMMARY CARDS */}
+    <div className="space-y-5 font-sans">
+      {/* KPI SUMMARY — derived from the rows actually on screen */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <div className="rounded-xl border border-border bg-card p-4 shadow-2xs">
-          <p className="text-[11px] font-extrabold uppercase tracking-wider text-muted-foreground">Total Net Billed Outflow</p>
-          <p className="mt-1 text-xl font-mono font-black text-foreground">₹{totalBilledAmount.toLocaleString('en-IN')}</p>
-          <p className="mt-0.5 text-xs text-muted-foreground">Cumulative billed across {filteredRows.length} bills</p>
-        </div>
-
-        <div className="rounded-xl border border-border bg-card p-4 shadow-2xs">
-          <p className="text-[11px] font-extrabold uppercase tracking-wider text-amber-700 dark:text-amber-400">Total Retention Deductions (5%)</p>
-          <p className="mt-1 text-xl font-mono font-black text-amber-800 dark:text-amber-300">₹{totalRetentions.toLocaleString('en-IN')}</p>
-          <p className="mt-0.5 text-xs text-muted-foreground">Held back for DLP security</p>
-        </div>
-
-        <div className="rounded-xl border border-border bg-card p-4 shadow-2xs">
-          <p className="text-[11px] font-extrabold uppercase tracking-wider text-emerald-700 dark:text-emerald-400">Advances Adjusted</p>
-          <p className="mt-1 text-xl font-mono font-black text-emerald-800 dark:text-emerald-300">₹{totalAdvances.toLocaleString('en-IN')}</p>
-          <p className="mt-0.5 text-xs text-muted-foreground">Pre-paid MOB advances</p>
-        </div>
-
-        <div className="rounded-xl border border-border bg-card p-4 shadow-2xs">
-          <p className="text-[11px] font-extrabold uppercase tracking-wider text-primary">Pending Payable Outflow</p>
-          <p className="mt-1 text-xl font-mono font-black text-primary">₹{totalExpectedOutflow.toLocaleString('en-IN')}</p>
-          <p className="mt-0.5 text-xs text-muted-foreground">Awaiting accounts treasury release</p>
-        </div>
+        <KpiCard
+          label="Gross Billed (incl. GST)"
+          value={inr(kpis.gross)}
+          detail={`${kpis.billCount} bill(s) · ${displayRows.length} line(s)`}
+        />
+        <KpiCard
+          label="Retention Held"
+          value={inr(kpis.retention)}
+          detail="Security retained for DLP"
+          tone="amber"
+        />
+        <KpiCard
+          label="Paid To Date"
+          value={inr(kpis.paid)}
+          detail="Settled via payments ledger"
+          tone="emerald"
+        />
+        <KpiCard
+          label="Outstanding Payable"
+          value={inr(kpis.outstanding)}
+          detail="Net payable less payments made"
+          tone="primary"
+        />
       </div>
 
-      {savedMsg && (
-        <div className="flex items-center gap-2 rounded-xl border border-emerald-300 bg-emerald-50 p-3 text-xs font-bold text-emerald-800 dark:bg-emerald-950/30">
-          <CheckCircle2 className="h-4 w-4 text-emerald-600 flex-shrink-0" />
-          Ledger Rows &amp; Bill-Wise Amounts updated and saved to Backend Database!
+      {savedMessage && (
+        <div
+          role="status"
+          className="flex items-center gap-2 rounded-xl border border-emerald-300 bg-emerald-50 p-3 text-xs font-bold text-emerald-800 dark:border-emerald-900/40 dark:bg-emerald-950/30 dark:text-emerald-300"
+        >
+          <CheckCircle2 className="h-4 w-4 flex-shrink-0 text-emerald-600" aria-hidden="true" />
+          {savedMessage}
         </div>
       )}
 
-      {/* SEARCH & EDIT MODE CONTROLS */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-3">
+      {error && <BudgetError message={error} onRetry={() => void load()} retrying={loading} />}
+
+      {/* FILTERS + ACTIONS */}
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+        <div className="flex flex-wrap items-end gap-3">
           <div className="relative">
-            <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
+            <Search
+              className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground"
+              aria-hidden="true"
+            />
             <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search by Supplier, Bill #, Cost Code..."
+              type="search"
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              placeholder="Supplier, bill no, PO, PR, cost code…"
+              aria-label="Search ledger"
               className="h-8.5 w-72 rounded-lg border border-border bg-card pl-8 pr-3 text-xs font-medium outline-none focus:ring-1 focus:ring-primary"
             />
           </div>
 
-          <div className="flex items-center gap-1.5 text-xs">
-            <span className="font-bold text-muted-foreground">Status:</span>
-            <select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-              className="h-8.5 rounded-lg border border-border bg-card px-2.5 text-xs font-bold text-foreground outline-none"
-            >
-              <option value="All">All Payment Statuses</option>
-              <option value="Paid">Paid</option>
-              <option value="Partially Paid">Partially Paid</option>
-              <option value="Pending Approval">Pending Approval</option>
-              <option value="On Hold">On Hold</option>
-            </select>
-          </div>
+          <FilterSelect
+            label="Payment"
+            value={paymentStatus}
+            onChange={setPaymentStatus}
+            options={[
+              { value: 'All', label: 'All statuses' },
+              ...PAYMENT_STATUSES.map((s) => ({ value: s, label: s })),
+            ]}
+          />
+
+          <FilterSelect
+            label="Budget Head"
+            value={categoryId}
+            onChange={setCategoryId}
+            options={[
+              { value: 'All', label: 'All budget heads' },
+              ...categories.map((c) => ({ value: c.id, label: c.categoryName })),
+            ]}
+          />
+
+          <label className="flex flex-col gap-1 text-[11px] font-bold uppercase text-muted-foreground">
+            Bill from
+            <input
+              type="date"
+              value={fromDate}
+              onChange={(e) => setFromDate(e.target.value)}
+              className="h-8.5 rounded-lg border border-border bg-card px-2 text-xs font-semibold outline-none"
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-[11px] font-bold uppercase text-muted-foreground">
+            Bill to
+            <input
+              type="date"
+              value={toDate}
+              onChange={(e) => setToDate(e.target.value)}
+              className="h-8.5 rounded-lg border border-border bg-card px-2 text-xs font-semibold outline-none"
+            />
+          </label>
         </div>
 
-        <div className="flex items-center gap-2">
-          {/* EDIT & ADD/REMOVE BUTTONS */}
-          {isEditMode ? (
-            <>
-              <button
-                type="button"
-                onClick={handleAddNewRow}
-                className="inline-flex h-8.5 items-center gap-1.5 rounded-lg bg-emerald-600 px-3 text-xs font-bold text-white shadow-sm hover:bg-emerald-700 transition-colors"
-              >
-                <Plus className="h-3.5 w-3.5" /> Add New Ledger Row
-              </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={handleExport}
+            disabled={!permissions.canExport || displayRows.length === 0}
+            className="inline-flex h-8.5 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-xs font-bold text-foreground shadow-2xs hover:bg-muted disabled:opacity-50"
+          >
+            <Download className="h-3.5 w-3.5" aria-hidden="true" /> Export CSV
+          </button>
 
-              <button
-                type="button"
-                onClick={handleCancelAttempt}
-                className="inline-flex h-8.5 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-xs font-semibold text-muted-foreground shadow-2xs hover:bg-muted hover:text-foreground transition-colors"
-              >
-                <RotateCcw className="h-3.5 w-3.5" /> Cancel
-              </button>
-
-              <button
-                type="button"
-                onClick={handleSaveEdits}
-                className="inline-flex h-8.5 items-center gap-1.5 rounded-lg bg-primary px-4 text-xs font-bold text-primary-foreground shadow-sm hover:bg-primary/90 transition-colors"
-              >
-                <Save className="h-3.5 w-3.5" /> Save Ledger Changes
-              </button>
-            </>
-          ) : (
-            <>
-              <button
-                type="button"
-                onClick={() => setIsEditMode(true)}
-                className="inline-flex h-8.5 items-center gap-1.5 rounded-lg bg-primary px-4 text-xs font-bold text-primary-foreground shadow-sm hover:bg-primary/90 transition-colors"
-              >
-                <Edit3 className="h-3.5 w-3.5" /> Edit Ledger Mode
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setShowUploadModal(true)}
-                className="inline-flex h-8.5 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-xs font-bold text-foreground shadow-2xs hover:bg-muted transition-colors"
-              >
-                <Upload className="h-3.5 w-3.5" /> Import Excel
-              </button>
-            </>
-          )}
-        </div>
-      </div>
-
-      {/* 28-COLUMN FULL CONSTRUCTION ERP BILL-WISE LEDGER TABLE */}
-      <div className="overflow-hidden rounded-xl border border-border bg-card shadow-2xs">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs whitespace-nowrap font-sans border-collapse">
-            <thead>
-              {/* Top Grouped Category Header Row */}
-              <tr className="border-b border-border bg-muted/80 text-[10px] font-extrabold uppercase tracking-wider text-muted-foreground select-none">
-                {isEditMode && <th className="px-2 py-2 text-center bg-red-100 text-red-900">Action</th>}
-                <th colSpan={6} className="px-3 py-2 text-center border-r border-border bg-slate-200/70 dark:bg-slate-800/70 text-slate-900 dark:text-slate-100">Identity &amp; Budget Head</th>
-                <th colSpan={5} className="px-3 py-2 text-center border-r border-border bg-blue-100/70 dark:bg-blue-950/60 text-blue-900 dark:text-blue-300">Supplier &amp; Bill Audit</th>
-                <th colSpan={7} className="px-3 py-2 text-center border-r border-border bg-emerald-100 dark:bg-emerald-950/60 text-emerald-900 dark:text-emerald-300">Billed Line Items &amp; Taxes</th>
-                <th colSpan={4} className="px-3 py-2 text-center border-r border-border bg-purple-100/70 dark:bg-purple-950/60 text-purple-900 dark:text-purple-300">Payment Settlement</th>
-                <th colSpan={6} className="px-3 py-2 text-center bg-amber-100/70 dark:bg-amber-950/60 text-amber-900 dark:text-amber-300">PO Traceability &amp; Remaining Budget</th>
-              </tr>
-
-              {/* Column Names Header Row (28 Columns) */}
-              <tr className="border-b border-border bg-muted/60 text-[11px] font-bold uppercase tracking-wider text-muted-foreground select-none">
-                {isEditMode && <th className="px-2 py-2.5 w-10 text-center border-r border-border bg-red-50 text-red-700">Delete</th>}
-                <th className="px-3.5 py-2.5 min-w-[160px] border-r border-border">Head Activity</th>
-                <th className="px-3.5 py-2.5 min-w-[180px] border-r border-border">Sub Activity Ledger</th>
-                <th className="px-3 py-2.5 text-center font-mono text-primary font-black border-r border-border bg-primary/5">Cost Code</th>
-                <th className="px-3 py-2.5 border-r border-border">Item Group</th>
-                <th className="px-4 py-2.5 min-w-[200px] border-r border-border">Item Desc</th>
-                <th className="px-3 py-2.5 text-center border-r border-border">Unit</th>
-
-                <th className="px-4 py-2.5 min-w-[180px] border-r border-border">Supplier Name</th>
-                <th className="px-3 py-2.5 text-center border-r border-border">Accounting Date</th>
-                <th className="px-3 py-2.5 text-center border-r border-border">Bill Date (Supplier)</th>
-                <th className="px-3.5 py-2.5 font-mono border-r border-border">Bill No. (ERP)</th>
-                <th className="px-3.5 py-2.5 font-mono border-r border-border">Bill No. (Supplier)</th>
-
-                <th className="px-3.5 py-2.5 text-right font-mono border-r border-border">Received Qty</th>
-                <th className="px-3.5 py-2.5 text-right font-mono border-r border-border">Final Bill Rate (₹)</th>
-                <th className="px-4 py-2.5 text-right font-mono font-bold border-r border-border">Bill Item Amt (₹)</th>
-                <th className="px-3 py-2.5 text-center font-mono border-r border-border">GST %</th>
-                <th className="px-4 py-2.5 text-right font-mono text-amber-700 font-bold border-r border-border bg-amber-50/40">Retention (5%) (₹)</th>
-                <th className="px-4 py-2.5 text-right font-mono font-black text-emerald-900 dark:text-emerald-300 border-r border-border bg-emerald-100/50">Final Bill Amount (₹)</th>
-                <th className="px-3.5 py-2.5 text-center border-r border-border">Status</th>
-
-                <th className="px-3.5 py-2.5 text-right font-mono border-r border-border">Advance Paid (₹)</th>
-                <th className="px-3.5 py-2.5 text-right font-mono text-primary font-bold border-r border-border">Expected Pay (₹)</th>
-                <th className="px-3.5 py-2.5 text-right font-mono border-r border-border">JV Payment (₹)</th>
-                <th className="px-3.5 py-2.5 text-left border-r border-border min-w-[200px]">General Remarks</th>
-
-                <th className="px-3.5 py-2.5 font-mono border-r border-border">P.O. / W.O No.</th>
-                <th className="px-3.5 py-2.5 text-right font-mono border-r border-border">P.O Rate (₹)</th>
-                <th className="px-4 py-2.5 border-r border-border min-w-[180px]">Note On PO</th>
-                <th className="px-3.5 py-2.5 font-mono border-r border-border">P.R No</th>
-                <th className="px-4 py-2.5 text-right font-mono font-black text-emerald-800 dark:text-emerald-400 border-r border-border bg-emerald-50/40">Running Available Budget (₹)</th>
-                <th className="px-4 py-2.5 text-left min-w-[200px]">Line Remarks</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border">
-              {filteredRows.map((row) => (
-                <tr key={row.id} className="hover:bg-muted/30 transition-colors align-middle">
-                  {/* Delete Action Button in Edit Mode */}
-                  {isEditMode && (
-                    <td className="px-2 py-2 text-center border-r border-border bg-red-50/50">
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteRow(row.id)}
-                        className="rounded p-1 text-red-600 hover:bg-red-100 transition-colors"
-                        title="Remove Ledger Entry"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    </td>
+          {permissions.canEditLedger &&
+            (isEditMode ? (
+              <>
+                <button
+                  type="button"
+                  onClick={cancelEdit}
+                  disabled={saving}
+                  className="inline-flex h-8.5 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-xs font-semibold text-muted-foreground shadow-2xs hover:bg-muted disabled:opacity-50"
+                >
+                  <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" /> Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleSave()}
+                  disabled={saving || !hasEdits}
+                  className="inline-flex h-8.5 items-center gap-1.5 rounded-lg bg-emerald-600 px-4 text-xs font-bold text-white shadow-sm hover:bg-emerald-700 disabled:opacity-50"
+                >
+                  {saving ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                  ) : (
+                    <Save className="h-3.5 w-3.5" aria-hidden="true" />
                   )}
-
-                  {/* Head Activity */}
-                  <td className="px-2 py-1 font-bold text-foreground border-r border-border">
-                    {isEditMode ? (
-                      <input
-                        type="text"
-                        value={row.headActivity}
-                        onChange={(e) => handleCellChange(row.id, 'headActivity', e.target.value)}
-                        className="h-7 w-36 rounded border border-border bg-card px-2 text-xs font-bold outline-none"
-                      />
-                    ) : (
-                      row.headActivity
-                    )}
-                  </td>
-
-                  {/* Sub Activity Ledger */}
-                  <td className="px-2 py-1 font-semibold text-foreground border-r border-border">
-                    {isEditMode ? (
-                      <input
-                        type="text"
-                        value={row.subActivityLedger}
-                        onChange={(e) => handleCellChange(row.id, 'subActivityLedger', e.target.value)}
-                        className="h-7 w-40 rounded border border-border bg-card px-2 text-xs font-semibold outline-none"
-                      />
-                    ) : (
-                      row.subActivityLedger
-                    )}
-                  </td>
-
-                  {/* Cost Code */}
-                  <td className="px-2 py-1 text-center font-mono font-black text-primary border-r border-border bg-primary/5">
-                    {isEditMode ? (
-                      <input
-                        type="text"
-                        value={row.costCode}
-                        onChange={(e) => handleCellChange(row.id, 'costCode', e.target.value)}
-                        className="h-7 w-20 text-center rounded border border-primary/40 bg-card px-2 text-xs font-mono font-bold outline-none"
-                      />
-                    ) : (
-                      row.costCode
-                    )}
-                  </td>
-
-                  {/* Item Group */}
-                  <td className="px-2 py-1 border-r border-border">
-                    {isEditMode ? (
-                      <input
-                        type="text"
-                        value={row.itemGroup}
-                        onChange={(e) => handleCellChange(row.id, 'itemGroup', e.target.value)}
-                        className="h-7 w-28 rounded border border-border bg-card px-2 text-xs outline-none"
-                      />
-                    ) : (
-                      row.itemGroup
-                    )}
-                  </td>
-
-                  {/* Item Desc */}
-                  <td className="px-2 py-1 border-r border-border">
-                    {isEditMode ? (
-                      <input
-                        type="text"
-                        value={row.itemDesc}
-                        onChange={(e) => handleCellChange(row.id, 'itemDesc', e.target.value)}
-                        className="h-7 w-48 rounded border border-border bg-card px-2 text-xs outline-none"
-                      />
-                    ) : (
-                      <span className="whitespace-normal min-w-[200px] max-w-[280px] break-words">{row.itemDesc}</span>
-                    )}
-                  </td>
-
-                  {/* Unit */}
-                  <td className="px-2 py-1 text-center border-r border-border">
-                    {isEditMode ? (
-                      <input
-                        type="text"
-                        value={row.unit}
-                        onChange={(e) => handleCellChange(row.id, 'unit', e.target.value)}
-                        className="h-7 w-16 text-center rounded border border-border bg-card px-1 text-xs outline-none"
-                      />
-                    ) : (
-                      row.unit
-                    )}
-                  </td>
-
-                  {/* Supplier Name */}
-                  <td className="px-2 py-1 border-r border-border">
-                    {isEditMode ? (
-                      <input
-                        type="text"
-                        value={row.supplierName}
-                        onChange={(e) => handleCellChange(row.id, 'supplierName', e.target.value)}
-                        className="h-7 w-44 rounded border border-border bg-card px-2 text-xs font-bold outline-none"
-                      />
-                    ) : (
-                      <span className="font-bold text-foreground">{row.supplierName}</span>
-                    )}
-                  </td>
-
-                  {/* Dates */}
-                  <td className="px-2 py-1 text-center font-mono border-r border-border">
-                    {isEditMode ? (
-                      <input
-                        type="text"
-                        value={row.accountingDate}
-                        onChange={(e) => handleCellChange(row.id, 'accountingDate', e.target.value)}
-                        className="h-7 w-24 text-center rounded border border-border bg-card px-1 text-xs font-mono outline-none"
-                      />
-                    ) : (
-                      row.accountingDate
-                    )}
-                  </td>
-
-                  <td className="px-2 py-1 text-center font-mono border-r border-border">
-                    {isEditMode ? (
-                      <input
-                        type="text"
-                        value={row.billDateOfSupplier}
-                        onChange={(e) => handleCellChange(row.id, 'billDateOfSupplier', e.target.value)}
-                        className="h-7 w-24 text-center rounded border border-border bg-card px-1 text-xs font-mono outline-none"
-                      />
-                    ) : (
-                      row.billDateOfSupplier
-                    )}
-                  </td>
-
-                  {/* Bill Numbers */}
-                  <td className="px-2 py-1 font-mono border-r border-border">
-                    {isEditMode ? (
-                      <input
-                        type="text"
-                        value={row.billNo}
-                        onChange={(e) => handleCellChange(row.id, 'billNo', e.target.value)}
-                        className="h-7 w-32 rounded border border-border bg-card px-2 text-xs font-mono font-bold outline-none"
-                      />
-                    ) : (
-                      row.billNo
-                    )}
-                  </td>
-
-                  <td className="px-2 py-1 font-mono border-r border-border">
-                    {isEditMode ? (
-                      <input
-                        type="text"
-                        value={row.billNoOfSupplier}
-                        onChange={(e) => handleCellChange(row.id, 'billNoOfSupplier', e.target.value)}
-                        className="h-7 w-32 rounded border border-border bg-card px-2 text-xs font-mono outline-none"
-                      />
-                    ) : (
-                      row.billNoOfSupplier
-                    )}
-                  </td>
-
-                  {/* EDITABLE NUMERIC QUANTITIES & RATES */}
-                  <td className="px-2 py-1 text-right font-mono border-r border-border">
-                    {isEditMode ? (
-                      <input
-                        type="number"
-                        value={row.receivedQty}
-                        onChange={(e) => handleCellChange(row.id, 'receivedQty', e.target.value)}
-                        className="h-7 w-24 text-right rounded border border-emerald-400 bg-card px-2 text-xs font-mono font-bold outline-none"
-                      />
-                    ) : (
-                      row.receivedQty.toLocaleString('en-IN')
-                    )}
-                  </td>
-
-                  <td className="px-2 py-1 text-right font-mono border-r border-border">
-                    {isEditMode ? (
-                      <input
-                        type="number"
-                        value={row.finalBillRate}
-                        onChange={(e) => handleCellChange(row.id, 'finalBillRate', e.target.value)}
-                        className="h-7 w-24 text-right rounded border border-emerald-400 bg-card px-2 text-xs font-mono font-bold outline-none"
-                      />
-                    ) : (
-                      `₹${row.finalBillRate.toLocaleString('en-IN')}`
-                    )}
-                  </td>
-
-                  {/* AUTO-CALCULATED ITEM AMOUNT */}
-                  <td className="px-4 py-2 text-right font-mono font-bold text-foreground border-r border-border">
-                    ₹{row.billItemAmt.toLocaleString('en-IN')}
-                  </td>
-
-                  {/* GST & RETENTION */}
-                  <td className="px-2 py-1 text-center font-mono border-r border-border">
-                    {isEditMode ? (
-                      <input
-                        type="number"
-                        value={row.gstRate}
-                        onChange={(e) => handleCellChange(row.id, 'gstRate', e.target.value)}
-                        className="h-7 w-16 text-center rounded border border-border bg-card px-1 text-xs font-mono outline-none"
-                      />
-                    ) : (
-                      `${row.gstRate}%`
-                    )}
-                  </td>
-
-                  <td className="px-2 py-1 text-right font-mono border-r border-border bg-amber-50/20">
-                    {isEditMode ? (
-                      <input
-                        type="number"
-                        value={row.retentionDeduction}
-                        onChange={(e) => handleCellChange(row.id, 'retentionDeduction', e.target.value)}
-                        className="h-7 w-24 text-right rounded border border-amber-400 bg-card px-2 text-xs font-mono font-bold outline-none"
-                      />
-                    ) : (
-                      `₹${row.retentionDeduction.toLocaleString('en-IN')}`
-                    )}
-                  </td>
-
-                  {/* FINAL BILL AMOUNT */}
-                  <td className="px-4 py-2 text-right font-mono font-black text-emerald-900 dark:text-emerald-300 border-r border-border bg-emerald-50/40">
-                    ₹{row.finalBillAmount.toLocaleString('en-IN')}
-                  </td>
-
-                  {/* PAYMENT STATUS DROPDOWN */}
-                  <td className="px-2 py-1 text-center border-r border-border">
-                    {isEditMode ? (
-                      <select
-                        value={row.paymentStatus}
-                        onChange={(e) => handleCellChange(row.id, 'paymentStatus', e.target.value)}
-                        className="h-7 rounded border border-border bg-card px-1 text-[11px] font-bold outline-none"
-                      >
-                        <option value="Paid">Paid</option>
-                        <option value="Partially Paid">Partially Paid</option>
-                        <option value="Pending Approval">Pending Approval</option>
-                        <option value="On Hold">On Hold</option>
-                      </select>
-                    ) : (
-                      <span className={`inline-flex rounded-full px-2.5 py-0.5 text-[10px] font-extrabold uppercase ${
-                        row.paymentStatus === 'Paid'
-                          ? 'bg-emerald-100 text-emerald-800'
-                          : row.paymentStatus === 'Partially Paid'
-                          ? 'bg-blue-100 text-blue-800'
-                          : row.paymentStatus === 'Pending Approval'
-                          ? 'bg-amber-100 text-amber-800'
-                          : 'bg-red-100 text-red-800'
-                      }`}>
-                        {row.paymentStatus}
-                      </span>
-                    )}
-                  </td>
-
-                  {/* SETTLEMENT AMOUNTS */}
-                  <td className="px-2 py-1 text-right font-mono border-r border-border">
-                    {isEditMode ? (
-                      <input
-                        type="number"
-                        value={row.advancePayment}
-                        onChange={(e) => handleCellChange(row.id, 'advancePayment', e.target.value)}
-                        className="h-7 w-24 text-right rounded border border-border bg-card px-2 text-xs font-mono outline-none"
-                      />
-                    ) : (
-                      `₹${row.advancePayment.toLocaleString('en-IN')}`
-                    )}
-                  </td>
-
-                  <td className="px-4 py-2 text-right font-mono font-bold text-primary border-r border-border">
-                    ₹{row.expectedPayment.toLocaleString('en-IN')}
-                  </td>
-
-                  <td className="px-2 py-1 text-right font-mono border-r border-border">
-                    {isEditMode ? (
-                      <input
-                        type="number"
-                        value={row.jvPayment}
-                        onChange={(e) => handleCellChange(row.id, 'jvPayment', e.target.value)}
-                        className="h-7 w-20 text-right rounded border border-border bg-card px-2 text-xs font-mono outline-none"
-                      />
-                    ) : (
-                      `₹${row.jvPayment.toLocaleString('en-IN')}`
-                    )}
-                  </td>
-
-                  <td className="px-2 py-1 border-r border-border">
-                    {isEditMode ? (
-                      <input
-                        type="text"
-                        value={row.remarks}
-                        onChange={(e) => handleCellChange(row.id, 'remarks', e.target.value)}
-                        className="h-7 w-40 rounded border border-border bg-card px-2 text-xs outline-none"
-                      />
-                    ) : (
-                      <span className="text-muted-foreground text-[11px]">{row.remarks}</span>
-                    )}
-                  </td>
-
-                  {/* PO DETAILS */}
-                  <td className="px-2 py-1 font-mono border-r border-border">
-                    {isEditMode ? (
-                      <input
-                        type="text"
-                        value={row.poWoNo}
-                        onChange={(e) => handleCellChange(row.id, 'poWoNo', e.target.value)}
-                        className="h-7 w-32 rounded border border-border bg-card px-2 text-xs font-mono font-bold outline-none"
-                      />
-                    ) : (
-                      <span className="font-mono text-amber-800 dark:text-amber-300 font-bold">{row.poWoNo}</span>
-                    )}
-                  </td>
-
-                  <td className="px-2 py-1 text-right font-mono border-r border-border">
-                    {isEditMode ? (
-                      <input
-                        type="number"
-                        value={row.poWoRate}
-                        onChange={(e) => handleCellChange(row.id, 'poWoRate', e.target.value)}
-                        className="h-7 w-20 text-right rounded border border-border bg-card px-2 text-xs font-mono outline-none"
-                      />
-                    ) : (
-                      `₹${row.poWoRate.toLocaleString('en-IN')}`
-                    )}
-                  </td>
-
-                  <td className="px-2 py-1 border-r border-border">
-                    {isEditMode ? (
-                      <input
-                        type="text"
-                        value={row.noteOnPo}
-                        onChange={(e) => handleCellChange(row.id, 'noteOnPo', e.target.value)}
-                        className="h-7 w-40 rounded border border-border bg-card px-2 text-xs outline-none"
-                      />
-                    ) : (
-                      <span className="text-muted-foreground text-[11px]">{row.noteOnPo}</span>
-                    )}
-                  </td>
-
-                  <td className="px-2 py-1 font-mono border-r border-border">
-                    {isEditMode ? (
-                      <input
-                        type="text"
-                        value={row.prNo}
-                        onChange={(e) => handleCellChange(row.id, 'prNo', e.target.value)}
-                        className="h-7 w-28 rounded border border-border bg-card px-2 text-xs font-mono outline-none"
-                      />
-                    ) : (
-                      row.prNo
-                    )}
-                  </td>
-
-                  {/* RUNNING BUDGET */}
-                  <td className="px-4 py-2 text-right font-mono font-black text-emerald-800 dark:text-emerald-400 border-r border-border bg-emerald-50/20">
-                    ₹{row.runningAvailableBudget.toLocaleString('en-IN')}
-                  </td>
-
-                  <td className="px-2 py-1">
-                    {isEditMode ? (
-                      <input
-                        type="text"
-                        value={row.lineRemarks}
-                        onChange={(e) => handleCellChange(row.id, 'lineRemarks', e.target.value)}
-                        className="h-7 w-40 rounded border border-border bg-card px-2 text-xs outline-none"
-                      />
-                    ) : (
-                      <span className="text-muted-foreground text-[11px]">{row.lineRemarks}</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                  {saving
+                    ? 'Saving…'
+                    : `Save ${Object.keys(edits).length || ''} bill${Object.keys(edits).length === 1 ? '' : 's'}`}
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={beginEdit}
+                disabled={displayRows.length === 0}
+                className="inline-flex h-8.5 items-center gap-1.5 rounded-lg bg-primary px-4 text-xs font-bold text-primary-foreground shadow-sm hover:bg-primary/90 disabled:opacity-50"
+              >
+                <Edit3 className="h-3.5 w-3.5" aria-hidden="true" /> Edit Settlement
+              </button>
+            ))}
         </div>
       </div>
 
-      {/* EXCEL IMPORTER MODAL FOR LEDGER */}
-      {showUploadModal && (
-        <ExcelImporterModal
-          isOpen={showUploadModal}
-          onClose={() => setShowUploadModal(false)}
-          onImportSuccess={() => {
-            alert('Ledger Excel sheet imported & synced to Backend Database successfully!');
-            setShowUploadModal(false);
-          }}
-        />
-      )}
-
-      {/* UNSAVED LEDGER CHANGES CONFIRMATION POPUP MODAL */}
-      {showUnsavedConfirmModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 backdrop-blur-sm p-4 select-none">
-          <div className="w-full max-w-md rounded-2xl border border-border bg-card p-6 shadow-2xl space-y-4">
-            <div className="flex items-center gap-3">
-              <div className="rounded-xl bg-amber-100 p-2.5 text-amber-700 dark:bg-amber-950/50">
-                <AlertTriangle className="h-6 w-6" />
-              </div>
-              <div>
-                <h3 className="font-heading text-base font-bold text-foreground">Unsaved Ledger Edits Detected</h3>
-                <p className="text-xs text-muted-foreground mt-0.5">You have modified ledger rows or amounts. Save changes before exiting?</p>
-              </div>
-            </div>
-
-            <div className="rounded-xl border border-amber-200 bg-amber-50/50 p-3 text-xs text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-300">
-              Edits will only apply when you click <strong>Save Ledger Changes</strong>.
-            </div>
-
-            <div className="flex flex-col gap-2 pt-2">
-              <button
-                type="button"
-                onClick={handleSaveEdits}
-                className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 text-xs font-bold text-white shadow-sm hover:bg-emerald-700"
-              >
-                <Save className="h-4 w-4" /> Save Ledger Changes
-              </button>
-
-              <button
-                type="button"
-                onClick={handleCancelEdits}
-                className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-lg border border-red-200 bg-red-50 px-4 text-xs font-bold text-red-700 hover:bg-red-100 dark:border-red-900/40 dark:bg-red-950/30 dark:text-red-300"
-              >
-                <Trash2 className="h-4 w-4" /> Discard Changes
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setShowUnsavedConfirmModal(false)}
-                className="inline-flex h-9 w-full items-center justify-center rounded-lg border border-border bg-card px-4 text-xs font-semibold text-muted-foreground hover:bg-muted"
-              >
-                Keep Editing
-              </button>
-            </div>
-          </div>
+      {isEditMode && (
+        <div className="flex items-start gap-2 rounded-xl border border-blue-300 bg-blue-50 p-3 text-xs text-blue-900 dark:border-blue-900/40 dark:bg-blue-950/25 dark:text-blue-300">
+          <Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" aria-hidden="true" />
+          <p>
+            Editable fields are <strong>retention</strong>, <strong>advance adjusted</strong>,{' '}
+            <strong>other deductions</strong>, <strong>payment status</strong> and{' '}
+            <strong>ledger remarks</strong>. Quantities, rates and GST come from the vendor bill
+            lines raised in Billing and are read-only here. Net payable is recomputed by the
+            database on save.
+          </p>
         </div>
       )}
+
+      {/* LEDGER TABLE */}
+      {loading ? (
+        <BudgetLoading label="Loading bill-wise ledger from Supabase…" />
+      ) : displayRows.length === 0 ? (
+        <BudgetEmpty
+          title="No bills match this view"
+          detail={
+            search || paymentStatus !== 'All' || categoryId !== 'All' || fromDate || toDate
+              ? 'No vendor bills match the current filters. Clear them to see everything for this project.'
+              : 'No vendor bills have been raised against this project yet. Bills appear here automatically once they are created in the Billing module.'
+          }
+        />
+      ) : (
+        <>
+          <div className="overflow-hidden rounded-xl border border-border bg-card shadow-2xs">
+            <div className="max-h-[70vh] overflow-auto">
+              <table className="w-full border-collapse text-left text-xs whitespace-nowrap font-sans">
+                <thead className="sticky top-0 z-10">
+                  <tr className="border-b border-border bg-muted/90 text-[10px] font-extrabold uppercase tracking-wider text-muted-foreground backdrop-blur">
+                    {isPortfolio && <th className="border-r border-border px-3 py-2">Project</th>}
+                    <th colSpan={6} className="border-r border-border bg-slate-200/70 px-3 py-2 text-center text-slate-900 dark:bg-slate-800/70 dark:text-slate-100">
+                      Identity &amp; Budget Head
+                    </th>
+                    <th colSpan={5} className="border-r border-border bg-blue-100/70 px-3 py-2 text-center text-blue-900 dark:bg-blue-950/60 dark:text-blue-300">
+                      Supplier &amp; Bill Audit
+                    </th>
+                    <th colSpan={7} className="border-r border-border bg-emerald-100 px-3 py-2 text-center text-emerald-900 dark:bg-emerald-950/60 dark:text-emerald-300">
+                      Billed Lines &amp; Taxes
+                    </th>
+                    <th colSpan={5} className="border-r border-border bg-purple-100/70 px-3 py-2 text-center text-purple-900 dark:bg-purple-950/60 dark:text-purple-300">
+                      Payment Settlement
+                    </th>
+                    <th colSpan={6} className="bg-amber-100/70 px-3 py-2 text-center text-amber-900 dark:bg-amber-950/60 dark:text-amber-300">
+                      Traceability &amp; Remaining Budget
+                    </th>
+                  </tr>
+                  <tr className="border-b border-border bg-muted/70 text-[11px] font-bold uppercase tracking-wider text-muted-foreground backdrop-blur">
+                    {isPortfolio && <th className="border-r border-border px-3 py-2.5">Project</th>}
+                    <Th>Head Activity</Th>
+                    <Th>Sub Activity</Th>
+                    <Th className="text-center text-primary">Cost Code</Th>
+                    <Th>Item Group</Th>
+                    <Th>Item Description</Th>
+                    <Th className="text-center">Unit</Th>
+
+                    <Th>Supplier</Th>
+                    <Th className="text-center">Accounting Date</Th>
+                    <Th className="text-center">Bill Date</Th>
+                    <Th>Bill No (ERP)</Th>
+                    <Th>Bill No (Supplier)</Th>
+
+                    <Th className="text-right">Received Qty</Th>
+                    <Th className="text-right">Bill Rate</Th>
+                    <Th className="text-right">Bill Item Amt</Th>
+                    <Th className="text-center">GST %</Th>
+                    <Th className="text-right text-amber-700">Retention %</Th>
+                    <Th className="text-right text-amber-700">Retention Amt</Th>
+                    <Th className="text-right text-emerald-800">Net Payable</Th>
+
+                    <Th className="text-right">Advance Adj.</Th>
+                    <Th className="text-right">Other Ded.</Th>
+                    <Th className="text-right">Paid To Date</Th>
+                    <Th className="text-right text-primary">Outstanding</Th>
+                    <Th className="text-center">Payment Status</Th>
+
+                    <Th>PO / WO No</Th>
+                    <Th className="text-right">PO Rate</Th>
+                    <Th>PR No</Th>
+                    <Th>GRN No</Th>
+                    <Th className="text-right text-emerald-800">Running Available</Th>
+                    <Th>Remarks</Th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {visibleRows.map((row) => {
+                    const edit = edits[row.bill_id];
+                    const isDirty = Boolean(edit);
+                    return (
+                      <tr
+                        key={row.id}
+                        className={`transition-colors hover:bg-muted/30 ${isDirty ? 'bg-amber-50/60 dark:bg-amber-950/20' : ''}`}
+                      >
+                        {isPortfolio && (
+                          <Td className="border-r border-border font-semibold">{row.project_name}</Td>
+                        )}
+                        <Td className="font-bold text-foreground">{row.head_activity}</Td>
+                        <Td className="font-semibold">{row.sub_activity_ledger}</Td>
+                        <Td className="text-center font-mono font-black text-primary">{row.cost_code}</Td>
+                        <Td>{row.item_group}</Td>
+                        <Td className="max-w-[280px] whitespace-normal break-words">{row.item_desc}</Td>
+                        <Td className="text-center">{row.unit}</Td>
+
+                        <Td className="font-bold text-foreground" title={row.supplier_gst ?? undefined}>
+                          {row.supplier_name}
+                        </Td>
+                        <Td className="text-center font-mono">{dmy(row.accounting_date)}</Td>
+                        <Td className="text-center font-mono">{dmy(row.bill_date_of_supplier)}</Td>
+                        <Td className="font-mono font-bold">{row.bill_no ?? '—'}</Td>
+                        <Td className="font-mono">{row.bill_no_of_supplier ?? '—'}</Td>
+
+                        <Td className="text-right font-mono">{row.received_qty.toLocaleString('en-IN')}</Td>
+                        <Td className="text-right font-mono">{inr(row.final_bill_rate)}</Td>
+                        <Td className="text-right font-mono font-bold">{inr(row.bill_item_amt)}</Td>
+                        <Td className="text-center font-mono">{row.gst_rate}%</Td>
+
+                        <Td className="bg-amber-50/20 text-right font-mono">
+                          {isEditMode ? (
+                            <NumberInput
+                              value={row.retention_percent}
+                              onChange={(v) => patchRow(row, 'retention_percent', v)}
+                              max={100}
+                              className="w-16 border-amber-400"
+                              ariaLabel={`Retention percent for bill ${row.bill_no ?? row.bill_id}`}
+                            />
+                          ) : (
+                            `${row.retention_percent}%`
+                          )}
+                        </Td>
+                        <Td className="bg-amber-50/20 text-right font-mono">
+                          {isEditMode ? (
+                            <NumberInput
+                              value={row.retention_deduction}
+                              onChange={(v) => patchRow(row, 'retention_amount', v)}
+                              className="w-24 border-amber-400"
+                              ariaLabel={`Retention amount for bill ${row.bill_no ?? row.bill_id}`}
+                            />
+                          ) : (
+                            inr(row.retention_deduction)
+                          )}
+                        </Td>
+                        <Td className="bg-emerald-50/40 text-right font-mono font-black text-emerald-900 dark:bg-emerald-950/20 dark:text-emerald-300">
+                          {inr(row.final_bill_amount)}
+                        </Td>
+
+                        <Td className="text-right font-mono">
+                          {isEditMode ? (
+                            <NumberInput
+                              value={row.advance_payment}
+                              onChange={(v) => patchRow(row, 'advance_adjusted', v)}
+                              className="w-24"
+                              ariaLabel={`Advance adjusted for bill ${row.bill_no ?? row.bill_id}`}
+                            />
+                          ) : (
+                            inr(row.advance_payment)
+                          )}
+                        </Td>
+                        <Td className="text-right font-mono">
+                          {isEditMode ? (
+                            <NumberInput
+                              value={edit?.other_deductions ?? 0}
+                              onChange={(v) => patchRow(row, 'other_deductions', v)}
+                              className="w-24"
+                              ariaLabel={`Other deductions for bill ${row.bill_no ?? row.bill_id}`}
+                            />
+                          ) : (
+                            '—'
+                          )}
+                        </Td>
+                        <Td className="text-right font-mono">{inr(row.jv_payment)}</Td>
+                        <Td className="text-right font-mono font-bold text-primary">
+                          {inr(row.expected_payment)}
+                        </Td>
+                        <Td className="text-center">
+                          {isEditMode ? (
+                            <select
+                              value={row.payment_status}
+                              onChange={(e) => patchRow(row, 'payment_status', e.target.value)}
+                              aria-label={`Payment status for bill ${row.bill_no ?? row.bill_id}`}
+                              className="h-7 rounded border border-border bg-card px-1 text-[11px] font-bold outline-none"
+                            >
+                              {PAYMENT_STATUSES.map((s) => (
+                                <option key={s} value={s}>
+                                  {s}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <span
+                              className={`inline-flex rounded-full px-2.5 py-0.5 text-[10px] font-extrabold uppercase ${statusPill(row.payment_status)}`}
+                            >
+                              {row.payment_status}
+                            </span>
+                          )}
+                        </Td>
+
+                        <Td className="font-mono font-bold text-amber-800 dark:text-amber-300">
+                          {row.po_wo_no || '—'}
+                        </Td>
+                        <Td className="text-right font-mono">
+                          {row.po_wo_rate ? inr(row.po_wo_rate) : '—'}
+                        </Td>
+                        <Td className="font-mono">{row.pr_no || '—'}</Td>
+                        <Td className="font-mono">{row.grn_no || '—'}</Td>
+                        <Td
+                          className={`bg-emerald-50/20 text-right font-mono font-black ${
+                            row.running_available_budget < 0
+                              ? 'text-red-600'
+                              : 'text-emerald-800 dark:text-emerald-400'
+                          }`}
+                          title={`Category allocation ${inr(row.category_allocated_amount)}`}
+                        >
+                          {inr(row.running_available_budget)}
+                        </Td>
+                        <Td className="max-w-[240px] whitespace-normal break-words text-[11px] text-muted-foreground">
+                          {isEditMode ? (
+                            <input
+                              type="text"
+                              value={row.remarks ?? ''}
+                              onChange={(e) => patchRow(row, 'ledger_remarks', e.target.value)}
+                              aria-label={`Remarks for bill ${row.bill_no ?? row.bill_id}`}
+                              className="h-7 w-40 rounded border border-border bg-card px-2 text-xs outline-none"
+                            />
+                          ) : (
+                            row.remarks || '—'
+                          )}
+                        </Td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+            <p>
+              Showing <strong className="text-foreground">{visibleRows.length}</strong> of{' '}
+              <strong className="text-foreground">{displayRows.length}</strong> ledger line(s)
+              across <strong className="text-foreground">{kpis.billCount}</strong> bill(s)
+              {!isPortfolio && ' for this project'}.
+            </p>
+            {visibleCount < displayRows.length && (
+              <button
+                type="button"
+                onClick={() => setVisibleCount((c) => c + PAGE_STEP)}
+                className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-xs font-bold text-foreground hover:bg-muted"
+              >
+                <FileSpreadsheet className="h-3.5 w-3.5" aria-hidden="true" />
+                Show {Math.min(PAGE_STEP, displayRows.length - visibleCount)} more
+              </button>
+            )}
+          </div>
+        </>
+      )}
+
+      {hasEdits && !isEditMode && (
+        <div className="flex items-center gap-2 rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs font-bold text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/25 dark:text-amber-300">
+          <AlertTriangle className="h-4 w-4 flex-shrink-0" aria-hidden="true" />
+          You have unsaved ledger edits. Re-enter Edit Settlement to save or discard them.
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ----------------------------------------------------------------------------
+// Presentational helpers
+// ----------------------------------------------------------------------------
+
+function Th({ children, className = '' }: { children: React.ReactNode; className?: string }) {
+  return <th className={`border-r border-border px-3 py-2.5 ${className}`}>{children}</th>;
+}
+
+function Td({ children, className = '', title }: { children: React.ReactNode; className?: string; title?: string }) {
+  return (
+    <td className={`border-r border-border px-3 py-2 ${className}`} title={title}>
+      {children}
+    </td>
+  );
+}
+
+function NumberInput({
+  value,
+  onChange,
+  className = '',
+  max,
+  ariaLabel,
+}: {
+  value: number;
+  onChange: (raw: string) => void;
+  className?: string;
+  max?: number;
+  ariaLabel: string;
+}) {
+  return (
+    <input
+      type="number"
+      min={0}
+      max={max}
+      step="0.01"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      aria-label={ariaLabel}
+      className={`h-7 rounded border bg-card px-2 text-right text-xs font-mono font-bold outline-none focus:ring-1 focus:ring-primary ${className}`}
+    />
+  );
+}
+
+function FilterSelect({
+  label,
+  value,
+  onChange,
+  options,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  options: { value: string; label: string }[];
+}) {
+  return (
+    <label className="flex flex-col gap-1 text-[11px] font-bold uppercase text-muted-foreground">
+      {label}
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="h-8.5 max-w-[200px] rounded-lg border border-border bg-card px-2 text-xs font-bold text-foreground outline-none"
+      >
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function KpiCard({
+  label,
+  value,
+  detail,
+  tone = 'default',
+}: {
+  label: string;
+  value: string;
+  detail: string;
+  tone?: 'default' | 'amber' | 'emerald' | 'primary';
+}) {
+  const valueTone =
+    tone === 'amber'
+      ? 'text-amber-800 dark:text-amber-300'
+      : tone === 'emerald'
+        ? 'text-emerald-800 dark:text-emerald-300'
+        : tone === 'primary'
+          ? 'text-primary'
+          : 'text-foreground';
+  const labelTone =
+    tone === 'amber'
+      ? 'text-amber-700 dark:text-amber-400'
+      : tone === 'emerald'
+        ? 'text-emerald-700 dark:text-emerald-400'
+        : tone === 'primary'
+          ? 'text-primary'
+          : 'text-muted-foreground';
+
+  return (
+    <div className="rounded-xl border border-border bg-card p-4 shadow-2xs">
+      <p className={`text-[11px] font-extrabold uppercase tracking-wider ${labelTone}`}>{label}</p>
+      <p className={`mt-1 text-xl font-mono font-black ${valueTone}`}>{value}</p>
+      <p className="mt-0.5 text-xs text-muted-foreground">{detail}</p>
     </div>
   );
 }
