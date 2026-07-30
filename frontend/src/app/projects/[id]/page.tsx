@@ -4350,34 +4350,12 @@ Rules:
                     <div className="grid grid-cols-1 gap-3">
                       <StatCard icon={Users} label="Team Members" value={project!.teamMembers.length} />
                       <StatCard icon={ListTodo} label="Active Tasks" value={overviewTaskStats.inProgress} />
-                      <StatCard
-                        icon={AlertTriangle}
-                        label="Critical Path Tasks"
-                        value={overviewTaskStats.critical.length}
-                        accent="ring-rose-200 dark:ring-rose-800"
-                      />
                     </div>
                   </SectionCard>
                 </div>
 
-                {/* Schedule + Budget */}
-                <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
-                  <SectionCard title="Schedule Control" subtitle="Task completion breakdown across the project.">
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                      {[
-                        { l: 'Total Tasks', v: overviewTaskStats.total },
-                        { l: 'Completed', v: overviewTaskStats.completed },
-                        { l: 'In Progress', v: overviewTaskStats.inProgress },
-                        { l: 'Overdue', v: overviewTaskStats.overdue.length, c: 'text-rose-500' },
-                      ].map(s => (
-                        <div key={s.l} className="bg-muted/30 rounded-2xl p-3 text-center">
-                          <span className="text-[8px] text-muted-foreground font-bold uppercase tracking-wider block mb-1">{s.l}</span>
-                          <span className={`text-sm font-black ${s.c || 'text-foreground'}`}>{s.v}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </SectionCard>
-
+                {/* Budget */}
+                <div className="grid grid-cols-1 gap-3">
                   <SectionCard title="Budget & Cost Control">
                     <div className="grid grid-cols-2 gap-2">
                       {[
@@ -4460,8 +4438,8 @@ Rules:
                   </SectionCard>
                 </div>
 
-                {/* Safety + Critical Activities */}
-                <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+                {/* Safety */}
+                <div className="grid grid-cols-1 gap-3">
                   <SectionCard title="Safety Dashboard">
                     <div className="grid grid-cols-2 gap-3">
                       <StatCard icon={ShieldCheck} label="Days Since Last Incident" value={overviewDaysSinceIncident ?? '—'} />
@@ -4472,23 +4450,6 @@ Rules:
                         accent="ring-rose-200 dark:ring-rose-800"
                       />
                     </div>
-                  </SectionCard>
-
-                  <SectionCard title="Critical Activities" subtitle="Critical-path or overdue tasks.">
-                    {overviewTaskStats.criticalOrOverdue.length === 0 ? (
-                      <div className="text-xs text-muted-foreground text-center py-4">No critical or overdue tasks right now.</div>
-                    ) : (
-                      <div className="space-y-2">
-                        {overviewTaskStats.criticalOrOverdue.slice(0, 5).map((t: any) => (
-                          <div key={t.id} className="flex justify-between items-center bg-rose-500/5 border border-rose-500/10 px-4 py-3 rounded-2xl">
-                            <span className="text-xs font-extrabold text-foreground truncate">{t.name}</span>
-                            <span className="text-[9px] font-black text-rose-500 bg-rose-500/10 px-3 py-1 rounded-full uppercase tracking-widest flex-shrink-0 ml-2">
-                              {t.delayDays > 0 ? `+${t.delayDays}d delay` : 'Critical Path'}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
                   </SectionCard>
                 </div>
 
