@@ -62,8 +62,26 @@ interface BudgetCashFlowChartProps {
 export default function BudgetCashFlowChart({ totalSpend, ledger = [] }: BudgetCashFlowChartProps) {
   const [viewMode, setViewMode] = useState<'cumulative' | 'monthly'>('cumulative');
   const [timeRange, setTimeRange] = useState<'all' | 'q1' | 'q2' | 'q3' | 'q4'>('all');
+  const [scurveData, setScurveData] = useState<MonthlyCashFlowPoint[]>(FULL_LIFECYCLE_SCURVE_DATA);
 
-  const filteredData = FULL_LIFECYCLE_SCURVE_DATA.filter((item) => {
+  React.useEffect(() => {
+    async function loadSCurve() {
+      try {
+        const res = await fetch('http://localhost:8000/api/budget/scurve');
+        if (res.ok) {
+          const json = await res.json();
+          if (json.lifecycle_data && Array.isArray(json.lifecycle_data)) {
+            setScurveData(json.lifecycle_data);
+          }
+        }
+      } catch (err) {
+        // Fallback to initial S-curve data
+      }
+    }
+    loadSCurve();
+  }, []);
+
+  const filteredData = scurveData.filter((item) => {
     if (timeRange === 'q1') return ['Jan 26', 'Feb 26', 'Mar 26'].includes(item.month);
     if (timeRange === 'q2') return ['Apr 26', 'May 26', 'Jun 26'].includes(item.month);
     if (timeRange === 'q3') return ['Jul 26', 'Aug 26', 'Sep 26'].includes(item.month);
@@ -71,8 +89,8 @@ export default function BudgetCashFlowChart({ totalSpend, ledger = [] }: BudgetC
     return true;
   });
 
-  const peakOutflowItem = FULL_LIFECYCLE_SCURVE_DATA.reduce((prev, current) =>
-    (current.monthlyPlanned > prev.monthlyPlanned) ? current : prev
+  const peakOutflowItem = scurveData.reduce((prev, current) =>
+    (current.monthlyPlanned > prev.monthlyPlanned) ? current : prev, scurveData[0] || FULL_LIFECYCLE_SCURVE_DATA[0]
   );
 
   return (

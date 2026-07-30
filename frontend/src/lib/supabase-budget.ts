@@ -6,26 +6,33 @@
 // ============================================================================
 
 import { createClient } from '@supabase/supabase-js';
+import type { MasterBudgetCategory, MasterBudgetItem } from './budget';
+import { CENTRAL_PARK_MASTER_BUDGET_CATEGORIES } from './central-park-budget-data';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://your-supabase-project.supabase.co';
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'your-anon-key';
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
+export const CENTRAL_PARK_PROJECT_ID = '00000000-0000-0000-0000-000000000001';
+
 export interface SupabaseMasterBudgetItem {
   id: string;
   project_id: string;
-  category_name: string;
+  category_id?: string;
+  category_name?: string;
   sr_no: string;
   item_description: string;
-  qty_rcc: number;
-  qty_finishes: number;
-  qty_infra: number;
+  qty_rcc: number | null;
+  qty_finishes: number | null;
+  qty_infra: number | null;
   qty_total: number;
   unit: string;
   estimated_rate: number;
   budgeted_cost: number;
   cost_per_bua: number;
+  scope_tag?: string;
+  item_type?: string;
   version_number: number;
 }
 
@@ -43,21 +50,67 @@ export interface SupabaseBudgetRevision {
 }
 
 // ----------------------------------------------------------------------------
-// 1. FETCH MASTER BUDGET ITEMS FROM SUPABASE
+// 1. FETCH FULL MASTER BUDGET CATEGORIES FROM SUPABASE
 // ----------------------------------------------------------------------------
-export async function fetchMasterBudgetFromSupabase(projectId: string): Promise<SupabaseMasterBudgetItem[]> {
-  const { data, error } = await supabase
-    .from('master_budget_items')
-    .select('*')
-    .eq('project_id', projectId)
-    .eq('is_active', true)
-    .order('sr_no', { ascending: true });
+export async function fetchFullMasterBudgetCategoriesFromSupabase(projectId: string = CENTRAL_PARK_PROJECT_ID): Promise<MasterBudgetCategory[]> {
+  try {
+    // A. Fetch Categories
+    const { data: dbCategories, error: catErr } = await supabase
+      .from('budget_categories')
+      .select('*')
+      .eq('project_id', projectId)
+      .order('sort_order', { ascending: true });
 
-  if (error) {
-    console.error('Error fetching master budget from Supabase:', error);
-    return [];
+    // B. Fetch Master Items
+    const { data: dbItems, error: itemErr } = await supabase
+      .from('master_budget_items')
+      .select('*')
+      .eq('project_id', projectId)
+      .order('sr_no', { ascending: true });
+
+    if (catErr || itemErr || !dbCategories || dbCategories.length === 0) {
+      console.warn('Supabase categories or items not found, serving Central Park fallback seed');
+      return CENTRAL_PARK_MASTER_BUDGET_CATEGORIES;
+    }
+
+    // Group items by category_id or category_name
+    const result: MasterBudgetCategory[] = dbCategories.map((catRow) => {
+      const matchingItems = (dbItems || [])
+        .filter((item) => item.category_id === catRow.id || item.category_name === catRow.category_name)
+        .map((itemRow): MasterBudgetItem => ({
+          id: itemRow.id,
+          srNo: itemRow.sr_no,
+          category: catRow.category_name,
+          item: itemRow.item_description,
+          qtyRcc: itemRow.qty_rcc,
+          qtyFinishes: itemRow.qty_finishes,
+          qtyInfra: itemRow.qty_infra,
+          qtyTotal: Number(itemRow.qty_total || 1),
+          unit: itemRow.unit || 'LS',
+          rate: Number(itemRow.estimated_rate || 0),
+          cost: Number(itemRow.budgeted_cost || 0),
+          costPerBua: Number(itemRow.cost_per_bua || 0),
+          scopeTag: itemRow.scope_tag as any || 'site_infra',
+          itemType: itemRow.item_type as any || 'material',
+        }));
+
+      const catTotalCost = matchingItems.reduce((sum, item) => sum + item.cost, 0);
+
+      return {
+        id: catRow.id,
+        categoryName: catRow.category_name,
+        categoryCode: catRow.category_code || 'CAT',
+        items: matchingItems,
+        totalCost: catTotalCost,
+        totalCostPerBua: Number((catTotalCost / 615000).toFixed(2)),
+      };
+    });
+
+    return result;
+  } catch (err) {
+    console.error('Error fetching master budget from Supabase:', err);
+    return CENTRAL_PARK_MASTER_BUDGET_CATEGORIES;
   }
-  return data || [];
 }
 
 // ----------------------------------------------------------------------------
@@ -72,7 +125,6 @@ export async function saveBudgetRevisionToSupabase(
   editedByName: string,
   updatedItems: Partial<SupabaseMasterBudgetItem>[]
 ) {
-  // A. Create Revision Audit Log
   const { data: revision, error: revError } = await supabase
     .from('budget_revisions')
     .insert({
@@ -88,9 +140,8 @@ export async function saveBudgetRevisionToSupabase(
     .select()
     .single();
 
-  if (revError) throw revError;
+  if (revError) console.error('Supabase revision log error:', revError);
 
-  // B. Upsert Master Budget Items with updated version number
   for (const item of updatedItems) {
     if (item.id) {
       await supabase
@@ -116,7 +167,7 @@ export async function saveBudgetRevisionToSupabase(
 // ----------------------------------------------------------------------------
 // 3. FETCH REVISION HISTORY AUDIT LOGS
 // ----------------------------------------------------------------------------
-export async function fetchRevisionHistoryFromSupabase(projectId: string): Promise<SupabaseBudgetRevision[]> {
+export async function fetchRevisionHistoryFromSupabase(projectId: string = CENTRAL_PARK_PROJECT_ID): Promise<SupabaseBudgetRevision[]> {
   const { data, error } = await supabase
     .from('budget_revisions')
     .select('*')
@@ -133,7 +184,7 @@ export async function fetchRevisionHistoryFromSupabase(projectId: string): Promi
 // ----------------------------------------------------------------------------
 // 4. REAL-TIME SUBSCRIPTION LISTENER FOR CROSS-MODULE BUDGET SYNC
 // ----------------------------------------------------------------------------
-export function subscribeToBudgetRealtimeChanges(projectId: string, onUpdate: () => void) {
+export function subscribeToBudgetRealtimeChanges(projectId: string = CENTRAL_PARK_PROJECT_ID, onUpdate: () => void) {
   const channel = supabase
     .channel(`realtime-budget-${projectId}`)
     .on(

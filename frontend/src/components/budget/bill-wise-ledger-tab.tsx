@@ -1,7 +1,8 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Search, Filter, FileSpreadsheet, Upload, Download, CheckCircle2, Clock, AlertTriangle, ShieldCheck, Database, Calendar, Layers, ArrowUpRight, Edit3, Save, RotateCcw, Plus, Trash2, X } from 'lucide-react';
+import { subscribeToBudgetRealtimeChanges, CENTRAL_PARK_PROJECT_ID, supabase } from '@/lib/supabase-budget';
 import ExcelImporterModal from './excel-importer-modal';
 
 export interface BillWiseLedgerRow {
@@ -141,6 +142,61 @@ export default function BillWiseLedgerTab() {
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [showUnsavedConfirmModal, setShowUnsavedConfirmModal] = useState(false);
   const [savedMsg, setSavedMsg] = useState(false);
+
+  // Live Supabase Sync Hook
+  useEffect(() => {
+    async function loadLiveLedger() {
+      const { data, error } = await supabase
+        .from('budget_ledger')
+        .select('*')
+        .eq('project_id', CENTRAL_PARK_PROJECT_ID)
+        .order('created_at', { ascending: false });
+
+      if (data && data.length > 0) {
+        setLedgerRows(data.map((r: any) => ({
+          id: r.id,
+          headActivity: r.category_name || 'Civil Works',
+          subActivityLedger: r.sub_activity || 'Contractor Work',
+          costCode: r.cost_code || 'CIV-001',
+          supplierName: r.vendor_name || 'Vendor',
+          accountingDate: new Date(r.created_at).toLocaleDateString('en-GB'),
+          billDateOfSupplier: new Date(r.created_at).toLocaleDateString('en-GB'),
+          billNo: r.bill_number || 'BILL-001',
+          billNoOfSupplier: r.bill_number || 'BILL-001',
+          remarks: r.remarks || 'Verified',
+          itemGroup: 'Civil Material',
+          itemDesc: r.sub_activity || 'Supply',
+          unit: 'LS',
+          receivedQty: 1,
+          finalBillRate: Number(r.gross_bill_amount || 0),
+          billItemAmt: Number(r.gross_bill_amount || 0),
+          gstRate: 18,
+          retentionDeduction: Number(r.retention_deduction || 0),
+          finalBillAmount: Number(r.net_payable_amount || 0),
+          advancePayment: Number(r.mob_advance_deduction || 0),
+          expectedPayment: Number(r.net_payable_amount || 0),
+          jvPayment: 0,
+          poWoNo: 'PO-CP-001',
+          poWoRate: Number(r.gross_bill_amount || 0),
+          noteOnPo: 'Verified against PO',
+          prNo: 'PR-CP-001',
+          lineRemarks: 'Verified',
+          paymentStatus: r.payment_status || 'Paid',
+          runningAvailableBudget: 1453638820 - Number(r.net_payable_amount || 0),
+        })));
+      }
+    }
+
+    loadLiveLedger();
+
+    const unsubscribe = subscribeToBudgetRealtimeChanges(CENTRAL_PARK_PROJECT_ID, () => {
+      loadLiveLedger();
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, []);
 
   // Handle cell editing in Edit Mode
   function handleCellChange(rowId: string, field: keyof BillWiseLedgerRow, value: any) {

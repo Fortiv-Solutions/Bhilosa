@@ -1,8 +1,9 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ChevronDown, ChevronRight, Search, Building2, Calendar, Scale, Layers, CheckCircle2, Eye, EyeOff, Edit3, Save, RotateCcw, History, Clock, UserCheck, ArrowUpRight, ArrowDownRight, X, FileSpreadsheet, AlertTriangle, Trash2, Sparkles, Zap, Bot, Lightbulb, Pencil } from 'lucide-react';
-import { ORBIT3_VARIANCE_CATEGORIES, type Orbit3VarianceCategory, type Orbit3VarianceItem } from '@/lib/orbit3-variance-data';
+import { ORBIT3_VARIANCE_CATEGORIES, generateVarianceCategoriesFromMaster, type Orbit3VarianceCategory, type Orbit3VarianceItem } from '@/lib/orbit3-variance-data';
+import { fetchFullMasterBudgetCategoriesFromSupabase, subscribeToBudgetRealtimeChanges, CENTRAL_PARK_PROJECT_ID } from '@/lib/supabase-budget';
 
 interface VarianceAuditLog {
   id: string;
@@ -43,6 +44,27 @@ export default function VarianceAnalysisTab({
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [showUnsavedConfirmModal, setShowUnsavedConfirmModal] = useState(false);
   const [showAiMitigationModal, setShowAiMitigationModal] = useState(false);
+
+  // Live Supabase Sync Hook
+  useEffect(() => {
+    async function loadLiveVariance() {
+      const masterCats = await fetchFullMasterBudgetCategoriesFromSupabase(CENTRAL_PARK_PROJECT_ID);
+      if (masterCats && masterCats.length > 0) {
+        const derivedVariance = generateVarianceCategoriesFromMaster(masterCats);
+        setCategories(derivedVariance);
+      }
+    }
+
+    loadLiveVariance();
+
+    const unsubscribe = subscribeToBudgetRealtimeChanges(CENTRAL_PARK_PROJECT_ID, () => {
+      loadLiveVariance();
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, []);
 
   // Default Sample Audit Logs
   const [historyLogs, setHistoryLogs] = useState<VarianceAuditLog[]>([

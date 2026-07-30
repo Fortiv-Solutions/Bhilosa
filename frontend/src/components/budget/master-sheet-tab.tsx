@@ -1,10 +1,11 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { formatIndianCurrency } from '@/utils/format-currency';
 import { ChevronDown, ChevronRight, FileSpreadsheet, Search, Pencil, Save, X, Trash2, CheckCircle2, History, Building2, Layers, Plus, AlertTriangle, FileClock, Clock, UserCheck, Sparkles, ShieldAlert, Check, Lightbulb, Copy } from 'lucide-react';
 import type { MasterBudgetCategory, MasterBudgetItem } from '@/lib/budget';
 import { CENTRAL_PARK_MASTER_BUDGET_CATEGORIES } from '@/lib/central-park-budget-data';
+import { fetchFullMasterBudgetCategoriesFromSupabase, fetchRevisionHistoryFromSupabase, saveBudgetRevisionToSupabase, subscribeToBudgetRealtimeChanges, CENTRAL_PARK_PROJECT_ID } from '@/lib/supabase-budget';
 import ExcelImporterModal from './excel-importer-modal';
 
 interface BudgetRevisionAuditLog {
@@ -77,6 +78,45 @@ export default function MasterSheetTab({
       itemDetails: [],
     },
   ]);
+
+  // Live Supabase Sync Hook
+  useEffect(() => {
+    async function loadLiveData() {
+      const liveCats = await fetchFullMasterBudgetCategoriesFromSupabase(CENTRAL_PARK_PROJECT_ID);
+      if (liveCats && liveCats.length > 0) {
+        setCategories(liveCats);
+        const openMap: Record<string, boolean> = {};
+        liveCats.forEach((c) => { openMap[c.id] = true; });
+        setOpenCategories(openMap);
+      }
+
+      const revLogs = await fetchRevisionHistoryFromSupabase(CENTRAL_PARK_PROJECT_ID);
+      if (revLogs && revLogs.length > 0) {
+        setRevisionHistoryLogs(revLogs.map(r => ({
+          id: r.id,
+          versionLabel: r.version_label,
+          timestamp: new Date(r.created_at).toLocaleString(),
+          editedBy: r.edited_by_name || 'Pramukh User',
+          justification: r.justification_reason,
+          oldTotalCost: r.old_total_cost,
+          newTotalCost: r.new_total_cost,
+          netDiffAmount: r.net_diff_amount,
+          itemDetails: [],
+        })));
+        setVersionNumber(Math.max(...revLogs.map(r => r.version_number)) + 1);
+      }
+    }
+
+    loadLiveData();
+
+    const unsubscribe = subscribeToBudgetRealtimeChanges(CENTRAL_PARK_PROJECT_ID, () => {
+      loadLiveData();
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, []);
 
   function toggleCategory(catId: string) {
     setOpenCategories((prev) => ({ ...prev, [catId]: !prev[catId] }));
