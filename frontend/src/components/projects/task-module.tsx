@@ -213,10 +213,29 @@ export function TaskModule({ project, overviewData }: { project: any, overviewDa
                       onChange={(event) => setTaskAssigneeId(event.target.value)}
                       className="w-full appearance-none rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/50 pl-4 pr-10 py-3 text-sm text-gray-900 dark:text-white outline-none transition-all focus:border-[#b68d40] focus:bg-white dark:focus:bg-gray-900 focus:ring-4 focus:ring-[#b68d40]/10 cursor-pointer"
                     >
-                      <option value="">Select team member</option>
-                      {project.teamMembers.map((member: any) => (
-                        <option key={member.id} value={member.id}>{member.name} - {member.role}</option>
-                      ))}
+                      <option value="">Select site engineer</option>
+                      {(() => {
+                        const allMembers = project.teamMembers || [];
+                        
+                        // Strict Site Engineer Filter: Exclude all upper management roles & empty roles
+                        const siteEngineers = allMembers.filter((m: any) => {
+                          const r = (m.role || '').trim().toLowerCase();
+                          if (!r) return false;
+                          const isUpperMgmt = r.includes('super') || r.includes('director') || r.includes('admin') || r.includes('owner') || r.includes('project_manager') || r.includes('project manager');
+                          if (isUpperMgmt) return false;
+                          return r.includes('site') || r.includes('engineer') || r.includes('field');
+                        });
+
+                        if (siteEngineers.length === 0) {
+                          return <option value="" disabled>⚠️ No Site Engineers found (Assign role = 'Site Engineer' in /users or SQL)</option>;
+                        }
+
+                        return siteEngineers.map((member: any) => (
+                          <option key={member.id} value={member.id}>
+                            {member.name} ({member.role || 'Site Engineer'})
+                          </option>
+                        ));
+                      })()}
                     </select>
                     <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
                   </div>

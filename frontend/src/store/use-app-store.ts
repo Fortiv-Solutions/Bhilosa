@@ -347,16 +347,16 @@ export const useAppStore = create<AppState>((set) => ({
                 const newTask: GanttTask = {
                   id: newRow.id,
                   projectId: proj.id,
-                  name: newRow.title,
+                  name: newRow.title || newRow.name || 'Untitled Task',
                   startDate: newRow.start_date || '',
-                  endDate: newRow.due_date || '',
-                  progress: newRow.progress,
+                  endDate: newRow.due_date || newRow.end_date || '',
+                  progress: Number(newRow.progress ?? (newRow.status === 'COMPLETED' ? 100 : 0)),
                   dependencies: newRow.dependencies || null,
                   isCriticalPath: newRow.priority === 'HIGH',
-                  assigneeId: newRow.assignee_id || null,
-                  assigneeName: newRow.assignee_name || null,
-                  priority: newRow.priority,
-                  status: newRow.status,
+                  assigneeId: newRow.assignee_id || newRow.assigned_to || null,
+                  assigneeName: newRow.assignee_name || newRow.assigned_name || null,
+                  priority: newRow.priority || 'MEDIUM',
+                  status: newRow.status || 'TODO',
                 };
                 return { ...proj, tasks: [...proj.tasks, newTask] };
               }
@@ -366,16 +366,16 @@ export const useAppStore = create<AppState>((set) => ({
                   ...proj,
                   tasks: proj.tasks.map(t => t.id === newRow.id ? {
                     ...t,
-                    name: newRow.title,
-                    startDate: newRow.start_date || '',
-                    endDate: newRow.due_date || '',
-                    progress: newRow.progress,
-                    dependencies: newRow.dependencies || null,
-                    isCriticalPath: newRow.priority === 'HIGH',
-                    assigneeId: newRow.assignee_id || null,
-                    assigneeName: newRow.assignee_name || null,
-                    priority: newRow.priority,
-                    status: newRow.status,
+                    name: newRow.title || newRow.name || t.name,
+                    startDate: newRow.start_date !== undefined ? newRow.start_date || '' : t.startDate,
+                    endDate: newRow.due_date || newRow.end_date || t.endDate,
+                    progress: newRow.progress !== undefined ? Number(newRow.progress) : t.progress,
+                    dependencies: newRow.dependencies !== undefined ? newRow.dependencies : t.dependencies,
+                    isCriticalPath: newRow.priority ? newRow.priority === 'HIGH' : t.isCriticalPath,
+                    assigneeId: newRow.assignee_id || newRow.assigned_to || t.assigneeId,
+                    assigneeName: newRow.assignee_name || newRow.assigned_name || t.assigneeName,
+                    priority: newRow.priority || t.priority,
+                    status: newRow.status || t.status,
                   } : t)
                 };
               }
@@ -692,16 +692,16 @@ export const useAppStore = create<AppState>((set) => ({
             .map((t: any) => ({
               id: t.id,
               projectId: proj.id,
-              name: t.title,
+              name: t.title || t.name || 'Untitled Task',
               startDate: t.start_date || '',
-              endDate: t.due_date || '',
-              progress: t.progress,
+              endDate: t.due_date || t.end_date || '',
+              progress: Number(t.progress ?? (t.status === 'COMPLETED' ? 100 : 0)),
               dependencies: t.dependencies || null,
               isCriticalPath: t.priority === 'HIGH',
-              assigneeId: t.assignee_id || null,
-              assigneeName: t.assignee_name || null,
-              priority: t.priority,
-              status: t.status,
+              assigneeId: t.assignee_id || t.assigned_to || null,
+              assigneeName: t.assignee_name || t.assigned_name || null,
+              priority: t.priority || 'MEDIUM',
+              status: t.status || 'TODO',
             }));
           return { ...proj, tasks: dbTasks };
         });
@@ -716,28 +716,45 @@ export const useAppStore = create<AppState>((set) => ({
     if (!isLiveSupabase()) return;
 
     try {
-      const { data, error } = await supabase
+      const { data: projectMemberData } = await supabase
         .from('project_members')
-        .select('project_id, user_id, profiles(id, name, email, role)')
-        .eq('is_active', true);
+        .select('project_id, user_id, project_role, profiles(id, name, email, role)');
 
-      if (error) {
-        console.warn('[store] Team members query skipped:', error.message);
-        return;
-      }
+      const { data: profilesData } = await supabase
+        .from('profiles')
+        .select('id, name, email, role, project_id');
 
       set((state) => {
         const updatedProjects = state.projects.map((proj) => {
           const dbSiteId = getDbSiteId(proj.id);
-          const members = (data ?? [])
-            .filter((m: any) => m.project_id === dbSiteId)
-            .map((m: any) => ({
-              id: m.user_id,
-              projectId: proj.id,
-              name: 'Team Member',
-              role: 'member',
-            }));
-          return { ...proj, teamMembers: members };
+
+          const pmMembers = (projectMemberData ?? [])
+            .filter((m: any) => (m.project_id === dbSiteId || !m.project_id) && m.profiles)
+            .map((m: any) => {
+              const rawRole = m.profiles?.role || m.project_role || '';
+              return {
+                id: m.user_id || m.profiles?.id,
+                projectId: proj.id,
+                name: m.profiles?.name || m.profiles?.email?.split('@')[0] || 'Member',
+                role: rawRole,
+              };
+            });
+
+          const allProfiles = (profilesData ?? []).map((p: any) => ({
+            id: p.id,
+            projectId: proj.id,
+            name: p.name || p.email?.split('@')[0] || 'User',
+            role: p.role || '',
+          }));
+
+          const combined = [...pmMembers];
+          allProfiles.forEach((p: any) => {
+            if (!combined.some((m: any) => m.id === p.id)) {
+              combined.push(p);
+            }
+          });
+
+          return { ...proj, teamMembers: combined };
         });
         return { projects: updatedProjects };
       });
@@ -1609,10 +1626,14 @@ A draft purchase request has been prepared in the Procurement Module.
 
         const { error } = await supabase.from('tasks').insert({
           project_id: dbSiteId,
+          name: task.name,
           title: task.name,
           start_date: task.startDate || null,
           due_date: task.endDate || null,
+          end_date: task.endDate || null,
+          assigned_to: assigneeId,
           assignee_id: assigneeId,
+          assigned_name: task.assigneeName || null,
           assignee_name: task.assigneeName || null,
           priority: task.priority,
           status: task.status,
@@ -1655,8 +1676,14 @@ A draft purchase request has been prepared in the Procurement Module.
         }
         if (progress !== undefined) payload.progress = progress;
         if (updates.priority !== undefined) payload.priority = updates.priority;
-        if (assigneeId !== undefined) payload.assignee_id = assigneeId;
-        if (updates.assigneeName !== undefined) payload.assignee_name = updates.assigneeName;
+        if (assigneeId !== undefined) {
+          payload.assigned_to = assigneeId;
+          payload.assignee_id = assigneeId;
+        }
+        if (updates.assigneeName !== undefined) {
+          payload.assigned_name = updates.assigneeName;
+          payload.assignee_name = updates.assigneeName;
+        }
 
         const { error } = await supabase
           .from('tasks')
