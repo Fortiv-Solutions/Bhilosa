@@ -4373,8 +4373,8 @@ Rules:
                   </SectionCard>
                 </div>
 
-                {/* Procurement / Inventory / Workforce / Quality */}
-                <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
+                {/* Procurement / Inventory / Quality */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                   <SectionCard title="Procurement">
                     <div className="grid grid-cols-2 gap-2">
                       {[
@@ -4407,21 +4407,6 @@ Rules:
                     )}
                   </SectionCard>
 
-                  <SectionCard title="Workforce">
-                    <div className="grid grid-cols-1 gap-2">
-                      <div className="bg-muted/30 rounded-2xl px-3 py-2">
-                        <span className="text-[8px] text-muted-foreground font-bold uppercase tracking-wider block leading-none mb-1">Team Members</span>
-                        <span className="text-xs font-black text-foreground">{project!.teamMembers.length}</span>
-                      </div>
-                      {Object.entries(overviewRoleBreakdown).slice(0, 3).map(([role, count]) => (
-                        <div key={role} className="bg-muted/30 rounded-2xl px-3 py-2">
-                          <span className="text-[8px] text-muted-foreground font-bold uppercase tracking-wider block leading-none mb-1">{role}</span>
-                          <span className="text-xs font-black text-foreground">{count as number}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </SectionCard>
-
                   <SectionCard title="Quality">
                     <div className="grid grid-cols-2 gap-2">
                       {[
@@ -4434,21 +4419,6 @@ Rules:
                           <span className={`text-xs font-black ${s.c || 'text-foreground'}`}>{s.v}</span>
                         </div>
                       ))}
-                    </div>
-                  </SectionCard>
-                </div>
-
-                {/* Safety */}
-                <div className="grid grid-cols-1 gap-3">
-                  <SectionCard title="Safety Dashboard">
-                    <div className="grid grid-cols-2 gap-3">
-                      <StatCard icon={ShieldCheck} label="Days Since Last Incident" value={overviewDaysSinceIncident ?? '—'} />
-                      <StatCard
-                        icon={AlertTriangle}
-                        label="Total Incidents Logged"
-                        value={liveSafetyIncidents.length}
-                        accent="ring-rose-200 dark:ring-rose-800"
-                      />
                     </div>
                   </SectionCard>
                 </div>
