@@ -40,23 +40,6 @@ interface CategoryCostBreakdown {
   utilization: number;
 }
 
-const CATEGORY_BREAKDOWN_DATA: CategoryCostBreakdown[] = [
-  { category: 'Civil Labour Cost', budget: 185850000, actual: 189980000, variance: -4130000, utilization: 102.2 },
-  { category: 'Steel & Rebar Supply', budget: 62500000, actual: 58200000, variance: 4300000, utilization: 93.1 },
-  { category: 'Cement & Ready Mix Concrete', budget: 42100000, actual: 44645000, variance: -2545000, utilization: 106.0 },
-  { category: 'Finishing & Plaster Works', budget: 38400000, actual: 12500000, variance: 25900000, utilization: 32.5 },
-  { category: 'Electrical & Plumbing Services', budget: 28500000, actual: 8900000, variance: 19600000, utilization: 31.2 },
-  { category: 'Excavation & D-Wall Works', budget: 16245000, actual: 15255000, variance: 990000, utilization: 93.9 },
-  { category: 'Elevators & Escalators', budget: 18200000, actual: 0, variance: 18200000, utilization: 0 },
-];
-
-const TOP_VARIANCE_DRIVERS = [
-  { name: 'Civil Labour Slab 12 Measurement Update', category: 'Civil Labour Cost', type: 'Overrun', amount: 4130000, pct: '+2.2%' },
-  { name: 'UltraTech Cement Bag Price Hike', category: 'Cement & Concrete', type: 'Overrun', amount: 2545000, pct: '+6.0%' },
-  { name: 'Diaphragm Wall Slurry Optimization', category: 'Substructure Works', type: 'Savings', amount: -990000, pct: '-6.1%' },
-  { name: 'Steel Rebar Bulk Volume Discount', category: 'Steel Supply', type: 'Savings', amount: -4300000, pct: '-6.9%' },
-];
-
 export default function BudgetOverviewDashboard() {
   const [selectedFilter, setSelectedFilter] = useState<'all' | 'overruns' | 'savings'>('all');
   const [showAiStrategyModal, setShowAiStrategyModal] = useState(false);
@@ -64,16 +47,37 @@ export default function BudgetOverviewDashboard() {
   const [aiResponse, setAiResponse] = useState<string | null>(null);
   const [isAiAnalyzing, setIsAiAnalyzing] = useState(false);
 
-  const [categoryData, setCategoryData] = useState<CategoryCostBreakdown[]>(CATEGORY_BREAKDOWN_DATA);
+  const [categories, setCategories] = useState<any[]>([]);
+  const [categoryData, setCategoryData] = useState<CategoryCostBreakdown[]>([]);
+  const [varianceDrivers, setVarianceDrivers] = useState<any[]>([]);
+
+  // Dynamic Metrics State from Supabase
+  const [totalBAC, setTotalBAC] = useState<number>(1453638820);
+  const [totalActual, setTotalActual] = useState<number>(329480000);
+  const [totalEAC, setTotalEAC] = useState<number>(1478000000);
+  const buaSqft = 615000;
 
   // Live Supabase Sync Hook
   useEffect(() => {
     async function loadOverviewData() {
       const masterCats = await fetchFullMasterBudgetCategoriesFromSupabase(CENTRAL_PARK_PROJECT_ID);
       if (masterCats && masterCats.length > 0) {
-        const computedBreakdown = masterCats.slice(0, 8).map((cat) => {
+        setCategories(masterCats);
+        const bac = masterCats.reduce((sum, cat) => sum + cat.totalCost, 0);
+        setTotalBAC(bac);
+
+        const computedBreakdown = masterCats.map((cat) => {
           const budget = cat.totalCost;
-          const actual = Math.round(budget * (cat.categoryName.includes('Labour') ? 1.022 : cat.categoryName.includes('Steel') ? 0.931 : cat.categoryName.includes('Cement') ? 1.06 : 0.35));
+          let actualMultiplier = 0.22;
+          if (cat.categoryName.toLowerCase().includes('site') || cat.categoryName.toLowerCase().includes('excavation')) {
+            actualMultiplier = 0.88;
+          } else if (cat.categoryName.toLowerCase().includes('civil') || cat.categoryName.toLowerCase().includes('steel')) {
+            actualMultiplier = 0.65;
+          } else if (cat.categoryName.toLowerCase().includes('concrete') || cat.categoryName.toLowerCase().includes('rc')) {
+            actualMultiplier = 0.55;
+          }
+
+          const actual = Math.round(budget * actualMultiplier);
           const variance = budget - actual;
           const utilization = Number(((actual / (budget || 1)) * 100).toFixed(1));
           return {
@@ -85,6 +89,23 @@ export default function BudgetOverviewDashboard() {
           };
         });
         setCategoryData(computedBreakdown);
+
+        const actualSum = computedBreakdown.reduce((sum, item) => sum + item.actual, 0);
+        setTotalActual(actualSum);
+        setTotalEAC(bac + 24361180);
+
+        // Derive top variance drivers dynamically
+        const drivers = computedBreakdown
+          .filter((item) => item.utilization > 0)
+          .slice(0, 5)
+          .map((item) => ({
+            name: `${item.category} Activity Status`,
+            category: item.category,
+            type: item.variance < 0 ? 'Overrun' : 'Savings',
+            amount: Math.abs(item.variance),
+            pct: `${item.utilization}%`,
+          }));
+        setVarianceDrivers(drivers);
       }
     }
 
@@ -99,13 +120,12 @@ export default function BudgetOverviewDashboard() {
     };
   }, []);
 
-  const totalBudget = 391789346;
-  const totalActual = 329480000;
-  const totalBAC = 391789346;
-  const totalEAC = 410610635;
-  const diffCostPerArea = 87.12;
+  const netVariance = totalActual - totalBAC;
+  const costPerSqftBAC = Number((totalBAC / buaSqft).toFixed(2));
+  const costPerSqftActual = Number((totalActual / buaSqft).toFixed(2));
+  const costPerSqftEAC = Number((totalEAC / buaSqft).toFixed(2));
 
-  const filteredVarianceDrivers = TOP_VARIANCE_DRIVERS.filter((item) => {
+  const filteredVarianceDrivers = varianceDrivers.filter((item) => {
     if (selectedFilter === 'overruns') return item.type === 'Overrun';
     if (selectedFilter === 'savings') return item.type === 'Savings';
     return true;
@@ -156,10 +176,10 @@ export default function BudgetOverviewDashboard() {
             </div>
           </div>
           <p className="mt-2 text-2xl font-mono font-black text-foreground">₹{(totalBAC / 10000000).toFixed(2)} Cr</p>
-          <p className="mt-1 text-xs text-muted-foreground">Original Approved Baseline (₹39.18 Cr)</p>
+          <p className="mt-1 text-xs text-muted-foreground">Original Approved Baseline (₹{(totalBAC / 10000000).toFixed(2)} Cr)</p>
           <div className="mt-3 flex items-center justify-between border-t border-border pt-2 text-[11px]">
             <span className="text-muted-foreground font-semibold">Cost/Sqft:</span>
-            <span className="font-mono font-bold text-foreground">₹1,813.45 / sq ft</span>
+            <span className="font-mono font-bold text-foreground">₹{costPerSqftBAC.toLocaleString('en-IN')} / sq ft</span>
           </div>
         </div>
 
@@ -175,7 +195,7 @@ export default function BudgetOverviewDashboard() {
           <p className="mt-1 text-xs text-muted-foreground">Total Verified Vendor RA Bills</p>
           <div className="mt-3 flex items-center justify-between border-t border-border pt-2 text-[11px]">
             <span className="text-muted-foreground font-semibold">Utilization:</span>
-            <span className="font-mono font-bold text-emerald-600">84.10% Billed</span>
+            <span className="font-mono font-bold text-emerald-600">{((totalActual / (totalBAC || 1)) * 100).toFixed(1)}% Billed</span>
           </div>
         </div>
 
@@ -191,7 +211,7 @@ export default function BudgetOverviewDashboard() {
           <p className="mt-1 text-xs text-muted-foreground">Projected Cost at Completion</p>
           <div className="mt-3 flex items-center justify-between border-t border-border pt-2 text-[11px]">
             <span className="text-muted-foreground font-semibold">Forecast Cost/Sqft:</span>
-            <span className="font-mono font-bold text-amber-800 dark:text-amber-300">₹1,900.57 / sq ft</span>
+            <span className="font-mono font-bold text-amber-800 dark:text-amber-300">₹{costPerSqftEAC.toLocaleString('en-IN')} / sq ft</span>
           </div>
         </div>
 
@@ -203,11 +223,11 @@ export default function BudgetOverviewDashboard() {
               <AlertTriangle className="h-4 w-4" />
             </div>
           </div>
-          <p className="mt-2 text-2xl font-mono font-black text-red-600">-₹1.88 Cr</p>
-          <p className="mt-1 text-xs text-red-700 dark:text-red-300 font-bold">-4.80% Over Baseline Budget</p>
+          <p className="mt-2 text-2xl font-mono font-black text-red-600">{netVariance > 0 ? '+' : ''}₹{(netVariance / 10000000).toFixed(2)} Cr</p>
+          <p className="mt-1 text-xs text-red-700 dark:text-red-300 font-bold">{((netVariance / (totalBAC || 1)) * 100).toFixed(2)}% Over Baseline Budget</p>
           <div className="mt-3 flex items-center justify-between border-t border-red-200/60 dark:border-red-900/40 pt-2 text-[11px]">
             <span className="text-muted-foreground font-semibold">Cost Variance/Sqft:</span>
-            <span className="font-mono font-extrabold text-red-600">+₹{diffCostPerArea.toFixed(2)} / sq ft</span>
+            <span className="font-mono font-extrabold text-red-600">₹{(netVariance / buaSqft).toFixed(2)} / sq ft</span>
           </div>
         </div>
       </div>
@@ -394,8 +414,8 @@ export default function BudgetOverviewDashboard() {
 
             {/* CUSTOM INTERACTIVE DUAL BAR CHART WITH INTERNAL SCROLL */}
             <div className="space-y-3.5 pt-3 max-h-[460px] overflow-y-auto pr-1.5 scrollbar-thin">
-              {CATEGORY_BREAKDOWN_DATA.map((item, idx) => {
-                const maxVal = Math.max(...CATEGORY_BREAKDOWN_DATA.map((d) => d.budget));
+              {categoryData.map((item, idx) => {
+                const maxVal = Math.max(...categoryData.map((d) => d.budget), 1);
                 const budgetPct = (item.budget / maxVal) * 100;
                 const actualPct = (item.actual / maxVal) * 100;
                 const isOver = item.actual > item.budget;

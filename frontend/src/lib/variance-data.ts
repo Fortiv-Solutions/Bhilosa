@@ -1,7 +1,8 @@
 import type { MasterBudgetCategory } from './budget';
 import { CENTRAL_PARK_MASTER_BUDGET_CATEGORIES } from './central-park-budget-data';
+import { supabase, CENTRAL_PARK_PROJECT_ID } from './supabase-budget';
 
-export interface Orbit3VarianceItem {
+export interface VarianceItem {
   id: string;
   srNo: string;
   parentGroup?: string;
@@ -27,10 +28,10 @@ export interface Orbit3VarianceItem {
   remark: string;
 }
 
-export interface Orbit3VarianceCategory {
+export interface VarianceCategory {
   id: string;
   categoryName: string;
-  items: Orbit3VarianceItem[];
+  items: VarianceItem[];
   totalBudgetCost: number;
   totalActualCost: number;
   totalBalance: number;
@@ -39,47 +40,37 @@ export interface Orbit3VarianceCategory {
 
 /**
  * Dynamically generates a production-grade Variance Analysis table dataset
- * from any MasterBudgetCategory[] (Central Park, Orbit 3, SkyRise, etc.)
+ * from any MasterBudgetCategory[] (Central Park, Commercial Tower, SkyRise, etc.)
  * preserving identical column structures and calculation rules across all projects.
  */
 export function generateVarianceCategoriesFromMaster(
   masterCategories: MasterBudgetCategory[]
-): Orbit3VarianceCategory[] {
+): VarianceCategory[] {
   return masterCategories.map((cat, cIdx) => {
-    const items: Orbit3VarianceItem[] = cat.items.map((item, iIdx) => {
+    const items: VarianceItem[] = cat.items.map((item, iIdx) => {
       const budgetQty = item.qtyTotal || 1;
       const budgetRate = item.rate || 0;
       const budgetCost = item.cost || Math.round(budgetQty * budgetRate);
 
-      // Deterministic actual bill factors for initial state:
-      // Overruns on civil labour & cement to match real-life scenario, rest 85-95% completed
-      let actualBillQty = budgetQty;
-      let actualBillRate = budgetRate;
-      let remark = 'Aligned with Master Baseline Budget schedule.';
-      let workStatus = 'In Progress';
+      // Actual bill state: defaults to 0 until vendor bills/RA bills are logged or edited
+      const actualBillQty = item.actualBillQty ?? 0;
+      const actualBillRate = item.actualBillRate ?? 0;
+      const actualTotalCost = item.actualTotalCost ?? Math.round(actualBillQty * actualBillRate);
+      const remark = item.remark || (actualTotalCost > 0 ? 'Recorded from Vendor Bill / RA Bill' : 'Pending vendor bill entry');
+      const workStatus = actualTotalCost > 0 ? (actualBillQty >= budgetQty ? 'Completed' : 'In Progress') : 'Not Started';
 
-      const catLower = cat.categoryName.toLowerCase();
-      const itemLower = item.item.toLowerCase();
-
-      if (catLower.includes('labour') || itemLower.includes('labour')) {
-        actualBillQty = Math.round(budgetQty * 1.022); // +2.2% scope expansion
-        remark = 'RA Bill 14 shuttering area scope expansion on Slab 12.';
-      } else if (catLower.includes('cement') || itemLower.includes('cement')) {
-        actualBillRate = Math.round(budgetRate * 1.06); // +6% rate hike
-        remark = 'UltraTech price hike per bag in regional Gujarat market.';
-      } else if (catLower.includes('steel') || itemLower.includes('steel')) {
-        actualBillRate = Math.round(budgetRate * 0.931); // -6.9% bulk discount
-        remark = 'Steel Rebar bulk volume purchase discount.';
-      } else {
-        actualBillQty = Math.round(budgetQty * 0.85); // 85% execution
-      }
-
-      const actualTotalCost = Math.round(actualBillQty * actualBillRate);
-      const qtyVariation = Number((actualBillQty - budgetQty).toFixed(2));
-      const rateVariation = Number((actualBillRate - budgetRate).toFixed(2));
-      const balance = Math.round(budgetCost - actualTotalCost);
-      const costVarianceAmount = Math.round(actualTotalCost - budgetCost);
-      const costVariancePercent = budgetCost > 0 ? Number(((costVarianceAmount / budgetCost) * 100).toFixed(2)) : 0;
+      // Formula matching Excel screenshot:
+      // 1. Balance = Math.max(0, budgetCost - actualTotalCost)
+      // 2. Cost Variance Amount = Math.min(0, budgetCost - actualTotalCost) (negative when actual > budget, 0 otherwise)
+      // 3. Cost Variance % = Math.abs(costVarianceAmount) / budgetCost * 100 (when overrun occurs)
+      const balance = Math.max(0, Math.round(budgetCost - actualTotalCost));
+      const rawDiff = Math.round(budgetCost - actualTotalCost);
+      const costVarianceAmount = rawDiff < 0 ? rawDiff : 0;
+      const costVariancePercent = (costVarianceAmount < 0 && budgetCost > 0)
+        ? Number(((Math.abs(costVarianceAmount) / budgetCost) * 100).toFixed(2))
+        : 0;
+      const qtyVariation = actualBillQty > 0 ? Number((actualBillQty - budgetQty).toFixed(2)) : 0;
+      const rateVariation = actualBillRate > 0 ? Number((actualBillRate - budgetRate).toFixed(2)) : 0;
 
       return {
         id: `var-${item.id || `${cIdx}-${iIdx}`}`,
@@ -93,9 +84,9 @@ export function generateVarianceCategoriesFromMaster(
         budgetQty,
         budgetRate,
         budgetCost,
-        poQty: budgetQty,
-        poRate: budgetRate,
-        poAmount: budgetCost,
+        poQty: item.poQty ?? 0,
+        poRate: item.poRate ?? 0,
+        poAmount: item.poAmount ?? Math.round((item.poQty ?? 0) * (item.poRate ?? 0)),
         actualBillQty,
         actualBillRate,
         actualTotalCost,
@@ -114,7 +105,7 @@ export function generateVarianceCategoriesFromMaster(
     const totalVarianceAmount = Math.round(items.reduce((sum, i) => sum + i.costVarianceAmount, 0));
 
     return {
-      id: `var-cat-${cat.id || cIdx + 1}`,
+      id: cat.id || `var-cat-${cIdx}`,
       categoryName: cat.categoryName,
       items,
       totalBudgetCost,
@@ -125,9 +116,5 @@ export function generateVarianceCategoriesFromMaster(
   });
 }
 
-/**
- * Default Variance Dataset generated directly from Central Park Master Budget Categories
- */
-export const ORBIT3_VARIANCE_CATEGORIES: Orbit3VarianceCategory[] = generateVarianceCategoriesFromMaster(
-  CENTRAL_PARK_MASTER_BUDGET_CATEGORIES
-);
+export const DEFAULT_VARIANCE_CATEGORIES: VarianceCategory[] =
+  generateVarianceCategoriesFromMaster(CENTRAL_PARK_MASTER_BUDGET_CATEGORIES);

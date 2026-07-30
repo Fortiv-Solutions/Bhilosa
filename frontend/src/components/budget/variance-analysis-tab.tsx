@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { ChevronDown, ChevronRight, Search, Building2, Calendar, Scale, Layers, CheckCircle2, Eye, EyeOff, Edit3, Save, RotateCcw, History, Clock, UserCheck, ArrowUpRight, ArrowDownRight, X, FileSpreadsheet, AlertTriangle, Trash2, Sparkles, Zap, Bot, Lightbulb, Pencil } from 'lucide-react';
-import { ORBIT3_VARIANCE_CATEGORIES, generateVarianceCategoriesFromMaster, type Orbit3VarianceCategory, type Orbit3VarianceItem } from '@/lib/orbit3-variance-data';
+import { DEFAULT_VARIANCE_CATEGORIES, generateVarianceCategoriesFromMaster, type VarianceCategory, type VarianceItem } from '@/lib/variance-data';
 import { fetchFullMasterBudgetCategoriesFromSupabase, subscribeToBudgetRealtimeChanges, CENTRAL_PARK_PROJECT_ID } from '@/lib/supabase-budget';
 
 interface VarianceAuditLog {
@@ -26,29 +26,34 @@ interface VarianceAuditLog {
 }
 
 interface VarianceAnalysisTabProps {
-  categories?: Orbit3VarianceCategory[];
+  projectId?: string;
+  projectName?: string;
+  categories?: VarianceCategory[];
   saleableAreaSqft?: number;
   asOfDate?: string;
   canManage?: boolean;
 }
 
 export default function VarianceAnalysisTab({
-  categories: initialCategories = ORBIT3_VARIANCE_CATEGORIES,
-  saleableAreaSqft = 216046.0,
-  asOfDate = '20-07-2026',
+  projectId = CENTRAL_PARK_PROJECT_ID,
+  projectName = 'Central Park Residential Project',
+  categories: initialCategories = DEFAULT_VARIANCE_CATEGORIES,
+  saleableAreaSqft = 615000.0,
+  asOfDate = '30-07-2026',
   canManage = true,
 }: VarianceAnalysisTabProps) {
-  const [categories, setCategories] = useState<Orbit3VarianceCategory[]>(initialCategories);
+  const [categories, setCategories] = useState<VarianceCategory[]>(initialCategories);
   const [isEditMode, setIsEditMode] = useState(false);
   const [editedItems, setEditedItems] = useState<Record<string, { billQty: number; billRate: number; remark: string }>>({});
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [showUnsavedConfirmModal, setShowUnsavedConfirmModal] = useState(false);
   const [showAiMitigationModal, setShowAiMitigationModal] = useState(false);
 
-  // Live Supabase Sync Hook
+  // Live Supabase Sync Hook for any Project ID
   useEffect(() => {
     async function loadLiveVariance() {
-      const masterCats = await fetchFullMasterBudgetCategoriesFromSupabase(CENTRAL_PARK_PROJECT_ID);
+      const activeProjId = projectId || CENTRAL_PARK_PROJECT_ID;
+      const masterCats = await fetchFullMasterBudgetCategoriesFromSupabase(activeProjId);
       if (masterCats && masterCats.length > 0) {
         const derivedVariance = generateVarianceCategoriesFromMaster(masterCats);
         setCategories(derivedVariance);
@@ -57,14 +62,15 @@ export default function VarianceAnalysisTab({
 
     loadLiveVariance();
 
-    const unsubscribe = subscribeToBudgetRealtimeChanges(CENTRAL_PARK_PROJECT_ID, () => {
+    const activeProjId = projectId || CENTRAL_PARK_PROJECT_ID;
+    const unsubscribe = subscribeToBudgetRealtimeChanges(activeProjId, () => {
       loadLiveVariance();
     });
 
     return () => {
       unsubscribe();
     };
-  }, []);
+  }, [projectId]);
 
   // Default Sample Audit Logs
   const [historyLogs, setHistoryLogs] = useState<VarianceAuditLog[]>([
@@ -106,7 +112,7 @@ export default function VarianceAnalysisTab({
       editedBy: 'Project Director (Pramukh Group)',
       changesCount: 100,
       netImpactAmount: 0,
-      remarksSummary: 'Imported Master Budget & Initial Actuals from Orbit_3_Budget_Recon_Main.xlsm',
+      remarksSummary: 'Imported Master Budget & Baseline Actuals from Central_Park_Budget.xlsx',
       itemDetails: [],
     },
   ]);
@@ -127,7 +133,7 @@ export default function VarianceAnalysisTab({
   }
 
   // Handle Edit Input Change
-  function handleCellChange(itemId: string, field: 'billQty' | 'billRate' | 'remark', value: any, defaultItem: Orbit3VarianceItem) {
+  function handleCellChange(itemId: string, field: 'billQty' | 'billRate' | 'remark', value: any, defaultItem: VarianceItem) {
     setEditedItems((prev) => {
       const current = prev[itemId] || {
         billQty: defaultItem.actualBillQty,
@@ -154,20 +160,24 @@ export default function VarianceAnalysisTab({
     }
   }
 
+  function handleStartEditing() {
+    setIsEditMode(true);
+  }
+
   // Save Edits & Create History Snapshot
   function handleSaveEdits() {
-    const changeDetails: VarianceAuditLog['itemDetails'] = [];
     let netImpact = 0;
+    const changeDetails: VarianceAuditLog['itemDetails'] = [];
 
     const updatedCategories = categories.map((cat) => {
       const updatedCatItems = cat.items.map((item) => {
         const edit = editedItems[item.id];
         if (!edit) return item;
 
-        const oldCost = item.actualTotalCost;
         const billQty = edit.billQty;
         const billRate = edit.billRate;
         const actualTotalCost = Math.round(billQty * billRate);
+        const oldCost = item.actualTotalCost;
         const costDiff = actualTotalCost - oldCost;
 
         if (costDiff !== 0 || edit.remark !== item.remark) {
@@ -184,11 +194,14 @@ export default function VarianceAnalysisTab({
           netImpact += costDiff;
         }
 
-        const qtyVariation = Number((billQty - item.budgetQty).toFixed(2));
-        const rateVariation = Number((billRate - item.budgetRate).toFixed(2));
-        const balance = Math.round(item.budgetCost - actualTotalCost);
-        const costVarianceAmount = Math.round(actualTotalCost - item.budgetCost);
-        const costVariancePercent = item.budgetCost > 0 ? Number(((costVarianceAmount / item.budgetCost) * 100).toFixed(2)) : 0;
+        const balance = Math.max(0, Math.round(item.budgetCost - actualTotalCost));
+        const rawDiff = Math.round(item.budgetCost - actualTotalCost);
+        const costVarianceAmount = rawDiff < 0 ? rawDiff : 0;
+        const costVariancePercent = (costVarianceAmount < 0 && item.budgetCost > 0)
+          ? Number(((Math.abs(costVarianceAmount) / item.budgetCost) * 100).toFixed(2))
+          : 0;
+        const qtyVariation = billQty > 0 ? Number((billQty - item.budgetQty).toFixed(2)) : 0;
+        const rateVariation = billRate > 0 ? Number((billRate - item.budgetRate).toFixed(2)) : 0;
 
         return {
           ...item,
@@ -259,21 +272,13 @@ export default function VarianceAnalysisTab({
   const totalActualCost = categories.reduce((sum, c) => sum + c.totalActualCost, 0);
   const totalQtyVariation = allItems.reduce((sum, i) => sum + (i.qtyVariation || 0), 0);
   const totalRateVariation = allItems.reduce((sum, i) => sum + (i.rateVariation || 0), 0);
-  const totalBalance = totalBudgetCost - totalActualCost;
-  const totalCostVarianceAmount = totalActualCost - totalBudgetCost;
-  const totalCostVariancePercent = totalBudgetCost > 0 ? (totalCostVarianceAmount / totalBudgetCost) * 100 : 0;
-
-  const bacCostPerArea = saleableAreaSqft > 0 ? totalBudgetCost / saleableAreaSqft : 0;
-  const eacTotalCost = totalBudgetCost + Math.max(0, totalCostVarianceAmount);
-  const eacCostPerArea = saleableAreaSqft > 0 ? eacTotalCost / saleableAreaSqft : 0;
-  const diffCostPerArea = eacCostPerArea - bacCostPerArea;
+  const totalBalanceAmount = categories.reduce((sum, c) => sum + c.totalBalance, 0);
+  const totalVarianceAmount = categories.reduce((sum, c) => sum + c.totalVarianceAmount, 0);
+  const totalVariancePercent = totalBudgetCost > 0 ? ((totalVarianceAmount / totalBudgetCost) * 100).toFixed(2) : '0.00';
 
   const civilMaterialDifferences = [
-    { material: 'Cement', unit: 'Bags', qty: 13130, basicRate: 385, avgRate: 412, diffAmount: 354510 },
-    { material: 'Sand', unit: 'Ton', qty: 2278, basicRate: 1250, avgRate: 1340, diffAmount: 205020 },
-    { material: 'Metal 10mm & 20mm', unit: 'Ton', qty: 1378, basicRate: 1050, avgRate: 1120, diffAmount: 96460 },
-    { material: 'Bricks', unit: 'Nos.', qty: 149709, basicRate: 10.03, avgRate: 11.20, diffAmount: 175160 },
-    { material: 'Steel / Rebar', unit: 'Ton', qty: 450, basicRate: 62500, avgRate: 64200, diffAmount: 765000 },
+    { name: 'Fe 550D TMT Steel Rebar', originalBudget: 153000000, currentCost: 142500000, diffAmount: -10500000, reason: 'Bulk procurement volume discount' },
+    { name: 'UltraTech PPC Cement (50kg Bags)', originalBudget: 42500000, currentCost: 45050000, diffAmount: 2550000, reason: 'Market price hike per bag in Q2 2026' },
   ];
   const totalMaterialDiffAmount = civilMaterialDifferences.reduce((s, m) => s + m.diffAmount, 0);
 
@@ -287,7 +292,7 @@ export default function VarianceAnalysisTab({
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h2 className="font-heading text-lg font-bold text-foreground tracking-tight">Pramukh Orbit 3 — Cost Summary &amp; Variance Recon</h2>
+              <h2 className="font-heading text-lg font-bold text-foreground tracking-tight">{projectName} — Cost Summary &amp; Variance Analysis</h2>
               <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-[10px] font-extrabold text-emerald-800 uppercase">
                 {isEditMode ? 'Editing Variance Mode' : 'Verified Variance.xlsx'}
               </span>
@@ -520,9 +525,10 @@ export default function VarianceAnalysisTab({
                         const currentCost = Math.round(currentBillQty * currentBillRate);
                         const currentQtyVar = Number((currentBillQty - item.budgetQty).toFixed(2));
                         const currentRateVar = Number((currentBillRate - item.budgetRate).toFixed(2));
-                        const currentBalance = Math.round(item.budgetCost - currentCost);
-                        const currentCostVarAmt = Math.round(currentCost - item.budgetCost);
-                        const currentCostVarPct = item.budgetCost > 0 ? (currentCostVarAmt / item.budgetCost) * 100 : 0;
+                        const currentBalance = Math.max(0, Math.round(item.budgetCost - currentCost));
+                        const currentRawDiff = Math.round(item.budgetCost - currentCost);
+                        const currentCostVarAmt = currentRawDiff < 0 ? currentRawDiff : 0;
+                        const currentCostVarPct = (currentCostVarAmt < 0 && item.budgetCost > 0) ? (Math.abs(currentCostVarAmt) / item.budgetCost) * 100 : 0;
                         const isOverrun = currentCostVarAmt < 0;
 
                         return (
@@ -591,16 +597,18 @@ export default function VarianceAnalysisTab({
                             <td className="px-3.5 py-2 text-right font-mono text-amber-700 dark:text-amber-400 font-semibold whitespace-nowrap border-r border-border">{currentRateVar.toLocaleString('en-IN')}</td>
 
                             {/* BALANCE */}
-                            <td className="px-4 py-2 text-right font-mono font-extrabold text-foreground whitespace-nowrap border-r border-border bg-muted/30">{currentBalance.toLocaleString('en-IN')}</td>
+                            <td className="px-4 py-2 text-right font-mono font-extrabold text-foreground whitespace-nowrap border-r border-border bg-muted/30">
+                              {currentBalance > 0 ? `₹${currentBalance.toLocaleString('en-IN')}` : '-'}
+                            </td>
 
                             {/* COST VARIANCE (AMOUNT) */}
-                            <td className={`px-4 py-2 text-right font-mono font-black whitespace-nowrap border-r border-border ${isOverrun ? 'text-red-600 bg-red-50/40 dark:bg-red-950/20' : 'text-emerald-600'}`}>
-                              {isOverrun ? '-' : ''}₹{Math.abs(currentCostVarAmt).toLocaleString('en-IN')}
+                            <td className={`px-4 py-2 text-right font-mono font-black whitespace-nowrap border-r border-border ${isOverrun ? 'text-red-600 bg-red-50/40 dark:bg-red-950/20 font-bold' : 'text-muted-foreground'}`}>
+                              {isOverrun ? `-₹${Math.abs(currentCostVarAmt).toLocaleString('en-IN')}` : '0.00'}
                             </td>
 
                             {/* COST VARIANCE (%) */}
-                            <td className={`px-3.5 py-2 text-right font-mono font-bold whitespace-nowrap border-r border-border ${isOverrun ? 'text-red-600' : 'text-emerald-600'}`}>
-                              {currentCostVarPct.toFixed(2)}%
+                            <td className={`px-3.5 py-2 text-right font-mono font-bold whitespace-nowrap border-r border-border ${isOverrun ? 'text-red-600 font-black' : 'text-muted-foreground'}`}>
+                              {currentCostVarPct > 0 ? `${currentCostVarPct.toFixed(2)}%` : '0.00%'}
                             </td>
 
                             {/* EDITABLE REMARK */}
@@ -650,19 +658,19 @@ export default function VarianceAnalysisTab({
 
                 {/* Balance */}
                 <td className="px-4 py-3 text-right font-mono text-slate-100 font-black border-r border-slate-700 text-xs">
-                  ₹{totalBalance.toLocaleString('en-IN')}
+                  ₹{totalBalanceAmount.toLocaleString('en-IN')}
                 </td>
 
                 {/* Cost Variance (Amount) */}
                 <td className="px-4 py-3 text-right font-mono text-xs border-r border-slate-700">
-                  <span className={`inline-block rounded px-2.5 py-1 text-white font-black shadow-2xs ${totalCostVarianceAmount < 0 ? 'bg-red-600' : 'bg-emerald-600'}`}>
-                    {totalCostVarianceAmount < 0 ? '-' : ''}₹{Math.abs(totalCostVarianceAmount).toLocaleString('en-IN')}
+                  <span className={`inline-block rounded px-2.5 py-1 text-white font-black shadow-2xs ${totalVarianceAmount < 0 ? 'bg-red-600' : 'bg-slate-700'}`}>
+                    {totalVarianceAmount < 0 ? `-₹${Math.abs(totalVarianceAmount).toLocaleString('en-IN')}` : '0.00'}
                   </span>
                 </td>
 
                 {/* Cost Variance (%) */}
                 <td className="px-3.5 py-3 text-right font-mono text-red-400 font-black border-r border-slate-700 text-xs">
-                  {Math.abs(totalCostVariancePercent).toFixed(2)}%
+                  {totalVariancePercent}%
                 </td>
 
                 <td></td>

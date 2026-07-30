@@ -35,6 +35,13 @@ export type MasterBudgetItem = {
   costPerBua?: number | null;
   committedAmount?: number;
   spentAmount?: number;
+  poQty?: number;
+  poRate?: number;
+  poAmount?: number;
+  actualBillQty?: number;
+  actualBillRate?: number;
+  actualTotalCost?: number;
+  remark?: string;
   itemType?: 'material' | 'labour' | 'service' | 'mixed';
   scopeTag?: ScopeTag;
 };

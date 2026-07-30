@@ -68,6 +68,19 @@ export async function fetchFullMasterBudgetCategoriesFromSupabase(projectId: str
       .eq('project_id', projectId)
       .order('sr_no', { ascending: true });
 
+    // C. Fetch Variance Items for Real Actual Billed Spend
+    const { data: dbVarianceItems } = await supabase
+      .from('budget_variance_items')
+      .select('*')
+      .eq('project_id', projectId);
+
+    const varianceMap = new Map<string, any>();
+    if (dbVarianceItems) {
+      dbVarianceItems.forEach(v => {
+        if (v.master_budget_item_id) varianceMap.set(v.master_budget_item_id, v);
+      });
+    }
+
     if (catErr || itemErr || !dbCategories || dbCategories.length === 0) {
       console.warn('Supabase categories or items not found, serving Central Park fallback seed');
       return CENTRAL_PARK_MASTER_BUDGET_CATEGORIES;
@@ -77,22 +90,32 @@ export async function fetchFullMasterBudgetCategoriesFromSupabase(projectId: str
     const result: MasterBudgetCategory[] = dbCategories.map((catRow) => {
       const matchingItems = (dbItems || [])
         .filter((item) => item.category_id === catRow.id || item.category_name === catRow.category_name)
-        .map((itemRow): MasterBudgetItem => ({
-          id: itemRow.id,
-          srNo: itemRow.sr_no,
-          category: catRow.category_name,
-          item: itemRow.item_description,
-          qtyRcc: itemRow.qty_rcc,
-          qtyFinishes: itemRow.qty_finishes,
-          qtyInfra: itemRow.qty_infra,
-          qtyTotal: Number(itemRow.qty_total || 1),
-          unit: itemRow.unit || 'LS',
-          rate: Number(itemRow.estimated_rate || 0),
-          cost: Number(itemRow.budgeted_cost || 0),
-          costPerBua: Number(itemRow.cost_per_bua || 0),
-          scopeTag: itemRow.scope_tag as any || 'site_infra',
-          itemType: itemRow.item_type as any || 'material',
-        }));
+        .map((itemRow): MasterBudgetItem => {
+          const varRow = varianceMap.get(itemRow.id);
+          return {
+            id: itemRow.id,
+            srNo: itemRow.sr_no,
+            category: catRow.category_name,
+            item: itemRow.item_description,
+            qtyRcc: itemRow.qty_rcc,
+            qtyFinishes: itemRow.qty_finishes,
+            qtyInfra: itemRow.qty_infra,
+            qtyTotal: Number(itemRow.qty_total || 1),
+            unit: itemRow.unit || 'LS',
+            rate: Number(itemRow.estimated_rate || 0),
+            cost: Number(itemRow.budgeted_cost || 0),
+            costPerBua: Number(itemRow.cost_per_bua || 0),
+            scopeTag: itemRow.scope_tag as any || 'site_infra',
+            itemType: itemRow.item_type as any || 'material',
+            poQty: varRow ? Number(varRow.po_qty || 0) : 0,
+            poRate: varRow ? Number(varRow.po_rate || 0) : 0,
+            poAmount: varRow ? Number(varRow.po_amount || 0) : 0,
+            actualBillQty: varRow ? Number(varRow.actual_bill_qty || 0) : 0,
+            actualBillRate: varRow ? Number(varRow.actual_bill_rate || 0) : 0,
+            actualTotalCost: varRow ? Number(varRow.actual_total_cost || 0) : 0,
+            remark: varRow ? varRow.remark : undefined,
+          };
+        });
 
       const catTotalCost = matchingItems.reduce((sum, item) => sum + item.cost, 0);
 
@@ -202,9 +225,45 @@ export function subscribeToBudgetRealtimeChanges(projectId: string = CENTRAL_PAR
       { event: '*', schema: 'public', table: 'master_budget_items', filter: `project_id=eq.${projectId}` },
       () => onUpdate()
     )
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'budget_variance_items', filter: `project_id=eq.${projectId}` },
+      () => onUpdate()
+    )
     .subscribe();
 
   return () => {
     supabase.removeChannel(channel);
   };
+}
+
+// ----------------------------------------------------------------------------
+// 5. SAVE VARIANCE ITEM EDITS TO SUPABASE REAL-TIME
+// ----------------------------------------------------------------------------
+export async function updateVarianceItemInSupabase(
+  masterItemId: string,
+  actualBillQty: number,
+  actualBillRate: number,
+  remark: string,
+  projectId: string = CENTRAL_PARK_PROJECT_ID
+) {
+  const actualTotalCost = Math.round(actualBillQty * actualBillRate);
+
+  const { data, error } = await supabase
+    .from('budget_variance_items')
+    .update({
+      actual_bill_qty: actualBillQty,
+      actual_bill_rate: actualBillRate,
+      actual_total_cost: actualTotalCost,
+      remark: remark,
+      work_status: actualTotalCost > 0 ? 'In Progress' : 'Not Started',
+      updated_at: new Date().toISOString()
+    })
+    .eq('master_budget_item_id', masterItemId)
+    .eq('project_id', projectId);
+
+  if (error) {
+    console.error('Error updating variance item in Supabase:', error);
+  }
+  return { data, error };
 }

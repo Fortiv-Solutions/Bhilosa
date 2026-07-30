@@ -8,7 +8,7 @@ import VarianceAnalysisTab from '@/components/budget/variance-analysis-tab';
 import BillWiseLedgerTab from '@/components/budget/bill-wise-ledger-tab';
 import BudgetCashFlowChart from '@/components/budget-cash-flow-chart';
 import BudgetSettingsTab from '@/components/budget/budget-settings-tab';
-import { ORBIT3_VARIANCE_CATEGORIES } from '@/lib/orbit3-variance-data';
+import { DEFAULT_VARIANCE_CATEGORIES } from '@/lib/variance-data';
 import { formatIndianCurrency } from '@/utils/format-currency';
 import {
   AlertTriangle,
@@ -35,6 +35,7 @@ function numberValue(value: number | string | null | undefined): number {
 }
 
 export default function BudgetPage() {
+  const store = useAppStore() as any;
   const {
     projects = [],
     selectedProjectId,
@@ -45,7 +46,7 @@ export default function BudgetPage() {
     refreshDashboard,
     userRole,
     runAction,
-  } = useAppStore();
+  } = store;
 
   const [activeTab, setActiveTab] = useState<BudgetTab>('dashboard');
 
@@ -67,16 +68,16 @@ export default function BudgetPage() {
   const safeProjects = Array.isArray(projects) ? projects : [];
 
   const totals = useMemo(() => {
-    const allocated = safeDashboard.summaries.reduce((sum, row) => sum + numberValue(row?.allocated_amount), 0);
-    const committed = safeDashboard.summaries.reduce((sum, row) => sum + numberValue(row?.committed_amount), 0);
-    const spent = safeDashboard.summaries.reduce((sum, row) => sum + numberValue(row?.spent_amount), 0);
-    const available = safeDashboard.summaries.reduce((sum, row) => sum + numberValue(row?.remaining_amount), 0);
+    const allocated = safeDashboard.summaries.reduce((sum: number, row: any) => sum + numberValue(row?.allocated_amount), 0);
+    const committed = safeDashboard.summaries.reduce((sum: number, row: any) => sum + numberValue(row?.committed_amount), 0);
+    const spent = safeDashboard.summaries.reduce((sum: number, row: any) => sum + numberValue(row?.spent_amount), 0);
+    const available = safeDashboard.summaries.reduce((sum: number, row: any) => sum + numberValue(row?.remaining_amount), 0);
     const utilization = allocated > 0 ? ((committed + spent) / allocated) * 100 : 0;
     return { allocated, committed, spent, available, utilization };
   }, [safeDashboard.summaries]);
 
   const openAlertsCount = useMemo(() => {
-    return safeDashboard.alerts.filter((alert) => alert?.status === 'pending').length.toString();
+    return safeDashboard.alerts.filter((alert: any) => alert?.status === 'pending').length.toString();
   }, [safeDashboard.alerts]);
 
   return (
@@ -170,9 +171,9 @@ export default function BudgetPage() {
         <MasterSheetTab canManage={true} />
       )}
 
-      {/* TAB 3: VARIANCE RECONCILIATION (Orbit 3 Recon XLSM) */}
+      {/* TAB 3: VARIANCE RECONCILIATION */}
       {activeTab === 'variance' && (
-        <VarianceAnalysisTab categories={ORBIT3_VARIANCE_CATEGORIES} canManage={true} />
+        <VarianceAnalysisTab categories={DEFAULT_VARIANCE_CATEGORIES} canManage={true} />
       )}
 
       {/* TAB 4: BILL-WISE LEDGER (28-Column Construction ERP Ledger) */}
