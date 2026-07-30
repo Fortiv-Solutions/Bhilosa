@@ -198,6 +198,9 @@ CREATE TABLE IF NOT EXISTS public.budget_variance_items (
   CONSTRAINT unq_variance_item UNIQUE (project_id, master_budget_item_id)
 );
 
+-- Ensure Unique Index exists on pre-existing budget_variance_items table for ON CONFLICT target
+CREATE UNIQUE INDEX IF NOT EXISTS idx_unq_variance_project_item ON public.budget_variance_items (project_id, master_budget_item_id);
+
 CREATE INDEX IF NOT EXISTS idx_budget_variance_project ON public.budget_variance_items(project_id);
 
 -- ----------------------------------------------------------------------------

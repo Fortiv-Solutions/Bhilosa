@@ -31,6 +31,9 @@ BEGIN
   ALTER TABLE public.master_budget_items ADD COLUMN IF NOT EXISTS item_type text DEFAULT 'material';
   ALTER TABLE public.master_budget_items ADD COLUMN IF NOT EXISTS version_number integer DEFAULT 1;
 
+  -- Ensure Unique Index exists on pre-existing budget_variance_items table for ON CONFLICT target
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_unq_variance_project_item ON public.budget_variance_items (project_id, master_budget_item_id);
+
   INSERT INTO public.projects (id, code, name, location, bua_sqft, budget_amount, actual_spend_amount, status)
   VALUES (
     v_proj_id,
