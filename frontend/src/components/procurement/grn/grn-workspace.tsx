@@ -283,11 +283,6 @@ export function GrnWorkspace({
           <GrnForm
             grn={activeGrn}
             vendorOptions={vendorOptions}
-            purchaseOrderOptions={purchaseOrders.map((po) => ({
-              id: po.id,
-              po_number: po.po_number,
-              vendor_id: po.vendor_id,
-            }))}
             onPrint={() => {
               if (onDownloadReport && activeGrn.id) {
                 onDownloadReport(activeGrn.id);

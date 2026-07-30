@@ -272,6 +272,32 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
     return () => window.clearTimeout(timer);
   }, [refresh]);
 
+  // Real-time subscription for mobile MR submissions & status changes
+  useEffect(() => {
+    if (!liveMode) return;
+    const channel = supabase
+      .channel('realtime-material-requests-erp')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'material_requests' },
+        () => {
+          void refresh();
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'material_request_lines' },
+        () => {
+          void refresh();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [liveMode, refresh]);
+
   /**
    * Realtime sync.
    *

@@ -86,6 +86,20 @@ CREATE TABLE public.tasks (
   priority text DEFAULT 'MEDIUM'::text,
   status text DEFAULT 'TODO'::text,
   location_block text,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  done boolean DEFAULT false,
+  assignee_id uuid,
+  assignee_name text,
+  approval_status text DEFAULT 'NOT_SUBMITTED'::text,
+  created_by_name text,
+  approved_by_name text,
+  assigned_by_name text,
+  phase text,
+  site_tower_block text,
+  has_issue boolean DEFAULT false,
+  issue_details text,
+  issue_reported_at timestamp with time zone,
   CONSTRAINT tasks_pkey PRIMARY KEY (id),
   CONSTRAINT tasks_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.projects(id),
   CONSTRAINT tasks_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.profiles(id),
@@ -2017,4 +2031,27 @@ CREATE TABLE public.budget_config (
   CONSTRAINT budget_config_pkey PRIMARY KEY (project_id),
   CONSTRAINT budget_config_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.projects(id),
   CONSTRAINT budget_config_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.profiles(id)
+);
+CREATE TABLE public.ai_chat_sessions (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL,
+  title text,
+  project_id uuid,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  is_archived boolean NOT NULL DEFAULT false,
+  CONSTRAINT ai_chat_sessions_pkey PRIMARY KEY (id),
+  CONSTRAINT ai_chat_sessions_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.profiles(id),
+  CONSTRAINT ai_chat_sessions_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.projects(id)
+);
+CREATE TABLE public.ai_chat_messages (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  session_id uuid NOT NULL,
+  role text NOT NULL CHECK (role = ANY (ARRAY['user'::text, 'assistant'::text])),
+  content text NOT NULL,
+  context_snapshot jsonb,
+  tokens_used integer,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT ai_chat_messages_pkey PRIMARY KEY (id),
+  CONSTRAINT ai_chat_messages_session_id_fkey FOREIGN KEY (session_id) REFERENCES public.ai_chat_sessions(id)
 );

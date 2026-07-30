@@ -177,8 +177,6 @@ interface GrnFormProps {
   grn: GrnRow;
   /** Active vendors backing the supplier dropdown. */
   vendorOptions?: VendorOption[];
-  /** Issued purchase orders a receipt can be linked to. */
-  purchaseOrderOptions?: { id: string; po_number: string; vendor_id?: string }[];
   onSubmit: (formData: FullGrnFormState) => void;
   /** Generates the report-format Goods Received Note PDF and opens it in a new tab. */
   onPrint?: () => void;
@@ -188,7 +186,6 @@ interface GrnFormProps {
 export function GrnForm({
   grn,
   vendorOptions = [],
-  purchaseOrderOptions = [],
   onSubmit,
   onPrint,
   onCancel,

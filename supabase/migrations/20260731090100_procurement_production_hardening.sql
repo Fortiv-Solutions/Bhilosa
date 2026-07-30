@@ -591,25 +591,32 @@ CREATE TRIGGER guard_vendor_bill_approval
 -- Resolves a usable stock_ledger.transaction_type label at runtime. The
 -- enum's labels differ between environments, so hardcoding one is how the
 -- budget module previously broke.
+-- As of this migration the column is erp_inventory_txn_type, whose inbound
+-- label is 'inward'. The lookup stays dynamic (rather than hardcoding it)
+-- because label sets differ between environments — hardcoding one is exactly
+-- how the budget module previously broke on a missing enum value.
 CREATE OR REPLACE FUNCTION public.app_stock_receipt_txn_type()
 RETURNS text
 LANGUAGE sql
 STABLE
 AS $$
   WITH preferred AS (
-    SELECT unnest(ARRAY[
-      'grn_receipt', 'purchase_receipt', 'receipt', 'grn', 'inward', 'in', 'purchase'
-    ]) AS label, generate_series(1, 7) AS ord
+    SELECT label, ord
+    FROM unnest(ARRAY[
+      'inward', 'grn_receipt', 'purchase_receipt', 'receipt', 'grn', 'opening'
+    ]) WITH ORDINALITY AS u(label, ord)
+  ),
+  target_type AS (
+    SELECT a.atttypid AS oid
+    FROM pg_attribute a
+    WHERE a.attrelid = 'public.stock_ledger'::regclass
+      AND a.attname = 'transaction_type'
+      AND NOT a.attisdropped
   )
   SELECT p.label
   FROM preferred p
   JOIN pg_enum e ON e.enumlabel = p.label
-  JOIN pg_type t ON t.oid = e.enumtypid
-  WHERE t.typname = (
-    SELECT udt_name FROM information_schema.columns
-    WHERE table_schema = 'public' AND table_name = 'stock_ledger'
-      AND column_name = 'transaction_type'
-  )
+  JOIN target_type tt ON tt.oid = e.enumtypid
   ORDER BY p.ord
   LIMIT 1;
 $$;
