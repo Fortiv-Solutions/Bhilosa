@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useAppStore } from '@/store/use-app-store';
@@ -51,7 +51,8 @@ import {
   ChevronUp,
   Video,
   Smartphone,
-  FolderClosed
+  FolderClosed,
+  AlertTriangle
 } from 'lucide-react';
 import { use } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -67,6 +68,11 @@ import { getDPRs, approveDPR, rejectDPR } from '@/lib/dpr';
 import { isUpperManagement } from '@/lib/rbac';
 import { getPendingApprovals } from '@/lib/approvals';
 import { getQCInspections, getSafetyIncidents } from '@/lib/safety-qc';
+import { listProcurementDashboard, type ProcurementDashboardData } from '@/lib/procurement';
+import { listBudgetDashboard, type BudgetDashboardData } from '@/lib/budget';
+import { formatIndianCurrency } from '@/utils/format-currency';
+import { SectionCard } from '@/components/ui/section-card';
+import { StatCard } from '@/components/ui/stat-card';
 import {
   ResponsiveContainer,
   LineChart,
@@ -609,6 +615,37 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
     };
   }, [project, id]);
 
+  // Project-scoped procurement, budget, QC and safety data for the Overview tab.
+  // Each source is caught independently so one table's permission/RLS error
+  // doesn't blank out the others (matches the company dashboard's fetch pattern).
+  const [liveProcurement, setLiveProcurement] = useState<ProcurementDashboardData | null>(null);
+  const [liveBudget, setLiveBudget] = useState<BudgetDashboardData | null>(null);
+  const [qcInspections, setQcInspections] = useState<any[]>([]);
+  const [liveSafetyIncidents, setLiveSafetyIncidents] = useState<any[]>([]);
+
+  useEffect(() => {
+    if (!project) return;
+    const dbSiteId = getDbSiteId(project.id);
+    let active = true;
+
+    Promise.all([
+      listProcurementDashboard(dbSiteId).catch(err => { console.error('Procurement fetch failed:', err); return null; }),
+      listBudgetDashboard(dbSiteId).catch(err => { console.error('Budget fetch failed:', err); return null; }),
+      getQCInspections(dbSiteId).catch(err => { console.error('QC fetch failed:', err); return null; }),
+      getSafetyIncidents(dbSiteId).catch(err => { console.error('Safety fetch failed:', err); return null; }),
+    ]).then(([procData, budgetData, qcData, safetyData]) => {
+      if (!active) return;
+      setLiveProcurement(procData);
+      setLiveBudget(budgetData);
+      setQcInspections(qcData || []);
+      setLiveSafetyIncidents(safetyData || []);
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [project?.id]);
+
   const handleApproveWorkflow = async (id: string, type: string) => {
     try {
       if (type === 'Daily Progress Report') {
@@ -633,6 +670,107 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
       console.error('Failed to reject:', err);
     }
   };
+
+  // ────────────────────────────────────────────────────────────────────────
+  // Overview tab — derived real-data stats (no fabricated values)
+  // ────────────────────────────────────────────────────────────────────────
+  const overviewTaskStats = useMemo(() => {
+    const tasks = project?.tasks || [];
+    const today = new Date();
+    const isOpen = (t: any) => t.status !== 'COMPLETED' && t.status !== 'CANCELLED';
+    const overdueTasks = tasks.filter((t: any) => isOpen(t) && t.endDate && new Date(t.endDate) < today);
+    const criticalTasks = tasks.filter((t: any) => t.isCriticalPath);
+    const criticalOrOverdue = [...new Map([...criticalTasks, ...overdueTasks].map((t: any) => [t.id, t])).values()]
+      .map((t: any) => {
+        const delayDays = isOpen(t) && t.endDate && new Date(t.endDate) < today
+          ? Math.floor((today.getTime() - new Date(t.endDate).getTime()) / 86400000)
+          : 0;
+        return { ...t, delayDays };
+      });
+    return {
+      total: tasks.length,
+      completed: tasks.filter((t: any) => t.status === 'COMPLETED').length,
+      inProgress: tasks.filter((t: any) => t.status === 'IN_PROGRESS').length,
+      overdue: overdueTasks,
+      critical: criticalTasks,
+      criticalOrOverdue,
+    };
+  }, [project]);
+
+  const overviewLowStockMaterials = useMemo(
+    () => (project?.materials || []).filter((m: any) => m.quantity <= m.reorderLevel),
+    [project]
+  );
+
+  const overviewBudgetTotals = useMemo(() => {
+    if (!liveBudget?.summaries?.length) return null;
+    return liveBudget.summaries.reduce((acc, r) => ({
+      allocated: acc.allocated + Number(r.allocated_amount || 0),
+      committed: acc.committed + Number(r.committed_amount || 0),
+      spent: acc.spent + Number(r.spent_amount || 0),
+    }), { allocated: 0, committed: 0, spent: 0 });
+  }, [liveBudget]);
+
+  const overviewPendingBillsCount = useMemo(() => {
+    if (!liveProcurement?.vendorBills) return null;
+    return liveProcurement.vendorBills.filter((b: any) => !['approved', 'paid', 'rejected'].includes(b?.status)).length;
+  }, [liveProcurement]);
+
+  const overviewPendingPRsCount = useMemo(() => {
+    if (!liveProcurement?.purchaseRequisitions) return null;
+    return liveProcurement.purchaseRequisitions.filter((pr: any) => pr.status === 'pending_approval').length;
+  }, [liveProcurement]);
+
+  const overviewDaysSinceIncident = useMemo(() => {
+    const dates = liveSafetyIncidents.map((s: any) => s?.incident_date).filter(Boolean).sort();
+    const referenceDate = dates.length ? dates[dates.length - 1] : project?.startDate;
+    if (!referenceDate) return null;
+    const diff = Math.floor((Date.now() - new Date(referenceDate).getTime()) / 86400000);
+    return diff >= 0 ? diff : null;
+  }, [liveSafetyIncidents, project]);
+
+  const overviewQcStats = useMemo(() => ({
+    passed: qcInspections.filter((q: any) => q?.result === 'pass' || q?.status === 'passed').length,
+    failed: qcInspections.filter((q: any) => q?.result === 'fail' || q?.status === 'failed').length,
+  }), [qcInspections]);
+
+  const overviewRoleBreakdown = useMemo(() => {
+    return (project?.teamMembers || []).reduce((acc: Record<string, number>, m: any) => {
+      const role = m.role || 'Unspecified';
+      acc[role] = (acc[role] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>);
+  }, [project]);
+
+  const overviewRecentActivity = useMemo(() => {
+    const dprItems = dprLogs.map((d: any) => ({
+      id: `dpr-${d.id}`,
+      date: d?.report_date || d?.created_at,
+      text: `Daily Progress Report submitted${d?.status ? ` — ${d.status}` : ''}`,
+    }));
+    const delayItems = delayEvents.map((d: any) => ({
+      id: `delay-${d.id}`,
+      date: d?.created_at,
+      text: d?.reason_details || d?.description || 'Delay event logged',
+    }));
+    return [...dprItems, ...delayItems]
+      .filter(i => i.date)
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+      .slice(0, 6);
+  }, [dprLogs, delayEvents]);
+
+  function overviewTaskBarPosition(tsk: any) {
+    const projectStart = project?.startDate ? new Date(project.startDate).getTime() : NaN;
+    const projectEnd = project?.endDate ? new Date(project.endDate).getTime() : NaN;
+    const projectSpan = projectEnd - projectStart;
+    if (!projectSpan || projectSpan <= 0 || !tsk.startDate || !tsk.endDate) return { left: 0, width: 25 };
+    const tStart = new Date(tsk.startDate).getTime();
+    const tEnd = new Date(tsk.endDate).getTime();
+    if (isNaN(tStart) || isNaN(tEnd)) return { left: 0, width: 25 };
+    const left = Math.max(0, Math.min(95, ((tStart - projectStart) / projectSpan) * 100));
+    const width = Math.max(4, Math.min(100 - left, ((tEnd - tStart) / projectSpan) * 100));
+    return { left, width };
+  }
 
   // Supabase sync helpers for Quality Control module
   const syncQcRequestToSupabase = async (req: any) => {
@@ -1288,180 +1426,6 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   };
   const projectWeather = project ? getWeatherForProject(project.id) : { temp: '32°C', desc: 'Partly Cloudy, 12 km/h Wind' };
 
-  // Detailed overview command center data
-  const getProjectOverviewData = (id: string) => {
-    switch(id) {
-      case 'central-park':
-        return {
-          physicalProgress: 28,
-          plannedProgress: 34,
-          variance: -6,
-          budgetUsed: '₹24.2 Cr',
-          workforce: 186,
-          pendingApprovals: 7,
-          materialRisk: 1,
-          openIssues: 3,
-          
-          developer: 'Pramukh Group',
-          pmc: 'Fortiv Solutions PMC',
-          architect: 'Space Design Associates',
-          consultant: 'V. R. Patel & Associates',
-          towers: 4,
-          units: 180,
-          builtUpArea: '2,45,000 Sq.Ft.',
-          startDate: '2025-05-01',
-          targetCompletion: '30 Jul 2027',
-          reraNumber: 'PR/GJ/SURAT/SURAT CITY/S120',
-          propertyType: 'Residential Apartment',
-          
-          forecastCompletion: '15 Sep 2027',
-          forecastDelay: 47,
-          milestonesCompleted: 12,
-          totalMilestones: 18,
-          cpi: 0.92,
-          
-          approvedBudget: '₹90 Cr',
-          committedCost: '₹58 Cr',
-          actualSpent: '₹24 Cr',
-          pendingBills: '₹4 Cr',
-          forecastCost: '₹95 Cr',
-          potentialOverrun: '₹5 Cr',
-          
-          prRaised: 152,
-          prPending: 8,
-          poIssued: 121,
-          pendingDeliveries: 12,
-          delayedDeliveries: 3,
-          criticalMaterials: 2,
-          
-          cementStock: { days: 18, status: 'Healthy' as const },
-          steelStock: { days: 24, status: 'Healthy' as const },
-          aacStock: { days: 7, status: 'Low' as const },
-          tilesStock: { days: 3, status: 'Low' as const },
-          reorderAlerts: 3,
-          
-          requiredWorkforce: 220,
-          shortfall: 34,
-          productivity: 84,
-          activeContractors: 8,
-          subcontractors: 14,
-          
-          qaInspections: 245,
-          passed: 231,
-          failed: 14,
-          openSnags: 36,
-          closedSnags: 192,
-          
-          safeDays: 148,
-          safetyAudits: 22,
-          openNcr: 3,
-          safetyViolations: 5,
-          
-          criticalActivities: [
-            { name: 'Tower A Slab L7', delay: '5 Days' },
-            { name: 'Waterproofing', delay: '8 Days' },
-            { name: 'MEP Shaft Closure', delay: '3 Days' }
-          ],
-          
-          aiInsights: [
-            'Tower B delayed by 6 days due to slab cycle lag.',
-            'Budget burn exceeds progress by 8%.',
-            'Cement stock below safety threshold.',
-            '2 approvals blocking structural execution.'
-          ],
-          aiActions: [
-            'Approve PR-145 (Cement reinforcement)',
-            'Increase workforce by 18 labour on Tower A',
-            'Expedite waterproofing vendor appointment'
-          ]
-        };
-      case 'orbit-4':
-      default:
-        return {
-          physicalProgress: 46,
-          plannedProgress: 50,
-          variance: -4,
-          budgetUsed: '₹24.0 Cr',
-          workforce: 194,
-          pendingApprovals: 2,
-          materialRisk: 1,
-          openIssues: 2,
-          
-          developer: 'Pramukh Group',
-          pmc: 'Fortiv Solutions PMC',
-          architect: 'Sanjay Puri Architects',
-          consultant: 'Delcons Consultants',
-          towers: 2,
-          units: 96,
-          builtUpArea: '1,85,000 Sq.Ft.',
-          startDate: '2025-10-01',
-          targetCompletion: '30 Dec 2027',
-          reraNumber: 'PR/GJ/SURAT/SURAT CITY/S044',
-          propertyType: 'Commercial Corporate Complex',
-          
-          forecastCompletion: '20 Jan 2028',
-          forecastDelay: 21,
-          milestonesCompleted: 15,
-          totalMilestones: 20,
-          cpi: 0.96,
-          
-          approvedBudget: '₹54 Cr',
-          committedCost: '₹38 Cr',
-          actualSpent: '₹24 Cr',
-          pendingBills: '₹2 Cr',
-          forecastCost: '₹56 Cr',
-          potentialOverrun: '₹2 Cr',
-          
-          prRaised: 94,
-          prPending: 2,
-          poIssued: 78,
-          pendingDeliveries: 5,
-          delayedDeliveries: 1,
-          criticalMaterials: 1,
-          
-          cementStock: { days: 12, status: 'Low' as const },
-          steelStock: { days: 18, status: 'Healthy' as const },
-          aacStock: { days: 9, status: 'Healthy' as const },
-          tilesStock: { days: 15, status: 'Healthy' as const },
-          reorderAlerts: 1,
-          
-          requiredWorkforce: 210,
-          shortfall: 16,
-          productivity: 90,
-          activeContractors: 5,
-          subcontractors: 10,
-          
-          qaInspections: 180,
-          passed: 172,
-          failed: 8,
-          openSnags: 14,
-          closedSnags: 158,
-          
-          safeDays: 210,
-          safetyAudits: 18,
-          openNcr: 1,
-          safetyViolations: 2,
-          
-          criticalActivities: [
-            { name: 'Level 8 Deck Casting', delay: '4 Days' },
-            { name: 'GRC Facade Brackets', delay: '6 Days' },
-            { name: 'Fire Piping Support', delay: '2 Days' }
-          ],
-          
-          aiInsights: [
-            'East facade anchor plates survey variance requires structural alignment.',
-            'High-speed lift shop-drawing approval lagging by 14 days.',
-            'Steel stock is healthy, but reorder level is approaching.'
-          ],
-          aiActions: [
-            'Approve structural alignment protocol',
-            'Expedite high-speed lift drawing signature',
-            'Review steel vendor PO next week'
-          ]
-        };
-    }
-  };
-  const overviewData = project ? getProjectOverviewData(project.id) : getProjectOverviewData('central-park');
   const [imageMode, setImageMode] = useState<'render' | 'photo' | 'drone' | 'camera'>('render');
 
   // Daily Activity Form states
@@ -4296,79 +4260,53 @@ Rules:
             {activeTab === 'project-management' && (
               <div className="space-y-4">
 
-                {/* ─── KPI Grid ─── */}
-                <div className="grid grid-cols-1 gap-4 items-stretch">
-
-                  {/* KPI Grid Panel - full width */}
-                  <div className="bg-card rounded-[24px] border border-border/40 p-5 shadow-sm flex flex-col">
-                    <h3 className="text-[11px] font-heading font-black uppercase tracking-widest text-foreground mb-4 flex items-center gap-2">
-                      <span className="w-2 h-4 bg-[#FF7D29] rounded-full"></span> Key Metrics
-                    </h3>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 flex-1 h-full">
-                      {[
-                        { label: 'Physical Progress', value: `${overviewData.physicalProgress}%`, sub: `Planned ${overviewData.plannedProgress}%`, color: '#FF7D29', bg: 'bg-[#FF7D29]/10', icon: Gauge, spark: [18,22,25,28] },
-                        { label: 'Schedule Variance', value: `${overviewData.variance}%`, sub: 'Behind Plan', color: '#ef4444', bg: 'bg-red-500/10', icon: Clock, spark: [-2,-4,-5,-6] },
-                        { label: 'Budget Used', value: overviewData.budgetUsed, sub: `of ${overviewData.approvedBudget}`, color: '#3b82f6', bg: 'bg-blue-500/10', icon: Coins, spark: [12,16,20,24] },
-                        { label: 'Workforce', value: `${overviewData.workforce}`, sub: `Need ${overviewData.requiredWorkforce}`, color: '#8b5cf6', bg: 'bg-violet-500/10', icon: Users, spark: [200,195,190,186] },
-                        { label: 'Pending Approvals', value: `${overviewData.pendingApprovals}`, sub: 'Items awaiting', color: '#f59e0b', bg: 'bg-amber-500/10', icon: ClipboardList, spark: [3,5,6,7] },
-                        { label: 'Material Risk', value: `${overviewData.materialRisk}`, sub: 'Critical items', color: '#ef4444', bg: 'bg-red-500/10', icon: PackageOpen, spark: [0,1,1,1] },
-                        { label: 'Open Issues', value: `${overviewData.openIssues}`, sub: 'High priority', color: '#f97316', bg: 'bg-orange-500/10', icon: ListTodo, spark: [2,4,3,3] },
-                        { label: 'Safe Days', value: `${overviewData.safeDays}`, sub: 'Without incident', color: '#10b981', bg: 'bg-emerald-500/10', icon: ShieldCheck, spark: [140,145,147,148] },
-                      ].map((kpi) => {
-                        const Icon = kpi.icon;
-                        return (
-                          <div key={kpi.label} className="group relative bg-muted/30 border border-transparent hover:border-border/60 hover:bg-muted/50 rounded-2xl p-3 flex items-center justify-between transition-all duration-300">
-                            <div className="flex items-center gap-3">
-                              <div className={`w-8 h-8 rounded-xl flex items-center justify-center ${kpi.bg}`}>
-                                <Icon className="w-4 h-4" style={{ color: kpi.color }} />
-                              </div>
-                              <div>
-                                <span className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground block leading-tight">{kpi.label}</span>
-                                <span className="text-sm font-black text-foreground block leading-none mt-0.5">{kpi.value}</span>
-                              </div>
-                            </div>
-                            <div className="flex flex-col items-end justify-center w-[40px]">
-                              <svg width="32" height="12" viewBox="0 0 32 16" className="opacity-60 group-hover:opacity-100 transition-opacity">
-                                {kpi.spark.map((v, i, arr) => {
-                                  const min = Math.min(...arr), max = Math.max(...arr), range = max - min || 1;
-                                  const x = (i / (arr.length - 1)) * 30 + 1;
-                                  const y = 15 - ((v - min) / range) * 13;
-                                  return i === 0 ? null : (
-                                    <line key={i} x1={(((i-1) / (arr.length - 1)) * 30 + 1)} y1={15 - (((arr[i-1] - min) / range) * 13)} x2={x} y2={y} stroke={kpi.color} strokeWidth="2" strokeLinecap="round" />
-                                  );
-                                })}
-                              </svg>
-                              <span className="text-[7px] text-muted-foreground font-bold mt-1 text-right leading-tight whitespace-nowrap">{kpi.sub}</span>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
+                {/* Key Metrics */}
+                <SectionCard title="Key Metrics" subtitle="Real-time project health at a glance.">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                    <StatCard icon={Gauge} label="Physical Progress" value={`${project!.progress}%`} />
+                    <StatCard
+                      icon={Coins}
+                      label="Budget Spent"
+                      value={overviewBudgetTotals ? formatIndianCurrency(overviewBudgetTotals.spent) : formatIndianCurrency(project!.actualSpend)}
+                    />
+                    <StatCard icon={Users} label="Team Members" value={project!.teamMembers.length} />
+                    <StatCard
+                      icon={ClipboardList}
+                      label="Pending Approvals"
+                      value={pendingWorkflows.length}
+                      accent="ring-amber-200 dark:ring-amber-800"
+                    />
+                    <StatCard
+                      icon={PackageOpen}
+                      label="Material Risk"
+                      value={overviewLowStockMaterials.length}
+                      accent="ring-rose-200 dark:ring-rose-800"
+                    />
+                    <StatCard
+                      icon={AlertTriangle}
+                      label="Open Delays"
+                      value={delayEvents.length}
+                      accent="ring-rose-200 dark:ring-rose-800"
+                    />
+                    <StatCard icon={FileText} label="Open DPRs" value={dprLogs.filter((d: any) => d?.status === 'draft').length} />
+                    <StatCard icon={ShieldCheck} label="Days Since Last Incident" value={overviewDaysSinceIncident ?? '—'} />
                   </div>
-                </div>
+                </SectionCard>
 
-                {/* ─── MIDDLE ROW: 3-Col Analytics ─── */}
+                {/* Project Info / Progress & Budget / Team & Tasks */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                  
-                  {/* Col 1: Project Info */}
-                  <div className="bg-card rounded-[24px] border border-border/40 shadow-sm p-4 flex flex-col hover:shadow-md transition-all duration-300">
-                    <div className="flex items-center justify-between mb-4">
-                      <div className="flex items-center gap-2">
-                        <span className="w-2 h-4 bg-[#FF7D29] rounded-full"></span>
-                        <h3 className="font-heading font-black text-[11px] uppercase tracking-widest text-foreground">Project Info</h3>
-                      </div>
-                      <span className="text-[8px] font-bold text-emerald-600 bg-emerald-500/10 px-2.5 py-1 rounded-full uppercase tracking-wider">Active Portfolio</span>
-                    </div>
-                    <div className="grid grid-cols-2 gap-x-4 gap-y-4 flex-1">
+                  <SectionCard title="Project Info">
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-4">
                       {[
                         { l: 'Project', v: project!.name },
-                        { l: 'Type', v: overviewData.propertyType },
-                        { l: 'Developer', v: overviewData.developer },
-                        { l: 'PMC', v: overviewData.pmc },
-                        { l: 'Architect', v: overviewData.architect },
-                        { l: 'Towers/Units', v: `${overviewData.towers} / ${overviewData.units}` },
-                        { l: 'BUA', v: overviewData.builtUpArea },
-                        { l: 'RERA', v: overviewData.reraNumber },
+                        { l: 'Location', v: project!.location || 'Not set' },
+                        { l: 'Client', v: project!.clientName },
+                        { l: 'Phase', v: project!.currentPhase },
+                        { l: 'Status', v: project!.status },
+                        { l: 'Start Date', v: project!.startDate || 'Not set' },
+                        { l: 'Target End', v: project!.endDate || 'Not set' },
+                        ...(project!.reraNo ? [{ l: 'RERA No', v: project!.reraNo }] : []),
+                        ...(project!.propertyType ? [{ l: 'Type', v: project!.propertyType }] : []),
                       ].map(f => (
                         <div key={f.l} className="min-w-0">
                           <span className="text-[8px] text-muted-foreground uppercase font-bold tracking-wider block leading-none mb-1">{f.l}</span>
@@ -4376,440 +4314,223 @@ Rules:
                         </div>
                       ))}
                     </div>
-                  </div>
+                  </SectionCard>
 
-                  {/* Col 2: Progress & Burn */}
-                  <div className="bg-card rounded-[24px] border border-border/40 shadow-sm p-4 flex flex-col hover:shadow-md transition-all duration-300">
-                    <div className="flex items-center justify-between mb-4">
-                      <div className="flex items-center gap-2">
-                        <span className="w-2 h-4 bg-[#FF7D29] rounded-full"></span>
-                        <h3 className="font-heading font-black text-[11px] uppercase tracking-widest text-foreground">Progress & Burn</h3>
-                      </div>
-                      <span className={`text-[8px] font-bold px-2.5 py-1 rounded-full border uppercase tracking-wider ${overviewData.variance < 0 ? 'text-red-500 bg-red-500/10 border-red-500/20' : 'text-emerald-500 bg-emerald-500/10 border-emerald-500/20'}`}>
-                        {overviewData.variance < 0 ? `▼ Delay ${overviewData.variance}%` : `▲ Ahead +${overviewData.variance}%`}
-                      </span>
-                    </div>
-                    
-                    <div className="flex flex-col gap-4 flex-1 justify-between">
-                      {/* Dual ring */}
-                      <div className="flex items-center gap-5 bg-slate-50/50 dark:bg-slate-900/50 p-3 rounded-2xl border border-border/40">
+                  <SectionCard title="Progress & Budget">
+                    <div className="flex flex-col gap-4">
+                      <div className="flex items-center gap-5 bg-muted/20 p-3 rounded-2xl border border-border/40">
                         <div className="relative w-[75px] h-[75px] flex-shrink-0">
                           <svg className="w-full h-full -rotate-90" viewBox="0 0 80 80">
                             <circle cx="40" cy="40" r="32" fill="none" stroke="rgba(0,0,0,0.05)" strokeWidth="6" className="dark:stroke-white/5" />
-                            <circle cx="40" cy="40" r="32" fill="none" stroke="#94a3b8" strokeWidth="6" strokeDasharray={201.1} strokeDashoffset={201.1 - (201.1 * overviewData.plannedProgress) / 100} strokeLinecap="round" opacity="0.4" />
-                            <circle cx="40" cy="40" r="24" fill="none" stroke="rgba(0,0,0,0.04)" strokeWidth="6" className="dark:stroke-white/10" />
-                            <circle cx="40" cy="40" r="24" fill="none" stroke="#FF7D29" strokeWidth="6" strokeDasharray={150.8} strokeDashoffset={150.8 - (150.8 * overviewData.physicalProgress) / 100} strokeLinecap="round" />
+                            <circle cx="40" cy="40" r="32" fill="none" stroke="var(--primary)" strokeWidth="6" strokeDasharray={201.1} strokeDashoffset={201.1 - (201.1 * project!.progress) / 100} strokeLinecap="round" />
                           </svg>
                           <div className="absolute inset-0 flex flex-col items-center justify-center">
-                            <span className="text-[13px] font-black text-foreground leading-none">{overviewData.physicalProgress}%</span>
+                            <span className="text-[13px] font-black text-foreground leading-none">{project!.progress}%</span>
                           </div>
                         </div>
-                        <div className="flex flex-col justify-center space-y-2">
-                          <div>
-                            <div className="flex items-center gap-1.5">
-                              <span className="w-2 h-2 rounded-full bg-[#FF7D29] flex-shrink-0 shadow-[0_0_8px_rgba(255,125,41,0.5)]"></span>
-                              <span className="text-[10px] font-bold text-foreground">Actual: {overviewData.physicalProgress}%</span>
-                            </div>
-                            <div className="flex items-center gap-1.5 mt-0.5">
-                              <span className="w-2 h-2 rounded-full bg-slate-400 flex-shrink-0 opacity-60"></span>
-                              <span className="text-[9px] font-bold text-muted-foreground">Planned: {overviewData.plannedProgress}%</span>
-                            </div>
-                          </div>
-                          <div className="pt-1.5 border-t border-border/40">
-                            <div className="text-[8px] text-muted-foreground font-bold uppercase tracking-wider">Target ETA</div>
-                            <div className="text-[10px] font-black text-foreground mt-0.5">{overviewData.targetCompletion}</div>
-                          </div>
+                        <div className="flex flex-col justify-center space-y-1.5">
+                          <div className="text-[8px] text-muted-foreground font-bold uppercase tracking-wider">Target Completion</div>
+                          <div className="text-[11px] font-black text-foreground">{project!.endDate || 'Not set'}</div>
                         </div>
                       </div>
-                      
-                      {/* Budget Burn Area Chart */}
-                      <div className="flex-1 flex flex-col">
-                        <div className="flex items-center justify-between mb-1.5 px-1">
-                          <span className="text-[8px] font-bold text-muted-foreground uppercase tracking-wider">Budget Burn</span>
-                          <span className="text-[9px] font-black text-[#FF7D29]">{overviewData.actualSpent}</span>
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <div className="bg-muted/30 rounded-2xl p-3">
+                          <span className="text-[8px] text-muted-foreground font-bold uppercase tracking-wider block mb-1">Allocated</span>
+                          <span className="font-black text-foreground">{overviewBudgetTotals ? formatIndianCurrency(overviewBudgetTotals.allocated) : formatIndianCurrency(project!.budget)}</span>
                         </div>
-                        <div className="flex-1 w-full" style={{minHeight:'65px'}}>
-                          <ResponsiveContainer width="100%" height="100%">
-                            <AreaChart data={[{m:'Jan',budget:10,actual:8},{m:'Feb',budget:20,actual:16},{m:'Mar',budget:33,actual:29},{m:'Apr',budget:46,actual:40},{m:'May',budget:60,actual:52},{m:'Jun',budget:75,actual:65}]} margin={{top:2,right:0,left:-32,bottom:0}}>
-                              <defs>
-                                <linearGradient id="budgetGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#94a3b8" stopOpacity={0.25}/><stop offset="95%" stopColor="#94a3b8" stopOpacity={0}/></linearGradient>
-                                <linearGradient id="actualGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#FF7D29" stopOpacity={0.4}/><stop offset="95%" stopColor="#FF7D29" stopOpacity={0}/></linearGradient>
-                              </defs>
-                              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(0,0,0,0.04)" className="dark:stroke-white/5" />
-                              <XAxis dataKey="m" tick={{fontSize:8, fill:'#94a3b8'}} axisLine={false} tickLine={false} />
-                              <YAxis tick={{fontSize:8, fill:'#94a3b8'}} axisLine={false} tickLine={false} />
-                              <Tooltip contentStyle={{fontSize:'10px',borderRadius:'12px',padding:'6px 12px',border:'1px solid rgba(0,0,0,0.08)'}} />
-                              <Area type="monotone" dataKey="budget" stroke="#94a3b8" strokeWidth={1.5} fill="url(#budgetGrad)" strokeDasharray="3 1" name="Budget" />
-                              <Area type="monotone" dataKey="actual" stroke="#FF7D29" strokeWidth={2.5} fill="url(#actualGrad)" name="Actual" />
-                            </AreaChart>
-                          </ResponsiveContainer>
+                        <div className="bg-muted/30 rounded-2xl p-3">
+                          <span className="text-[8px] text-muted-foreground font-bold uppercase tracking-wider block mb-1">Committed</span>
+                          <span className="font-black text-foreground">{overviewBudgetTotals ? formatIndianCurrency(overviewBudgetTotals.committed) : '—'}</span>
                         </div>
                       </div>
                     </div>
-                  </div>
+                  </SectionCard>
 
-                  {/* Col 3: Project Health */}
-                  <div className="bg-card rounded-[24px] border border-border/40 shadow-sm p-4 flex flex-col hover:shadow-md transition-all duration-300">
-                    <div className="flex items-center justify-between mb-4">
-                      <div className="flex items-center gap-2">
-                        <span className="w-2 h-4 bg-[#FF7D29] rounded-full"></span>
-                        <h3 className="font-heading font-black text-[11px] uppercase tracking-widest text-foreground">Project Health</h3>
-                      </div>
-                      <span className="text-[8px] font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-full uppercase tracking-wider">Score: 82/100</span>
+                  <SectionCard title="Team & Tasks">
+                    <div className="grid grid-cols-1 gap-3">
+                      <StatCard icon={Users} label="Team Members" value={project!.teamMembers.length} />
+                      <StatCard icon={ListTodo} label="Active Tasks" value={overviewTaskStats.inProgress} />
+                      <StatCard
+                        icon={AlertTriangle}
+                        label="Critical Path Tasks"
+                        value={overviewTaskStats.critical.length}
+                        accent="ring-rose-200 dark:ring-rose-800"
+                      />
                     </div>
-                    
-                    <div className="flex flex-col gap-4 flex-1 justify-between">
-                      {/* Radial health bars */}
-                      <div className="bg-slate-50/50 dark:bg-slate-900/50 rounded-2xl border border-border/40 p-2 flex items-center justify-center" style={{height:'104px'}}>
-                        <ResponsiveContainer width="100%" height="100%">
-                          <RadialBarChart cx="50%" cy="50%" innerRadius="20%" outerRadius="95%" data={[{name:'Safety',value:98,fill:'#10b981'},{name:'Quality',value:90,fill:'#3b82f6'},{name:'Inventory',value:82,fill:'#f59e0b'},{name:'Schedule',value:72,fill:'#ef4444'},{name:'Budget',value:88,fill:'#FF7D29'}]} startAngle={90} endAngle={-270}>
-                            <RadialBar dataKey="value" background={{ fill: 'rgba(0,0,0,0.03)' }} cornerRadius={4} />
-                            <Tooltip contentStyle={{fontSize:'10px',borderRadius:'12px',padding:'6px 12px',border:'1px solid rgba(0,0,0,0.08)',boxShadow:'0 4px 6px rgba(0,0,0,0.05)'}} formatter={(v: any) => [`${v}%`]} />
-                            <Legend iconSize={6} wrapperStyle={{fontSize:'8px',paddingTop:'4px'}} />
-                          </RadialBarChart>
-                        </ResponsiveContainer>
-                      </div>
-                      
-                      {/* Weekly Workforce Bar */}
-                      <div className="flex-1 flex flex-col">
-                        <div className="flex items-center justify-between mb-1.5 px-1">
-                          <span className="text-[8px] font-bold text-muted-foreground uppercase tracking-wider">Weekly Workforce</span>
-                          <span className="text-[9px] font-black text-[#FF7D29]">{overviewData.workforce} Today</span>
-                        </div>
-                        <div className="flex-1 w-full" style={{minHeight:'55px'}}>
-                          <ResponsiveContainer width="100%" height="100%">
-                            <BarChart data={[{d:'Mon',w:172},{d:'Tue',w:180},{d:'Wed',w:176},{d:'Thu',w:184},{d:'Fri',w:186},{d:'Sat',w:160}]} margin={{top:0,right:0,left:-32,bottom:0}}>
-                              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(0,0,0,0.04)" className="dark:stroke-white/5" />
-                              <XAxis dataKey="d" tick={{fontSize:8, fill:'#94a3b8'}} axisLine={false} tickLine={false} />
-                              <YAxis tick={{fontSize:8, fill:'#94a3b8'}} axisLine={false} tickLine={false} domain={[150,200]} />
-                              <Tooltip cursor={{fill: 'rgba(0,0,0,0.02)'}} contentStyle={{fontSize:'10px',borderRadius:'12px',padding:'6px 12px',border:'1px solid rgba(0,0,0,0.08)'}} />
-                              <Bar dataKey="w" radius={[4,4,0,0]} name="Workers">
-                                {[172,180,176,184,186,160].map((v, i) => (
-                                  <Cell key={i} fill={v === 186 ? '#FF7D29' : 'rgba(255,125,41,0.15)'} />
-                                ))}
-                              </Bar>
-                            </BarChart>
-                          </ResponsiveContainer>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
+                  </SectionCard>
                 </div>
 
-                {/* ── ROW: Schedule + Budget ── */}
+                {/* Schedule + Budget */}
                 <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
-                  {/* Schedule Control */}
-                  <div className="bg-card p-5 rounded-[24px] border border-border/40 shadow-sm flex flex-col gap-4 hover:shadow-md transition-all duration-300">
-                    <div className="flex justify-between items-center mb-1">
-                      <div className="flex items-center gap-2">
-                        <span className="w-2 h-4 bg-[#FF7D29] rounded-full"></span>
-                        <h3 className="font-heading font-black text-foreground text-[11px] uppercase tracking-widest">Schedule Control</h3>
-                      </div>
-                      <span className="text-[9px] text-muted-foreground font-bold bg-muted/40 px-2 py-1 rounded-md">Completion: {overviewData.forecastCompletion}</span>
-                    </div>
-                    <div className="grid grid-cols-4 gap-2">
-                      {[{l:'Planned',v:`${overviewData.plannedProgress}%`,c:'text-foreground'},{l:'Actual',v:`${overviewData.physicalProgress}%`,c:'text-foreground'},{l:'Variance',v:`${overviewData.variance}%`,c:'text-red-500'},{l:'Milestones',v:`${overviewData.milestonesCompleted}/${overviewData.totalMilestones}`,c:'text-foreground'}].map(s=>(
-                        <div key={s.l} className="bg-muted/30 rounded-2xl p-3 text-center transition-all hover:bg-muted/50 border border-transparent hover:border-border/60">
-                          <span className="text-[8px] text-muted-foreground font-bold uppercase tracking-wider block mb-1">{s.l}</span>
-                          <span className={`text-xs font-black ${s.c}`}>{s.v}</span>
-                        </div>
-                      ))}
-                    </div>
-                    <div className="flex items-center justify-between bg-red-500/5 border border-red-500/10 rounded-2xl px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse flex-shrink-0 shadow-[0_0_8px_rgba(239,68,68,0.5)]"></span>
-                        <span className="text-[10px] text-red-500 font-bold uppercase tracking-wider">Forecast Delay</span>
-                      </div>
-                      <span className="text-red-500 text-[13px] font-black">{overviewData.forecastDelay} Days</span>
-                    </div>
-                    <div className="h-[90px] w-full mt-1">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <LineChart data={[
-                          { name: 'M1', planned: 5, actual: 4 },
-                          { name: 'M2', planned: 12, actual: 10 },
-                          { name: 'M3', planned: 22, actual: 18 },
-                          { name: 'M4', planned: 34, actual: 28 },
-                          { name: 'M5', planned: 50, actual: null },
-                          { name: 'M6', planned: 70, actual: null },
-                          { name: 'M7', planned: 88, actual: null },
-                          { name: 'M8', planned: 100, actual: null },
-                        ]} margin={{ top: 2, right: 4, left: -28, bottom: 0 }}>
-                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(0,0,0,0.06)" className="dark:stroke-white/5" />
-                          <XAxis dataKey="name" tick={{ fontSize: 8, fill:'#94a3b8' }} axisLine={false} tickLine={false} />
-                          <YAxis tick={{ fontSize: 8, fill:'#94a3b8' }} axisLine={false} tickLine={false} />
-                          <Tooltip contentStyle={{ borderRadius: '12px', fontSize: '10px', padding: '6px 12px', border:'1px solid rgba(0,0,0,0.08)' }} />
-                          <Line type="monotone" dataKey="planned" stroke="#94a3b8" strokeWidth={1.5} strokeDasharray="4 3" name="Planned" dot={{ r: 1.5 }} />
-                          <Line type="monotone" dataKey="actual" stroke="#FF7D29" strokeWidth={2.5} name="Actual" dot={{ r: 3, fill:'#FF7D29' }} connectNulls />
-                        </LineChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </div>
-
-                  {/* Budget & Cost Control */}
-                  <div className="bg-card p-5 rounded-[24px] border border-border/40 shadow-sm flex flex-col gap-4 hover:shadow-md transition-all duration-300">
-                    <div className="flex justify-between items-center mb-1">
-                      <div className="flex items-center gap-2">
-                        <span className="w-2 h-4 bg-[#FF7D29] rounded-full"></span>
-                        <h3 className="font-heading font-black text-foreground text-[11px] uppercase tracking-widest">Budget & Cost Control</h3>
-                      </div>
-                      <span className={`text-[9px] font-extrabold px-3 py-1 rounded-full border ${
-                        overviewData.cpi >= 1
-                          ? 'text-emerald-600 bg-emerald-500/10 border-emerald-500/25'
-                          : 'text-red-500 bg-red-500/10 border-red-500/25'
-                      }`}>CPI: {overviewData.cpi}</span>
-                    </div>
-                    <div className="grid grid-cols-3 gap-2">
+                  <SectionCard title="Schedule Control" subtitle="Task completion breakdown across the project.">
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                       {[
-                        {l:'Approved Budget',v:overviewData.approvedBudget,c:'text-foreground'},
-                        {l:'Committed Cost',v:overviewData.committedCost,c:'text-foreground'},
-                        {l:'Actual Spent',v:overviewData.actualSpent,c:'text-[#FF7D29] font-black'},
-                        {l:'Pending Bills',v:overviewData.pendingBills,c:'text-foreground'},
-                        {l:'Forecast Cost',v:overviewData.forecastCost,c:'text-amber-500'},
-                        {l:'Potential Overrun',v:overviewData.potentialOverrun,c:'text-red-500'},
-                      ].map(s=>(
-                        <div key={s.l} className="bg-muted/30 rounded-2xl p-3 transition-all hover:bg-muted/50 border border-transparent hover:border-border/60">
+                        { l: 'Total Tasks', v: overviewTaskStats.total },
+                        { l: 'Completed', v: overviewTaskStats.completed },
+                        { l: 'In Progress', v: overviewTaskStats.inProgress },
+                        { l: 'Overdue', v: overviewTaskStats.overdue.length, c: 'text-rose-500' },
+                      ].map(s => (
+                        <div key={s.l} className="bg-muted/30 rounded-2xl p-3 text-center">
                           <span className="text-[8px] text-muted-foreground font-bold uppercase tracking-wider block mb-1">{s.l}</span>
-                          <span className={`text-xs font-black ${s.c}`}>{s.v}</span>
+                          <span className={`text-sm font-black ${s.c || 'text-foreground'}`}>{s.v}</span>
                         </div>
                       ))}
                     </div>
-                    <div className="flex items-center justify-between text-[9px] font-bold text-muted-foreground bg-muted/40 rounded-2xl px-4 py-3 border border-border/40 mt-auto">
-                      <span>Risk: <strong className="text-amber-500 uppercase tracking-wide">Low Exposure Watch</strong></span>
-                      <span className="flex items-center gap-1.5">Audit: <strong className="text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-md border border-emerald-500/20 uppercase tracking-wide flex items-center gap-1"><ShieldCheck className="w-3 h-3" /> Reconciled</strong></span>
-                    </div>
-                  </div>
-                </div>
+                  </SectionCard>
 
-                {/* ── ROW 2: Procurement + Inventory + Workforce + Quality (4-up compact) ── */}
-                <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
-
-                  {/* Procurement */}
-                  <div className="bg-card p-5 rounded-[24px] border border-border/40 shadow-sm flex flex-col gap-4 hover:shadow-md transition-all duration-300">
-                    <h3 className="font-heading font-black text-foreground text-[11px] uppercase tracking-widest flex items-center gap-2 mb-1">
-                      <span className="w-2 h-4 bg-[#FF7D29] rounded-full"></span>Procurement
-                    </h3>
-                    <div className="grid grid-cols-2 gap-2 flex-1">
-                      {[
-                        {l:'PR Raised',v:overviewData.prRaised,c:'text-foreground'},
-                        {l:'PR Pending',v:overviewData.prPending,c:'text-amber-500'},
-                        {l:'PO Issued',v:overviewData.poIssued,c:'text-foreground'},
-                        {l:'Pend. Deliveries',v:overviewData.pendingDeliveries,c:'text-foreground'},
-                        {l:'Delayed',v:overviewData.delayedDeliveries,c:'text-red-500'},
-                        {l:'Critical Mat.',v:`${overviewData.criticalMaterials}`,c:'text-red-500'},
-                      ].map(s=>(
-                        <div key={s.l} className="bg-muted/30 rounded-2xl px-3 py-2 hover:bg-muted/50 transition-colors border border-transparent hover:border-border/60">
-                          <span className="text-[8px] text-muted-foreground font-bold uppercase tracking-wider block leading-none mb-1">{s.l}</span>
-                          <span className={`text-xs font-black leading-tight flex items-center gap-1 ${s.c}`}>
-                            {s.v} {s.l === 'Critical Mat.' && <span className="text-[9px]">⚠</span>}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Inventory */}
-                  <div className="bg-card p-5 rounded-[24px] border border-border/40 shadow-sm flex flex-col gap-4 hover:shadow-md transition-all duration-300">
-                    <h3 className="font-heading font-black text-foreground text-[11px] uppercase tracking-widest flex items-center gap-2 mb-1">
-                      <span className="w-2 h-4 bg-[#FF7D29] rounded-full"></span>Inventory
-                    </h3>
+                  <SectionCard title="Budget & Cost Control">
                     <div className="grid grid-cols-2 gap-2">
                       {[
-                        {l:'Cement',v:`${overviewData.cementStock.days}d`,status:'ok'},
-                        {l:'Steel',v:`${overviewData.steelStock.days}d`,status:'ok'},
-                        {l:'AAC Blocks',v:`${overviewData.aacStock.days}d`,status:'warn'},
-                        {l:'Tiles',v:'Low',status:'warn'},
-                      ].map(s=>(
-                        <div key={s.l} className={`rounded-2xl px-3 py-2 transition-colors border border-transparent ${s.status==='ok'?'bg-emerald-500/5 hover:bg-emerald-500/10 hover:border-emerald-500/20':'bg-amber-500/5 hover:bg-amber-500/10 hover:border-amber-500/20'}`}>
-                          <span className="text-[8px] text-muted-foreground font-bold uppercase tracking-wider block leading-none mb-1">{s.l}</span>
-                          <span className={`text-xs font-black leading-tight ${s.status==='ok'?'text-emerald-600 dark:text-emerald-400':'text-amber-600 dark:text-amber-400'}`}>{s.v}</span>
-                        </div>
-                      ))}
-                      <div className="col-span-2 bg-red-500/5 border border-red-500/10 rounded-2xl px-4 py-3 flex justify-between items-center transition-colors hover:bg-red-500/10">
-                        <span className="text-[9px] text-red-500 font-bold uppercase tracking-wider flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span> Reorder Alerts</span>
-                        <span className="text-red-500 text-xs font-black">{overviewData.reorderAlerts}</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Workforce */}
-                  <div className="bg-card p-5 rounded-[24px] border border-border/40 shadow-sm flex flex-col gap-4 hover:shadow-md transition-all duration-300">
-                    <h3 className="font-heading font-black text-foreground text-[11px] uppercase tracking-widest flex items-center gap-2 mb-1">
-                      <span className="w-2 h-4 bg-[#FF7D29] rounded-full"></span>Workforce
-                    </h3>
-                    <div className="grid grid-cols-2 gap-2 flex-1">
-                      {[
-                        {l:'Required',v:overviewData.requiredWorkforce,c:'text-foreground'},
-                        {l:'Present',v:overviewData.workforce,c:'text-foreground'},
-                        {l:'Shortfall',v:`-${overviewData.shortfall}`,c:'text-red-500'},
-                        {l:'Productivity',v:`${overviewData.productivity}%`,c:'text-emerald-500'},
-                        {l:'Contractors',v:overviewData.activeContractors,c:'text-foreground'},
-                        {l:'Subcontractors',v:overviewData.subcontractors,c:'text-foreground'},
-                      ].map(s=>(
-                        <div key={s.l} className="bg-muted/30 rounded-2xl px-3 py-2 hover:bg-muted/50 transition-colors border border-transparent hover:border-border/60">
-                          <span className="text-[8px] text-muted-foreground font-bold uppercase tracking-wider block leading-none mb-1">{s.l}</span>
-                          <span className={`text-xs font-black leading-tight ${s.c}`}>{s.v}</span>
+                        { l: 'Allocated', v: overviewBudgetTotals ? formatIndianCurrency(overviewBudgetTotals.allocated) : formatIndianCurrency(project!.budget) },
+                        { l: 'Committed', v: overviewBudgetTotals ? formatIndianCurrency(overviewBudgetTotals.committed) : '—' },
+                        { l: 'Spent', v: overviewBudgetTotals ? formatIndianCurrency(overviewBudgetTotals.spent) : formatIndianCurrency(project!.actualSpend) },
+                        { l: 'Pending Bills', v: overviewPendingBillsCount ?? '—' },
+                      ].map(s => (
+                        <div key={s.l} className="bg-muted/30 rounded-2xl p-3">
+                          <span className="text-[8px] text-muted-foreground font-bold uppercase tracking-wider block mb-1">{s.l}</span>
+                          <span className="text-sm font-black text-foreground">{s.v}</span>
                         </div>
                       ))}
                     </div>
-                  </div>
-
-                  {/* Quality */}
-                  <div className="bg-card p-5 rounded-[24px] border border-border/40 shadow-sm flex flex-col gap-4 hover:shadow-md transition-all duration-300">
-                    <h3 className="font-heading font-black text-foreground text-[11px] uppercase tracking-widest flex items-center gap-2 mb-1">
-                      <span className="w-2 h-4 bg-[#FF7D29] rounded-full"></span>Quality
-                    </h3>
-                    <div className="grid grid-cols-2 gap-2 flex-1">
-                      {[
-                        {l:'QA Inspections',v:overviewData.qaInspections,c:'text-foreground'},
-                        {l:'Passed',v:overviewData.passed,c:'text-emerald-500'},
-                        {l:'Failed',v:overviewData.failed,c:'text-red-500'},
-                        {l:'Open Snags',v:overviewData.openSnags,c:'text-amber-500'},
-                        {l:'Closed Snags',v:overviewData.closedSnags,c:'text-foreground'},
-                      ].map(s=>(
-                        <div key={s.l} className="bg-muted/30 rounded-2xl px-3 py-2 hover:bg-muted/50 transition-colors border border-transparent hover:border-border/60">
-                          <span className="text-[8px] text-muted-foreground font-bold uppercase tracking-wider block leading-none mb-1">{s.l}</span>
-                          <span className={`text-xs font-black leading-tight ${s.c}`}>{s.v}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
+                  </SectionCard>
                 </div>
 
-                {/* ── ROW 3: Safety + Critical Activities ── */}
-                <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
-                  {/* Safety */}
-                  <div className="bg-card p-5 rounded-[24px] border border-border/40 shadow-sm flex flex-col gap-4 hover:shadow-md transition-all duration-300">
-                    <h3 className="font-heading font-black text-foreground text-[11px] uppercase tracking-widest flex items-center gap-2 mb-1">
-                      <span className="w-2 h-4 bg-[#FF7D29] rounded-full animate-pulse shadow-[0_0_8px_rgba(255,125,41,0.5)]"></span>Safety Dashboard
-                    </h3>
-                    <div className="grid grid-cols-4 gap-2 h-full">
-                      <div className="col-span-2 bg-emerald-500/5 border border-emerald-500/10 rounded-2xl p-4 flex flex-col justify-center items-center gap-3 text-center">
-                        <div className="w-12 h-12 rounded-full bg-emerald-500/10 flex items-center justify-center text-emerald-600 dark:text-emerald-400">
-                          <ShieldCheck className="w-6 h-6 animate-pulse" />
+                {/* Procurement / Inventory / Workforce / Quality */}
+                <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
+                  <SectionCard title="Procurement">
+                    <div className="grid grid-cols-2 gap-2">
+                      {[
+                        { l: 'Material Requests', v: liveProcurement?.materialRequests.length ?? '—' },
+                        { l: 'PRs Raised', v: liveProcurement?.purchaseRequisitions.length ?? '—' },
+                        { l: 'PRs Pending', v: overviewPendingPRsCount ?? '—', c: 'text-amber-500' },
+                        { l: 'POs Issued', v: liveProcurement?.purchaseOrders.length ?? '—' },
+                        { l: 'GRNs Received', v: liveProcurement?.grns.length ?? '—' },
+                      ].map(s => (
+                        <div key={s.l} className="bg-muted/30 rounded-2xl px-3 py-2">
+                          <span className="text-[8px] text-muted-foreground font-bold uppercase tracking-wider block leading-none mb-1">{s.l}</span>
+                          <span className={`text-xs font-black ${s.c || 'text-foreground'}`}>{s.v}</span>
                         </div>
-                        <div>
-                          <span className="text-[9px] text-muted-foreground font-bold uppercase tracking-wider block mb-1">Days No Incident</span>
-                          <span className="text-emerald-600 dark:text-emerald-400 text-xl font-black">{overviewData.safeDays} Days</span>
-                        </div>
-                      </div>
-                      <div className="col-span-2 grid grid-cols-2 gap-2">
-                        {[
-                          {l:'Safety Audits',v:`${overviewData.safetyAudits} done`,c:'text-foreground'},
-                          {l:'Open NCRs',v:`${overviewData.openNcr} active`,c:'text-amber-500'},
-                          {l:'Violations',v:`${overviewData.safetyViolations} logged`,c:'text-red-500'},
-                          {l:'PPE Compliance',v:'97%',c:'text-emerald-500'},
-                        ].map(s=>(
-                          <div key={s.l} className="bg-muted/30 rounded-2xl p-3 flex flex-col justify-center text-center transition-all hover:bg-muted/50 border border-transparent hover:border-border/60">
-                            <span className="text-[8px] text-muted-foreground font-bold uppercase tracking-wider block mb-1">{s.l}</span>
-                            <span className={`text-xs font-black ${s.c}`}>{s.v}</span>
+                      ))}
+                    </div>
+                  </SectionCard>
+
+                  <SectionCard title="Inventory">
+                    {overviewLowStockMaterials.length === 0 ? (
+                      <div className="text-xs text-muted-foreground text-center py-4">No materials below reorder level.</div>
+                    ) : (
+                      <div className="space-y-2">
+                        {overviewLowStockMaterials.slice(0, 4).map((m: any) => (
+                          <div key={m.id} className="flex items-center justify-between bg-rose-500/5 border border-rose-500/10 rounded-2xl px-3 py-2 text-xs">
+                            <span className="font-bold text-foreground truncate">{m.itemName}</span>
+                            <span className="font-black text-rose-500 flex-shrink-0 ml-2">{m.quantity} {m.unit}</span>
                           </div>
                         ))}
                       </div>
-                    </div>
-                  </div>
+                    )}
+                  </SectionCard>
 
-                  {/* Critical Activities */}
-                  <div className="bg-card p-5 rounded-[24px] border border-border/40 shadow-sm flex flex-col gap-4 hover:shadow-md transition-all duration-300">
-                    <h3 className="font-heading font-black text-foreground text-[11px] uppercase tracking-widest flex items-center gap-2 mb-1">
-                      <span className="w-2 h-4 bg-[#FF7D29] rounded-full animate-pulse shadow-[0_0_8px_rgba(255,125,41,0.5)]"></span>Critical Activities — PMC Target
-                    </h3>
-                    <div className="space-y-2">
-                      {overviewData.criticalActivities.map(act => (
-                        <div key={act.name} className="flex justify-between items-center bg-rose-500/5 border border-rose-500/10 px-4 py-3 rounded-2xl transition-all hover:bg-rose-500/10">
-                          <span className="text-xs font-extrabold text-foreground">{act.name}</span>
-                          <span className="text-[9px] font-black text-rose-500 bg-rose-500/10 px-3 py-1 rounded-full uppercase tracking-widest">+{act.delay} delay</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-
-                {/* 13. AI Project Intelligence Panel */}
-                <div className="bg-card p-5 rounded-[24px] border border-border/40 shadow-sm flex flex-col gap-4 hover:shadow-md transition-all duration-300 mt-1">
-                  <div className="flex items-center gap-2 border-b border-border/40 pb-3">
-                    <span className="w-2 h-4 rounded-full bg-[#FF7D29] animate-pulse shadow-[0_0_8px_rgba(255,125,41,0.5)]"></span>
-                    <h3 className="font-heading font-black text-foreground text-[11px] uppercase tracking-widest">AI Project Intelligence</h3>
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-5 text-muted-foreground select-none">
-                    <div className="space-y-2">
-                      <span className="text-[9px] font-bold uppercase tracking-widest text-slate-400 block mb-3">AI Anomalies Detected</span>
-                      {overviewData.aiInsights.map((insight, idx) => (
-                        <div key={idx} className="flex items-center gap-3 text-rose-500 dark:text-rose-400 bg-rose-500/5 dark:bg-rose-500/10 border border-rose-500/10 px-4 py-3 rounded-2xl font-bold leading-tight">
-                          <span className="text-sm">⚠</span>
-                          <p className="flex-1 text-[11px]">{insight}</p>
-                        </div>
-                      ))}
-                    </div>
-                    <div className="space-y-2">
-                      <span className="text-[9px] font-bold uppercase tracking-widest text-slate-400 block mb-3">AI Recommended Actions (One-Click Execute)</span>
-                      {overviewData.aiActions.map((action, idx) => (
-                        <button key={idx} type="button" className="w-full text-left flex items-center gap-3 text-[#FF7D29] bg-[#FF7D29]/5 border border-[#FF7D29]/15 px-4 py-3 rounded-2xl font-bold hover:bg-[#FF7D29]/10 transition-colors shadow-xs group">
-                          <span className="text-sm">⚙</span>
-                          <span className="flex-1 text-[11px] font-extrabold text-foreground group-hover:text-[#FF7D29] transition-colors">{action}</span>
-                          <span className="text-[9px] font-black uppercase bg-[#FF7D29]/10 text-[#FF7D29] px-3 py-1 rounded-full border border-[#FF7D29]/20 shadow-xs">Apply</span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-
-                {/* 14. Interactive Gantt Chart */}
-                <div className="bg-card p-5 rounded-[24px] border border-border/40 shadow-sm space-y-4 hover:shadow-md transition-all duration-300">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-border/40 pb-3 mb-2">
-                    <div className="flex items-center gap-2">
-                      <span className="w-2 h-4 bg-[#FF7D29] rounded-full"></span>
-                      <div>
-                        <h3 className="font-heading font-black text-foreground text-[11px] uppercase tracking-widest leading-none">Interactive Gantt Schedule</h3>
-                        <p className="text-[9px] text-muted-foreground mt-1 font-bold uppercase tracking-widest">PMC Realtime Critical Path Tracking</p>
+                  <SectionCard title="Workforce">
+                    <div className="grid grid-cols-1 gap-2">
+                      <div className="bg-muted/30 rounded-2xl px-3 py-2">
+                        <span className="text-[8px] text-muted-foreground font-bold uppercase tracking-wider block leading-none mb-1">Team Members</span>
+                        <span className="text-xs font-black text-foreground">{project!.teamMembers.length}</span>
                       </div>
+                      {Object.entries(overviewRoleBreakdown).slice(0, 3).map(([role, count]) => (
+                        <div key={role} className="bg-muted/30 rounded-2xl px-3 py-2">
+                          <span className="text-[8px] text-muted-foreground font-bold uppercase tracking-wider block leading-none mb-1">{role}</span>
+                          <span className="text-xs font-black text-foreground">{count as number}</span>
+                        </div>
+                      ))}
                     </div>
-                    {/* Gantt Filters Checkboxes */}
+                  </SectionCard>
+
+                  <SectionCard title="Quality">
+                    <div className="grid grid-cols-2 gap-2">
+                      {[
+                        { l: 'Inspections', v: qcInspections.length },
+                        { l: 'Passed', v: overviewQcStats.passed, c: 'text-emerald-500' },
+                        { l: 'Failed', v: overviewQcStats.failed, c: 'text-rose-500' },
+                      ].map(s => (
+                        <div key={s.l} className="bg-muted/30 rounded-2xl px-3 py-2">
+                          <span className="text-[8px] text-muted-foreground font-bold uppercase tracking-wider block leading-none mb-1">{s.l}</span>
+                          <span className={`text-xs font-black ${s.c || 'text-foreground'}`}>{s.v}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </SectionCard>
+                </div>
+
+                {/* Safety + Critical Activities */}
+                <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+                  <SectionCard title="Safety Dashboard">
+                    <div className="grid grid-cols-2 gap-3">
+                      <StatCard icon={ShieldCheck} label="Days Since Last Incident" value={overviewDaysSinceIncident ?? '—'} />
+                      <StatCard
+                        icon={AlertTriangle}
+                        label="Total Incidents Logged"
+                        value={liveSafetyIncidents.length}
+                        accent="ring-rose-200 dark:ring-rose-800"
+                      />
+                    </div>
+                  </SectionCard>
+
+                  <SectionCard title="Critical Activities" subtitle="Critical-path or overdue tasks.">
+                    {overviewTaskStats.criticalOrOverdue.length === 0 ? (
+                      <div className="text-xs text-muted-foreground text-center py-4">No critical or overdue tasks right now.</div>
+                    ) : (
+                      <div className="space-y-2">
+                        {overviewTaskStats.criticalOrOverdue.slice(0, 5).map((t: any) => (
+                          <div key={t.id} className="flex justify-between items-center bg-rose-500/5 border border-rose-500/10 px-4 py-3 rounded-2xl">
+                            <span className="text-xs font-extrabold text-foreground truncate">{t.name}</span>
+                            <span className="text-[9px] font-black text-rose-500 bg-rose-500/10 px-3 py-1 rounded-full uppercase tracking-widest flex-shrink-0 ml-2">
+                              {t.delayDays > 0 ? `+${t.delayDays}d delay` : 'Critical Path'}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </SectionCard>
+                </div>
+
+                {/* Interactive Gantt Schedule */}
+                <SectionCard title="Interactive Gantt Schedule" subtitle="Realtime critical path tracking from actual task dates.">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-border/40 pb-3 mb-4">
                     <div className="flex flex-wrap items-center gap-4 text-[9px] font-bold text-muted-foreground bg-muted/30 px-4 py-2 rounded-2xl border border-transparent hover:border-border/60 transition-colors select-none">
                       <label className="flex items-center gap-1.5 cursor-pointer hover:text-foreground group">
-                        <input 
-                          type="checkbox" 
+                        <input
+                          type="checkbox"
                           checked={ganttShowCritical}
                           onChange={(e) => setGanttShowCritical(e.target.checked)}
-                          className="rounded-md border-border/60 text-[#FF7D29] focus:ring-1 focus:ring-[#FF7D29] focus:ring-offset-0 w-3 h-3 group-hover:border-[#FF7D29]" 
+                          className="rounded-md border-border/60 text-primary focus:ring-1 focus:ring-primary focus:ring-offset-0 w-3 h-3 group-hover:border-primary"
                         />
                         <span className="uppercase tracking-widest">Critical Path</span>
                       </label>
                       <label className="flex items-center gap-1.5 cursor-pointer hover:text-foreground group">
-                        <input 
-                          type="checkbox" 
+                        <input
+                          type="checkbox"
                           checked={ganttShowDelayed}
                           onChange={(e) => setGanttShowDelayed(e.target.checked)}
-                          className="rounded-md border-border/60 text-[#FF7D29] focus:ring-1 focus:ring-[#FF7D29] focus:ring-offset-0 w-3 h-3 group-hover:border-[#FF7D29]" 
+                          className="rounded-md border-border/60 text-primary focus:ring-1 focus:ring-primary focus:ring-offset-0 w-3 h-3 group-hover:border-primary"
                         />
                         <span className="uppercase tracking-widest">Delayed</span>
                       </label>
                       <label className="flex items-center gap-1.5 cursor-pointer hover:text-foreground group">
-                        <input 
-                          type="checkbox" 
-                          checked={ganttShowDependencies}
-                          onChange={(e) => setGanttShowDependencies(e.target.checked)}
-                          className="rounded-md border-border/60 text-[#FF7D29] focus:ring-1 focus:ring-[#FF7D29] focus:ring-offset-0 w-3 h-3 group-hover:border-[#FF7D29]" 
-                        />
-                        <span className="uppercase tracking-widest">Dependencies</span>
-                      </label>
-                      <label className="flex items-center gap-1.5 cursor-pointer hover:text-foreground group">
-                        <input 
-                          type="checkbox" 
+                        <input
+                          type="checkbox"
                           checked={ganttShowResources}
                           onChange={(e) => setGanttShowResources(e.target.checked)}
-                          className="rounded-md border-border/60 text-[#FF7D29] focus:ring-1 focus:ring-[#FF7D29] focus:ring-offset-0 w-3 h-3 group-hover:border-[#FF7D29]" 
+                          className="rounded-md border-border/60 text-primary focus:ring-1 focus:ring-primary focus:ring-offset-0 w-3 h-3 group-hover:border-primary"
                         />
                         <span className="uppercase tracking-widest">Resource View</span>
                       </label>
                     </div>
 
-                    {/* Zoom controls */}
                     <div className="flex bg-muted/30 p-1 rounded-2xl border border-border/40 text-[9px] font-bold select-none uppercase tracking-widest">
                       {(['week', 'month', 'quarter'] as const).map(z => (
                         <button
                           key={z}
                           onClick={() => setGanttZoom(z)}
-                          className={`px-4 py-1.5 rounded-xl transition-all duration-200 ${ganttZoom === z ? 'bg-[#FF7D29] text-white shadow-md shadow-[#FF7D29]/20' : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'}`}
+                          className={`px-4 py-1.5 rounded-xl transition-all duration-200 ${ganttZoom === z ? 'bg-primary text-primary-foreground shadow-md' : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'}`}
                         >
                           {z}
                         </button>
@@ -4817,96 +4538,57 @@ Rules:
                     </div>
                   </div>
 
-                  {/* SVG Gantt Chart */}
                   <div className="overflow-x-auto pb-2">
-                    <div className="min-w-[1100px] border border-border/40 rounded-3xl p-4 bg-muted/10 relative shadow-sm">
-                      {/* Columns Header based on Zoom */}
+                    <div className="min-w-[900px] border border-border/40 rounded-3xl p-4 bg-muted/10 relative shadow-sm">
                       <div className="flex items-center text-[9px] font-black uppercase tracking-widest text-muted-foreground border-b border-border/40 pb-3 mb-4 select-none">
-                        <div className="w-[580px] flex-shrink-0 grid grid-cols-7 pr-3">
-                          <div className="col-span-2">Task Name</div>
-                          <div>Contractor</div>
+                        <div className="w-[480px] flex-shrink-0 grid grid-cols-6 pr-3">
+                          <div className="col-span-3">Task Name</div>
                           <div>Resp. Engineer</div>
                           <div>Planned End</div>
-                          <div>Actual End</div>
                           <div className="text-right">Delay (Days)</div>
                         </div>
                         <div className="flex-1 grid grid-cols-4 text-center border-l border-border/40">
-                          {ganttZoom === 'week' ? (
-                            <>
-                              <div>Days 1 - 7</div>
-                              <div>Days 8 - 14</div>
-                              <div>Days 15 - 21</div>
-                              <div>Days 22 - 28</div>
-                            </>
-                          ) : ganttZoom === 'month' ? (
-                            <>
-                              <div>Week 1</div>
-                              <div>Week 2</div>
-                              <div>Week 3</div>
-                              <div>Week 4</div>
-                            </>
-                          ) : (
-                            <>
-                              <div>Month 1 (Phase A)</div>
-                              <div>Month 2 (Phase B)</div>
-                              <div>Month 3 (Phase C)</div>
-                              <div>Month 4 (Phase D)</div>
-                            </>
-                          )}
+                          <div>Q1</div>
+                          <div>Q2</div>
+                          <div>Q3</div>
+                          <div>Q4</div>
                         </div>
                       </div>
 
-                      {/* Gantt Rows */}
                       <div className="space-y-4">
                         {project!.tasks
-                          .filter(tsk => {
+                          .filter((tsk: any) => {
                             if (ganttShowCritical && !tsk.isCriticalPath) return false;
                             if (ganttShowDelayed) {
-                              const isOverdue = tsk.progress < 90 && tsk.priority === 'HIGH';
+                              const isOverdue = tsk.status !== 'COMPLETED' && tsk.status !== 'CANCELLED' && tsk.endDate && new Date(tsk.endDate) < new Date();
                               if (!isOverdue) return false;
                             }
                             return true;
                           })
-                          .map((tsk, idx) => {
-                            const baseMargin = (idx * 12) % 45; // simulated offset for UI representation
-                            const baseWidth = 25 + ((idx * 8) % 35); // simulated duration width
-                            const hasWarning = tsk.progress < 90 && tsk.priority === 'HIGH';
-                            
-                            // Mocking dependency connector lines
-                            const hasDependency = tsk.dependencies && ganttShowDependencies;
-
-                            // Mocking a vendor mapping
-                            const mockVendor = idx % 2 === 0 ? 'ABC Infra' : 'Tata Tiscon';
-
-                            // Simulated Planned / Actual Dates and Delay Days
-                            const plannedEnd = tsk.endDate;
-                            const actualEnd = idx % 3 === 0 ? '2026-07-15' : plannedEnd;
-                            const delayDays = idx % 3 === 0 ? 5 : 0;
+                          .map((tsk: any) => {
+                            const { left, width } = overviewTaskBarPosition(tsk);
+                            const isOverdue = tsk.status !== 'COMPLETED' && tsk.status !== 'CANCELLED' && tsk.endDate && new Date(tsk.endDate) < new Date();
+                            const delayDays = isOverdue ? Math.floor((Date.now() - new Date(tsk.endDate).getTime()) / 86400000) : 0;
 
                             return (
                               <div key={tsk.id} className="flex items-center text-[10px] py-1.5 border-b border-border/20 last:border-b-0 pb-3 last:pb-0">
-                                {/* Task Details and resource (580px width) */}
-                                <div className="w-[580px] flex-shrink-0 pr-3 min-w-0 grid grid-cols-7 items-center">
-                                  <div className="col-span-2 flex items-center gap-2 min-w-0 pr-2">
+                                <div className="w-[480px] flex-shrink-0 pr-3 min-w-0 grid grid-cols-6 items-center">
+                                  <div className="col-span-3 flex items-center gap-2 min-w-0 pr-2">
                                     <span className="font-extrabold text-foreground truncate block leading-tight">{tsk.name}</span>
                                     {tsk.isCriticalPath && (
                                       <span className="rounded-full bg-rose-500/10 px-2 py-0.5 text-[7.5px] font-black text-rose-600 dark:text-rose-400 uppercase tracking-widest border border-rose-500/20 flex-shrink-0">Critical</span>
                                     )}
                                   </div>
-                                  <span className="font-bold text-muted-foreground truncate block">{mockVendor}</span>
                                   <span className="font-bold text-muted-foreground truncate block">
-                                    {ganttShowResources ? `👤 ${tsk.assigneeName || 'Rajesh'}` : '-'}
+                                    {ganttShowResources ? (tsk.assigneeName || 'Unassigned') : '-'}
                                   </span>
-                                  <span className="font-bold text-muted-foreground block">{plannedEnd}</span>
-                                  <span className="font-bold text-muted-foreground block">{actualEnd}</span>
+                                  <span className="font-bold text-muted-foreground block">{tsk.endDate || '—'}</span>
                                   <span className={`font-black block text-right text-[11px] ${delayDays > 0 ? 'text-red-500' : 'text-emerald-500'}`}>
                                     {delayDays > 0 ? `+${delayDays}d` : '0d'}
                                   </span>
                                 </div>
-                                
-                                {/* Gantt Timeline Bar */}
+
                                 <div className="flex-1 relative h-7 bg-muted/20 rounded-xl border border-border/30 overflow-visible flex items-center shadow-inner">
-                                  {/* Dotted grids background */}
                                   <div className="absolute inset-0 grid grid-cols-4 pointer-events-none opacity-40">
                                     <div className="border-r border-dashed border-border/70"></div>
                                     <div className="border-r border-dashed border-border/70"></div>
@@ -4914,48 +4596,24 @@ Rules:
                                     <div></div>
                                   </div>
 
-                                  {/* Visual Schedule Bar */}
-                                  <div 
-                                    className={`absolute h-5 rounded-lg flex items-center justify-between px-3 text-[9px] font-black text-white transition-all shadow-md group/bar
-                                      ${tsk.isCriticalPath 
-                                        ? 'bg-gradient-to-r from-rose-500 to-rose-400 hover:from-rose-600 hover:to-rose-500' 
-                                        : 'bg-gradient-to-r from-[#FF7D29] to-[#FF9D5C] hover:from-[#E66B1A] hover:to-[#FF8842]'}`}
-                                    style={{ 
-                                      left: `${baseMargin}%`, 
-                                      width: `${baseWidth}%` 
-                                    }}
+                                  <div
+                                    className={`absolute h-5 rounded-lg flex items-center justify-between px-3 text-[9px] font-black text-white transition-all shadow-md
+                                      ${tsk.isCriticalPath
+                                        ? 'bg-gradient-to-r from-rose-500 to-rose-400'
+                                        : 'bg-gradient-to-r from-primary to-primary/70'}`}
+                                    style={{ left: `${left}%`, width: `${width}%` }}
+                                    title={`Planned End: ${tsk.endDate || '—'}${delayDays > 0 ? ` (Delay: ${delayDays} days)` : ''}`}
                                   >
                                     <span className="truncate pr-2 uppercase tracking-wider text-[8px]">Progress</span>
                                     <span>{tsk.progress}%</span>
-                                    
-                                    {/* Hover tooltip */}
-                                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 bg-popover border border-border text-foreground px-3 py-2 rounded-xl shadow-xl text-[10px] font-bold whitespace-nowrap opacity-0 group-hover/bar:opacity-100 transition-opacity duration-200 pointer-events-none z-30">
-                                      Planned End: {plannedEnd} | Actual: {actualEnd} {delayDays > 0 && `(Delay: ${delayDays} days)`}
-                                    </div>
                                   </div>
 
-                                  {/* Overdue Blinking warning dot */}
-                                  {hasWarning && (
-                                    <div 
-                                      className="absolute -right-2 top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 animate-pulse border-2 border-white dark:border-gray-900 shadow-[0_0_8px_rgba(239,68,68,0.6)]"
+                                  {isOverdue && (
+                                    <div
+                                      className="absolute -right-2 top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 animate-pulse border-2 border-white dark:border-gray-900"
                                       title="Overdue Schedule Alert"
                                     >
                                       <span className="absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75 animate-ping"></span>
-                                      <span className="text-[8px] text-white">⚠️</span>
-                                    </div>
-                                  )}
-
-                                  {/* Dependency connection helper */}
-                                  {hasDependency && (
-                                    <div 
-                                      className="absolute left-0 right-0 top-1/2 h-[1px] border-t-2 border-dashed border-[#FF7D29]/40 -z-10"
-                                      style={{
-                                        left: `calc(${baseMargin}% - 24px)`,
-                                        width: '24px'
-                                      }}
-                                      title={`Linked to parent task: ${tsk.dependencies}`}
-                                    >
-                                      <span className="absolute -left-1.5 -top-1.5 font-black text-[#FF7D29] text-[10px]">←</span>
                                     </div>
                                   )}
                                 </div>
@@ -4971,61 +4629,31 @@ Rules:
                       </div>
                     </div>
                   </div>
-                </div>
+                </SectionCard>
 
-                {/* 15. Recent Site Updates */}
-                <div className="bg-card p-5 rounded-[24px] border border-border/40 shadow-sm mt-4 hover:shadow-md transition-all duration-300">
-                  <div className="flex items-center gap-2 border-b border-border/40 pb-3 mb-4">
-                    <span className="w-2 h-4 bg-[#FF7D29] rounded-full"></span>
-                    <h3 className="font-heading font-black text-foreground text-[11px] uppercase tracking-widest leading-none">Recent Site Updates</h3>
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
-                    <div className="bg-muted/30 border border-transparent hover:border-border/60 transition-colors p-4 rounded-2xl flex items-start gap-3 text-[10px] font-semibold">
-                      <div className="w-6 h-6 rounded-full bg-emerald-500/10 flex items-center justify-center flex-shrink-0 text-emerald-500">
-                        <span className="font-bold">✔</span>
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground block font-black text-[9px] uppercase tracking-widest mb-1">Today</span>
-                        <p className="text-foreground leading-tight">Slab Casting Completed for Tower A Level 7 column starter</p>
-                      </div>
+                {/* Recent Activity */}
+                <SectionCard title="Recent Activity" subtitle="Latest daily progress reports and delay events for this project.">
+                  {overviewRecentActivity.length === 0 ? (
+                    <div className="text-xs text-muted-foreground text-center py-4">No recent activity logged yet.</div>
+                  ) : (
+                    <div className="space-y-2">
+                      {overviewRecentActivity.map((item) => (
+                        <div key={item.id} className="bg-muted/30 border border-transparent hover:border-border/60 transition-colors p-4 rounded-2xl flex items-start gap-3 text-[10px] font-semibold">
+                          <div>
+                            <span className="text-muted-foreground block font-black text-[9px] uppercase tracking-widest mb-1">
+                              {new Date(item.date).toLocaleDateString()}
+                            </span>
+                            <p className="text-foreground leading-tight">{item.text}</p>
+                          </div>
+                        </div>
+                      ))}
                     </div>
-                    <div className="bg-muted/30 border border-transparent hover:border-border/60 transition-colors p-4 rounded-2xl flex items-start gap-3 text-[10px] font-semibold">
-                      <div className="w-6 h-6 rounded-full bg-emerald-500/10 flex items-center justify-center flex-shrink-0 text-emerald-500">
-                        <span className="font-bold">✔</span>
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground block font-black text-[9px] uppercase tracking-widest mb-1">Today</span>
-                        <p className="text-foreground leading-tight">PR-145 Submitted for reinforcement structural steel PO</p>
-                      </div>
-                    </div>
-                    <div className="bg-rose-500/5 dark:bg-rose-500/10 border border-rose-500/15 p-4 rounded-2xl flex items-start gap-3 text-[10px] font-semibold transition-colors hover:bg-rose-500/10">
-                      <div className="w-6 h-6 rounded-full bg-rose-500/10 flex items-center justify-center flex-shrink-0 text-rose-500">
-                        <span className="font-bold">⚠</span>
-                      </div>
-                      <div>
-                        <span className="text-rose-500 block font-black text-[9px] uppercase tracking-widest mb-1">Yesterday</span>
-                        <p className="text-foreground leading-tight">Cement Stock Low warning flag raised by store manager</p>
-                      </div>
-                    </div>
-                    <div className="bg-muted/30 border border-transparent hover:border-border/60 transition-colors p-4 rounded-2xl flex items-start gap-3 text-[10px] font-semibold">
-                      <div className="w-6 h-6 rounded-full bg-emerald-500/10 flex items-center justify-center flex-shrink-0 text-emerald-500">
-                        <span className="font-bold">✔</span>
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground block font-black text-[9px] uppercase tracking-widest mb-1">Yesterday</span>
-                        <p className="text-foreground leading-tight">MEP work completed on Block C level 3 apartment units</p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
+                  )}
+                </SectionCard>
 
-                {/* 16. Pending Workflows & Approvals */}
+                {/* Pending Workflow Approvals */}
                 {isUpperManagement(currentUser.role) && (
-                  <div className="bg-card p-5 rounded-[24px] border border-border/40 shadow-sm mt-4 hover:shadow-md transition-all duration-300">
-                    <div className="flex items-center gap-2 border-b border-border/40 pb-3 mb-4">
-                      <span className="w-2 h-4 bg-amber-500 rounded-full animate-pulse"></span>
-                      <h3 className="font-heading font-black text-foreground text-[11px] uppercase tracking-widest leading-none">Pending Workflow Approvals</h3>
-                    </div>
+                  <SectionCard title="Pending Workflow Approvals">
                     <div className="space-y-3">
                       {workflowsLoading ? (
                         <div className="text-center text-xs text-muted-foreground py-4">Loading workflows...</div>
@@ -5042,13 +4670,13 @@ Rules:
                               <span className="bg-amber-500/10 text-amber-600 px-2 py-0.5 rounded uppercase font-bold text-[9px]">{workflow.status}</span>
                             </div>
                             <div className="flex items-center gap-2 mt-2">
-                              <button 
+                              <button
                                 onClick={() => handleApproveWorkflow(workflow.id, workflow.type)}
                                 className="bg-emerald-500 hover:bg-emerald-600 text-white font-bold px-4 py-1.5 rounded-lg shadow-sm transition-all flex-1"
                               >
                                 Approve
                               </button>
-                              <button 
+                              <button
                                 onClick={() => handleRejectWorkflow(workflow.id, workflow.type)}
                                 className="bg-red-500 hover:bg-red-600 text-white font-bold px-4 py-1.5 rounded-lg shadow-sm transition-all flex-1"
                               >
@@ -5059,11 +4687,10 @@ Rules:
                         ))
                       )}
                     </div>
-                  </div>
+                  </SectionCard>
                 )}
               </div>
             )}
-
 
             {/* 2. DAILY PROGRESS REPORTS AND FLEET MANAGEMENT */}
             {activeTab === 'site-operations' && (
@@ -9625,7 +9252,7 @@ Rules:
 
             {/* TASK ASSIGNMENT */}
             {activeTab === 'tasks' && (
-              <TaskModule project={project} overviewData={overviewData} />
+              <TaskModule project={project} />
             )}
 
             {/* USER MANAGEMENT */}

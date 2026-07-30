@@ -16,7 +16,7 @@ import {
 } from 'lucide-react';
 import { useAppStore } from '@/store/use-app-store';
 
-export function TaskModule({ project, overviewData }: { project: any, overviewData: any }) {
+export function TaskModule({ project }: { project: any }) {
   const { addTask, updateTask, deleteTask } = useAppStore();
   
   // State for Add Task form visibility

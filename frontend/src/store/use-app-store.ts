@@ -557,7 +557,7 @@ export const useAppStore = create<AppState>((set) => ({
     try {
       const { data, error } = await supabase
         .from('projects')
-        .select('id, code, name, status')
+        .select('id, code, name, client_name, location, description, project_value, budget_amount, actual_spend_amount, start_date, target_end_date, current_phase, status')
         .order('name');
 
       if (error) throw error;
@@ -566,7 +566,9 @@ export const useAppStore = create<AppState>((set) => ({
         const dbProjects = data.map((project: any, index: number): ProjectSite => {
           const frontendId = getFrontendProjectId(project.id);
           const status = String(project.status || 'active').toLowerCase();
-          const progress = Number(project.progress_percentage ?? project.progress ?? 0);
+          // No progress column exists on `projects` — real progress is derived
+          // from average task completion in fetchDbTasks() once tasks load.
+          const progress = 0;
           return {
             id: frontendId,
             name: project.name || project.code || `Project ${index + 1}`,
@@ -722,7 +724,10 @@ export const useAppStore = create<AppState>((set) => ({
               priority: (t.priority || 'MEDIUM').toUpperCase(),
               status: (t.status || 'TODO').toUpperCase(),
             }));
-          return { ...proj, tasks: dbTasks };
+          const progress = dbTasks.length
+            ? Math.round(dbTasks.reduce((sum, t) => sum + t.progress, 0) / dbTasks.length)
+            : proj.progress;
+          return { ...proj, tasks: dbTasks, progress };
         });
         return { projects: updatedProjects };
       });
