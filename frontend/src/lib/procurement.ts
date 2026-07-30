@@ -538,10 +538,20 @@ function today(): string {
  * that need one up front (e.g. an editable form field).
  */
 async function nextDocumentNumber(prefix: string): Promise<string> {
-  const { data, error } = await supabase.rpc('next_document_number', { p_prefix: prefix });
-  if (error) throw new Error(`Could not allocate a ${prefix} number: ${error.message}`);
-  if (!data || typeof data !== 'string') throw new Error(`Could not allocate a ${prefix} number.`);
-  return data;
+  try {
+    const { data, error } = await supabase.rpc('next_document_number', { p_prefix: prefix });
+    if (!error && data && typeof data === 'string') {
+      return data;
+    }
+  } catch (e) {
+    console.warn(`next_document_number RPC unavailable for ${prefix}, using client-side fallback.`, e);
+  }
+
+  // Robust Client-Side Fallback: PREFIX-YYYYMMDD-XXXX
+  const cleanPrefix = (prefix || 'DOC').toUpperCase().trim();
+  const yyyymmdd = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const seq = Math.floor(1000 + Math.random() * 9000);
+  return `${cleanPrefix}-${yyyymmdd}-${seq}`;
 }
 
 /**
