@@ -74,8 +74,6 @@ export default function BudgetPage() {
     };
   }, [liveMode, dashboard, mockDashboard]);
 
-  const safeProjects = Array.isArray(projects) ? projects : [];
-
   const totals = useMemo(() => {
     const allocated = safeDashboard.summaries.reduce((sum: number, row: any) => sum + numberValue(row?.allocated_amount), 0);
     const committed = safeDashboard.summaries.reduce((sum: number, row: any) => sum + numberValue(row?.committed_amount), 0);
