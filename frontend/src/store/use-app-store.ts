@@ -87,6 +87,16 @@ interface AppState {
   vendorQuotations: VendorQuotation[];
   vendorPayments: VendorPayment[];
   vendorPerformances: VendorPerformance[];
+
+  // Budget module properties & actions
+  selectedProjectId: string;
+  setSelectedProjectId: (id: string) => void;
+  liveMode: boolean;
+  dashboard: any;
+  mockDashboard: any;
+  refreshDashboard: () => void;
+  userRole: string;
+  runAction: (name: string, payload?: any) => Promise<any>;
   
   // Actions
   checkLogin: () => Promise<void>;
@@ -170,6 +180,15 @@ export const useAppStore = create<AppState>((set) => ({
   vendorQuotations: [],
   vendorPayments: [],
   vendorPerformances: [],
+
+  selectedProjectId: 'f6704467-df8c-4f51-a49b-ddfdc40c39af',
+  setSelectedProjectId: (id: string) => set({ selectedProjectId: id }),
+  liveMode: false,
+  dashboard: null,
+  mockDashboard: null,
+  refreshDashboard: () => {},
+  userRole: 'PROJECT_MANAGER',
+  runAction: async () => ({ success: true }),
 
   checkLogin: async () => {
     try {
