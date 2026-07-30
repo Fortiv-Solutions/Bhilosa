@@ -24,7 +24,7 @@ import {
   Check,
   Upload,
 } from 'lucide-react';
-import { type PurchaseOrderRow, type ProcurementLineRow, updatePurchaseOrderTermsAndConditions, updatePurchaseOrderStatus, uploadChallanInvoiceDocument, printPurchaseOrderReport } from '@/lib/procurement';
+import { type PurchaseOrderRow, type ProcurementLineRow, type VendorOption, updatePurchaseOrderTermsAndConditions, updatePurchaseOrderStatus, uploadChallanInvoiceDocument, printPurchaseOrderReport } from '@/lib/procurement';
 
 function numberToWords(num: number): string {
   if (!num || isNaN(num)) return 'Zero Only';
@@ -199,13 +199,15 @@ export interface FullPoFormState {
 
 interface PoFormProps {
   po: PurchaseOrderRow;
+  /** Active vendors backing the vendor dropdown. */
+  vendorOptions?: VendorOption[];
   onSubmit: (formData: FullPoFormState) => void;
   /** Generates the report-format Purchase Order PDF and opens it in a new tab. */
   onPrint?: () => void;
   onCancel: () => void;
 }
 
-export function PoForm({ po, onSubmit, onPrint, onCancel }: PoFormProps) {
+export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel }: PoFormProps) {
   const todayStr = new Date().toISOString().slice(0, 10);
   const [savingTerms, setSavingTerms] = useState(false);
   const [termsSaveMsg, setTermsSaveMsg] = useState<string | null>(null);
@@ -935,16 +937,42 @@ export function PoForm({ po, onSubmit, onPrint, onCancel }: PoFormProps) {
               />
             </div>
 
-            {/* 12. Supplier Name */}
+            {/* 12. Supplier Name — selected from the vendor registry so the PO
+                always resolves to a real vendor id. */}
             <div>
               <label className="block text-[11px] font-bold uppercase text-muted-foreground mb-1">Supplier Name</label>
-              <input
-                type="text"
-                value={form.supplier_name}
-                onChange={(e) => updateHeader('supplier_name', e.target.value)}
-                className="w-full rounded-lg border border-border bg-background px-3 py-2 font-bold text-foreground"
-                required
-              />
+              {vendorOptions.length > 0 ? (
+                <select
+                  value={form.supplier_name}
+                  onChange={(e) => {
+                    const name = e.target.value;
+                    const vendor = vendorOptions.find((v) => (v.display_name || v.legal_name) === name);
+                    setForm((prev) => ({
+                      ...prev,
+                      supplier_name: name,
+                      ...(vendor ? { vendor_id: vendor.id } : {}),
+                    }) as FullPoFormState);
+                  }}
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2 font-bold text-foreground"
+                  required
+                >
+                  <option value="">Select a supplier…</option>
+                  {vendorOptions.map((vendor) => (
+                    <option key={vendor.id} value={vendor.display_name || vendor.legal_name}>
+                      {vendor.label}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  value={form.supplier_name}
+                  onChange={(e) => updateHeader('supplier_name', e.target.value)}
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2 font-bold text-foreground"
+                  placeholder="No vendors loaded — add one in the Vendor Registry"
+                  required
+                />
+              )}
             </div>
 
             {/* 13. PO in the name of* */}

@@ -1,5 +1,20 @@
 import { supabase, getDbSiteId, getSupabaseJsonHeaders } from '@/utils/supabase-client';
 import { isLiveSupabase } from '@/lib/erp/supabase-modules';
+import { normalizeDatabaseRole, type Role } from '@/lib/roles';
+import {
+  fieldsSection,
+  tableSection,
+  openReportWindow,
+  isDraftStatus,
+  fmtCurrency,
+  fmtNumber,
+  fmtDate,
+  fmtDateTime,
+  fmtBool,
+  fmtPercent,
+  fmtStatus,
+  fmtText,
+} from '@/lib/procurement-report';
 
 type MutationResult<T = unknown> = {
   data: T | null;
@@ -128,6 +143,8 @@ export type ProcurementLineRow = {
   extra_rec_qty?: number | null;
   extra_adj_qty?: number | null;
   quantity: number;
+  /** Cumulative quantity already received against this line (purchase_order_lines). */
+  received_qty?: number | null;
   pr_bal_qty?: number | null;
   lead_period_days?: number | null;
   lead_period_date?: string | null;
@@ -510,39 +527,89 @@ function today(): string {
   return new Date().toISOString().split('T')[0];
 }
 
-function sequence(prefix: string): string {
-  return `${prefix}-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Date.now().toString().slice(-5)}`;
+/**
+ * Allocates a document number from the database sequence, so two documents
+ * raised in the same window can never collide.
+ *
+ * The previous client-side generator used the last five digits of Date.now(),
+ * which repeats every 100 seconds — two bills raised 100s apart on the same
+ * date received identical numbers. Prefer letting the RPC that creates the
+ * document allocate its own number; this helper exists for the few call sites
+ * that need one up front (e.g. an editable form field).
+ */
+async function nextDocumentNumber(prefix: string): Promise<string> {
+  const { data, error } = await supabase.rpc('next_document_number', { p_prefix: prefix });
+  if (error) throw new Error(`Could not allocate a ${prefix} number: ${error.message}`);
+  if (!data || typeof data !== 'string') throw new Error(`Could not allocate a ${prefix} number.`);
+  return data;
 }
 
+/**
+ * The signed-in user's profile id, or null when there is no active session.
+ *
+ * Deliberately has no fallback. This previously fell back to "any profile in
+ * the table", which stamped created_by / updated_by / approved_by with an
+ * arbitrary user and made the approval audit trail unusable as a financial
+ * control.
+ */
 async function currentProfileId(): Promise<string | null> {
   try {
-    const { data } = await supabase.auth.getUser();
-    if (data.user?.id) {
-      const { data: userProfile } = await supabase
-        .from('profiles')
-        .select('id')
-        .eq('id', data.user.id)
-        .maybeSingle();
-      if (userProfile?.id) return userProfile.id;
-    }
-  } catch {}
+    const { data, error } = await supabase.auth.getUser();
+    if (error || !data.user?.id) return null;
 
-  try {
-    const { data: anyProfile } = await supabase
+    const { data: userProfile } = await supabase
       .from('profiles')
       .select('id')
-      .limit(1)
+      .eq('id', data.user.id)
+      .is('deleted_at', null)
+      .eq('is_active', true)
       .maybeSingle();
 
-    if (anyProfile?.id) return anyProfile.id;
-  } catch {}
-
-  return null;
+    return userProfile?.id ?? null;
+  } catch {
+    return null;
+  }
 }
 
-async function requireUpperManagementProfile(): Promise<string> {
+/** Throws unless there is an authenticated, active profile. */
+async function requireProfile(): Promise<string> {
   const profileId = await currentProfileId();
-  if (!profileId) throw new Error('Authentication required.');
+  if (!profileId) {
+    throw new Error('You are signed out. Please sign in again to continue.');
+  }
+  return profileId;
+}
+
+/** The signed-in user's normalised procurement role, or null. */
+export async function currentUserRole(): Promise<Role | null> {
+  const { data, error } = await supabase.rpc('app_current_role');
+  if (error || !data || typeof data !== 'string') return null;
+  return normalizeDatabaseRole(data);
+}
+
+/**
+ * Throws unless the signed-in user may approve at the requested level.
+ *
+ * The database enforces this too (see the approval triggers in
+ * 20260731090100_procurement_production_hardening.sql); checking here as well
+ * turns a raw Postgres error into a message worth showing a user.
+ */
+async function requireApprover(level: 'operational' | 'financial'): Promise<string> {
+  const profileId = await requireProfile();
+  const role = await currentUserRole();
+
+  const permitted =
+    level === 'financial'
+      ? role === 'UPPER_MANAGEMENT'
+      : role === 'UPPER_MANAGEMENT' || role === 'PROJECT_MANAGER';
+
+  if (!permitted) {
+    throw new Error(
+      level === 'financial'
+        ? 'Only upper management may approve bills or release payment.'
+        : 'Only management or a project manager may approve this document.',
+    );
+  }
   return profileId;
 }
 
@@ -1132,7 +1199,7 @@ export async function convertMaterialRequestToPr(input: ConvertToPrInput): Promi
         project_id: materialRequest.project_id,
         site_id: materialRequest.site_id,
         material_request_id: materialRequest.id,
-        pr_number: sequence('PR'),
+        pr_number: await nextDocumentNumber('PR'),
         title: input.title || materialRequest.justification || materialRequest.mr_number,
         estimated_cost: estimatedCost,
         finance_required: input.financeRequired,
@@ -1352,7 +1419,7 @@ export async function createRfqFromPr(pr: PurchaseRequisitionRow, vendorIds: str
       .insert({
         project_id: pr.project_id,
         purchase_requisition_id: pr.id,
-        rfq_number: sequence('RFQ'),
+        rfq_number: await nextDocumentNumber('RFQ'),
         title: pr.title,
         issue_date: today(),
         due_date: pr.required_date,
@@ -1472,7 +1539,7 @@ export async function recordQuotation(input: RecordQuotationInput): Promise<Muta
         project_id: input.rfq.project_id,
         rfq_id: input.rfq.id,
         vendor_id: input.vendorId,
-        quotation_number: input.quotationNumber?.trim() || sequence('QT'),
+        quotation_number: input.quotationNumber?.trim() || (await nextDocumentNumber('QT')),
         quotation_date: input.quotationDate || today(),
         subtotal_amount: subtotalAmount,
         tax_amount: taxAmount,
@@ -1603,7 +1670,7 @@ export type ApproveVendorSelectionInput = {
 
 export async function approveVendorSelection(input: ApproveVendorSelectionInput): Promise<MutationResult<{ selectionId: string }>> {
   try {
-    const profileId = await requireUpperManagementProfile();
+    const profileId = await requireApprover('operational');
 
     const { data: selection, error: selectionError } = await supabase
       .from('vendor_selections')
@@ -1815,14 +1882,22 @@ export async function generatePurchaseOrder(input: GeneratePurchaseOrderInput): 
       }
     }
 
-    let effectiveVendorId = (input.vendorId || '').trim();
+    // The vendor must be the one that was actually selected. This previously
+    // fell back to `vendors.select('id').limit(1)`, which silently issued the
+    // purchase order to whichever vendor happened to sort first.
+    const effectiveVendorId = (input.vendorId || '').trim();
     if (!isValidUuid(effectiveVendorId)) {
-      const { data: realVendor } = await supabase.from('vendors').select('id').limit(1).maybeSingle();
-      if (realVendor?.id) {
-        effectiveVendorId = realVendor.id;
-      } else {
-        throw new Error('Select a vendor before generating the purchase order. Add one in the Vendor Registry if none exist.');
-      }
+      throw new Error('Select a vendor before generating the purchase order. Add one in the Vendor Registry if none exist.');
+    }
+    const { data: vendorExists, error: vendorLookupError } = await supabase
+      .from('vendors')
+      .select('id, is_active')
+      .eq('id', effectiveVendorId)
+      .maybeSingle();
+    if (vendorLookupError) throw new Error(vendorLookupError.message);
+    if (!vendorExists) throw new Error('The selected vendor no longer exists.');
+    if (!(vendorExists as { is_active: boolean }).is_active) {
+      throw new Error('The selected vendor is deactivated and cannot receive a purchase order.');
     }
 
     const effectiveSelectionId = isValidUuid(input.vendorSelectionId) ? input.vendorSelectionId : null;
@@ -1836,7 +1911,7 @@ export async function generatePurchaseOrder(input: GeneratePurchaseOrderInput): 
         purchase_requisition_id: input.purchaseRequisitionId,
         vendor_selection_id: effectiveSelectionId,
         budget_allocation_id: budgetAllocationId,
-        po_number: sequence('PO'),
+        po_number: await nextDocumentNumber('PO'),
         po_date: today(),
         delivery_date: input.deliveryDate,
         delivery_location: input.deliveryLocation,
@@ -1995,13 +2070,22 @@ export async function updateFullPurchaseOrder(formData: {
   }
 }
 
-export async function approveAndSendPurchaseOrder(po: PurchaseOrderRow): Promise<MutationResult> {
+/**
+ * Approves a purchase order and (optionally) issues it to the vendor.
+ * The RPC re-checks the caller's role and stamps approved_by/approved_at
+ * server-side, so the audit trail cannot be set by the client.
+ */
+export async function approveAndSendPurchaseOrder(
+  po: PurchaseOrderRow,
+  sendToVendor = true,
+): Promise<MutationResult<{ status: string }>> {
   try {
-    await rpcAction('approve_and_send_purchase_order', {
+    await requireApprover('operational');
+    const result = await rpcAction<{ status?: string }>('approve_and_send_purchase_order', {
       p_purchase_order_id: po.id,
-      p_send_to_vendor: true,
+      p_send_to_vendor: sendToVendor,
     });
-    return { data: null, error: null };
+    return { data: { status: String(result.status || 'approved') }, error: null };
   } catch (error) {
     return { data: null, error: asError(error) };
   }
@@ -2009,30 +2093,130 @@ export async function approveAndSendPurchaseOrder(po: PurchaseOrderRow): Promise
 
 
 
-export async function createGrnFromPo(po: PurchaseOrderRow): Promise<MutationResult<{ grnId: string }>> {
+export type ReceiveGoodsInput = {
+  receiptDate?: string;
+  challanNumber?: string;
+  challanDate?: string;
+  vehicleNumber?: string;
+  godownName?: string;
+  transporterName?: string;
+  qualityDecision?: string;
+  remarks?: string;
+  /** Leave empty to receive the full outstanding PO quantity. */
+  lines?: {
+    purchaseOrderLineId?: string | null;
+    itemId?: string | null;
+    receivedQty: number;
+    acceptedQty: number;
+    rejectedQty: number;
+    unitRate: number;
+    remarks?: string;
+  }[];
+  /**
+   * Forces the GRN into `pending_approval` even for an approver, so a
+   * receipt can be recorded now and posted to inventory after review.
+   */
+  submitForApproval?: boolean;
+};
+
+/**
+ * Records goods received against a purchase order.
+ *
+ * The inspection detail (received / accepted / rejected quantities, challan,
+ * vehicle, remarks) is now sent to the server. It used to be collected by the
+ * GRN modal and then dropped: only the PO id was passed, so every quantity the
+ * storekeeper entered was discarded.
+ */
+export async function createGrnFromPo(
+  po: PurchaseOrderRow,
+  input: ReceiveGoodsInput = {},
+): Promise<MutationResult<{ grnId: string; grnNumber: string; status: string }>> {
   try {
-    const result = await rpcAction<{ grnId?: string }>('post_goods_receipt_note', {
-      p_purchase_order_id: po.id,
-    });
-    if (!result.grnId) throw new Error('GRN was not posted.');
-    return { data: { grnId: String(result.grnId) }, error: null };
+    await requireProfile();
+
+    const lines = (input.lines || []).map((line) => ({
+      purchaseOrderLineId: line.purchaseOrderLineId || null,
+      itemId: line.itemId || null,
+      receivedQty: Number(line.receivedQty) || 0,
+      acceptedQty: Number(line.acceptedQty) || 0,
+      rejectedQty: Number(line.rejectedQty) || 0,
+      unitRate: Number(line.unitRate) || 0,
+      remarks: line.remarks || null,
+    }));
+
+    for (const line of lines) {
+      if (line.receivedQty < 0 || line.acceptedQty < 0 || line.rejectedQty < 0) {
+        throw new Error('Received, accepted and rejected quantities cannot be negative.');
+      }
+      if (line.acceptedQty + line.rejectedQty > line.receivedQty) {
+        throw new Error('Accepted plus rejected quantity cannot exceed the received quantity.');
+      }
+    }
+
+    const result = await rpcAction<{ grnId?: string; grnNumber?: string; status?: string }>(
+      'post_goods_receipt_note',
+      {
+        p_purchase_order_id: po.id,
+        p_receipt_date: input.receiptDate || today(),
+        p_challan_no: input.challanNumber?.trim() || null,
+        p_challan_date: input.challanDate || null,
+        p_vehicle_no: input.vehicleNumber?.trim() || null,
+        p_godown_name: input.godownName?.trim() || null,
+        p_transporter_name: input.transporterName?.trim() || null,
+        p_quality_decision: input.qualityDecision || 'accepted',
+        p_remarks: input.remarks?.trim() || null,
+        p_lines: lines,
+        p_submit_for_approval: input.submitForApproval ?? false,
+      },
+    );
+
+    if (!result.grnId) throw new Error('The goods receipt note was not created.');
+    return {
+      data: {
+        grnId: String(result.grnId),
+        grnNumber: String(result.grnNumber || ''),
+        status: String(result.status || 'draft'),
+      },
+      error: null,
+    };
   } catch (error) {
     return { data: null, error: asError(error) };
   }
 }
 
-export async function createVendorBillFromGrn(grn: GrnRow): Promise<MutationResult<{ vendorBillId: string }>> {
+/**
+ * Raises a vendor bill from a posted GRN, with a real three-way match
+ * (PO value vs GRN value vs invoice value) recorded in three_way_matches.
+ * The bill number is allocated server-side.
+ */
+export async function createVendorBillFromGrn(
+  grn: GrnRow,
+  options: { invoiceValue?: number; tolerance?: number; documentHash?: string; storagePath?: string; fileName?: string } = {},
+): Promise<MutationResult<{ vendorBillId: string; billNumber: string; matchStatus: string }>> {
   try {
-    const result = await rpcAction<{ vendorBillId?: string }>('submit_vendor_bill_from_grn', {
-      p_grn_id: grn.id,
-      p_bill_number: sequence('BILL'),
-      p_bill_date: today(),
-      p_document_hash: null,
-      p_storage_path: null,
-      p_file_name: null,
-    });
-    if (!result.vendorBillId) throw new Error('Vendor bill was not created.');
-    return { data: { vendorBillId: String(result.vendorBillId) }, error: null };
+    await requireProfile();
+    const result = await rpcAction<{ vendorBillId?: string; billNumber?: string; matchStatus?: string }>(
+      'submit_vendor_bill_from_grn',
+      {
+        p_grn_id: grn.id,
+        p_bill_number: null,
+        p_bill_date: today(),
+        p_invoice_value: options.invoiceValue ?? null,
+        p_document_hash: options.documentHash ?? null,
+        p_storage_path: options.storagePath ?? null,
+        p_file_name: options.fileName ?? null,
+        p_tolerance: options.tolerance ?? 0,
+      },
+    );
+    if (!result.vendorBillId) throw new Error('The vendor bill was not created.');
+    return {
+      data: {
+        vendorBillId: String(result.vendorBillId),
+        billNumber: String(result.billNumber || ''),
+        matchStatus: String(result.matchStatus || 'pending'),
+      },
+      error: null,
+    };
   } catch (error) {
     return { data: null, error: asError(error) };
   }
@@ -2528,7 +2712,7 @@ export async function createVendor(input: VendorInput): Promise<MutationResult<{
       .from('vendors')
       .insert({
         ...vendorColumns(input),
-        vendor_code: (input.vendor_code || '').trim() || sequence('VN'),
+        vendor_code: (input.vendor_code || '').trim() || (await nextDocumentNumber('VN')),
         compliance_status: input.compliance_status || 'pending',
         rating: input.rating ?? 0,
         is_active: true,
@@ -2693,7 +2877,7 @@ export async function createItemMaster(input: {
     const { data, error } = await supabase
       .from('item_master')
       .insert({
-        sku: input.sku || sequence('SKU'),
+        sku: input.sku || (await nextDocumentNumber('SKU')),
         name: input.name,
         description: input.description,
         specification: input.specification,
@@ -2819,7 +3003,7 @@ export async function logManualStockMovement(input: StockMovementInput): Promise
 }
 export async function approvePurchaseOrder(po: PurchaseOrderRow): Promise<MutationResult> {
   try {
-    const profileId = await requireUpperManagementProfile();
+    const profileId = await requireApprover('operational');
     const { error } = await supabase.from('purchase_orders').update({
       status: 'approved',
       updated_by: profileId,
@@ -2834,9 +3018,11 @@ export async function approvePurchaseOrder(po: PurchaseOrderRow): Promise<Mutati
 
 export async function rejectPurchaseOrder(po: PurchaseOrderRow, reason: string): Promise<MutationResult> {
   try {
-    const profileId = await requireUpperManagementProfile();
+    const profileId = await requireApprover('operational');
+    if (!reason?.trim()) throw new Error('A rejection reason is required.');
     const { error } = await supabase.from('purchase_orders').update({
       status: 'rejected',
+      terms_and_conditions_legal: reason.trim(),
       updated_by: profileId,
       updated_at: new Date().toISOString()
     }).eq('id', po.id);
@@ -2934,58 +3120,31 @@ export type CreateGrnInput = {
   attachments: File[];
 };
 
+/**
+ * Submits a goods receipt against a PO.
+ *
+ * Delegates to post_goods_receipt_note so that the GRN header, its lines,
+ * purchase_order_lines.received_qty, the stock balance and the stock ledger
+ * all move in one transaction. The previous implementation wrote the header
+ * and lines in separate un-guarded statements and then unconditionally marked
+ * the PO `delivered` even on a partial receipt.
+ */
 export async function submitGrn(input: CreateGrnInput): Promise<MutationResult> {
-  try {
-    const profileId = await currentProfileId();
-    if (!profileId) throw new Error('Authentication required');
-
-    const poQuery = await supabase.from('purchase_orders').select('project_id, vendor_id').eq('id', input.purchaseOrderId).single();
-    if (poQuery.error || !poQuery.data) throw new Error('PO not found');
-
-    const grnData = {
-      purchase_order_id: input.purchaseOrderId,
-      project_id: poQuery.data.project_id,
-      vendor_id: poQuery.data.vendor_id,
-      grn_number: sequence('GRN'),
-      receipt_date: input.receiptDate,
-      challan_no: input.challanNumber,
-      vehicle_no: input.vehicleNumber,
-      status: 'received',
-      quality_decision: input.qualityDecision,
-      created_by: profileId,
-      updated_by: profileId
-    };
-
-    const { data: grn, error: grnError } = await supabase.from('goods_receipt_notes').insert(grnData).select('id').single();
-    if (grnError || !grn) throw new Error('Failed to create GRN header: ' + (grnError?.message || 'Unknown'));
-
-    const lineData = input.lines.map(l => ({
-      grn_id: grn.id,
-      project_id: poQuery.data.project_id,
-      item_id: l.item_id,
-      received_qty: l.received_qty,
-      accepted_qty: l.accepted_qty,
-      rejected_qty: l.rejected_qty,
-      unit_rate: l.unit_rate,
-      remarks: l.remarks,
-      created_by: profileId,
-      updated_by: profileId
-    }));
-
-    const { error: lineError } = await supabase.from('goods_receipt_note_lines').insert(lineData);
-    if (lineError) throw new Error('Failed to insert GRN lines: ' + lineError.message);
-
-    // Mark PO as partially_delivered or delivered based on received qty
-    await supabase.from('purchase_orders').update({
-      status: 'delivered',
-      updated_by: profileId,
-      updated_at: new Date().toISOString()
-    }).eq('id', input.purchaseOrderId);
-
-    return { data: null, error: null };
-  } catch (error) {
-    return { data: null, error: asError(error) };
-  }
+  const result = await createGrnFromPo({ id: input.purchaseOrderId } as PurchaseOrderRow, {
+    receiptDate: input.receiptDate,
+    challanNumber: input.challanNumber,
+    vehicleNumber: input.vehicleNumber,
+    qualityDecision: input.qualityDecision,
+    lines: input.lines.map((line) => ({
+      itemId: line.item_id,
+      receivedQty: line.received_qty,
+      acceptedQty: line.accepted_qty,
+      rejectedQty: line.rejected_qty,
+      unitRate: line.unit_rate,
+      remarks: line.remarks,
+    })),
+  });
+  return { data: null, error: result.error };
 }
 
 export async function createFullGoodsReceiptNote(formData: {
@@ -3007,101 +3166,345 @@ export async function createFullGoodsReceiptNote(formData: {
   uploaded_challan_url?: string;
   uploaded_challan_path?: string;
   uploaded_challan_name?: string;
-}): Promise<MutationResult<{ id: string }>> {
+  /** Existing GRN id. Omit to create. */
+  id?: string;
+  /** Required when no purchase order is linked. */
+  project_id?: string;
+  site_id?: string;
+  /** Links the receipt to its PO; supplies project + vendor automatically. */
+  purchase_order_id?: string;
+  /** The supplier. Selected from the vendor registry, not typed free-hand. */
+  vendor_id?: string;
+  challan_date?: string;
+  quality_decision?: string;
+  quantity_verification?: string;
+  physical_inspection?: string;
+  damage_check?: string;
+  volume_in_brass?: string;
+  net_weight?: string;
+  in_weight?: string;
+  out_weight?: string;
+  asset_item?: string;
+  asset_amount?: number;
+  lines?: {
+    item_id?: string | null;
+    purchase_order_line_id?: string | null;
+    received_qty: number;
+    accepted_qty: number;
+    rejected_qty: number;
+    unit_rate: number;
+    remarks?: string;
+  }[];
+}): Promise<MutationResult<{ id: string; grnNumber: string }>> {
   try {
-    const profileId = await currentProfileId();
-    const grnData = {
-      grn_number: formData.grn_number,
-      receipt_date: formData.grn_date ? formData.grn_date.slice(0, 10) : new Date().toISOString().slice(0, 10),
-      challan_no: formData.challan_no || null,
-      vehicle_no: formData.vehicle_no || null,
-      godown_name: formData.godown_name || 'Main Site Store',
-      transporter_name: formData.transporter_name || null,
-      dealer_name: formData.dealer_name || null,
-      qc_no: formData.qc_no || null,
-      status: formData.status || 'draft',
-      quantity_verification: formData.challan_no || null,
-      physical_inspection: formData.vehicle_no || null,
-      remarks: formData.remarks || null,
-      account_posting_amount: formData.account_posting_amount ?? null,
-      // These were previously accepted as arguments and then silently dropped,
-      // so an uploaded invoice was stored in the bucket but never linked to the GRN.
-      uploaded_invoice_url: formData.uploaded_invoice_url || null,
-      uploaded_invoice_path: formData.uploaded_invoice_path || null,
-      uploaded_invoice_name: formData.uploaded_invoice_name || null,
-      uploaded_challan_url: formData.uploaded_challan_url || null,
-      uploaded_challan_path: formData.uploaded_challan_path || null,
-      uploaded_challan_name: formData.uploaded_challan_name || null,
-      created_by: profileId,
-      updated_by: profileId,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    };
+    await requireProfile();
 
-    const { data, error } = await supabase
-      .from('goods_receipt_notes')
-      .insert(grnData)
-      .select('id')
-      .single();
+    if (!formData.id && !formData.purchase_order_id && !formData.project_id) {
+      throw new Error('Select a purchase order, or choose a project, before saving the goods receipt.');
+    }
+    if (!formData.id && !formData.purchase_order_id && !formData.vendor_id) {
+      throw new Error('Select a supplier before saving the goods receipt.');
+    }
 
-    if (error) throw new Error(error.message);
+    const result = await rpcAction<{ grnId?: string; grnNumber?: string }>('save_goods_receipt_note', {
+      p_payload: {
+        id: formData.id || null,
+        project_id: formData.project_id || null,
+        site_id: formData.site_id || null,
+        purchase_order_id: formData.purchase_order_id || null,
+        vendor_id: formData.vendor_id || null,
+        grn_number: formData.grn_number || null,
+        receipt_date: formData.grn_date ? formData.grn_date.slice(0, 10) : today(),
+        challan_no: formData.challan_no || null,
+        challan_date: formData.challan_date || null,
+        vehicle_no: formData.vehicle_no || null,
+        godown_name: formData.godown_name || null,
+        transporter_name: formData.transporter_name || null,
+        dealer_name: formData.dealer_name || null,
+        qc_no: formData.qc_no || null,
+        supplier_name: formData.supplier_name || null,
+        // Real inspection fields, rather than the previous behaviour of
+        // stuffing challan_no and vehicle_no into them.
+        quantity_verification: formData.quantity_verification || null,
+        physical_inspection: formData.physical_inspection || null,
+        damage_check: formData.damage_check || null,
+        volume_in_brass: formData.volume_in_brass || null,
+        net_weight: formData.net_weight || null,
+        in_weight: formData.in_weight || null,
+        out_weight: formData.out_weight || null,
+        asset_item: formData.asset_item || null,
+        asset_amount: formData.asset_amount ?? 0,
+        remarks: formData.remarks || null,
+        quality_decision: formData.quality_decision || 'pending',
+        status: formData.status || 'draft',
+        uploaded_invoice_url: formData.uploaded_invoice_url || null,
+        uploaded_invoice_path: formData.uploaded_invoice_path || null,
+        uploaded_invoice_name: formData.uploaded_invoice_name || null,
+        uploaded_challan_url: formData.uploaded_challan_url || null,
+        uploaded_challan_path: formData.uploaded_challan_path || null,
+        uploaded_challan_name: formData.uploaded_challan_name || null,
+        lines: formData.lines || [],
+      },
+    });
 
-    return { data: { id: data.id }, error: null };
-  } catch (err: any) {
+    if (!result.grnId) throw new Error('The goods receipt note was not saved.');
+    return { data: { id: String(result.grnId), grnNumber: String(result.grnNumber || '') }, error: null };
+  } catch (err: unknown) {
     return { data: null, error: asError(err) };
   }
 }
 
 /**
- * Update the workflow status of an existing GRN in Supabase.
- * Statuses: 'draft' | 'pending_verification' | 'pending_approval' | 'posted'
+ * Moves a GRN through its workflow.
+ *
+ * Routed through set_goods_receipt_note_status, which validates the
+ * transition and enforces the approver role. The previous implementation
+ * PATCHed the status column directly with any string the caller supplied,
+ * so a site engineer could mark a receipt `posted`.
  */
 export async function updateGrnStatus(
   grnId: string,
   newStatus: string
 ): Promise<MutationResult> {
   try {
-    const profileId = await currentProfileId();
-    const { error } = await supabase
-      .from('goods_receipt_notes')
-      .update({
-        status: newStatus,
-        updated_by: profileId,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', grnId);
-
-    if (error) throw new Error(error.message);
+    await requireProfile();
+    await rpcAction('set_goods_receipt_note_status', { p_grn_id: grnId, p_status: newStatus });
     return { data: null, error: null };
-  } catch (err: any) {
+  } catch (err: unknown) {
     return { data: null, error: asError(err) };
   }
 }
 
 /**
- * Update the workflow status of an existing Purchase Bill (Vendor Bill) in Supabase.
- * Statuses: 'draft' | 'pending_verification' | 'pending_approval' | 'approved'
+ * Moves a purchase bill through its workflow.
+ *
+ * set_vendor_bill_status validates the transition, restricts approval and
+ * payment release to upper management, and refuses to approve a bill whose
+ * three-way match is in `mismatch`.
  */
 export async function updateVendorBillStatus(
   billId: string,
   newStatus: string
 ): Promise<MutationResult> {
   try {
-    const profileId = await currentProfileId();
-    const { error } = await supabase
-      .from('vendor_bills')
-      .update({
-        status: newStatus,
-        updated_by: profileId,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', billId);
-
-    if (error) throw new Error(error.message);
+    await requireProfile();
+    await rpcAction('set_vendor_bill_status', { p_bill_id: billId, p_status: newStatus });
     return { data: null, error: null };
-  } catch (err: any) {
+  } catch (err: unknown) {
     return { data: null, error: asError(err) };
   }
+}
+
+/**
+ * Creates or updates a purchase bill from the full ten-section PB form.
+ *
+ * Every scalar the form collects lands in a real column, the entries grid
+ * becomes vendor_bill_lines rows, and the repeating sections (advance
+ * entries, payment vouchers, PO details, GRN remarks, ledger postings) are
+ * stored in vendor_bills.form_payload. Previously only `status` was saved.
+ */
+export async function savePurchaseBill(payload: {
+  id?: string;
+  project_id?: string;
+  site_id?: string;
+  vendor_id?: string;
+  purchase_order_id?: string;
+  grn_id?: string;
+  work_order_id?: string;
+  bill_number?: string;
+  [key: string]: unknown;
+}): Promise<MutationResult<{ vendorBillId: string; billNumber: string; netPayable: number }>> {
+  try {
+    await requireProfile();
+
+    if (!payload.id && !payload.vendor_id && !payload.grn_id && !payload.purchase_order_id) {
+      throw new Error('Select a supplier, purchase order or GRN before saving the purchase bill.');
+    }
+
+    const result = await rpcAction<{ vendorBillId?: string; billNumber?: string; netPayable?: number }>(
+      'save_purchase_bill',
+      { p_payload: payload },
+    );
+
+    if (!result.vendorBillId) throw new Error('The purchase bill was not saved.');
+    return {
+      data: {
+        vendorBillId: String(result.vendorBillId),
+        billNumber: String(result.billNumber || ''),
+        netPayable: Number(result.netPayable || 0),
+      },
+      error: null,
+    };
+  } catch (err: unknown) {
+    return { data: null, error: asError(err) };
+  }
+}
+
+/**
+ * Creates or updates a purchase order from the PO form.
+ *
+ * The PO form previously had no persistence path at all: its submit handler
+ * called an optional `onSavePo` callback that the page never passed, so the
+ * form closed and every field was discarded.
+ */
+export async function savePurchaseOrderForm(payload: {
+  id?: string;
+  project_id?: string;
+  site_id?: string;
+  vendor_id?: string;
+  purchase_requisition_id?: string;
+  lines?: {
+    item_id?: string | null;
+    item_description: string;
+    quantity: number;
+    unit_rate: number;
+    tax_rate: number;
+    line_total?: number;
+  }[];
+  [key: string]: unknown;
+}): Promise<MutationResult<{ purchaseOrderId: string; poNumber: string; total: number }>> {
+  try {
+    await requireProfile();
+
+    const lines = payload.lines || [];
+    if (!payload.id && lines.length === 0) {
+      throw new Error('Add at least one line item before saving the purchase order.');
+    }
+    for (const line of lines) {
+      if (!line.item_description?.trim()) throw new Error('Every purchase order line needs a description.');
+      if (!(Number(line.quantity) > 0)) throw new Error('Every purchase order line needs a quantity greater than zero.');
+      if (Number(line.unit_rate) < 0) throw new Error('A purchase order line rate cannot be negative.');
+    }
+
+    const result = await rpcAction<{ purchaseOrderId?: string; poNumber?: string; total?: number }>(
+      'save_purchase_order',
+      { p_payload: payload },
+    );
+
+    if (!result.purchaseOrderId) throw new Error('The purchase order was not saved.');
+    return {
+      data: {
+        purchaseOrderId: String(result.purchaseOrderId),
+        poNumber: String(result.poNumber || ''),
+        total: Number(result.total || 0),
+      },
+      error: null,
+    };
+  } catch (err: unknown) {
+    return { data: null, error: asError(err) };
+  }
+}
+
+export type VendorOption = {
+  id: string;
+  label: string;
+  legal_name: string;
+  display_name: string | null;
+  gst_number: string | null;
+  city: string | null;
+  phone: string | null;
+  compliance_status: string | null;
+};
+
+/**
+ * Active vendors for a supplier dropdown.
+ *
+ * Supplier was previously a free-text field on the GRN and bill forms, which
+ * meant a receipt could name a supplier that did not exist in the registry and
+ * could never be joined back to a vendor record.
+ */
+export async function listActiveVendorOptions(): Promise<VendorOption[]> {
+  if (!isLiveSupabase()) return [];
+  const { data, error } = await supabase
+    .from('vendors')
+    .select('id, legal_name, display_name, gst_number, city, phone, compliance_status')
+    .eq('is_active', true)
+    .order('legal_name');
+
+  if (error) throw new Error(error.message);
+
+  return (data || []).map((vendor) => {
+    const row = vendor as Omit<VendorOption, 'label'>;
+    const name = row.display_name || row.legal_name;
+    return {
+      ...row,
+      label: row.gst_number ? `${name} — ${row.gst_number}` : name,
+    };
+  });
+}
+
+export type GrnOption = {
+  id: string;
+  grn_number: string;
+  receipt_date: string | null;
+  vendor_id: string | null;
+  vendor_name: string;
+  po_number: string | null;
+  status: string;
+  value: number;
+};
+
+/**
+ * Posted GRNs that have no bill yet — the source list for "Create PB from GRN".
+ */
+export async function listBillableGrnOptions(projectId?: string): Promise<GrnOption[]> {
+  if (!isLiveSupabase()) return [];
+
+  const dbProjectId = projectId && projectId !== 'all' ? getDbSiteId(projectId) : null;
+  let query = supabase
+    .from('goods_receipt_notes')
+    .select(`
+      id, grn_number, receipt_date, vendor_id, status, account_posting_amount,
+      vendors(legal_name, display_name),
+      purchase_orders(po_number),
+      goods_receipt_note_lines(accepted_qty, unit_rate)
+    `)
+    .eq('status', 'posted')
+    .is('deleted_at', null)
+    .order('receipt_date', { ascending: false })
+    .limit(200);
+
+  if (dbProjectId) query = query.eq('project_id', dbProjectId);
+
+  const { data, error } = await query;
+  if (error) throw new Error(error.message);
+
+  const { data: billed } = await supabase
+    .from('vendor_bills')
+    .select('grn_id')
+    .is('deleted_at', null)
+    .not('grn_id', 'is', null);
+  const billedIds = new Set((billed || []).map((row) => (row as { grn_id: string }).grn_id));
+
+  return (data || [])
+    .filter((grn) => !billedIds.has((grn as { id: string }).id))
+    .map((grn) => {
+      const row = grn as {
+        id: string;
+        grn_number: string;
+        receipt_date: string | null;
+        vendor_id: string | null;
+        status: string;
+        account_posting_amount: number | null;
+        vendors?: { legal_name?: string; display_name?: string } | null;
+        purchase_orders?: { po_number?: string } | null;
+        goods_receipt_note_lines?: { accepted_qty: number; unit_rate: number }[];
+      };
+      const lineValue = (row.goods_receipt_note_lines || []).reduce(
+        (sum, line) => sum + (Number(line.accepted_qty) || 0) * (Number(line.unit_rate) || 0),
+        0,
+      );
+      return {
+        id: row.id,
+        grn_number: row.grn_number,
+        receipt_date: row.receipt_date,
+        vendor_id: row.vendor_id,
+        vendor_name: row.vendors?.display_name || row.vendors?.legal_name || 'Unknown supplier',
+        po_number: row.purchase_orders?.po_number ?? null,
+        status: row.status,
+        value: Number(row.account_posting_amount) || lineValue,
+      };
+    });
 }
 
 /**
@@ -3137,1126 +3540,891 @@ export type PostGrnInput = {
   grnId: string;
 };
 
+/**
+ * Moves a GRN to `posted`, which is what releases the accepted quantities
+ * into inventory. Routed through set_goods_receipt_note_status so the
+ * transition is validated and the role is enforced in the database.
+ */
 export async function postGrnToInventory(input: PostGrnInput): Promise<MutationResult> {
   try {
-    const profileId = await requireUpperManagementProfile();
-    if (!profileId) throw new Error('Authentication required');
-
-    const { error } = await supabase.from('goods_receipt_notes').update({
-      status: 'posted',
-      updated_by: profileId,
-      updated_at: new Date().toISOString()
-    }).eq('id', input.grnId);
-
-    if (error) throw new Error(error.message);
-
+    await requireApprover('operational');
+    await rpcAction('set_goods_receipt_note_status', {
+      p_grn_id: input.grnId,
+      p_status: 'posted',
+    });
     return { data: null, error: null };
   } catch (error) {
     return { data: null, error: asError(error) };
   }
 }
+// =====================================================================
+// PRINT REPORTS
+// =====================================================================
+// Each report is declared as an ordered list of sections so that every field
+// the corresponding form captures appears in a predictable place. All values
+// are escaped by the report engine — see lib/procurement-report.ts for why
+// that matters (the previous builders interpolated raw DB text into HTML).
 
-/**
- * Client-side formatted print window fallback for Material Requests.
- * Used when backend PDF endpoint is unreachable or offline.
- */
+type AnyRow = Record<string, any>;
+
+/** Reads the first present key, so reports tolerate schema/joined-alias drift. */
+function pick(row: AnyRow | null | undefined, ...keys: string[]): unknown {
+  if (!row) return undefined;
+  for (const key of keys) {
+    const value = row[key];
+    if (value !== undefined && value !== null && value !== '') return value;
+  }
+  return undefined;
+}
+
+function vendorName(row: AnyRow | null | undefined): string {
+  return fmtText(
+    pick(row, 'vendor_name') ||
+      pick(row?.vendors, 'display_name', 'legal_name') ||
+      pick(row, 'supplier_name', 'dealer_name'),
+  );
+}
+
+function projectName(row: AnyRow | null | undefined): string {
+  return fmtText(pick(row?.projects, 'name') || pick(row, 'project_name'));
+}
+
+function reportFailed(documentLabel: string): void {
+  if (typeof window === 'undefined') return;
+  window.alert(
+    `The ${documentLabel} report could not be opened. Please allow pop-ups for this site and try again.`,
+  );
+}
+
+/** Signature strip used across the procurement documents. */
+const APPROVAL_SLOTS = ['Prepared By', 'Checked By', 'Approved By', 'Received By'];
+
+// ---------------------------------------------------------------------
+// 1. Material Request
+// ---------------------------------------------------------------------
 export function printMaterialRequestReport(mr: MaterialRequestRow) {
-  if (typeof window === 'undefined') return;
-  const printWindow = window.open('', '_blank', 'width=1000,height=900');
-  if (!printWindow) return;
+  const row = mr as unknown as AnyRow;
+  const lines = mr.material_request_lines || [];
+  const estimatedValue = lines.reduce(
+    (sum, line) => sum + (Number(line.quantity) || 0) * (Number(line.estimated_rate) || 0),
+    0,
+  );
 
-  const now = new Date();
-  const printDateStr = now.toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }) + ' ' + now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false });
-  const mrDateStr = mr.created_at ? new Date(mr.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '';
-  const reqDateHeaderStr = mr.required_date ? new Date(mr.required_date).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '';
-  const raisedByName = mr.profiles?.name || (mr as any).raised_by || '';
-  const projectName = mr.projects?.name || (mr as any).project_name || '';
-  const contractorName = (mr as any).contractor_name || (mr as any).company_name || (mr as any).contractor || '';
-  const workActivity = mr.work_activity || '';
+  const ok = openReportWindow({
+    documentTitle: 'Material Request',
+    documentNumber: mr.mr_number,
+    projectName: projectName(row),
+    statusLabel: mr.status,
+    draft: isDraftStatus(mr.status),
+    sections: [
+      fieldsSection('Request Details', [
+        { label: 'MR Number', value: fmtText(mr.mr_number) },
+        { label: 'Status', value: fmtStatus(mr.status) },
+        { label: 'Priority', value: fmtStatus(mr.priority) },
+        { label: 'Raised On', value: fmtDate(pick(row, 'submitted_at', 'created_at')) },
+        { label: 'Required By', value: fmtDate(mr.required_date) },
+        { label: 'Source', value: fmtStatus(mr.source) },
+        { label: 'Project', value: projectName(row) },
+        { label: 'Site / Block', value: fmtText(pick(row?.project_sites, 'name') || pick(row, 'site_block')) },
+        { label: 'Work Activity', value: fmtText(pick(row, 'work_activity')) },
+        { label: 'Raised By', value: fmtText(pick(row?.profiles, 'name') || pick(row, 'raised_by')) },
+        { label: 'Contact', value: fmtText(pick(row?.profiles, 'email')) },
+        { label: 'Stock Decision', value: fmtStatus(mr.stock_decision) },
+      ]),
 
-  const linesHtml = (mr.material_request_lines || []).map((line: any, idx: number) => {
-    const itemReqDate = line.required_date ? new Date(line.required_date).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }) : reqDateHeaderStr;
-    return `
-      <tr>
-        <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${idx + 1}</td>
-        <td style="border: 1px solid #000; padding: 6px 8px;">${line.item_group || ''}</td>
-        <td style="border: 1px solid #000; padding: 6px 8px; font-weight: 600;">${line.item_description || ''}</td>
-        <td style="border: 1px solid #000; padding: 6px 8px;">${line.brand || line.item_brand || ''}</td>
-        <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${line.unit || ''}</td>
-        <td style="border: 1px solid #000; padding: 6px 8px; text-align: right; font-weight: 700;">${line.quantity ?? ''}</td>
-        <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${itemReqDate}</td>
-      </tr>
-    `;
-  }).join('');
+      { kind: 'note', title: 'Justification / Purpose', body: fmtText(mr.justification) },
 
-  const remarksText = mr.justification || (mr as any).remarks || '';
+      tableSection(
+        'Requested Materials',
+        lines,
+        [
+          { header: '#', cell: (_l, i) => i + 1, align: 'center' },
+          { header: 'Item Code', cell: (l: AnyRow) => fmtText(pick(l, 'item_code')) },
+          { header: 'Description', cell: (l: AnyRow) => fmtText(l.item_description) },
+          { header: 'Group', cell: (l: AnyRow) => fmtText(pick(l, 'item_group')) },
+          { header: 'Specification', cell: (l: AnyRow) => fmtText(pick(l, 'specification', 'item_specification')) },
+          { header: 'Unit', cell: (l: AnyRow) => fmtText(pick(l, 'unit')), align: 'center' },
+          { header: 'Qty', cell: (l: AnyRow) => fmtNumber(l.quantity), align: 'right' },
+          {
+            header: 'Converted',
+            cell: (l: AnyRow) => fmtNumber(pick(l, 'converted_qty') ?? 0),
+            align: 'right',
+          },
+          {
+            header: 'Est. Rate',
+            cell: (l: AnyRow) => fmtCurrency(pick(l, 'estimated_rate', 'unit_rate') ?? 0),
+            align: 'right',
+          },
+          {
+            header: 'Est. Value',
+            cell: (l: AnyRow) =>
+              fmtCurrency((Number(l.quantity) || 0) * (Number(pick(l, 'estimated_rate', 'unit_rate')) || 0)),
+            align: 'right',
+            footer: () => fmtCurrency(estimatedValue),
+          },
+          { header: 'Line Status', cell: (l: AnyRow) => fmtStatus(pick(l, 'line_status')) },
+          { header: 'Remarks', cell: (l: AnyRow) => fmtText(pick(l, 'remarks')) },
+        ],
+        'No material lines recorded on this request',
+      ),
 
-  const historyEntries = (mr as any).history && Array.isArray((mr as any).history) ? (mr as any).history : [];
+      {
+        kind: 'totals',
+        title: 'Estimated Value',
+        rows: [
+          { label: 'Line Count', value: fmtNumber(lines.length, 0) },
+          { label: 'Total Estimated Value', value: fmtCurrency(estimatedValue), emphasis: true },
+        ],
+      },
 
-  const historyHtml = historyEntries.length > 0
-    ? historyEntries.map((h: any) => `
-        <tr>
-          <td style="border: 1px solid #000; padding: 6px 8px;">${h.from || ''}</td>
-          <td style="border: 1px solid #000; padding: 6px 8px;">${h.to || ''}</td>
-          <td style="border: 1px solid #000; padding: 6px 8px; font-weight: 600;">${h.by || ''}</td>
-          <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${h.at || ''}</td>
-          <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${h.daysSince ?? ''}</td>
-          <td style="border: 1px solid #000; padding: 6px 8px;">${h.remarks || ''}</td>
-        </tr>
-      `).join('')
-    : `<tr><td colspan="6" style="border: 1px solid #000; padding: 10px; text-align: center; color: #444;">No history logs recorded</td></tr>`;
+      fieldsSection('Review & Workflow', [
+        { label: 'Reviewed By', value: fmtText(pick(row, 'reviewed_by')) },
+        { label: 'Reviewed At', value: fmtDateTime(pick(row, 'reviewed_at')) },
+        { label: 'Rejection Reason', value: fmtText(pick(row, 'rejection_reason')), wide: true, multiline: true },
+        { label: 'Clarification Asked', value: fmtText(pick(row, 'clarification_text')), wide: true, multiline: true },
+        { label: 'Clarification At', value: fmtDateTime(pick(row, 'clarification_at')) },
+        { label: 'Clarification Reply', value: fmtText(pick(row, 'clarification_reply')), wide: true, multiline: true },
+        { label: 'Replied At', value: fmtDateTime(pick(row, 'clarification_replied_at')) },
+        { label: 'Management Comment', value: fmtText(pick(row, 'management_comment')), wide: true, multiline: true },
+        { label: 'Commented At', value: fmtDateTime(pick(row, 'management_comment_at')) },
+      ]),
 
-  const htmlContent = `
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <title>Material Request Report - ${mr.mr_number || ''}</title>
-        <style>
-          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; padding: 24px; color: #000; margin: 0; background: #fff; line-height: 1.3; }
-          h1, h2, h3 { color: #000; margin: 0; padding: 0; }
-          .header-container { text-align: center; margin-bottom: 16px; border-bottom: 2px solid #000; padding-bottom: 8px; }
-          .header-title { font-size: 22px; font-weight: 900; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 4px; }
-          .header-subtitle { font-size: 11px; font-weight: 600; text-transform: uppercase; }
-          
-          .meta-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 12px; }
-          .meta-table td { border: 1px solid #000; padding: 6px 10px; vertical-align: middle; }
-          .meta-label { font-weight: 800; text-transform: uppercase; width: 22%; background: #fff; }
-          .meta-val { font-weight: 600; width: 28%; }
+      { kind: 'signatures', title: 'Authorisation', slots: APPROVAL_SLOTS },
+    ],
+  });
 
-          .section-heading { font-size: 13px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.5px; margin: 18px 0 8px 0; border-bottom: 1.5px solid #000; padding-bottom: 4px; }
-          .center-heading { text-align: center; border-bottom: none; }
-
-          .data-table { width: 100%; border-collapse: collapse; margin-bottom: 0; font-size: 11px; }
-          .data-table th { border: 1px solid #000; padding: 7px 8px; text-align: left; font-size: 10px; font-weight: 900; text-transform: uppercase; background: #fff; }
-          .data-table td { border: 1px solid #000; padding: 6px 8px; }
-          
-          .summary-table { width: 100%; border-collapse: collapse; margin-top: -1px; margin-bottom: 20px; font-size: 11px; }
-          .summary-table td { border: 1px solid #000; padding: 6px 10px; }
-
-          .btn-print { padding: 8px 18px; background-color: #000; color: #fff; border: 1px solid #000; font-weight: 800; cursor: pointer; font-size: 12px; text-transform: uppercase; }
-          .btn-print:hover { background-color: #333; }
-          @media print {
-            body { padding: 0; }
-            .no-print { display: none !important; }
-            @page { size: A4; margin: 10mm; }
-          }
-        </style>
-      </head>
-      <body>
-        <div class="no-print" style="margin-bottom: 16px; text-align: right;">
-          <button class="btn-print" onclick="window.print()">🖨️ PRINT REPORT / SAVE AS PDF</button>
-        </div>
-
-        <!-- TOP CENTER HEADING -->
-        <div class="header-container">
-          <div class="header-title">Material Requests</div>
-          <div class="header-subtitle">Printed By: ${raisedByName} &nbsp;&nbsp; on Date: ${printDateStr}</div>
-        </div>
-
-        <!-- METADATA TABULAR GRID -->
-        <table class="meta-table">
-          <tr>
-            <td class="meta-label">M.R. No.</td>
-            <td class="meta-val">${mr.mr_number || ''}</td>
-            <td class="meta-label">M.R. Date *</td>
-            <td class="meta-val">${mrDateStr}</td>
-          </tr>
-          <tr>
-            <td class="meta-label">Project & Site</td>
-            <td class="meta-val">${projectName}</td>
-            <td class="meta-label">Contractor Name</td>
-            <td class="meta-val">${contractorName}</td>
-          </tr>
-          <tr>
-            <td class="meta-label">Activity Names/Work Activity</td>
-            <td class="meta-val">${workActivity}</td>
-            <td class="meta-label">Raised By</td>
-            <td class="meta-val">${raisedByName}</td>
-          </tr>
-        </table>
-
-        <!-- MATERIAL REQUEST ENTRIES SECTION -->
-        <div class="section-heading center-heading">Material Request Entries</div>
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th style="width: 40px; text-align: center;">Sr No.</th>
-              <th>Item Group</th>
-              <th>Item Description</th>
-              <th>Item Brand</th>
-              <th style="width: 60px; text-align: center;">Units *</th>
-              <th style="width: 70px; text-align: right;">Quantity *</th>
-              <th style="width: 90px; text-align: center;">Required Date *</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${linesHtml.length > 0 ? linesHtml : '<tr><td colspan="7" style="border: 1px solid #000; padding:12px; text-align:center;">No entries found</td></tr>'}
-          </tbody>
-        </table>
-
-        <!-- SUMMARY ROWS IN SAME TABULAR SECTION -->
-        <table class="summary-table">
-          <tr>
-            <td style="width: 15%; font-weight: 900; text-transform: uppercase;">Remarks</td>
-            <td style="width: 85%; font-weight: 600;" colspan="3">${remarksText}</td>
-          </tr>
-          <tr>
-            <td style="width: 15%; font-weight: 900; text-transform: uppercase;">Priority</td>
-            <td style="width: 35%; font-weight: 700; text-transform: uppercase;">${mr.priority || ''}</td>
-            <td style="width: 15%; font-weight: 900; text-transform: uppercase;">Prepared by</td>
-            <td style="width: 35%; font-weight: 600;">${raisedByName}</td>
-          </tr>
-          <tr>
-            <td style="width: 15%; font-weight: 900; text-transform: uppercase;">Status</td>
-            <td style="width: 85%; font-weight: 700; text-transform: uppercase;" colspan="3">${mr.status || ''}</td>
-          </tr>
-        </table>
-
-        <!-- REPORT HISTORY SECTION -->
-        <div class="section-heading center-heading">REPORT HISTORY</div>
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th style="width: 15%;">FROM</th>
-              <th style="width: 15%;">TO</th>
-              <th style="width: 20%;">BY</th>
-              <th style="width: 18%; text-align: center;">AT</th>
-              <th style="width: 10%; text-align: center;">DAYS SINCE</th>
-              <th style="width: 22%;">REMARKS</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${historyHtml}
-          </tbody>
-        </table>
-
-        <script>
-          window.onload = function() {
-            setTimeout(function() { window.print(); }, 400);
-          };
-        </script>
-      </body>
-    </html>
-  `;
-
-  printWindow.document.open();
-  printWindow.document.write(htmlContent);
-  printWindow.document.close();
+  if (!ok) reportFailed('material request');
 }
 
-/**
- * Client-side formatted print window for Goods Receipt Notes (GRN).
- * Renders every field, section, table, vehicle details, invoice attachments, and financial totals.
- */
-export function printGrnReport(grn: any) {
-  if (typeof window === 'undefined') return;
-  const printWindow = window.open('', '_blank', 'width=1000,height=900');
-  if (!printWindow) return;
+// ---------------------------------------------------------------------
+// 2. Purchase Requisition
+// ---------------------------------------------------------------------
+export function printPurchaseRequisitionReport(pr: AnyRow) {
+  const lines: AnyRow[] = pr?.purchase_requisition_lines || [];
+  const lineSubtotal = lines.reduce(
+    (sum, l) => sum + (Number(l.quantity) || 0) * (Number(pick(l, 'estimated_rate', 'unit_rate')) || 0),
+    0,
+  );
+  const subtotal = Number(pick(pr, 'subtotal_amount')) || lineSubtotal;
+  const tax = Number(pick(pr, 'tax_amount')) || 0;
+  const discount = Number(pick(pr, 'discount_amount')) || 0;
+  const freight = Number(pick(pr, 'freight_amount')) || 0;
+  const other = Number(pick(pr, 'other_charges')) || 0;
+  const contingency = Number(pick(pr, 'contingency_amount')) || 0;
+  const total =
+    Number(pick(pr, 'total_amount')) || subtotal + tax + freight + other + contingency - discount;
 
-  const now = new Date();
-  const printDateStr = now.toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }) + ' ' + now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false });
-  const grnDateStr = grn.grn_date || grn.receipt_date || (grn.created_at ? new Date(grn.created_at).toLocaleDateString('en-IN') : '');
-  const receivedBy = grn.profiles?.name || grn.created_by_name || grn.received_by || '';
-  const projectName = grn.project_name || grn.projects?.name || '';
-  const vendorName = grn.vendor_name || grn.vendors?.display_name || grn.vendors?.legal_name || '';
+  const ok = openReportWindow({
+    documentTitle: 'Purchase Requisition',
+    documentNumber: pr?.pr_number,
+    projectName: projectName(pr),
+    statusLabel: pr?.status,
+    draft: isDraftStatus(pr?.status),
+    sections: [
+      fieldsSection('Requisition Details', [
+        { label: 'PR Number', value: fmtText(pr?.pr_number) },
+        { label: 'Status', value: fmtStatus(pr?.status) },
+        { label: 'Approval Stage', value: fmtStatus(pick(pr, 'current_approval_stage')) },
+        { label: 'PR Type', value: fmtStatus(pick(pr, 'pr_type')) },
+        { label: 'Priority', value: fmtStatus(pick(pr, 'priority')) },
+        { label: 'Requested Date', value: fmtDate(pick(pr, 'requested_date', 'created_at')) },
+        { label: 'Required Date', value: fmtDate(pick(pr, 'required_date')) },
+        { label: 'Release Date', value: fmtDate(pick(pr, 'pr_release_date')) },
+        { label: 'Finance Approval Required', value: fmtBool(pick(pr, 'finance_required')) },
+        { label: 'Title / Specification', value: fmtText(pr?.title), wide: true },
+        { label: 'Source MR', value: fmtText(pick(pr, 'material_request_id')) },
+        { label: 'Raised By', value: fmtText(pick(pr, 'created_by_name', 'created_by')) },
+      ]),
 
-  const itemsHtml = (grn.items || grn.lines || grn.goods_receipt_note_lines || []).map((item: any, idx: number) => `
-    <tr>
-      <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${idx + 1}</td>
-      <td style="border: 1px solid #000; padding: 6px 8px; font-weight: 700;">${item.item_code || ''}</td>
-      <td style="border: 1px solid #000; padding: 6px 8px; font-weight: 600;">${item.item_description || ''}</td>
-      <td style="border: 1px solid #000; padding: 6px 8px;">${item.category_group || item.item_group || ''}</td>
-      <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${item.unit || ''}</td>
-      <td style="border: 1px solid #000; padding: 6px 8px; text-align: right;">${item.po_approved_qty ?? ''}</td>
-      <td style="border: 1px solid #000; padding: 6px 8px; text-align: right; font-weight: 700;">${item.received_qty ?? ''}</td>
-      <td style="border: 1px solid #000; padding: 6px 8px; text-align: right; font-weight: 700;">${item.accepted_qty ?? ''}</td>
-      <td style="border: 1px solid #000; padding: 6px 8px; text-align: right; font-weight: 700;">${item.rejected_qty ?? ''}</td>
-      <td style="border: 1px solid #000; padding: 6px 8px; text-align: right;">${item.unit_rate ? '₹ ' + item.unit_rate.toLocaleString('en-IN', { minimumFractionDigits: 2 }) : ''}</td>
-      <td style="border: 1px solid #000; padding: 6px 8px; text-align: right; font-weight: 700;">${item.total_amount ? '₹ ' + item.total_amount.toLocaleString('en-IN', { minimumFractionDigits: 2 }) : ''}</td>
-      <td style="border: 1px solid #000; padding: 6px 8px;">${item.location || ''}</td>
-    </tr>
-  `).join('');
+      fieldsSection('Company, Activity & Cost Allocation', [
+        { label: 'Company', value: fmtText(pick(pr, 'company_name')) },
+        { label: 'Department', value: fmtText(pick(pr, 'department')) },
+        { label: 'Activity Name', value: fmtText(pick(pr, 'activity_name')) },
+        { label: 'Activity Code', value: fmtText(pick(pr, 'activity_code')) },
+        { label: 'WBS Code', value: fmtText(pick(pr, 'wbs_code')) },
+        { label: 'Cost Centre', value: fmtText(pick(pr, 'cost_centre')) },
+        { label: 'Budget Applicable', value: fmtBool(pick(pr, 'budget_applicable')) },
+        { label: 'Budget Head', value: fmtText(pick(pr, 'budget_head_id')) },
+        { label: 'Cost Code', value: fmtText(pick(pr, 'cost_code_id')) },
+        { label: 'Scope of Service', value: fmtText(pick(pr, 'scope_of_service')), wide: true },
+        {
+          label: 'Over-Budget Justification',
+          value: fmtText(pick(pr, 'over_budget_justification')),
+          wide: true,
+          multiline: true,
+        },
+      ]),
 
-  const historyEntries = grn.history && Array.isArray(grn.history) ? grn.history : [];
-  const historyHtml = historyEntries.length > 0
-    ? historyEntries.map((h: any) => `
-        <tr>
-          <td style="border: 1px solid #000; padding: 6px 8px;">${h.from || ''}</td>
-          <td style="border: 1px solid #000; padding: 6px 8px;">${h.to || ''}</td>
-          <td style="border: 1px solid #000; padding: 6px 8px; font-weight: 600;">${h.by || ''}</td>
-          <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${h.at || ''}</td>
-          <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${h.daysSince ?? ''}</td>
-          <td style="border: 1px solid #000; padding: 6px 8px;">${h.remarks || ''}</td>
-        </tr>
-      `).join('')
-    : `<tr><td colspan="6" style="border: 1px solid #000; padding: 10px; text-align: center; color: #444;">No history logs recorded</td></tr>`;
+      fieldsSection('Contractor & Delivery', [
+        { label: 'Contractor', value: fmtText(pick(pr, 'contractor_name')) },
+        { label: 'Contract Reference', value: fmtText(pick(pr, 'contract_reference')) },
+        { label: 'Vendor Code', value: fmtText(pick(pr, 'vendor_code')) },
+        { label: 'Site Contact Person', value: fmtText(pick(pr, 'site_contact_person', 'contact_person')) },
+        { label: 'Site Contact Number', value: fmtText(pick(pr, 'site_contact_number', 'contact_number')) },
+        { label: 'Delivery Address', value: fmtText(pick(pr, 'delivery_address')), wide: true },
+        {
+          label: 'Delivery Instructions',
+          value: fmtText(pick(pr, 'delivery_instructions')),
+          wide: true,
+          multiline: true,
+        },
+      ]),
 
-  const htmlContent = `
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <title>Goods Receipt Note Report - ${grn.grn_no || grn.grn_number || ''}</title>
-        <style>
-          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; padding: 24px; color: #000; margin: 0; background: #fff; line-height: 1.3; }
-          h1, h2, h3 { color: #000; margin: 0; padding: 0; }
-          .header-container { text-align: center; margin-bottom: 16px; border-bottom: 2px solid #000; padding-bottom: 8px; }
-          .header-title { font-size: 22px; font-weight: 900; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 4px; }
-          .header-subtitle { font-size: 11px; font-weight: 600; text-transform: uppercase; }
-          
-          .meta-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 12px; }
-          .meta-table td { border: 1px solid #000; padding: 6px 10px; vertical-align: middle; }
-          .meta-label { font-weight: 800; text-transform: uppercase; width: 22%; background: #fff; }
-          .meta-val { font-weight: 600; width: 28%; }
+      tableSection(
+        'Requisition Line Items',
+        lines,
+        [
+          { header: '#', cell: (l, i) => fmtNumber(pick(l, 'sr_no', 'line_number') ?? i + 1, 0), align: 'center' },
+          { header: 'Item Code', cell: (l) => fmtText(pick(l, 'item_code')) },
+          { header: 'Description', cell: (l) => fmtText(l.item_description) },
+          { header: 'Brand', cell: (l) => fmtText(pick(l, 'item_brand', 'preferred_brand')) },
+          {
+            header: 'Specification',
+            cell: (l) => fmtText(pick(l, 'specification', 'item_specification')),
+          },
+          { header: 'Unit', cell: (l) => fmtText(pick(l, 'unit')), align: 'center' },
+          { header: 'Qty', cell: (l) => fmtNumber(l.quantity), align: 'right' },
+          { header: 'Stock', cell: (l) => fmtNumber(pick(l, 'project_stock') ?? 0), align: 'right' },
+          { header: 'Lead Days', cell: (l) => fmtNumber(pick(l, 'lead_period_days') ?? 0, 0), align: 'right' },
+          {
+            header: 'Rate',
+            cell: (l) => fmtCurrency(pick(l, 'estimated_rate', 'unit_rate') ?? 0),
+            align: 'right',
+          },
+          {
+            header: 'Amount',
+            cell: (l) =>
+              fmtCurrency(
+                Number(pick(l, 'line_total')) ||
+                  (Number(l.quantity) || 0) * (Number(pick(l, 'estimated_rate', 'unit_rate')) || 0),
+              ),
+            align: 'right',
+            footer: () => fmtCurrency(lineSubtotal),
+          },
+          { header: 'Suggested Vendor', cell: (l) => fmtText(pick(l, 'suggested_vendor')) },
+          { header: 'Status', cell: (l) => fmtStatus(pick(l, 'line_status')) },
+          { header: 'Remarks', cell: (l) => fmtText(pick(l, 'remarks')) },
+        ],
+        'No requisition lines recorded',
+      ),
 
-          .section-heading { font-size: 13px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.5px; margin: 18px 0 8px 0; border-bottom: 1.5px solid #000; padding-bottom: 4px; }
-          .center-heading { text-align: center; border-bottom: none; }
+      {
+        kind: 'totals',
+        title: 'Commercial Summary',
+        rows: [
+          { label: 'Subtotal', value: fmtCurrency(subtotal) },
+          { label: 'Tax', value: fmtCurrency(tax) },
+          { label: 'Freight', value: fmtCurrency(freight) },
+          { label: 'Other Charges', value: fmtCurrency(other) },
+          { label: 'Contingency', value: fmtCurrency(contingency) },
+          { label: 'Discount', value: `(${fmtCurrency(discount)})` },
+          { label: 'Estimated Cost', value: fmtCurrency(pick(pr, 'estimated_cost') ?? subtotal) },
+          { label: 'Total Value', value: fmtCurrency(total), emphasis: true },
+        ],
+      },
 
-          .data-table { width: 100%; border-collapse: collapse; margin-bottom: 0; font-size: 11px; }
-          .data-table th { border: 1px solid #000; padding: 7px 8px; text-align: left; font-size: 10px; font-weight: 900; text-transform: uppercase; background: #fff; }
-          .data-table td { border: 1px solid #000; padding: 6px 8px; }
-          
-          .summary-table { width: 100%; border-collapse: collapse; margin-top: -1px; margin-bottom: 20px; font-size: 11px; }
-          .summary-table td { border: 1px solid #000; padding: 6px 10px; }
+      { kind: 'note', title: 'Terms & Conditions', body: fmtText(pick(pr, 'terms_and_conditions')) },
+      { kind: 'note', title: 'General Remarks', body: fmtText(pick(pr, 'general_remarks')) },
+      {
+        kind: 'note',
+        title: 'Internal Notes',
+        body: fmtText(pick(pr, 'internal_notes', 'assigned_team_notes')),
+      },
 
-          .btn-print { padding: 8px 18px; background-color: #000; color: #fff; border: 1px solid #000; font-weight: 800; cursor: pointer; font-size: 12px; text-transform: uppercase; }
-          .btn-print:hover { background-color: #333; }
-          @media print {
-            body { padding: 0; }
-            .no-print { display: none !important; }
-            @page { size: A4 landscape; margin: 8mm; }
-          }
-        </style>
-      </head>
-      <body>
-        <div class="no-print" style="margin-bottom: 16px; text-align: right;">
-          <button class="btn-print" onclick="window.print()">🖨️ PRINT REPORT / SAVE AS PDF</button>
-        </div>
+      { kind: 'signatures', title: 'Authorisation', slots: APPROVAL_SLOTS },
+    ],
+  });
 
-        <div class="header-container">
-          <div class="header-title">Goods Receipt Notes</div>
-          <div class="header-subtitle">Printed By: ${receivedBy} &nbsp;&nbsp; on Date: ${printDateStr}</div>
-        </div>
-
-        <table class="meta-table">
-          <tr>
-            <td class="meta-label">G.R.N. No.</td>
-            <td class="meta-val">${grn.grn_no || grn.grn_number || ''}</td>
-            <td class="meta-label">Receipt Date *</td>
-            <td class="meta-val">${grnDateStr}</td>
-          </tr>
-          <tr>
-            <td class="meta-label">Project & Site</td>
-            <td class="meta-val">${projectName}</td>
-            <td class="meta-label">Vendor Name</td>
-            <td class="meta-val">${vendorName}</td>
-          </tr>
-          <tr>
-            <td class="meta-label">P.O. Number</td>
-            <td class="meta-val">${grn.po_number || ''}</td>
-            <td class="meta-label">Vendor Invoice / Challan</td>
-            <td class="meta-val">${grn.vendor_invoice_no || grn.challan_no || ''}</td>
-          </tr>
-          <tr>
-            <td class="meta-label">Vehicle & Transporter</td>
-            <td class="meta-label">${grn.vehicle_number || grn.vehicle_no || ''} ${grn.transporter_name ? '(' + grn.transporter_name + ')' : ''}</td>
-            <td class="meta-label">Status</td>
-            <td class="meta-val" style="text-transform: uppercase;">${grn.status || ''}</td>
-          </tr>
-        </table>
-
-        <div class="section-heading center-heading">Goods Receipt Line Items</div>
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th style="width: 30px; text-align: center;">Sr No.</th>
-              <th>Code</th>
-              <th>Item Description</th>
-              <th>Category</th>
-              <th style="text-align: center;">Unit</th>
-              <th style="text-align: right;">PO Qty</th>
-              <th style="text-align: right;">Recv Qty</th>
-              <th style="text-align: right;">Acc Qty</th>
-              <th style="text-align: right;">Rej Qty</th>
-              <th style="text-align: right;">Rate</th>
-              <th style="text-align: right;">Total Amount</th>
-              <th>Location</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${itemsHtml.length > 0 ? itemsHtml : '<tr><td colspan="12" style="border: 1px solid #000; padding:12px; text-align:center;">No material items attached</td></tr>'}
-          </tbody>
-        </table>
-
-        <table class="summary-table">
-          <tr>
-            <td style="width: 15%; font-weight: 900; text-transform: uppercase;">Inspection Remarks</td>
-            <td style="width: 85%; font-weight: 600;" colspan="3">${grn.remarks || ''}</td>
-          </tr>
-          <tr>
-            <td style="width: 15%; font-weight: 900; text-transform: uppercase;">Posting Material Amount</td>
-            <td style="width: 35%; font-weight: 700;">${grn.account_posting_material_amount ? '₹ ' + Number(grn.account_posting_material_amount).toLocaleString('en-IN', { minimumFractionDigits: 2 }) : ''}</td>
-            <td style="width: 15%; font-weight: 900; text-transform: uppercase;">Received By</td>
-            <td style="width: 35%; font-weight: 600;">${receivedBy}</td>
-          </tr>
-        </table>
-
-        <div class="section-heading center-heading">REPORT HISTORY</div>
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th style="width: 15%;">FROM</th>
-              <th style="width: 15%;">TO</th>
-              <th style="width: 20%;">BY</th>
-              <th style="width: 18%; text-align: center;">AT</th>
-              <th style="width: 10%; text-align: center;">DAYS SINCE</th>
-              <th style="width: 22%;">REMARKS</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${historyHtml}
-          </tbody>
-        </table>
-
-        <script>
-          window.onload = function() {
-            setTimeout(function() { window.print(); }, 400);
-          };
-        </script>
-      </body>
-    </html>
-  `;
-
-  printWindow.document.open();
-  printWindow.document.write(htmlContent);
-  printWindow.document.close();
+  if (!ok) reportFailed('purchase requisition');
 }
 
-/**
- * Client-side formatted print window for Purchase Bills (PB).
- * Renders every field across all 10 sections, entry tables, payments, order details, audit grids, and ledger posting info.
- */
-export function printPurchaseBillReport(pb: any) {
-  if (typeof window === 'undefined') return;
-  const printWindow = window.open('', '_blank', 'width=1000,height=900');
-  if (!printWindow) return;
+// ---------------------------------------------------------------------
+// 3. Request for Quotation
+// ---------------------------------------------------------------------
+export function printRfqReport(rfq: AnyRow) {
+  const invited: AnyRow[] = rfq?.rfq_vendors || [];
 
-  const now = new Date();
-  const printDateStr = now.toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }) + ' ' + now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false });
-  const billDateStr = pb.bill_date_of_supplier || pb.bill_date || pb.accounting_date || '';
-  const preparedBy = pb.profiles?.name || pb.created_by_name || '';
+  const ok = openReportWindow({
+    documentTitle: 'Request for Quotation',
+    documentNumber: rfq?.rfq_number,
+    projectName: projectName(rfq),
+    statusLabel: rfq?.status,
+    draft: isDraftStatus(rfq?.status),
+    sections: [
+      fieldsSection('RFQ Details', [
+        { label: 'RFQ Number', value: fmtText(rfq?.rfq_number) },
+        { label: 'Status', value: fmtStatus(rfq?.status) },
+        { label: 'Issue Date', value: fmtDate(pick(rfq, 'issue_date')) },
+        { label: 'Quotation Due Date', value: fmtDate(pick(rfq, 'due_date')) },
+        { label: 'Linked PR', value: fmtText(pick(rfq, 'purchase_requisition_id')) },
+        { label: 'Vendors Invited', value: fmtNumber(invited.length, 0) },
+        { label: 'Title / Scope', value: fmtText(rfq?.title), wide: true },
+      ]),
 
-  const entriesHtml = (pb.purchase_bill_entries || pb.vendor_bill_lines || pb.items || []).map((e: any, idx: number) => `
-    <tr>
-      <td style="border: 1px solid #000; padding: 6px; text-align: center;">${idx + 1}</td>
-      <td style="border: 1px solid #000; padding: 6px; font-weight:700;">${e.grn_no || e.item_code || ''}</td>
-      <td style="border: 1px solid #000; padding: 6px;">${e.item_description || e.description || ''}</td>
-      <td style="border: 1px solid #000; padding: 6px;">${e.po_no || ''}</td>
-      <td style="border: 1px solid #000; padding: 6px; text-align: right;">${e.received_qty ?? e.quantity ?? ''}</td>
-      <td style="border: 1px solid #000; padding: 6px; text-align: right;">${e.bill_rate ? '₹ ' + Number(e.bill_rate).toFixed(2) : ''}</td>
-      <td style="border: 1px solid #000; padding: 6px; text-align: right;">${e.bill_discount_perc ? e.bill_discount_perc + '%' : ''}</td>
-      <td style="border: 1px solid #000; padding: 6px; text-align: right; font-weight:700;">${e.net_amount ? '₹ ' + Number(e.net_amount).toLocaleString('en-IN', { minimumFractionDigits: 2 }) : ''}</td>
-    </tr>
-  `).join('');
+      tableSection(
+        'Invited Vendors',
+        invited,
+        [
+          { header: '#', cell: (_v, i) => i + 1, align: 'center' },
+          { header: 'Vendor', cell: (v) => fmtText(pick(v.vendors, 'display_name', 'legal_name')) },
+          { header: 'GSTIN', cell: (v) => fmtText(pick(v.vendors, 'gst_number')) },
+          { header: 'Contact', cell: (v) => fmtText(pick(v.vendors, 'phone')) },
+          { header: 'Email', cell: (v) => fmtText(pick(v.vendors, 'email')) },
+          { header: 'Rating', cell: (v) => fmtNumber(pick(v.vendors, 'rating') ?? 0, 1), align: 'center' },
+          { header: 'Compliance', cell: (v) => fmtStatus(pick(v.vendors, 'compliance_status')) },
+          { header: 'Response', cell: (v) => fmtStatus(pick(v, 'response_status')) },
+          { header: 'Sent At', cell: (v) => fmtDateTime(pick(v, 'sent_at')) },
+        ],
+        'No vendors invited to this RFQ',
+      ),
 
-  const historyEntries = pb.history && Array.isArray(pb.history) ? pb.history : [];
-  const historyHtml = historyEntries.length > 0
-    ? historyEntries.map((h: any) => `
-        <tr>
-          <td style="border: 1px solid #000; padding: 6px 8px;">${h.from || ''}</td>
-          <td style="border: 1px solid #000; padding: 6px 8px;">${h.to || ''}</td>
-          <td style="border: 1px solid #000; padding: 6px 8px; font-weight: 600;">${h.by || ''}</td>
-          <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${h.at || ''}</td>
-          <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${h.daysSince ?? ''}</td>
-          <td style="border: 1px solid #000; padding: 6px 8px;">${h.remarks || ''}</td>
-        </tr>
-      `).join('')
-    : `<tr><td colspan="6" style="border: 1px solid #000; padding: 10px; text-align: center; color: #444;">No history logs recorded</td></tr>`;
+      { kind: 'note', title: 'Terms & Submission Instructions', body: fmtText(pick(rfq, 'terms')) },
 
-  const htmlContent = `
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <title>Purchase Bill Report - ${pb.bill_no || pb.bill_number || ''}</title>
-        <style>
-          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; padding: 24px; color: #000; margin: 0; background: #fff; line-height: 1.3; }
-          h1, h2, h3 { color: #000; margin: 0; padding: 0; }
-          .header-container { text-align: center; margin-bottom: 16px; border-bottom: 2px solid #000; padding-bottom: 8px; }
-          .header-title { font-size: 22px; font-weight: 900; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 4px; }
-          .header-subtitle { font-size: 11px; font-weight: 600; text-transform: uppercase; }
-          
-          .meta-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 12px; }
-          .meta-table td { border: 1px solid #000; padding: 6px 10px; vertical-align: middle; }
-          .meta-label { font-weight: 800; text-transform: uppercase; width: 22%; background: #fff; }
-          .meta-val { font-weight: 600; width: 28%; }
+      {
+        kind: 'signatures',
+        title: 'Authorisation',
+        slots: ['Prepared By', 'Verified By', 'Approved By'],
+      },
+    ],
+  });
 
-          .section-heading { font-size: 13px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.5px; margin: 18px 0 8px 0; border-bottom: 1.5px solid #000; padding-bottom: 4px; }
-          .center-heading { text-align: center; border-bottom: none; }
-
-          .data-table { width: 100%; border-collapse: collapse; margin-bottom: 0; font-size: 11px; }
-          .data-table th { border: 1px solid #000; padding: 7px 8px; text-align: left; font-size: 10px; font-weight: 900; text-transform: uppercase; background: #fff; }
-          .data-table td { border: 1px solid #000; padding: 6px 8px; }
-          
-          .summary-table { width: 100%; border-collapse: collapse; margin-top: -1px; margin-bottom: 20px; font-size: 11px; }
-          .summary-table td { border: 1px solid #000; padding: 6px 10px; }
-
-          .btn-print { padding: 8px 18px; background-color: #000; color: #fff; border: 1px solid #000; font-weight: 800; cursor: pointer; font-size: 12px; text-transform: uppercase; }
-          .btn-print:hover { background-color: #333; }
-          @media print {
-            body { padding: 0; }
-            .no-print { display: none !important; }
-            @page { size: A4 landscape; margin: 8mm; }
-          }
-        </style>
-      </head>
-      <body>
-        <div class="no-print" style="margin-bottom: 16px; text-align: right;">
-          <button class="btn-print" onclick="window.print()">🖨️ PRINT REPORT / SAVE AS PDF</button>
-        </div>
-
-        <div class="header-container">
-          <div class="header-title">Purchase Bills</div>
-          <div class="header-subtitle">Printed By: ${preparedBy} &nbsp;&nbsp; on Date: ${printDateStr}</div>
-        </div>
-
-        <table class="meta-table">
-          <tr>
-            <td class="meta-label">Bill No.</td>
-            <td class="meta-val">${pb.bill_no || pb.bill_number || ''}</td>
-            <td class="meta-label">Bill Date *</td>
-            <td class="meta-val">${billDateStr}</td>
-          </tr>
-          <tr>
-            <td class="meta-label">Project & Site</td>
-            <td class="meta-val">${pb.project_name || pb.projects?.name || ''}</td>
-            <td class="meta-label">Supplier / Vendor</td>
-            <td class="meta-val">${pb.supplier_name || pb.vendors?.display_name || pb.vendors?.legal_name || ''}</td>
-          </tr>
-          <tr>
-            <td class="meta-label">GRN & PO Ref</td>
-            <td class="meta-val">${pb.grn_no || pb.from_pos || ''}</td>
-            <td class="meta-label">3-Way Match Status</td>
-            <td class="meta-val" style="text-transform: uppercase;">${pb.match_status || pb.match_remarks || ''}</td>
-          </tr>
-          <tr>
-            <td class="meta-label">Total Amount</td>
-            <td class="meta-val" style="font-weight:900;">${pb.total_amount ? '₹ ' + Number(pb.total_amount).toLocaleString('en-IN', { minimumFractionDigits: 2 }) : ''}</td>
-            <td class="meta-label">Status</td>
-            <td class="meta-val" style="text-transform: uppercase;">${pb.status || ''}</td>
-          </tr>
-        </table>
-
-        <div class="section-heading center-heading">Purchase Bill Line Items</div>
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th style="width: 30px; text-align: center;">Sr No.</th>
-              <th>Code / GRN</th>
-              <th>Description</th>
-              <th>PO Ref</th>
-              <th style="text-align: right;">Billed Qty</th>
-              <th style="text-align: right;">Rate</th>
-              <th style="text-align: right;">Disc %</th>
-              <th style="text-align: right;">Net Amount</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${entriesHtml.length > 0 ? entriesHtml : '<tr><td colspan="8" style="border: 1px solid #000; padding:12px; text-align:center;">No bill entries attached</td></tr>'}
-          </tbody>
-        </table>
-
-        <table class="summary-table">
-          <tr>
-            <td style="width: 15%; font-weight: 900; text-transform: uppercase;">Prepared By</td>
-            <td style="width: 35%; font-weight: 600;">${preparedBy}</td>
-            <td style="width: 15%; font-weight: 900; text-transform: uppercase;">Workflow Status</td>
-            <td style="width: 35%; font-weight: 700; text-transform: uppercase;">${pb.status || ''}</td>
-          </tr>
-        </table>
-
-        <div class="section-heading center-heading">REPORT HISTORY</div>
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th style="width: 15%;">FROM</th>
-              <th style="width: 15%;">TO</th>
-              <th style="width: 20%;">BY</th>
-              <th style="width: 18%; text-align: center;">AT</th>
-              <th style="width: 10%; text-align: center;">DAYS SINCE</th>
-              <th style="width: 22%;">REMARKS</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${historyHtml}
-          </tbody>
-        </table>
-
-        <script>
-          window.onload = function() {
-            setTimeout(function() { window.print(); }, 400);
-          };
-        </script>
-      </body>
-    </html>
-  `;
-
-  printWindow.document.open();
-  printWindow.document.write(htmlContent);
-  printWindow.document.close();
+  if (!ok) reportFailed('RFQ');
 }
 
-/**
- * Client-side formatted print window for Purchase Requisitions (PR).
- * Renders every field, section, items table, budget head, contractor info, attached MRs, and workflow status.
- */
-export function printPurchaseRequisitionReport(pr: any) {
-  if (typeof window === 'undefined') return;
-  const printWindow = window.open('', '_blank', 'width=1000,height=900');
-  if (!printWindow) return;
+// ---------------------------------------------------------------------
+// 4. Purchase Order
+// ---------------------------------------------------------------------
+export function printPurchaseOrderReport(po: AnyRow) {
+  const lines: AnyRow[] = po?.purchase_order_lines || [];
+  const lineSubtotal = lines.reduce(
+    (sum, l) => sum + (Number(l.quantity) || 0) * (Number(l.unit_rate) || 0),
+    0,
+  );
+  const subtotal = Number(pick(po, 'subtotal_amount')) || lineSubtotal;
+  const tax = Number(pick(po, 'tax_amount')) || 0;
+  const total = Number(pick(po, 'total_amount')) || subtotal + tax;
 
-  const now = new Date();
-  const printDateStr = now.toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' });
-  const printedByName = pr.printed_by || pr.profiles?.name || pr.created_by_name || pr.raised_by || 'Karan Shah';
-  const prDateStr = pr.pr_date || (pr.created_at ? new Date(pr.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '');
-  const reqDateStr = pr.target_date || pr.required_date ? new Date(pr.target_date || pr.required_date).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '';
-  const projectName = pr.project_name || pr.projects?.name || '';
-  const companyName = pr.company_name || '';
-  const subProject = pr.site_name || pr.sub_project || '';
-  const contractorName = pr.contractor_name || pr.contractor || '';
-  const costCenter = pr.cost_code || pr.budget_head || pr.cost_center || '';
-  const activityNames = pr.activity_name || pr.work_activity || '';
-  const deliveryAddress = pr.delivery_address || '';
-  const remarks = pr.general_remarks || pr.remarks || pr.justification || '';
-  const unlockedProject = pr.unlocked_project ?? '1.00';
-  const preparedBy = pr.prepared_by || pr.profiles?.name || pr.created_by_name || pr.raised_by || '';
-  const prReleaseDate = pr.pr_release_date || (pr.created_at ? new Date(pr.created_at).toLocaleString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }) : '');
-  const status = pr.status || 'Approved';
+  const ok = openReportWindow({
+    documentTitle: 'Purchase Order',
+    documentNumber: po?.po_number,
+    projectName: projectName(po),
+    statusLabel: po?.status,
+    draft: isDraftStatus(po?.status),
+    sections: [
+      fieldsSection('Order Details', [
+        { label: 'PO Number', value: fmtText(po?.po_number) },
+        { label: 'PO Date', value: fmtDate(pick(po, 'po_date', 'created_at')) },
+        { label: 'Status', value: fmtStatus(po?.status) },
+        { label: 'Linked PR', value: fmtText(pick(po, 'purchase_requisition_id')) },
+        { label: 'Company', value: fmtText(pick(po, 'company_name')) },
+        { label: 'Contract Reference', value: fmtText(pick(po, 'contract_reference')) },
+        { label: 'Approved At', value: fmtDateTime(pick(po, 'approved_at')) },
+        { label: 'Issued To Vendor At', value: fmtDateTime(pick(po, 'sent_at')) },
+        { label: 'Template', value: fmtText(pick(po, 'template_code')) },
+      ]),
 
-  const items = pr.items || pr.lines || pr.pr_items || pr.purchase_requisition_lines || [];
-  const itemsHtml = items.map((item: any, idx: number) => `
-    <tr>
-      <td style="border: 1px solid #000; padding: 6px 6px; text-align: center;">${idx + 1}</td>
-      <td style="border: 1px solid #000; padding: 6px 6px;">${item.category_group || item.item_group || ''}</td>
-      <td style="border: 1px solid #000; padding: 6px 6px; font-weight: 600;">${item.item_description || item.description || ''}</td>
-      <td style="border: 1px solid #000; padding: 6px 6px; text-align: center;">${item.unit || ''}</td>
-      <td style="border: 1px solid #000; padding: 6px 6px;">${item.brand || item.item_brand || '-'}</td>
-      <td style="border: 1px solid #000; padding: 6px 6px; text-align: right;">${Number(item.est_qty ?? 0).toFixed(3)}</td>
-      <td style="border: 1px solid #000; padding: 6px 6px; text-align: right;">${Number(item.iss_qty ?? 0).toFixed(3)}</td>
-      <td style="border: 1px solid #000; padding: 6px 6px; text-align: right; font-weight: 700;">${Number(item.quantity ?? item.qty ?? 0).toFixed(2)}</td>
-      <td style="border: 1px solid #000; padding: 6px 6px; text-align: right;">${Number(item.bal_qty ?? item.quantity ?? 0).toFixed(2)}</td>
-      <td style="border: 1px solid #000; padding: 6px 6px; text-align: right;">${Number(item.pending_pr ?? 0).toFixed(2)}</td>
-      <td style="border: 1px solid #000; padding: 6px 6px; text-align: right;">${item.lead_period ? Number(item.lead_period).toFixed(2) : ''}</td>
-      <td style="border: 1px solid #000; padding: 6px 6px; text-align: center;">${item.lead_period_date || item.required_date || reqDateStr}</td>
-      <td style="border: 1px solid #000; padding: 6px 6px; text-align: center;">${item.required_date || item.target_date || reqDateStr}</td>
-      <td style="border: 1px solid #000; padding: 6px 6px; text-align: right;">${item.stock_qty ? Number(item.stock_qty).toFixed(3) : ''}</td>
-    </tr>
-  `).join('');
+      fieldsSection('Vendor', [
+        { label: 'Vendor', value: vendorName(po) },
+        { label: 'GSTIN', value: fmtText(pick(po?.vendors, 'gst_number')) },
+        { label: 'Contact', value: fmtText(pick(po?.vendors, 'phone')) },
+        { label: 'Email', value: fmtText(pick(po?.vendors, 'email')) },
+        { label: 'Rating', value: fmtNumber(pick(po?.vendors, 'rating') ?? 0, 1) },
+        { label: 'Compliance', value: fmtStatus(pick(po?.vendors, 'compliance_status')) },
+        { label: 'Contractor', value: fmtText(pick(po, 'contractor_name')) },
+      ]),
 
-  const historyEntries = pr.history && Array.isArray(pr.history) ? pr.history : [];
-  const historyHtml = historyEntries.length > 0
-    ? historyEntries.map((h: any) => `
-        <tr>
-          <td style="border: 1px solid #000; padding: 6px 8px;">${h.from || ''}</td>
-          <td style="border: 1px solid #000; padding: 6px 8px;">${h.to || ''}</td>
-          <td style="border: 1px solid #000; padding: 6px 8px; font-weight: 600;">${h.by || ''}</td>
-          <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${h.at || ''}</td>
-          <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${h.daysSince ?? ''}</td>
-          <td style="border: 1px solid #000; padding: 6px 8px;">${h.remarks || ''}</td>
-        </tr>
-      `).join('')
-    : `<tr><td colspan="6" style="border: 1px solid #000; padding: 10px; text-align: center; color: #444;">No history logs recorded</td></tr>`;
+      fieldsSection('Delivery & Payment', [
+        { label: 'Delivery Location', value: fmtText(pick(po, 'delivery_location')) },
+        { label: 'Delivery Date', value: fmtDate(pick(po, 'delivery_date')) },
+        { label: 'Payment Terms', value: fmtText(pick(po, 'payment_terms')) },
+        { label: 'Site Contact Person', value: fmtText(pick(po, 'site_contact_person')) },
+        { label: 'Site Contact Number', value: fmtText(pick(po, 'site_contact_number')) },
+      ]),
 
-  const htmlContent = `
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <title>Purchase Requisition Report - ${pr.pr_number || ''}</title>
-        <style>
-          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; padding: 18px; color: #000; margin: 0; background: #fff; line-height: 1.3; }
-          h1, h2, h3 { color: #000; margin: 0; padding: 0; }
-          .header-container { text-align: center; margin-bottom: 12px; border-bottom: 2px solid #000; padding-bottom: 6px; }
-          .header-title { font-size: 18px; font-weight: 900; letter-spacing: 0.5px; text-transform: uppercase; margin-bottom: 2px; }
-          .header-subtitle { font-size: 10px; font-weight: 600; }
-          
-          .meta-table { width: 100%; border-collapse: collapse; margin-bottom: 14px; font-size: 10px; table-layout: fixed; }
-          .meta-table td { border: 1px solid #000; padding: 4px 6px; vertical-align: middle; word-wrap: break-word; }
-          .meta-label { font-weight: 800; width: 16%; background: #fff; }
-          .meta-val { font-weight: 600; width: 34%; }
+      tableSection(
+        'Ordered Items',
+        lines,
+        [
+          { header: '#', cell: (_l, i) => i + 1, align: 'center' },
+          { header: 'Description', cell: (l) => fmtText(l.item_description) },
+          { header: 'Qty', cell: (l) => fmtNumber(l.quantity), align: 'right' },
+          { header: 'Received', cell: (l) => fmtNumber(pick(l, 'received_qty') ?? 0), align: 'right' },
+          {
+            header: 'Balance',
+            cell: (l) => fmtNumber(Math.max((Number(l.quantity) || 0) - (Number(l.received_qty) || 0), 0)),
+            align: 'right',
+          },
+          { header: 'Rate', cell: (l) => fmtCurrency(l.unit_rate), align: 'right' },
+          { header: 'Tax %', cell: (l) => fmtPercent(pick(l, 'tax_rate') ?? 0), align: 'right' },
+          {
+            header: 'Line Total',
+            cell: (l) =>
+              fmtCurrency(
+                Number(pick(l, 'line_total')) ||
+                  (Number(l.quantity) || 0) * (Number(l.unit_rate) || 0),
+              ),
+            align: 'right',
+            footer: () => fmtCurrency(lineSubtotal),
+          },
+        ],
+        'No line items on this purchase order',
+      ),
 
-          .section-heading { font-size: 11px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.5px; margin: 12px 0 5px 0; border-bottom: 1.5px solid #000; padding-bottom: 2px; }
-          .center-heading { text-align: center; border-bottom: none; }
+      {
+        kind: 'totals',
+        title: 'Order Value',
+        rows: [
+          { label: 'Subtotal', value: fmtCurrency(subtotal) },
+          { label: 'Tax', value: fmtCurrency(tax) },
+          { label: 'Total Order Value', value: fmtCurrency(total), emphasis: true },
+        ],
+      },
 
-          .data-table { width: 100%; border-collapse: collapse; margin-bottom: 0; font-size: 9px; table-layout: fixed; }
-          .data-table th { border: 1px solid #000; padding: 5px 3px; text-align: left; font-size: 8.5px; font-weight: 900; background: #fff; word-wrap: break-word; }
-          .data-table td { border: 1px solid #000; padding: 4px 3px; word-wrap: break-word; }
-          
-          .summary-table { width: 100%; border-collapse: collapse; margin-top: -1px; margin-bottom: 14px; font-size: 9.5px; table-layout: fixed; }
-          .summary-table td { border: 1px solid #000; padding: 4px 6px; word-wrap: break-word; }
+      { kind: 'note', title: 'Terms & Conditions', body: fmtText(pick(po, 'terms_and_conditions')) },
+      {
+        kind: 'note',
+        title: 'Legal Terms',
+        body: fmtText(pick(po, 'terms_and_conditions_legal')),
+      },
+      { kind: 'note', title: 'GST Section 194Q Declaration', body: fmtText(pick(po, 'gst_194q_clause')) },
+      { kind: 'note', title: 'RERA / Warranty Clause', body: fmtText(pick(po, 'rera_warranty_clause')) },
 
-          .btn-print { padding: 8px 18px; background-color: #000; color: #fff; border: 1px solid #000; font-weight: 800; cursor: pointer; font-size: 12px; text-transform: uppercase; }
-          .btn-print:hover { background-color: #333; }
-          @media print {
-            body { padding: 0; }
-            .no-print { display: none !important; }
-            @page { size: A4 landscape; margin: 6mm; }
-          }
-        </style>
-      </head>
-      <body>
-        <div class="no-print" style="margin-bottom: 16px; text-align: right;">
-          <button class="btn-print" onclick="window.print()">🖨️ PRINT REPORT / SAVE AS PDF</button>
-        </div>
+      {
+        kind: 'signatures',
+        title: 'Authorisation',
+        slots: ['Prepared By', 'Verified By', 'Approved By', 'Vendor Acknowledgement'],
+      },
+    ],
+  });
 
-        <div class="header-container">
-          <div class="header-title">Purchase Requisition</div>
-          <div class="header-subtitle">Printed By: ${printedByName} on Date: ${printDateStr}</div>
-        </div>
-
-        <table class="meta-table">
-          <tr>
-            <td class="meta-label">P.R. No.</td>
-            <td class="meta-val">${pr.pr_number || ''}</td>
-            <td class="meta-label">P.R.Date*</td>
-            <td class="meta-val">${prDateStr}</td>
-          </tr>
-          <tr>
-            <td class="meta-label">Project Name*</td>
-            <td class="meta-val">${projectName}</td>
-            <td class="meta-label">Name of Company</td>
-            <td class="meta-val">${companyName}</td>
-          </tr>
-          <tr>
-            <td class="meta-label">Sub Project*</td>
-            <td class="meta-val">${subProject}</td>
-            <td class="meta-label">Contractor Name</td>
-            <td class="meta-val">${contractorName}</td>
-          </tr>
-          <tr>
-            <td class="meta-label">Cost Center</td>
-            <td class="meta-val">${costCenter}</td>
-            <td class="meta-label"></td>
-            <td class="meta-val"></td>
-          </tr>
-          <tr>
-            <td class="meta-label">Activity Names</td>
-            <td class="meta-val">${activityNames}</td>
-            <td class="meta-label"></td>
-            <td class="meta-val"></td>
-          </tr>
-        </table>
-
-        <div class="section-heading center-heading">Material Request Entries*</div>
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th style="width: 25px; text-align: center;">Sr</th>
-              <th style="width: 75px;">Item Group*</th>
-              <th style="width: 120px;">Item Desc*</th>
-              <th style="width: 35px; text-align: center;">Unit*</th>
-              <th style="width: 55px;">Item Brand</th>
-              <th style="width: 45px; text-align: right;">Est Qty</th>
-              <th style="width: 45px; text-align: right;">Iss Qty</th>
-              <th style="width: 50px; text-align: right;">Quantity*</th>
-              <th style="width: 45px; text-align: right;">Bal Qty</th>
-              <th style="width: 50px; text-align: right;">Pending PR</th>
-              <th style="width: 45px; text-align: center;">Lead Period</th>
-              <th style="width: 65px; text-align: center;">Lead Period Date</th>
-              <th style="width: 65px; text-align: center;">Required Date*</th>
-              <th style="width: 50px; text-align: right;">Stock Qty</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${itemsHtml.length > 0 ? itemsHtml : '<tr><td colspan="14" style="border: 1px solid #000; padding:10px; text-align:center;">No entries found</td></tr>'}
-          </tbody>
-        </table>
-
-        <table class="summary-table">
-          <tr>
-            <td style="width: 15%; font-weight: 800;">Delivery Address</td>
-            <td style="width: 85%; font-weight: 600;" colspan="13">${deliveryAddress}</td>
-          </tr>
-          <tr>
-            <td style="width: 15%; font-weight: 800;">Remarks</td>
-            <td style="width: 85%; font-weight: 600;" colspan="13">${remarks}</td>
-          </tr>
-          <tr>
-            <td style="width: 15%; font-weight: 800;">Unlocked Project</td>
-            <td style="width: 35%; font-weight: 600;" colspan="5">${unlockedProject}</td>
-            <td style="width: 15%; font-weight: 800;" colspan="2">Prepared By</td>
-            <td style="width: 35%; font-weight: 600;" colspan="6">${preparedBy}</td>
-          </tr>
-          <tr>
-            <td style="width: 15%; font-weight: 800;">PR Release Date</td>
-            <td style="width: 35%; font-weight: 600;" colspan="5">${prReleaseDate}</td>
-            <td style="width: 15%; font-weight: 800;" colspan="2">Status</td>
-            <td style="width: 35%; font-weight: 700;" colspan="6">${status}</td>
-          </tr>
-        </table>
-
-        <div class="section-heading center-heading">REPORT HISTORY</div>
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th style="width: 15%;">FROM</th>
-              <th style="width: 15%;">TO</th>
-              <th style="width: 20%;">BY</th>
-              <th style="width: 18%; text-align: center;">AT</th>
-              <th style="width: 10%; text-align: center;">DAYS SINCE</th>
-              <th style="width: 22%;">REMARKS</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${historyHtml}
-          </tbody>
-        </table>
-
-        <script>
-          window.onload = function() {
-            setTimeout(function() { window.print(); }, 400);
-          };
-        </script>
-      </body>
-    </html>
-  `;
-
-  printWindow.document.open();
-  printWindow.document.write(htmlContent);
-  printWindow.document.close();
+  if (!ok) reportFailed('purchase order');
 }
 
-export function printPurchaseOrderReport(po: any) {
-  if (typeof window === 'undefined') return;
-  const printWindow = window.open('', '_blank', 'width=1000,height=900');
-  if (!printWindow) return;
+// ---------------------------------------------------------------------
+// 5. Goods Receipt Note
+// ---------------------------------------------------------------------
+export function printGrnReport(grn: AnyRow) {
+  const lines: AnyRow[] = grn?.goods_receipt_note_lines || [];
+  const received = lines.reduce((s, l) => s + (Number(l.received_qty) || 0), 0);
+  const accepted = lines.reduce((s, l) => s + (Number(l.accepted_qty) || 0), 0);
+  const rejected = lines.reduce((s, l) => s + (Number(l.rejected_qty) || 0), 0);
+  const acceptedValue = lines.reduce(
+    (s, l) => s + (Number(l.accepted_qty) || 0) * (Number(l.unit_rate) || 0),
+    0,
+  );
+  const rejectedValue = lines.reduce(
+    (s, l) => s + (Number(l.rejected_qty) || 0) * (Number(l.unit_rate) || 0),
+    0,
+  );
 
-  const now = new Date();
-  const printDateStr = now.toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }) + ' ' + now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false });
-  const poDateStr = po.po_date || (po.created_at ? new Date(po.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '');
-  const issuedByName = po.profiles?.name || po.created_by_name || '';
-  const vendorName = po.vendor_name || po.vendors?.display_name || po.vendors?.legal_name || '';
-  const projectName = po.project_name || po.projects?.name || '';
+  const ok = openReportWindow({
+    documentTitle: 'Goods Receipt Note',
+    documentNumber: grn?.grn_number,
+    projectName: projectName(grn),
+    statusLabel: grn?.status,
+    draft: isDraftStatus(grn?.status),
+    sections: [
+      fieldsSection('Receipt Details', [
+        { label: 'GRN Number', value: fmtText(grn?.grn_number) },
+        { label: 'Receipt Date', value: fmtDate(pick(grn, 'receipt_date')) },
+        { label: 'Status', value: fmtStatus(grn?.status) },
+        { label: 'Quality Decision', value: fmtStatus(pick(grn, 'quality_decision')) },
+        { label: 'Against PO', value: fmtText(pick(grn?.purchase_orders, 'po_number') || pick(grn, 'purchase_order_id')) },
+        { label: 'Posted At', value: fmtDateTime(pick(grn, 'posted_at')) },
+        { label: 'Godown / Store', value: fmtText(pick(grn, 'godown_name')) },
+        { label: 'QC Reference', value: fmtText(pick(grn, 'qc_no')) },
+        { label: 'Received By', value: fmtText(pick(grn, 'received_by')) },
+      ]),
 
-  const items = po.items || po.lines || po.purchase_order_lines || [];
-  const itemsHtml = items.map((item: any, idx: number) => `
-    <tr>
-      <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${idx + 1}</td>
-      <td style="border: 1px solid #000; padding: 6px 8px; font-weight: 700;">${item.item_code || ''}</td>
-      <td style="border: 1px solid #000; padding: 6px 8px; font-weight: 600;">${item.item_description || item.description || ''}</td>
-      <td style="border: 1px solid #000; padding: 6px 8px;">${item.category_group || item.item_group || ''}</td>
-      <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${item.unit || ''}</td>
-      <td style="border: 1px solid #000; padding: 6px 8px; text-align: right; font-weight: 700;">${item.quantity ?? item.qty ?? ''}</td>
-      <td style="border: 1px solid #000; padding: 6px 8px; text-align: right;">${item.unit_rate ? '₹ ' + Number(item.unit_rate).toFixed(2) : ''}</td>
-      <td style="border: 1px solid #000; padding: 6px 8px; text-align: right;">${item.discount_perc ? item.discount_perc + '%' : ''}</td>
-      <td style="border: 1px solid #000; padding: 6px 8px; text-align: right;">${item.tax_rate ? item.tax_rate + '%' : ''}</td>
-      <td style="border: 1px solid #000; padding: 6px 8px; text-align: right; font-weight: 700;">${item.net_amount ? '₹ ' + Number(item.net_amount).toLocaleString('en-IN', { minimumFractionDigits: 2 }) : ''}</td>
-    </tr>
-  `).join('');
+      fieldsSection('Supplier', [
+        { label: 'Supplier', value: vendorName(grn) },
+        { label: 'GSTIN', value: fmtText(pick(grn?.vendors, 'gst_number')) },
+        { label: 'Contact', value: fmtText(pick(grn?.vendors, 'phone')) },
+        { label: 'Dealer', value: fmtText(pick(grn, 'dealer_name')) },
+      ]),
 
-  const historyEntries = po.history && Array.isArray(po.history) ? po.history : [];
-  const historyHtml = historyEntries.length > 0
-    ? historyEntries.map((h: any) => `
-        <tr>
-          <td style="border: 1px solid #000; padding: 6px 8px;">${h.from || ''}</td>
-          <td style="border: 1px solid #000; padding: 6px 8px;">${h.to || ''}</td>
-          <td style="border: 1px solid #000; padding: 6px 8px; font-weight: 600;">${h.by || ''}</td>
-          <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${h.at || ''}</td>
-          <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${h.daysSince ?? ''}</td>
-          <td style="border: 1px solid #000; padding: 6px 8px;">${h.remarks || ''}</td>
-        </tr>
-      `).join('')
-    : `<tr><td colspan="6" style="border: 1px solid #000; padding: 10px; text-align: center; color: #444;">No history logs recorded</td></tr>`;
+      fieldsSection('Transport & Challan', [
+        { label: 'Challan Number', value: fmtText(pick(grn, 'challan_no', 'quantity_verification')) },
+        { label: 'Challan Date', value: fmtDate(pick(grn, 'challan_date')) },
+        { label: 'Vehicle Number', value: fmtText(pick(grn, 'vehicle_no', 'physical_inspection')) },
+        { label: 'Transporter', value: fmtText(pick(grn, 'transporter_name')) },
+        { label: 'In Weight', value: fmtText(pick(grn, 'in_weight')) },
+        { label: 'Out Weight', value: fmtText(pick(grn, 'out_weight')) },
+        { label: 'Net Weight', value: fmtText(pick(grn, 'net_weight')) },
+        { label: 'Volume (Brass)', value: fmtText(pick(grn, 'volume_in_brass')) },
+      ]),
 
-  const htmlContent = `
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <title>Purchase Order Report - ${po.po_number || ''}</title>
-        <style>
-          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; padding: 24px; color: #000; margin: 0; background: #fff; line-height: 1.3; }
-          h1, h2, h3 { color: #000; margin: 0; padding: 0; }
-          .header-container { text-align: center; margin-bottom: 16px; border-bottom: 2px solid #000; padding-bottom: 8px; }
-          .header-title { font-size: 22px; font-weight: 900; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 4px; }
-          .header-subtitle { font-size: 11px; font-weight: 600; text-transform: uppercase; }
-          
-          .meta-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 12px; }
-          .meta-table td { border: 1px solid #000; padding: 6px 10px; vertical-align: middle; }
-          .meta-label { font-weight: 800; text-transform: uppercase; width: 22%; background: #fff; }
-          .meta-val { font-weight: 600; width: 28%; }
+      fieldsSection('Inspection', [
+        { label: 'Quantity Verification', value: fmtText(pick(grn, 'quantity_verification')), wide: true },
+        { label: 'Physical Inspection', value: fmtText(pick(grn, 'physical_inspection')), wide: true },
+        { label: 'Damage Check', value: fmtText(pick(grn, 'damage_check')), wide: true },
+      ]),
 
-          .section-heading { font-size: 13px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.5px; margin: 18px 0 8px 0; border-bottom: 1.5px solid #000; padding-bottom: 4px; }
-          .center-heading { text-align: center; border-bottom: none; }
+      tableSection(
+        'Received Items & Inspection Result',
+        lines,
+        [
+          { header: '#', cell: (_l, i) => i + 1, align: 'center' },
+          { header: 'Item', cell: (l) => fmtText(pick(l?.item_master, 'name') || pick(l, 'item_description', 'item_id')) },
+          { header: 'Received', cell: (l) => fmtNumber(l.received_qty), align: 'right', footer: () => fmtNumber(received) },
+          { header: 'Accepted', cell: (l) => fmtNumber(l.accepted_qty), align: 'right', footer: () => fmtNumber(accepted) },
+          { header: 'Rejected', cell: (l) => fmtNumber(l.rejected_qty), align: 'right', footer: () => fmtNumber(rejected) },
+          { header: 'Rate', cell: (l) => fmtCurrency(l.unit_rate), align: 'right' },
+          {
+            header: 'Accepted Value',
+            cell: (l) => fmtCurrency((Number(l.accepted_qty) || 0) * (Number(l.unit_rate) || 0)),
+            align: 'right',
+            footer: () => fmtCurrency(acceptedValue),
+          },
+          { header: 'Inspection Remarks', cell: (l) => fmtText(pick(l, 'remarks')) },
+        ],
+        'No received lines recorded on this GRN',
+      ),
 
-          .data-table { width: 100%; border-collapse: collapse; margin-bottom: 0; font-size: 11px; }
-          .data-table th { border: 1px solid #000; padding: 7px 8px; text-align: left; font-size: 10px; font-weight: 900; text-transform: uppercase; background: #fff; }
-          .data-table td { border: 1px solid #000; padding: 6px 8px; }
-          
-          .summary-table { width: 100%; border-collapse: collapse; margin-top: -1px; margin-bottom: 20px; font-size: 11px; }
-          .summary-table td { border: 1px solid #000; padding: 6px 10px; }
+      {
+        kind: 'totals',
+        title: 'Receipt Summary',
+        rows: [
+          { label: 'Total Received Qty', value: fmtNumber(received) },
+          { label: 'Total Accepted Qty', value: fmtNumber(accepted) },
+          { label: 'Total Rejected Qty', value: fmtNumber(rejected) },
+          { label: 'Rejected Value', value: fmtCurrency(rejectedValue) },
+          { label: 'Asset Item', value: fmtText(pick(grn, 'asset_item')) },
+          { label: 'Asset Amount', value: fmtCurrency(pick(grn, 'asset_amount') ?? 0) },
+          {
+            label: 'Value Posted To Inventory',
+            value: fmtCurrency(pick(grn, 'account_posting_amount') ?? acceptedValue),
+            emphasis: true,
+          },
+        ],
+      },
 
-          .btn-print { padding: 8px 18px; background-color: #000; color: #fff; border: 1px solid #000; font-weight: 800; cursor: pointer; font-size: 12px; text-transform: uppercase; }
-          .btn-print:hover { background-color: #333; }
-          @media print {
-            body { padding: 0; }
-            .no-print { display: none !important; }
-            @page { size: A4 landscape; margin: 8mm; }
-          }
-        </style>
-      </head>
-      <body>
-        <div class="no-print" style="margin-bottom: 16px; text-align: right;">
-          <button class="btn-print" onclick="window.print()">🖨️ PRINT REPORT / SAVE AS PDF</button>
-        </div>
+      fieldsSection('Attached Documents', [
+        { label: 'Invoice File', value: fmtText(pick(grn, 'uploaded_invoice_name')) },
+        { label: 'Challan File', value: fmtText(pick(grn, 'uploaded_challan_name')) },
+      ], 2),
 
-        <div class="header-container">
-          <div class="header-title">Purchase Orders</div>
-          <div class="header-subtitle">Printed By: ${issuedByName} &nbsp;&nbsp; on Date: ${printDateStr}</div>
-        </div>
+      { kind: 'note', title: 'Remarks', body: fmtText(pick(grn, 'remarks')) },
 
-        <table class="meta-table">
-          <tr>
-            <td class="meta-label">P.O. No.</td>
-            <td class="meta-val">${po.po_number || ''}</td>
-            <td class="meta-label">P.O. Date *</td>
-            <td class="meta-val">${poDateStr}</td>
-          </tr>
-          <tr>
-            <td class="meta-label">Project & Site</td>
-            <td class="meta-val">${projectName}</td>
-            <td class="meta-label">Vendor Name</td>
-            <td class="meta-val">${vendorName}</td>
-          </tr>
-          <tr>
-            <td class="meta-label">Payment Terms</td>
-            <td class="meta-val">${po.payment_terms || ''}</td>
-            <td class="meta-label">Delivery Date</td>
-            <td class="meta-val">${po.delivery_date || ''}</td>
-          </tr>
-          <tr>
-            <td class="meta-label">Total PO Amount</td>
-            <td class="meta-val" style="font-weight:900;">${po.total_amount || po.total_po_value ? '₹ ' + Number(po.total_amount || po.total_po_value).toLocaleString('en-IN', { minimumFractionDigits: 2 }) : ''}</td>
-            <td class="meta-label">Status</td>
-            <td class="meta-val" style="text-transform: uppercase;">${po.status || ''}</td>
-          </tr>
-        </table>
+      {
+        kind: 'signatures',
+        title: 'Authorisation',
+        slots: ['Received By', 'Store Keeper', 'Inspected By', 'Approved By'],
+      },
+    ],
+  });
 
-        <div class="section-heading center-heading">Purchase Order Line Items</div>
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th style="width: 30px; text-align: center;">Sr No.</th>
-              <th>Code</th>
-              <th>Description</th>
-              <th>Category</th>
-              <th style="text-align: center;">Unit</th>
-              <th style="text-align: right;">Qty</th>
-              <th style="text-align: right;">Rate</th>
-              <th style="text-align: right;">Disc %</th>
-              <th style="text-align: right;">GST %</th>
-              <th style="text-align: right;">Net Amount</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${itemsHtml.length > 0 ? itemsHtml : '<tr><td colspan="10" style="border: 1px solid #000; padding:12px; text-align:center;">No PO items attached</td></tr>'}
-          </tbody>
-        </table>
-
-        <table class="summary-table">
-          <tr>
-            <td style="width: 15%; font-weight: 900; text-transform: uppercase;">Issued By</td>
-            <td style="width: 35%; font-weight: 600;">${issuedByName}</td>
-            <td style="width: 15%; font-weight: 900; text-transform: uppercase;">Status</td>
-            <td style="width: 35%; font-weight: 700; text-transform: uppercase;">${po.status || ''}</td>
-          </tr>
-        </table>
-
-        <div class="section-heading center-heading">REPORT HISTORY</div>
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th style="width: 15%;">FROM</th>
-              <th style="width: 15%;">TO</th>
-              <th style="width: 20%;">BY</th>
-              <th style="width: 18%; text-align: center;">AT</th>
-              <th style="width: 10%; text-align: center;">DAYS SINCE</th>
-              <th style="width: 22%;">REMARKS</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${historyHtml}
-          </tbody>
-        </table>
-
-        <script>
-          window.onload = function() {
-            setTimeout(function() { window.print(); }, 400);
-          };
-        </script>
-      </body>
-    </html>
-  `;
-
-  printWindow.document.open();
-  printWindow.document.write(htmlContent);
-  printWindow.document.close();
+  if (!ok) reportFailed('GRN');
 }
 
-export function printRfqReport(rfq: any) {
-  if (typeof window === 'undefined') return;
-  const printWindow = window.open('', '_blank', 'width=1000,height=900');
-  if (!printWindow) return;
+// ---------------------------------------------------------------------
+// 6. Purchase Bill
+// ---------------------------------------------------------------------
+export function printPurchaseBillReport(pb: AnyRow) {
+  const payload: AnyRow = pb?.form_payload || {};
+  const lines: AnyRow[] = pb?.vendor_bill_lines || payload.purchase_bill_entries || [];
+  const advances: AnyRow[] = payload.advance_payment_entries || [];
+  const vouchers: AnyRow[] = payload.payment_vouchers || [];
+  const poDetails: AnyRow[] = payload.po_details_all || [];
+  const grnRemarks: AnyRow[] = payload.grn_remarks_list || [];
+  const ledger: AnyRow[] = payload.ledger_posting_info || [];
+  const match: AnyRow = (pb?.three_way_matches || [])[0] || {};
 
-  const now = new Date();
-  const printDateStr = now.toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }) + ' ' + now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false });
-  const rfqDateStr = rfq.rfq_date || (rfq.created_at ? new Date(rfq.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '');
-  const issuedByName = rfq.profiles?.name || rfq.created_by_name || '';
+  const grossTotal = lines.reduce((s, l) => s + (Number(pick(l, 'gross_amount')) || 0), 0);
+  const netTotal = lines.reduce(
+    (s, l) => s + (Number(pick(l, 'net_amount', 'line_total')) || 0),
+    0,
+  );
+  const vatTotal = lines.reduce((s, l) => s + (Number(pick(l, 'vat_amt')) || 0), 0);
 
-  const items = rfq.items || rfq.lines || rfq.rfq_items || [];
-  const itemsHtml = items.map((item: any, idx: number) => `
-    <tr>
-      <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${idx + 1}</td>
-      <td style="border: 1px solid #000; padding: 6px 8px; font-weight: 600;">${item.item_description || item.description || ''}</td>
-      <td style="border: 1px solid #000; padding: 6px 8px;">${item.category_group || item.item_group || ''}</td>
-      <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${item.unit || ''}</td>
-      <td style="border: 1px solid #000; padding: 6px 8px; text-align: right; font-weight: 700;">${item.quantity ?? item.qty ?? ''}</td>
-      <td style="border: 1px solid #000; padding: 6px 8px;">${item.specifications || item.make || ''}</td>
-      <td style="border: 1px solid #000; padding: 6px 8px;">${item.remarks || ''}</td>
-    </tr>
-  `).join('');
+  const ok = openReportWindow({
+    documentTitle: 'Purchase Bill',
+    documentNumber: pb?.bill_number,
+    projectName: projectName(pb),
+    statusLabel: pb?.status,
+    draft: isDraftStatus(pb?.status),
+    sections: [
+      // Section 1 — header
+      fieldsSection('Bill Header', [
+        { label: 'Bill Number', value: fmtText(pb?.bill_number) },
+        { label: 'Bill Date', value: fmtDate(pick(pb, 'bill_date')) },
+        { label: 'Bill Received Date', value: fmtDate(pick(pb, 'bill_received_date')) },
+        { label: 'Accounting Date', value: fmtDate(pick(pb, 'accounting_date')) },
+        { label: "Supplier's Bill No.", value: fmtText(pick(pb, 'supplier_bill_no')) },
+        { label: "Supplier's Bill Date", value: fmtDate(pick(pb, 'supplier_bill_date')) },
+        { label: 'Bill Book Number', value: fmtText(pick(pb, 'bill_book_number')) },
+        { label: 'Status', value: fmtStatus(pb?.status) },
+        { label: 'Payment Status', value: fmtStatus(pick(pb, 'payment_status')) },
+        { label: 'Company', value: fmtText(pick(pb, 'company_name')) },
+        { label: 'Company Status', value: fmtText(pick(pb, 'company_status')) },
+        { label: 'Tax Status', value: fmtText(pick(pb, 'tax_status')) },
+        { label: 'Supplier', value: vendorName(pb) },
+        { label: 'Party Name', value: fmtText(pick(pb, 'party_name')) },
+        { label: 'Contractor', value: fmtText(pick(pb, 'contractor_name')) },
+        { label: 'Work Order Type', value: fmtText(pick(pb, 'work_order_type')) },
+        { label: 'Work Order No.', value: fmtText(pick(pb, 'work_order_no')) },
+        { label: 'Area Work Order No.', value: fmtText(pick(pb, 'area_work_order_no')) },
+        { label: 'Sub Project', value: fmtText(pick(pb, 'sub_project')) },
+        { label: 'From POs', value: fmtText(pick(pb, 'from_pos') || pick(pb, 'po_number')) },
+        { label: 'From Challans', value: fmtText(pick(pb, 'from_challans')) },
+        { label: 'Linked GRN', value: fmtText(pick(pb, 'grn_no', 'grn_id')) },
+        { label: 'Percentage', value: fmtPercent(pick(pb, 'perc') ?? 0) },
+        { label: 'Auto Debit', value: fmtBool(pick(pb, 'auto_debit')) },
+        { label: 'Payment Days', value: fmtNumber(pick(pb, 'payment_days') ?? 0, 0) },
+        { label: 'Bill Due Date', value: fmtDate(pick(pb, 'bill_due_date')) },
+        { label: 'Project Location', value: fmtText(pick(pb, 'project_location')) },
+        { label: 'Supplier Location', value: fmtText(pick(pb, 'supplier_location')) },
+      ]),
 
-  const historyEntries = rfq.history && Array.isArray(rfq.history) ? rfq.history : [];
-  const historyHtml = historyEntries.length > 0
-    ? historyEntries.map((h: any) => `
-        <tr>
-          <td style="border: 1px solid #000; padding: 6px 8px;">${h.from || ''}</td>
-          <td style="border: 1px solid #000; padding: 6px 8px;">${h.to || ''}</td>
-          <td style="border: 1px solid #000; padding: 6px 8px; font-weight: 600;">${h.by || ''}</td>
-          <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${h.at || ''}</td>
-          <td style="border: 1px solid #000; padding: 6px 8px; text-align: center;">${h.daysSince ?? ''}</td>
-          <td style="border: 1px solid #000; padding: 6px 8px;">${h.remarks || ''}</td>
-        </tr>
-      `).join('')
-    : `<tr><td colspan="6" style="border: 1px solid #000; padding: 10px; text-align: center; color: #444;">No history logs recorded</td></tr>`;
+      // Section 2 — entries
+      tableSection(
+        'Purchase Bill Entries',
+        lines,
+        [
+          { header: '#', cell: (l, i) => fmtNumber(pick(l, 'sr_no') ?? i + 1, 0), align: 'center' },
+          { header: 'GR No.', cell: (l) => fmtText(pick(l, 'gr_no')) },
+          { header: 'PO No.', cell: (l) => fmtText(pick(l, 'po_no')) },
+          { header: 'Challan', cell: (l) => fmtText(pick(l, 'challan_no')) },
+          { header: 'Group', cell: (l) => fmtText(pick(l, 'item_group')) },
+          { header: 'Description', cell: (l) => fmtText(pick(l, 'item_desc', 'description')) },
+          { header: 'Brand', cell: (l) => fmtText(pick(l, 'item_brand')) },
+          { header: 'Unit', cell: (l) => fmtText(pick(l, 'unit')), align: 'center' },
+          { header: 'Recd Qty', cell: (l) => fmtNumber(pick(l, 'received_qty', 'quantity') ?? 0), align: 'right' },
+          { header: 'Category', cell: (l) => fmtText(pick(l, 'purchase_category')) },
+          { header: 'PO Rate', cell: (l) => fmtCurrency(pick(l, 'po_rate', 'po_basic_rate') ?? 0), align: 'right' },
+          { header: 'Bill Rate', cell: (l) => fmtCurrency(pick(l, 'bill_rate', 'rate') ?? 0), align: 'right' },
+          { header: 'Disc %', cell: (l) => fmtPercent(pick(l, 'bill_discount_perc') ?? 0), align: 'right' },
+          { header: 'Disc Amt', cell: (l) => fmtCurrency(pick(l, 'bill_discount_amt') ?? 0), align: 'right' },
+          {
+            header: 'Gross',
+            cell: (l) => fmtCurrency(pick(l, 'gross_amount') ?? 0),
+            align: 'right',
+            footer: () => fmtCurrency(grossTotal),
+          },
+          { header: 'L/U Chgs', cell: (l) => fmtCurrency(pick(l, 'loading_unloading_chgs') ?? 0), align: 'right' },
+          { header: 'Freight', cell: (l) => fmtCurrency(pick(l, 'freight_chgs') ?? 0), align: 'right' },
+          { header: 'Others', cell: (l) => fmtCurrency(pick(l, 'others_chgs') ?? 0), align: 'right' },
+          { header: 'VAT Type', cell: (l) => fmtText(pick(l, 'vat_type')) },
+          { header: 'VAT %', cell: (l) => fmtPercent(pick(l, 'po_vat_rate', 'tax_rate') ?? 0), align: 'right' },
+          {
+            header: 'VAT Amt',
+            cell: (l) => fmtCurrency(pick(l, 'vat_amt') ?? 0),
+            align: 'right',
+            footer: () => fmtCurrency(vatTotal),
+          },
+          { header: 'LBT %', cell: (l) => fmtPercent(pick(l, 'po_lbt_rate') ?? 0), align: 'right' },
+          {
+            header: 'Net Amount',
+            cell: (l) => fmtCurrency(pick(l, 'net_amount', 'line_total') ?? 0),
+            align: 'right',
+            footer: () => fmtCurrency(netTotal),
+          },
+        ],
+        'No bill entries recorded',
+      ),
 
-  const htmlContent = `
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <title>Request for Quotation Report - ${rfq.rfq_number || ''}</title>
-        <style>
-          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; padding: 24px; color: #000; margin: 0; background: #fff; line-height: 1.3; }
-          h1, h2, h3 { color: #000; margin: 0; padding: 0; }
-          .header-container { text-align: center; margin-bottom: 16px; border-bottom: 2px solid #000; padding-bottom: 8px; }
-          .header-title { font-size: 22px; font-weight: 900; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 4px; }
-          .header-subtitle { font-size: 11px; font-weight: 600; text-transform: uppercase; }
-          
-          .meta-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 12px; }
-          .meta-table td { border: 1px solid #000; padding: 6px 10px; vertical-align: middle; }
-          .meta-label { font-weight: 800; text-transform: uppercase; width: 22%; background: #fff; }
-          .meta-val { font-weight: 600; width: 28%; }
+      // Section 3 — financial summary
+      {
+        kind: 'totals',
+        title: 'Bill Financial Summary',
+        rows: [
+          { label: 'Subtotal', value: fmtCurrency(pick(pb, 'subtotal_amount') ?? 0) },
+          { label: 'Tax', value: fmtCurrency(pick(pb, 'tax_amount') ?? 0) },
+          { label: 'Other Charges (Lumpsum)', value: fmtCurrency(pick(pb, 'lumpsum_other_charges') ?? 0) },
+          {
+            label: 'Loading / Unloading (Lumpsum)',
+            value: fmtCurrency(pick(pb, 'lumpsum_loading_unloading_charges') ?? 0),
+          },
+          { label: 'Freight (Lumpsum)', value: fmtCurrency(pick(pb, 'lumpsum_freight_charges') ?? 0) },
+          { label: 'Service Tax on Transportation', value: fmtCurrency(pick(pb, 'stax_amount') ?? 0) },
+          { label: 'LBT Amount', value: fmtCurrency(pick(pb, 'lbt_amount') ?? 0) },
+          { label: 'Round-off Adjustment', value: fmtCurrency(pick(pb, 'roundoff_adjustment') ?? 0) },
+          { label: 'Discount', value: `(${fmtCurrency(pick(pb, 'lumpsum_discount_amount') ?? 0)})` },
+          { label: 'Retention', value: `(${fmtCurrency(pick(pb, 'retention_amount') ?? 0)})` },
+          { label: 'Advance Adjusted', value: `(${fmtCurrency(pick(pb, 'advance_adjusted') ?? 0)})` },
+          { label: 'Other Deductions', value: `(${fmtCurrency(pick(pb, 'other_deductions') ?? 0)})` },
+          { label: 'Total Bill Amount', value: fmtCurrency(pick(pb, 'total_amount') ?? 0) },
+          {
+            label: 'Net Payable',
+            value: fmtCurrency(pick(pb, 'net_payable_amount') ?? pick(pb, 'total_amount') ?? 0),
+            emphasis: true,
+          },
+        ],
+      },
 
-          .section-heading { font-size: 13px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.5px; margin: 18px 0 8px 0; border-bottom: 1.5px solid #000; padding-bottom: 4px; }
-          .center-heading { text-align: center; border-bottom: none; }
+      // Tax detail
+      fieldsSection('Statutory Deductions & Tax Detail', [
+        { label: 'Retention %', value: fmtPercent(pick(pb, 'retention_percent') ?? 0) },
+        { label: 'LBT Payable By Us', value: fmtBool(pick(pb, 'lbt_payable_by_us')) },
+        { label: 'LBT Principal Amount', value: fmtCurrency(pick(pb, 'lbt_principal_amount') ?? 0) },
+        { label: 'LBT Rate', value: fmtPercent(pick(pb, 'lbt_tax_rate') ?? 0) },
+        {
+          label: 'Additional Transport Service Tax',
+          value: fmtBool(pick(pb, 'additional_transportation_stax_applicable')),
+        },
+        { label: 'S.Tax Principal Amount', value: fmtCurrency(pick(pb, 'stax_principal_amount') ?? 0) },
+        { label: 'Transport S.Tax Rate', value: fmtPercent(pick(pb, 'transportation_stax_rate') ?? 0) },
+        { label: 'Cheque Amount', value: fmtCurrency(pick(pb, 'cheque_amount') ?? 0) },
+        { label: 'Total Cheque Payments', value: fmtCurrency(pick(pb, 'total_cheque_payments') ?? 0) },
+        { label: 'Debit Details', value: fmtCurrency(pick(pb, 'debit_details') ?? 0) },
+        { label: 'Credit Details', value: fmtCurrency(pick(pb, 'credit_details') ?? 0) },
+        { label: 'Total Adjusted Amount', value: fmtCurrency(pick(pb, 'total_adjusted_amount') ?? 0) },
+      ]),
 
-          .data-table { width: 100%; border-collapse: collapse; margin-bottom: 0; font-size: 11px; }
-          .data-table th { border: 1px solid #000; padding: 7px 8px; text-align: left; font-size: 10px; font-weight: 900; text-transform: uppercase; background: #fff; }
-          .data-table td { border: 1px solid #000; padding: 6px 8px; }
-          
-          .summary-table { width: 100%; border-collapse: collapse; margin-top: -1px; margin-bottom: 20px; font-size: 11px; }
-          .summary-table td { border: 1px solid #000; padding: 6px 10px; }
+      // Section 4 — advances
+      tableSection(
+        'Advance Payment Adjustments',
+        advances,
+        [
+          { header: 'Voucher No.', cell: (a) => fmtText(pick(a, 'voucher_no')) },
+          { header: 'Voucher Date', cell: (a) => fmtDate(pick(a, 'voucher_date')) },
+          { header: 'PO No.', cell: (a) => fmtText(pick(a, 'po_no')) },
+          { header: 'Advance Paid', cell: (a) => fmtCurrency(pick(a, 'advanced_payment') ?? 0), align: 'right' },
+          { header: 'Already Adjusted', cell: (a) => fmtCurrency(pick(a, 'adjusted_payment') ?? 0), align: 'right' },
+          { header: 'Balance', cell: (a) => fmtCurrency(pick(a, 'balance_amt') ?? 0), align: 'right' },
+          {
+            header: 'Adjusted Here',
+            cell: (a) => fmtCurrency(pick(a, 'adjust_amt') ?? 0),
+            align: 'right',
+            footer: (rows) =>
+              fmtCurrency(rows.reduce((s, r) => s + (Number(pick(r, 'adjust_amt')) || 0), 0)),
+          },
+        ],
+        'No advance payments adjusted against this bill',
+      ),
 
-          .btn-print { padding: 8px 18px; background-color: #000; color: #fff; border: 1px solid #000; font-weight: 800; cursor: pointer; font-size: 12px; text-transform: uppercase; }
-          .btn-print:hover { background-color: #333; }
-          @media print {
-            body { padding: 0; }
-            .no-print { display: none !important; }
-            @page { size: A4 landscape; margin: 8mm; }
-          }
-        </style>
-      </head>
-      <body>
-        <div class="no-print" style="margin-bottom: 16px; text-align: right;">
-          <button class="btn-print" onclick="window.print()">🖨️ PRINT REPORT / SAVE AS PDF</button>
-        </div>
+      // Section 6 — payment vouchers
+      tableSection(
+        'Payment Vouchers',
+        vouchers,
+        [
+          { header: '#', cell: (v, i) => fmtNumber(pick(v, 'sr') ?? i + 1, 0), align: 'center' },
+          { header: 'Voucher No.', cell: (v) => fmtText(pick(v, 'voucher_no')) },
+          { header: 'Date', cell: (v) => fmtDate(pick(v, 'voucher_date')) },
+          { header: 'Ledger', cell: (v) => fmtText(pick(v, 'ledger_name')) },
+          { header: 'Bank / Cash', cell: (v) => fmtText(pick(v, 'bank_cash_account')) },
+          { header: 'Mode', cell: (v) => fmtText(pick(v, 'payment_mode')) },
+          { header: 'Instrument No.', cell: (v) => fmtText(pick(v, 'cheque_instrument_no')) },
+          { header: 'Instrument Date', cell: (v) => fmtDate(pick(v, 'cheque_instrument_date')) },
+          { header: 'Status', cell: (v) => fmtStatus(pick(v, 'status')) },
+          { header: 'Bill No.', cell: (v) => fmtText(pick(v, 'bill_no')) },
+          { header: 'Our Bill No.', cell: (v) => fmtText(pick(v, 'our_bill_no')) },
+          {
+            header: 'Paid',
+            cell: (v) => fmtCurrency(pick(v, 'current_paid') ?? 0),
+            align: 'right',
+            footer: (rows) =>
+              fmtCurrency(rows.reduce((s, r) => s + (Number(pick(r, 'current_paid')) || 0), 0)),
+          },
+        ],
+        'No payment vouchers recorded',
+      ),
 
-        <div class="header-container">
-          <div class="header-title">Request For Quotations</div>
-          <div class="header-subtitle">Printed By: ${issuedByName} &nbsp;&nbsp; on Date: ${printDateStr}</div>
-        </div>
+      // Section 7 — PO details
+      tableSection(
+        'Purchase Order Details',
+        poDetails,
+        [
+          { header: '#', cell: (p, i) => fmtNumber(pick(p, 'sr') ?? i + 1, 0), align: 'center' },
+          { header: 'PO No.', cell: (p) => fmtText(pick(p, 'po_no')) },
+          { header: 'PO Date', cell: (p) => fmtDate(pick(p, 'po_date')) },
+          { header: 'In The Name Of', cell: (p) => fmtText(pick(p, 'po_in_the_name_of')) },
+          { header: 'Item Group', cell: (p) => fmtText(pick(p, 'sr_item_group')) },
+          { header: 'Description', cell: (p) => fmtText(pick(p, 'item_desc')) },
+          { header: 'Brand', cell: (p) => fmtText(pick(p, 'item_brand')) },
+          { header: 'Approved Qty', cell: (p) => fmtNumber(pick(p, 'approved_qty') ?? 0), align: 'right' },
+          { header: 'Rate', cell: (p) => fmtCurrency(pick(p, 'unit_rate') ?? 0), align: 'right' },
+          { header: 'Net Amount', cell: (p) => fmtCurrency(pick(p, 'net_amt') ?? 0), align: 'right' },
+          { header: 'GRN Balance Qty', cell: (p) => fmtNumber(pick(p, 'grn_balance_qty') ?? 0), align: 'right' },
+          { header: 'Net Bill Amt', cell: (p) => fmtCurrency(pick(p, 'net_bill_amt') ?? 0), align: 'right' },
+        ],
+        'No purchase order details linked',
+      ),
 
-        <table class="meta-table">
-          <tr>
-            <td class="meta-label">R.F.Q. No.</td>
-            <td class="meta-val">${rfq.rfq_number || ''}</td>
-            <td class="meta-label">R.F.Q. Date *</td>
-            <td class="meta-val">${rfqDateStr}</td>
-          </tr>
-          <tr>
-            <td class="meta-label">Project & Site</td>
-            <td class="meta-val">${rfq.project_name || rfq.projects?.name || ''}</td>
-            <td class="meta-label">Submission Deadline</td>
-            <td class="meta-val">${rfq.submission_deadline || rfq.due_date || ''}</td>
-          </tr>
-          <tr>
-            <td class="meta-label">Ref PR/MR No.</td>
-            <td class="meta-val">${rfq.pr_number || rfq.mr_number || ''}</td>
-            <td class="meta-label">Status</td>
-            <td class="meta-val" style="text-transform: uppercase;">${rfq.status || ''}</td>
-          </tr>
-        </table>
+      // Section 8 — GRN remarks
+      tableSection(
+        'GRN Remarks',
+        grnRemarks,
+        [
+          { header: '#', cell: (g, i) => fmtNumber(pick(g, 'sr') ?? i + 1, 0), align: 'center' },
+          { header: 'GRN No.', cell: (g) => fmtText(pick(g, 'grn_no')) },
+          { header: 'Remark', cell: (g) => fmtText(pick(g, 'remark')) },
+        ],
+        'No GRN remarks recorded',
+      ),
 
-        <div class="section-heading center-heading">Requested Material Specifications</div>
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th style="width: 30px; text-align: center;">Sr No.</th>
-              <th>Item Description</th>
-              <th>Category</th>
-              <th style="text-align: center;">Unit</th>
-              <th style="text-align: right;">Quantity</th>
-              <th>Specifications / Brand</th>
-              <th>Remarks</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${itemsHtml.length > 0 ? itemsHtml : '<tr><td colspan="7" style="border: 1px solid #000; padding:12px; text-align:center;">No items requested</td></tr>'}
-          </tbody>
-        </table>
+      // Three-way match
+      fieldsSection('Three-Way Match & Verification', [
+        { label: 'Match Status', value: fmtStatus(pick(pb, 'match_status') || pick(match, 'match_status')) },
+        { label: 'PO Value', value: fmtCurrency(pick(pb, 'po_value') ?? pick(match, 'po_value') ?? 0) },
+        { label: 'GRN Value', value: fmtCurrency(pick(pb, 'grn_value') ?? pick(match, 'grn_value') ?? 0) },
+        {
+          label: 'Invoice Value',
+          value: fmtCurrency(pick(pb, 'invoice_value') ?? pick(match, 'invoice_value') ?? 0),
+        },
+        { label: 'Tolerance', value: fmtCurrency(pick(pb, 'tolerance_amount') ?? 0) },
+        { label: 'Duplicate Detected', value: fmtBool(pick(pb, 'duplicate_detected')) },
+        { label: 'Documents Received', value: fmtBool(pick(pb, 'required_documents_received')) },
+        { label: 'Work Completion Verified', value: fmtBool(pick(pb, 'work_completion_verified')) },
+        { label: 'QC Approval Verified', value: fmtBool(pick(pb, 'qc_approval_verified')) },
+        { label: 'Verified By', value: fmtText(pick(pb, 'verified_by')) },
+        { label: 'Verified At', value: fmtDateTime(pick(pb, 'verified_at')) },
+        { label: 'Approved By', value: fmtText(pick(pb, 'approved_by')) },
+        { label: 'Approved At', value: fmtDateTime(pick(pb, 'approved_at')) },
+        {
+          label: 'Match Remarks',
+          value: fmtText(pick(pb, 'match_remarks') || pick(match, 'match_remarks')),
+          wide: true,
+          multiline: true,
+        },
+      ]),
 
-        <table class="summary-table">
-          <tr>
-            <td style="width: 15%; font-weight: 900; text-transform: uppercase;">Issued By</td>
-            <td style="width: 35%; font-weight: 600;">${issuedByName}</td>
-            <td style="width: 15%; font-weight: 900; text-transform: uppercase;">Status</td>
-            <td style="width: 35%; font-weight: 700; text-transform: uppercase;">${rfq.status || ''}</td>
-          </tr>
-        </table>
+      // Section 9 — audit indicators
+      fieldsSection('Audit Indicators', [
+        { label: 'Unlocked FY', value: fmtNumber(pick(pb, 'unlocked_fy') ?? 0, 0) },
+        { label: 'Ledger Present', value: fmtNumber(payload.ledger_present ?? 0, 0) },
+        { label: 'Invalid Bill No. Flags', value: fmtNumber(payload.not_a_valid_bill_no ?? 0, 0) },
+        { label: 'Bill Already Signed', value: fmtBool(pick(pb, 'bill_has_already_signed')) },
+        { label: 'Issue Relation Count', value: fmtText(pick(pb, 'status_issue_relation_count')) },
+        { label: 'Assigned Approval Role', value: fmtText(pick(pb, 'assigned_approval_role')) },
+      ]),
 
-        <div class="section-heading center-heading">REPORT HISTORY</div>
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th style="width: 15%;">FROM</th>
-              <th style="width: 15%;">TO</th>
-              <th style="width: 20%;">BY</th>
-              <th style="width: 18%; text-align: center;">AT</th>
-              <th style="width: 10%; text-align: center;">DAYS SINCE</th>
-              <th style="width: 22%;">REMARKS</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${historyHtml}
-          </tbody>
-        </table>
+      // Section 10 — ledger postings
+      tableSection(
+        'Ledger Posting',
+        ledger,
+        [
+          { header: 'Date', cell: (l) => fmtDate(pick(l, 'date')) },
+          { header: 'Ledger', cell: (l) => fmtText(pick(l, 'ledger_main')) },
+          { header: 'Group', cell: (l) => fmtText(pick(l, 'ledger_group')) },
+          { header: 'Account Head', cell: (l) => fmtText(pick(l, 'account_head')) },
+          { header: 'Project', cell: (l) => fmtText(pick(l, 'project')) },
+          {
+            header: 'Debit',
+            cell: (l) => fmtCurrency(pick(l, 'dr') ?? 0),
+            align: 'right',
+            footer: (rows) => fmtCurrency(rows.reduce((s, r) => s + (Number(pick(r, 'dr')) || 0), 0)),
+          },
+          {
+            header: 'Credit',
+            cell: (l) => fmtCurrency(pick(l, 'cr') ?? 0),
+            align: 'right',
+            footer: (rows) => fmtCurrency(rows.reduce((s, r) => s + (Number(pick(r, 'cr')) || 0), 0)),
+          },
+        ],
+        'No ledger postings recorded',
+      ),
 
-        <script>
-          window.onload = function() {
-            setTimeout(function() { window.print(); }, 400);
-          };
-        </script>
-      </body>
-    </html>
-  `;
+      { kind: 'note', title: 'Narration', body: fmtText(pick(pb, 'narration')) },
+      { kind: 'note', title: 'Ledger Remarks', body: fmtText(pick(pb, 'ledger_remarks')) },
 
-  printWindow.document.open();
-  printWindow.document.write(htmlContent);
-  printWindow.document.close();
+      {
+        kind: 'signatures',
+        title: 'Authorisation',
+        slots: ['Prepared By', 'Verified By', 'Accounts', 'Approved By'],
+      },
+    ],
+  });
+
+  if (!ok) reportFailed('purchase bill');
 }

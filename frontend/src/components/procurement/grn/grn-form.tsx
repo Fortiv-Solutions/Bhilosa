@@ -31,6 +31,7 @@ import {
   extractInvoiceForGrn,
   findDuplicateInvoice,
   saveGrnInvoiceExtraction,
+  type VendorOption,
 } from '@/lib/procurement';
 
 export interface GrnPurchaseEntry {
@@ -174,13 +175,24 @@ interface ExtractionSummary {
 
 interface GrnFormProps {
   grn: GrnRow;
+  /** Active vendors backing the supplier dropdown. */
+  vendorOptions?: VendorOption[];
+  /** Issued purchase orders a receipt can be linked to. */
+  purchaseOrderOptions?: { id: string; po_number: string; vendor_id?: string }[];
   onSubmit: (formData: FullGrnFormState) => void;
   /** Generates the report-format Goods Received Note PDF and opens it in a new tab. */
   onPrint?: () => void;
   onCancel: () => void;
 }
 
-export function GrnForm({ grn, onSubmit, onPrint, onCancel }: GrnFormProps) {
+export function GrnForm({
+  grn,
+  vendorOptions = [],
+  purchaseOrderOptions = [],
+  onSubmit,
+  onPrint,
+  onCancel,
+}: GrnFormProps) {
   const todayStr = new Date().toISOString().slice(0, 10);
   const [uploadingInvoice, setUploadingInvoice] = useState(false);
 
@@ -843,16 +855,40 @@ export function GrnForm({ grn, onSubmit, onPrint, onCancel }: GrnFormProps) {
               />
             </div>
 
-            {/* 6. Supplier Name* */}
+            {/* 6. Supplier Name* — chosen from the vendor registry, so the
+                receipt can always be joined back to a real vendor record.
+                This used to be free text. */}
             <div className="sm:col-span-2">
               <label className="block text-[11px] font-bold uppercase text-primary mb-1">Supplier Name*</label>
-              <input
-                type="text"
-                value={form.supplier_name}
-                onChange={(e) => updateHeader('supplier_name', e.target.value)}
-                className="w-full rounded-lg border-2 border-primary/50 bg-background px-3 py-2 font-extrabold text-foreground"
-                required
-              />
+              {vendorOptions.length > 0 ? (
+                <select
+                  value={form.supplier_name}
+                  onChange={(e) => {
+                    const name = e.target.value;
+                    const vendor = vendorOptions.find((v) => (v.display_name || v.legal_name) === name);
+                    updateHeader('supplier_name', name);
+                    if (vendor?.phone) updateHeader('phone_no', vendor.phone);
+                  }}
+                  className="w-full rounded-lg border-2 border-primary/50 bg-background px-3 py-2 font-extrabold text-foreground"
+                  required
+                >
+                  <option value="">Select a supplier…</option>
+                  {vendorOptions.map((vendor) => (
+                    <option key={vendor.id} value={vendor.display_name || vendor.legal_name}>
+                      {vendor.label}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  value={form.supplier_name}
+                  onChange={(e) => updateHeader('supplier_name', e.target.value)}
+                  className="w-full rounded-lg border-2 border-primary/50 bg-background px-3 py-2 font-extrabold text-foreground"
+                  placeholder="No vendors loaded — add one in the Vendor Registry"
+                  required
+                />
+              )}
             </div>
 
             {/* 7. Phone No. */}

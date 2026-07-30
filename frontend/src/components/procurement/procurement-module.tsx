@@ -2,29 +2,17 @@
 
 import { FormEvent, useCallback, useEffect, useState } from 'react';
 import {
-  BadgeCheck,
-  CheckCircle2,
-  Boxes,
   ClipboardList,
-  Download,
-  FileText,
-  FileDown,
-  Eye,
   PackageCheck,
   RefreshCcw,
   ReceiptIndianRupee,
-  Send,
   ShoppingCart,
   Truck,
   UsersRound,
-  Warehouse,
   X,
-  UserPlus,
-  Plus,
 } from 'lucide-react';
 import { isLiveSupabase } from '@/lib/erp/supabase-modules';
 import { supabase } from '@/utils/supabase-client';
-import { generateMaterialRequestPdfBlob, downloadMaterialRequestPdfFile } from '@/lib/material-request-pdf';
 import {
   approveVendorSelection,
   assignPrToCurrentUser,
@@ -33,59 +21,46 @@ import {
   convertMaterialRequestToPr,
   createGrnFromPo,
   createProcurementDocumentUrl,
-  createMaterialRequest,
   createRfqFromPr,
   createVendorBillFromGrn,
   generatePurchaseOrderPdf,
   generatePurchaseOrder,
   generatePurchaseRequisitionPdf,
-  generateGoodsReceiptNotePdf,
-  generateMaterialRequestPdf,
+  listActiveVendorOptions,
+  listBillableGrnOptions,
   printMaterialRequestReport,
   printGrnReport,
   printPurchaseBillReport,
   printPurchaseOrderReport,
   printPurchaseRequisitionReport,
   printRfqReport,
-  generateRfqPdf,
-  generatePurchaseBillPdf,
   listProcurementDashboard,
   listProcurementProjects,
   recordQuotation,
   recommendVendorSelection,
   reviewMaterialRequestInventory,
   issueMaterialFromStock,
-  submitGrn,
-  postGrnToInventory,
-  updateFullPurchaseOrder,
-  approvePurchaseOrder,
-  rejectPurchaseOrder,
-  sendPurchaseOrderToVendor,
-  acknowledgePurchaseOrder,
+  savePurchaseBill,
+  savePurchaseOrderForm,
+  updateGrnStatus,
+  updateVendorBillStatus,
   type MaterialRequestRow,
   type ProcurementDashboardData,
   type ProcurementProjectOption,
   type PurchaseOrderRow,
-  type ProcurementLineRow,
   type PurchaseRequisitionRow,
   type QuotationRow,
-  type GeneratePurchaseOrderInput,
   type RfqRow,
-  type VendorBillRow,
-  type EntityAttachmentRow,
-  type InventorySnapshotRow,
   type GrnRow,
-  type VendorSelectionRow,
+  type GrnOption,
+  type VendorOption,
 } from '@/lib/procurement';
-import { formatCurrency, statusLabel, StatusBadge, EmptyState, Panel } from '@/components/procurement/shared';
+import { formatCurrency } from '@/components/procurement/shared';
 import { PurchaseRequisitionWorkspace } from '@/components/procurement/purchase-requisition/purchase-requisition-workspace';
 import { RFQWorkspace } from '@/components/procurement/rfq/rfq-workspace';
-import { RfqWorkbench } from '@/components/procurement/rfq-workbench';
 import MaterialRequestWorkQueue from '@/components/procurement/material-request-work-queue';
-import { PurchaseOrderWorkbench } from '@/components/procurement/purchase-order-workbench';
-import { GrnWorkbench } from '@/components/procurement/grn-workbench';
-import { InventoryWorkbench } from '@/components/procurement/inventory-workbench';
 import { POWorkspace } from '@/components/procurement/po/po-workspace';
+import type { FullPoFormState } from '@/components/procurement/po/po-form';
 import { GrnWorkspace } from '@/components/procurement/grn/grn-workspace';
 import { BillsWorkspace } from '@/components/procurement/bills/bills-workspace';
 import { useAppStore } from '@/store/use-app-store';
@@ -178,6 +153,8 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
   const [selectedPrForPo, setSelectedPrForPo] = useState<PurchaseRequisitionRow | null>(null);
   const [selectedQuotationForPo, setSelectedQuotationForPo] = useState<QuotationRow | null>(null);
   const [selectedVendorSelectionIdForPo, setSelectedVendorSelectionIdForPo] = useState<string | null>(null);
+  /** Explicit vendor choice when no accepted quotation fixes the vendor. */
+  const [selectedVendorForPo, setSelectedVendorForPo] = useState('');
   const [poDeliveryLocation, setPoDeliveryLocation] = useState('Project site store');
   const [poDeliveryDate, setPoDeliveryDate] = useState('');
   const [poPaymentTerms, setPoPaymentTerms] = useState('');
@@ -204,8 +181,11 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
 
   // GRN Modal State
   type GrnLineInput = {
-    item_id: string;
+    purchase_order_line_id: string | null;
+    item_id: string | null;
+    item_description: string;
     ordered_qty: number;
+    already_received_qty: number;
     received_qty: number;
     accepted_qty: number;
     rejected_qty: number;
@@ -215,11 +195,31 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
   const [grnLines, setGrnLines] = useState<GrnLineInput[]>([]);
   const [grnReceiptDate, setGrnReceiptDate] = useState('');
   const [grnChallanNumber, setGrnChallanNumber] = useState('');
+  const [grnChallanDate, setGrnChallanDate] = useState('');
   const [grnVehicleNumber, setGrnVehicleNumber] = useState('');
+  const [grnTransporter, setGrnTransporter] = useState('');
+  const [grnGodown, setGrnGodown] = useState('Main Site Store');
   const [grnQualityDecision, setGrnQualityDecision] = useState('accepted');
-  const [grnAttachments, setGrnAttachments] = useState<File[]>([]);
+  const [grnRemarks, setGrnRemarks] = useState('');
   const [grnModalOpen, setGrnModalOpen] = useState(false);
   const [selectedPoForGrn, setSelectedPoForGrn] = useState<PurchaseOrderRow | null>(null);
+  const [savingGrn, setSavingGrn] = useState(false);
+
+  // Vendor + GRN option lists backing the supplier / source dropdowns.
+  const [vendorOptions, setVendorOptions] = useState<VendorOption[]>([]);
+  const [billableGrns, setBillableGrns] = useState<GrnOption[]>([]);
+
+  // Create-PB flow: pick a posted GRN (or a supplier) to raise a bill against.
+  const [pbModalOpen, setPbModalOpen] = useState(false);
+  const [pbSource, setPbSource] = useState<'grn' | 'manual'>('grn');
+  const [pbGrnId, setPbGrnId] = useState('');
+  const [pbVendorId, setPbVendorId] = useState('');
+  const [pbInvoiceValue, setPbInvoiceValue] = useState('');
+  const [pbTolerance, setPbTolerance] = useState('0');
+  const [pbSupplierBillNo, setPbSupplierBillNo] = useState('');
+  const [pbSupplierBillDate, setPbSupplierBillDate] = useState('');
+  const [creatingPb, setCreatingPb] = useState(false);
+
   const liveMode = isLiveSupabase();
   const projectOptions = liveMode && liveProjects.length > 0 ? liveProjects : projects;
 
@@ -272,74 +272,157 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
     return () => window.clearTimeout(timer);
   }, [refresh]);
 
-  // Real-time Supabase Subscription for instant Sync with Mobile App & Submissions
+  /**
+   * Realtime sync.
+   *
+   * Every change used to trigger an immediate full dashboard reload — eleven
+   * queries per row — so a bulk insert produced a burst of refetches. Changes
+   * are now coalesced into one reload per idle window, and vendor_bills is
+   * subscribed so the Bills tab live-updates too.
+   */
   useEffect(() => {
     if (!liveMode) return;
     const client = supabase;
     if (!client) return;
 
-    const channel = client
-      .channel('procurement-realtime-sync')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'material_requests' }, (payload) => {
-        if (payload.eventType === 'INSERT') {
-          setMessage(`📱 New Material Request #${(payload.new as { mr_number?: string }).mr_number || ''} submitted from Mobile App!`);
-        }
+    let pending: number | null = null;
+    const scheduleRefresh = () => {
+      if (pending !== null) window.clearTimeout(pending);
+      pending = window.setTimeout(() => {
+        pending = null;
         void refresh();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'purchase_requisitions' }, (payload) => {
-        if (payload.eventType === 'INSERT') {
-          setMessage(`⚡ Auto-Draft Purchase Requisition #${(payload.new as { pr_number?: string }).pr_number || ''} created.`);
-        }
-        void refresh();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'purchase_orders' }, (payload) => {
-        if (payload.eventType === 'INSERT') {
-          setMessage(`📦 Purchase Order #${(payload.new as { po_number?: string }).po_number || ''} created.`);
-        }
-        void refresh();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'goods_receipt_notes' }, (payload) => {
-        if (payload.eventType === 'INSERT') {
-          setMessage(`✅ Goods Receipt Note #${(payload.new as { grn_number?: string }).grn_number || ''} submitted.`);
-        }
-        void refresh();
-      })
-      .subscribe();
+      }, 600);
+    };
+
+    const announce = (table: string, payload: { eventType: string; new: unknown }) => {
+      if (payload.eventType !== 'INSERT') return;
+      const row = (payload.new || {}) as Record<string, string | undefined>;
+      const notices: Record<string, string> = {
+        material_requests: `New material request ${row.mr_number || ''} submitted.`,
+        purchase_requisitions: `Purchase requisition ${row.pr_number || ''} created.`,
+        purchase_orders: `Purchase order ${row.po_number || ''} created.`,
+        goods_receipt_notes: `Goods receipt note ${row.grn_number || ''} submitted.`,
+        vendor_bills: `Purchase bill ${row.bill_number || ''} raised.`,
+      };
+      if (notices[table]) setMessage(notices[table].trim());
+    };
+
+    const tables = [
+      'material_requests',
+      'purchase_requisitions',
+      'purchase_orders',
+      'goods_receipt_notes',
+      'vendor_bills',
+    ];
+
+    let channel = client.channel('procurement-realtime-sync');
+    for (const table of tables) {
+      channel = channel.on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table },
+        (payload) => {
+          announce(table, payload as unknown as { eventType: string; new: unknown });
+          scheduleRefresh();
+        },
+      );
+    }
+    channel.subscribe();
 
     return () => {
+      if (pending !== null) window.clearTimeout(pending);
       void client.removeChannel(channel);
     };
   }, [liveMode, refresh]);
 
+  // Supplier and billable-GRN dropdown sources.
+  useEffect(() => {
+    if (!liveMode) return;
+    let active = true;
+    void listActiveVendorOptions()
+      .then((options) => { if (active) setVendorOptions(options); })
+      .catch(() => { /* the dashboard payload still carries a vendor list */ });
+    return () => { active = false; };
+  }, [liveMode]);
+
+  useEffect(() => {
+    if (!liveMode) return;
+    let active = true;
+    void listBillableGrnOptions(selectedProjectId)
+      .then((options) => { if (active) setBillableGrns(options); })
+      .catch(() => { if (active) setBillableGrns([]); });
+    return () => { active = false; };
+  }, [liveMode, selectedProjectId, data.grns, data.vendorBills]);
+
   const canApprove = activeRole === 'UPPER_MANAGEMENT' || activeRole === 'PROJECT_MANAGER';
+  const canApproveBills = activeRole === 'UPPER_MANAGEMENT';
+
+  /** Vendor list for dropdowns: the dedicated query, falling back to the dashboard payload. */
+  const vendorChoices = vendorOptions.length > 0
+    ? vendorOptions
+    : data.vendors.map((vendor) => ({
+        id: vendor.id,
+        label: vendor.display_name || vendor.legal_name,
+        legal_name: vendor.legal_name,
+        display_name: vendor.display_name ?? null,
+        gst_number: vendor.gst_number ?? null,
+        city: null,
+        phone: vendor.phone ?? null,
+        compliance_status: vendor.compliance_status ?? null,
+      }));
+
+  /**
+   * Runs a service call and surfaces its outcome honestly.
+   *
+   * The service layer returns `{ data, error }` and never throws, but every
+   * handler here used to ignore the result and show a success banner
+   * unconditionally — so a failed approval or GRN posting still reported
+   * "created successfully". This helper is the single place that decides.
+   */
+  const runAction = useCallback(
+    async <T,>(
+      label: string,
+      action: () => Promise<{ data: T | null; error: Error | null }>,
+    ): Promise<T | null> => {
+      setError(null);
+      setMessage(null);
+      try {
+        const result = await action();
+        if (result.error) {
+          setError(`${label} failed: ${result.error.message}`);
+          return null;
+        }
+        setMessage(`${label} completed.`);
+        await refresh();
+        return result.data;
+      } catch (unexpected) {
+        setError(
+          `${label} failed: ${unexpected instanceof Error ? unexpected.message : 'Unexpected error.'}`,
+        );
+        return null;
+      }
+    },
+    [refresh],
+  );
 
 
 
   async function handleReviewMr(mr: MaterialRequestRow) {
-    setError(null);
-    setMessage(null);
-    try {
-      await reviewMaterialRequestInventory(mr);
-      setMessage(`Inventory check updated for MR ${mr.mr_number}.`);
-      await refresh();
-    } catch (reviewError) {
-      setError(reviewError instanceof Error ? reviewError.message : 'Inventory check failed.');
-    }
+    await runAction(`Inventory check for MR ${mr.mr_number}`, () => reviewMaterialRequestInventory(mr));
   }
 
   async function handleIssueMr(mr: MaterialRequestRow) {
-    setError(null);
-    setMessage(null);
-    try {
-      await issueMaterialFromStock(mr);
-      setMessage(`Stock issued from site inventory for MR ${mr.mr_number}.`);
-      await refresh();
-    } catch (issueError) {
-      setError(issueError instanceof Error ? issueError.message : 'Failed to issue stock.');
-    }
+    await runAction(`Stock issue for MR ${mr.mr_number}`, () => issueMaterialFromStock(mr));
   }
 
   async function handleConvertMr(mr: MaterialRequestRow) {
+    const lines = mr.material_request_lines ?? [];
+    if (lines.length === 0) {
+      setError(
+        `MR ${mr.mr_number} has no material lines, so there is nothing to requisition. Add lines to the request first.`,
+      );
+      return;
+    }
+
     setSelectedMrForPr(mr);
     setPrTitle(`PR for ${mr.justification || mr.mr_number}`);
     setPrRequiredDate(mr.required_date || new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0]);
@@ -348,25 +431,17 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
     setPrRemarks('');
     setPrAttachments([]);
 
-    if (mr.material_request_lines && mr.material_request_lines.length > 0) {
-      setPrLines(
-        mr.material_request_lines.map((l) => ({
-          item_description: l.item_description,
-          quantity: l.quantity,
-          estimated_rate: l.estimated_rate || 0,
-          item_id: l.item_id || null,
-        }))
-      );
-    } else {
-      setPrLines([
-        {
-          item_description: 'General Material Requirement',
-          quantity: 1,
-          estimated_rate: 0,
-          item_id: null,
-        },
-      ]);
-    }
+    // Carry the MR's own lines across. A placeholder "General Material
+    // Requirement" line used to be invented when the MR had none, which put a
+    // fictitious item onto a real requisition.
+    setPrLines(
+      lines.map((l) => ({
+        item_description: l.item_description,
+        quantity: Number(l.quantity) || 0,
+        estimated_rate: Number(l.estimated_rate) || 0,
+        item_id: l.item_id || null,
+      })),
+    );
 
     setPrModalOpen(true);
   }
@@ -374,11 +449,18 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
   async function handleSavePr(event: FormEvent) {
     event.preventDefault();
     if (!selectedMrForPr) return;
-    setError(null);
-    setMessage(null);
 
-    try {
-      await convertMaterialRequestToPr({
+    if (!prTitle.trim()) {
+      setError('Enter a title or specification for the purchase requisition.');
+      return;
+    }
+    if (prLines.some((line) => !(line.quantity > 0))) {
+      setError('Every requisition line needs a quantity greater than zero.');
+      return;
+    }
+
+    const created = await runAction('Purchase requisition creation', () =>
+      convertMaterialRequestToPr({
         materialRequest: selectedMrForPr,
         title: prTitle,
         requiredDate: prRequiredDate,
@@ -392,14 +474,12 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
           item_id: l.item_id || undefined,
         })),
         attachments: prAttachments,
-      });
+      }),
+    );
 
-      setMessage(`Purchase Requisition created and assigned.`);
+    if (created) {
       setPrModalOpen(false);
       setSelectedMrForPr(null);
-      await refresh();
-    } catch (prError) {
-      setError(prError instanceof Error ? prError.message : 'Failed to create PR.');
     }
   }
 
@@ -413,27 +493,34 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
     event.preventDefault();
     if (!selectedPrForRfq) return;
     if (selectedVendorsForRfq.length === 0) {
-      setError('Please select at least one vendor for the RFQ.');
+      setError('Select at least one vendor to send this RFQ to.');
       return;
     }
 
-    setError(null);
-    setMessage(null);
-    try {
-      await createRfqFromPr(selectedPrForRfq, selectedVendorsForRfq);
-      setMessage(`RFQ published to selected vendors.`);
+    const published = await runAction('RFQ publication', () =>
+      createRfqFromPr(selectedPrForRfq, selectedVendorsForRfq),
+    );
+
+    if (published !== null) {
       setRfqModalOpen(false);
       setSelectedPrForRfq(null);
-      await refresh();
-    } catch (rfqError) {
-      setError(rfqError instanceof Error ? rfqError.message : 'Failed to publish RFQ.');
     }
   }
 
   function handleOpenQuoteModal(rfq: RfqRow) {
+    const linkedPr = data.purchaseRequisitions.find((pr) => pr.id === rfq.purchase_requisition_id);
+    const prLinesForQuote = linkedPr?.purchase_requisition_lines ?? [];
+
+    if (prLinesForQuote.length === 0) {
+      setError(
+        `RFQ ${rfq.rfq_number} has no requisition lines to quote against. Check that its purchase requisition still has line items.`,
+      );
+      return;
+    }
+
     setSelectedRfqForQuote(rfq);
-    setSelectedVendorForQuote(rfq.rfq_vendors?.[0]?.vendor_id || data.vendors[0]?.id || '');
-    setQuoteNumber(`QT-${Date.now().toString().slice(-5)}`);
+    setSelectedVendorForQuote(rfq.rfq_vendors?.[0]?.vendor_id || '');
+    setQuoteNumber('');
     setQuoteDate(new Date().toISOString().split('T')[0]);
     setQuoteLeadTimeDays(7);
     setQuoteDeliveryTerms('Delivery at project site store');
@@ -442,39 +529,42 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
     setQuoteStoragePath('');
     setQuoteAttachments([]);
 
-    const linkedPr = data.purchaseRequisitions.find((pr) => pr.id === rfq.purchase_requisition_id);
-    if (linkedPr?.purchase_requisition_lines && linkedPr.purchase_requisition_lines.length > 0) {
-      setQuoteLines(
-        linkedPr.purchase_requisition_lines.map((l) => ({
-          item_id: l.item_id,
-          item_description: l.item_description,
-          quantity: l.quantity,
-          unit_rate: l.estimated_rate || 100,
-          tax_rate: 18,
-        }))
-      );
-    } else {
-      setQuoteLines([
-        {
-          item_description: 'Material line item',
-          quantity: 100,
-          unit_rate: 50,
-          tax_rate: 18,
-        },
-      ]);
-    }
+    // Rates start at the requisition's own estimate (or zero), so the user
+    // enters what the vendor actually quoted. Placeholder rates of 100/50 and
+    // a fabricated 100-unit line used to be seeded here and were saved as if
+    // they were real commercial figures.
+    setQuoteLines(
+      prLinesForQuote.map((l) => ({
+        item_id: l.item_id,
+        item_description: l.item_description,
+        quantity: Number(l.quantity) || 0,
+        unit_rate: Number(l.estimated_rate) || 0,
+        tax_rate: 18,
+      })),
+    );
 
     setQuoteModalOpen(true);
   }
 
   async function handleSaveQuote(event: FormEvent) {
     event.preventDefault();
-    if (!selectedRfqForQuote || !selectedVendorForQuote) return;
+    if (!selectedRfqForQuote) return;
 
-    setError(null);
-    setMessage(null);
-    try {
-      await recordQuotation({
+    if (!selectedVendorForQuote) {
+      setError('Select the vendor this quotation is from.');
+      return;
+    }
+    if (!quoteNumber.trim()) {
+      setError("Enter the vendor's quotation reference number.");
+      return;
+    }
+    if (quoteLines.some((line) => !(line.unit_rate > 0))) {
+      setError('Enter a unit rate for every quoted line.');
+      return;
+    }
+
+    const saved = await runAction('Quotation recording', () =>
+      recordQuotation({
         rfq: selectedRfqForQuote,
         vendorId: selectedVendorForQuote,
         quotationNumber: quoteNumber,
@@ -492,20 +582,18 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
           item_id: l.item_id || undefined,
         })),
         attachments: quoteAttachments,
-      });
+      }),
+    );
 
-      setMessage(`Quotation submitted.`);
+    if (saved) {
       setQuoteModalOpen(false);
       setSelectedRfqForQuote(null);
-      await refresh();
-    } catch (quoteError) {
-      setError(quoteError instanceof Error ? quoteError.message : 'Failed to record quotation.');
     }
   }
 
   function handleOpenRecommendModal(quote: QuotationRow) {
     setSelectedQuotationForRecommendation(quote);
-    setRecommendationReason('Best evaluated commercial offer considering rate, lead time, GST impact, and vendor performance.');
+    setRecommendationReason('');
     setRecommendModalOpen(true);
   }
 
@@ -513,76 +601,87 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
     event.preventDefault();
     if (!selectedQuotationForRecommendation) return;
 
-    setError(null);
-    setMessage(null);
-    try {
-      const prId = data.rfqs.find((r) => r.id === selectedQuotationForRecommendation.rfq_id)?.purchase_requisition_id || '';
-      await recommendVendorSelection({
+    if (recommendationReason.trim().length < 10) {
+      setError('Give a commercial justification for this recommendation (at least a sentence).');
+      return;
+    }
+
+    const prId =
+      data.rfqs.find((r) => r.id === selectedQuotationForRecommendation.rfq_id)?.purchase_requisition_id || '';
+    if (!prId) {
+      setError('This quotation is not linked to a purchase requisition and cannot be recommended.');
+      return;
+    }
+
+    const saved = await runAction('Vendor recommendation', () =>
+      recommendVendorSelection({
         quotation: selectedQuotationForRecommendation,
         purchaseRequisitionId: prId,
         reasonForSelection: recommendationReason,
-      });
-      setMessage(`Quotation recommended for PO approval.`);
+      }),
+    );
+
+    if (saved) {
       setRecommendModalOpen(false);
       setSelectedQuotationForRecommendation(null);
-      await refresh();
-    } catch (recError) {
-      setError(recError instanceof Error ? recError.message : 'Failed to submit recommendation.');
     }
   }
 
   async function handleApproveSelection(selectionId: string) {
-    setError(null);
-    setMessage(null);
-    try {
-      await approveVendorSelection({ selectionId });
-      setMessage(`Vendor selection approved by management.`);
-      await refresh();
-    } catch (appError) {
-      setError(appError instanceof Error ? appError.message : 'Failed to approve vendor selection.');
-    }
+    await runAction('Vendor selection approval', () => approveVendorSelection({ selectionId }));
   }
 
   function handleOpenPoModal(pr: PurchaseRequisitionRow, quotation?: QuotationRow, selectionId?: string) {
+    const quotedLines = quotation?.quotation_lines ?? [];
+    const requisitionLines = pr.purchase_requisition_lines ?? [];
+
+    if (quotedLines.length === 0 && requisitionLines.length === 0) {
+      setError(
+        `PR ${pr.pr_number} has no line items, so a purchase order cannot be raised from it.`,
+      );
+      return;
+    }
+
     setSelectedPrForPo(pr);
     setSelectedQuotationForPo(quotation || null);
     setSelectedVendorSelectionIdForPo(selectionId || null);
+    // Without an approved quotation the vendor must be chosen explicitly.
+    setSelectedVendorForPo(quotation?.vendor_id || '');
     setPoDeliveryLocation('Project site store');
     setPoDeliveryDate(new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0]);
     setPoPaymentTerms(quotation?.payment_terms || '30 days from GRN');
 
-    if (quotation?.quotation_lines && quotation.quotation_lines.length > 0) {
+    // Prefer the accepted quotation's commercials; otherwise carry the
+    // requisition's own estimates. Neither path invents a rate — the previous
+    // fallbacks (`estimated_rate || 100`, and a 10-unit ₹100 placeholder line)
+    // wrote fictitious values onto real purchase orders.
+    if (quotedLines.length > 0) {
       setPoLines(
-        quotation.quotation_lines.map((ql) => ({
+        quotedLines.map((ql) => ({
           item_id: ql.item_id || undefined,
           item_description: ql.item_description,
-          quantity: ql.quantity,
-          unit_rate: ql.unit_rate || 0,
-          tax_rate: ql.tax_rate || 0,
-          line_total: ql.line_total || 0,
-        }))
-      );
-    } else if (pr.purchase_requisition_lines && pr.purchase_requisition_lines.length > 0) {
-      setPoLines(
-        pr.purchase_requisition_lines.map((prl) => ({
-          item_id: prl.item_id || undefined,
-          item_description: prl.item_description,
-          quantity: prl.quantity,
-          unit_rate: prl.estimated_rate || 100,
-          tax_rate: 18,
-          line_total: (prl.quantity * (prl.estimated_rate || 100)) * 1.18,
-        }))
+          quantity: Number(ql.quantity) || 0,
+          unit_rate: Number(ql.unit_rate) || 0,
+          tax_rate: Number(ql.tax_rate) || 0,
+          line_total: Number(ql.line_total) || 0,
+        })),
       );
     } else {
-      setPoLines([
-        {
-          item_description: 'PO Material line item',
-          quantity: 10,
-          unit_rate: 100,
-          tax_rate: 18,
-          line_total: 1180,
-        },
-      ]);
+      setPoLines(
+        requisitionLines.map((prl) => {
+          const quantity = Number(prl.quantity) || 0;
+          const rate = Number(prl.estimated_rate) || 0;
+          const taxRate = 18;
+          return {
+            item_id: prl.item_id || undefined,
+            item_description: prl.item_description,
+            quantity,
+            unit_rate: rate,
+            tax_rate: taxRate,
+            line_total: quantity * rate * (1 + taxRate / 100),
+          };
+        }),
+      );
     }
 
     setPoModalOpen(true);
@@ -591,16 +690,26 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
   async function handleSavePo(event: FormEvent) {
     event.preventDefault();
     if (!selectedPrForPo) return;
-    const vendorId = selectedQuotationForPo?.vendor_id || data.vendors[0]?.id;
+
+    // The vendor is whoever was quoted or explicitly chosen. This used to fall
+    // back to `data.vendors[0]`, silently issuing the order to whichever vendor
+    // sorted first.
+    const vendorId = selectedQuotationForPo?.vendor_id || selectedVendorForPo;
     if (!vendorId) {
-      setError('Please select a vendor for the PO.');
+      setError('Select the vendor this purchase order is being issued to.');
+      return;
+    }
+    if (poLines.length === 0 || poLines.some((line) => !(line.quantity > 0))) {
+      setError('Every purchase order line needs a quantity greater than zero.');
+      return;
+    }
+    if (poLines.some((line) => !(line.unit_rate > 0))) {
+      setError('Every purchase order line needs a unit rate.');
       return;
     }
 
-    setError(null);
-    setMessage(null);
-    try {
-      await generatePurchaseOrder({
+    const created = await runAction('Purchase order creation', () =>
+      generatePurchaseOrder({
         purchaseRequisitionId: selectedPrForPo.id,
         vendorId,
         vendorSelectionId: selectedVendorSelectionIdForPo || undefined,
@@ -616,27 +725,64 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
           tax_rate: l.tax_rate,
           line_total: l.line_total,
         })),
-      });
+      }),
+    );
 
-      setMessage(`Purchase Order created successfully.`);
+    if (created) {
       setPoModalOpen(false);
       setSelectedPrForPo(null);
-      await refresh();
-    } catch (poError) {
-      setError(poError instanceof Error ? poError.message : 'Failed to generate PO.');
     }
   }
 
-  async function handleGeneratePoPdf(po: PurchaseOrderRow) {
-    setError(null);
-    setMessage(null);
-    try {
-      await generatePurchaseOrderPdf(po);
-      setMessage(`PDF generated for PO ${po.po_number || ''}.`);
-      await refresh();
-    } catch (pdfError) {
-      setError(pdfError instanceof Error ? pdfError.message : 'PDF generation failed.');
+  /** Saves the full PO form. Previously the form had no persistence path at all. */
+  async function handleSavePoForm(formData: FullPoFormState) {
+    const activeId = (formData as unknown as { id?: string }).id;
+    await runAction('Purchase order save', () =>
+      savePurchaseOrderForm({
+        id: activeId,
+        project_id: selectedProjectId !== 'all' ? selectedProjectId : undefined,
+        vendor_id: (formData as unknown as { vendor_id?: string }).vendor_id,
+        po_date: (formData as unknown as { po_date?: string }).po_date,
+        delivery_location: (formData as unknown as { delivery_location?: string }).delivery_location,
+        delivery_date: (formData as unknown as { delivery_date?: string }).delivery_date,
+        payment_terms: (formData as unknown as { payment_terms?: string }).payment_terms,
+        terms_and_conditions: (formData as unknown as { terms_and_conditions?: string }).terms_and_conditions,
+        company_name: (formData as unknown as { company_name?: string }).company_name,
+        contractor_name: (formData as unknown as { contractor_name?: string }).contractor_name,
+        contract_reference: (formData as unknown as { contract_reference?: string }).contract_reference,
+        site_contact_person: (formData as unknown as { site_contact_person?: string }).site_contact_person,
+        site_contact_number: (formData as unknown as { site_contact_number?: string }).site_contact_number,
+        status: (formData as unknown as { status?: string }).status,
+        lines: ((formData as unknown as { lines?: unknown[] }).lines || []).map((raw) => {
+          const line = raw as Record<string, unknown>;
+          const quantity = Number(line.quantity ?? line.qty ?? 0);
+          const rate = Number(line.unit_rate ?? line.rate ?? 0);
+          const taxRate = Number(line.tax_rate ?? 0);
+          return {
+            item_id: (line.item_id as string) || null,
+            item_description: String(line.item_description ?? line.description ?? ''),
+            quantity,
+            unit_rate: rate,
+            tax_rate: taxRate,
+            line_total: Number(line.line_total ?? quantity * rate * (1 + taxRate / 100)),
+          };
+        }),
+      }),
+    );
+  }
+
+  async function handleApprovePo(po: PurchaseOrderRow) {
+    if (!canApprove) {
+      setError('Only management or a project manager may approve a purchase order.');
+      return;
     }
+    await runAction(`Approval of PO ${po.po_number || ''}`.trim(), () => approveAndSendPurchaseOrder(po));
+  }
+
+  async function handleGeneratePoPdf(po: PurchaseOrderRow) {
+    await runAction(`PDF generation for PO ${po.po_number || ''}`.trim(), () =>
+      generatePurchaseOrderPdf(po),
+    );
   }
 
   async function handleOpenPoPdf(po: PurchaseOrderRow) {
@@ -644,94 +790,271 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
       await handleGeneratePoPdf(po);
       return;
     }
+    setError(null);
     try {
       const urlResult = await createProcurementDocumentUrl(po.pdf_storage_path);
-      const urlStr = typeof urlResult === 'string' ? urlResult : (urlResult as any)?.data?.signedUrl;
-      if (urlStr) {
-        window.open(urlStr, '_blank');
+      if (urlResult.error) {
+        setError(`Could not open the PO document: ${urlResult.error.message}`);
+        return;
       }
-    } catch (err) {
-      setError('Could not open PO PDF preview.');
-    }
-  }
-
-  async function handleApprovePo(po: PurchaseOrderRow) {
-    setError(null);
-    setMessage(null);
-    try {
-      await approveAndSendPurchaseOrder(po);
-      setMessage(`PO ${po.po_number || ''} approved and sent to vendor.`);
-      await refresh();
-    } catch (appError) {
-      setError(appError instanceof Error ? appError.message : 'Failed to approve PO.');
+      const signedUrl = urlResult.data?.signedUrl;
+      if (!signedUrl) {
+        setError('The PO document has no stored file to open yet. Generate it first.');
+        return;
+      }
+      window.open(signedUrl, '_blank');
+    } catch (openError) {
+      setError(
+        `Could not open the PO document: ${openError instanceof Error ? openError.message : 'Unexpected error.'}`,
+      );
     }
   }
 
   function handleOpenGrnModal(po: PurchaseOrderRow) {
+    const poLinesForGrn = po.purchase_order_lines ?? [];
+    if (poLinesForGrn.length === 0) {
+      setError(
+        `PO ${po.po_number || ''} has no line items, so goods cannot be received against it.`.trim(),
+      );
+      return;
+    }
+
+    const outstanding = poLinesForGrn.filter(
+      (line) => (Number(line.quantity) || 0) > (Number(line.received_qty) || 0),
+    );
+    if (outstanding.length === 0) {
+      setError(`PO ${po.po_number || ''} is already fully received.`.trim());
+      return;
+    }
+
     setSelectedPoForGrn(po);
     setGrnReceiptDate(new Date().toISOString().split('T')[0]);
-    setGrnChallanNumber(`CH-${Date.now().toString().slice(-5)}`);
-    setGrnVehicleNumber('GJ-05-AB-1234');
+    // Challan and vehicle are transcribed from the supplier's paperwork, so
+    // they start blank rather than pre-filled with an invented challan number
+    // and the hardcoded vehicle 'GJ-05-AB-1234'.
+    setGrnChallanNumber('');
+    setGrnChallanDate(new Date().toISOString().split('T')[0]);
+    setGrnVehicleNumber('');
+    setGrnTransporter('');
+    setGrnGodown('Main Site Store');
     setGrnQualityDecision('accepted');
-    setGrnAttachments([]);
+    setGrnRemarks('');
 
-    if (po.purchase_order_lines && po.purchase_order_lines.length > 0) {
-      setGrnLines(
-        po.purchase_order_lines.map((pol) => ({
-          item_id: pol.item_id || 'item-unknown',
-          ordered_qty: pol.quantity,
-          received_qty: pol.quantity,
-          accepted_qty: pol.quantity,
+    setGrnLines(
+      outstanding.map((pol) => {
+        const ordered = Number(pol.quantity) || 0;
+        const already = Number(pol.received_qty) || 0;
+        const balance = Math.max(ordered - already, 0);
+        return {
+          purchase_order_line_id: pol.id,
+          item_id: pol.item_id || null,
+          item_description: pol.item_description,
+          ordered_qty: ordered,
+          already_received_qty: already,
+          received_qty: balance,
+          accepted_qty: balance,
           rejected_qty: 0,
-          unit_rate: pol.unit_rate || 0,
-          remarks: 'Inspected and verified OK',
-        }))
-      );
-    } else {
-      setGrnLines([
-        {
-          item_id: 'item-general',
-          ordered_qty: 10,
-          received_qty: 10,
-          accepted_qty: 10,
-          rejected_qty: 0,
-          unit_rate: 100,
-          remarks: 'General material OK',
-        },
-      ]);
-    }
+          unit_rate: Number(pol.unit_rate) || 0,
+          remarks: '',
+        };
+      }),
+    );
 
     setGrnModalOpen(true);
   }
 
+  /**
+   * Saves the goods receipt.
+   *
+   * Every field the modal collects is now sent. Previously this called
+   * `createGrnFromPo(po)` with only the purchase order, so the received,
+   * accepted and rejected quantities, the challan number, the vehicle number
+   * and the inspection remarks were all discarded — and the UI still reported
+   * "Goods Receipt Note created and inventory posted".
+   */
   async function handleSaveGrn(event: FormEvent) {
     event.preventDefault();
     if (!selectedPoForGrn) return;
 
-    setError(null);
-    setMessage(null);
-    try {
-      await createGrnFromPo(selectedPoForGrn);
+    if (!grnChallanNumber.trim()) {
+      setError("Enter the supplier's delivery challan or invoice number.");
+      return;
+    }
+    if (grnLines.every((line) => (Number(line.received_qty) || 0) <= 0)) {
+      setError('Enter the received quantity for at least one line.');
+      return;
+    }
+    for (const line of grnLines) {
+      const received = Number(line.received_qty) || 0;
+      const rejected = Number(line.rejected_qty) || 0;
+      const accepted = Number(line.accepted_qty) || 0;
+      const balance = Math.max(line.ordered_qty - line.already_received_qty, 0);
+      if (received < 0 || rejected < 0 || accepted < 0) {
+        setError('Quantities cannot be negative.');
+        return;
+      }
+      if (received > balance) {
+        setError(
+          `Received quantity for "${line.item_description}" exceeds the outstanding ordered quantity (${balance}).`,
+        );
+        return;
+      }
+      if (accepted + rejected > received) {
+        setError(
+          `Accepted plus rejected quantity for "${line.item_description}" exceeds the received quantity.`,
+        );
+        return;
+      }
+    }
 
-      setMessage(`Goods Receipt Note created and inventory posted.`);
+    setSavingGrn(true);
+    const created = await runAction('Goods receipt', () =>
+      createGrnFromPo(selectedPoForGrn, {
+        receiptDate: grnReceiptDate,
+        challanNumber: grnChallanNumber,
+        challanDate: grnChallanDate,
+        vehicleNumber: grnVehicleNumber,
+        godownName: grnGodown,
+        transporterName: grnTransporter,
+        qualityDecision: grnQualityDecision,
+        remarks: grnRemarks,
+        lines: grnLines
+          .filter((line) => (Number(line.received_qty) || 0) > 0)
+          .map((line) => ({
+            purchaseOrderLineId: line.purchase_order_line_id,
+            itemId: line.item_id,
+            receivedQty: Number(line.received_qty) || 0,
+            acceptedQty: Number(line.accepted_qty) || 0,
+            rejectedQty: Number(line.rejected_qty) || 0,
+            unitRate: Number(line.unit_rate) || 0,
+            remarks: line.remarks,
+          })),
+        // Only an approver's receipt posts straight to inventory; anyone else
+        // submits it for approval. The server enforces this either way.
+        submitForApproval: !canApprove,
+      }),
+    );
+
+    setSavingGrn(false);
+
+    if (created) {
+      setMessage(
+        created.status === 'posted'
+          ? `GRN ${created.grnNumber} posted to inventory.`
+          : `GRN ${created.grnNumber} submitted for approval.`,
+      );
       setGrnModalOpen(false);
       setSelectedPoForGrn(null);
-      await refresh();
-    } catch (grnError) {
-      setError(grnError instanceof Error ? grnError.message : 'Failed to create GRN.');
     }
   }
 
-  async function handleCreateBill(grn: GrnRow) {
-    setError(null);
-    setMessage(null);
-    try {
-      await createVendorBillFromGrn(grn);
-      setMessage(`Vendor Bill generated with 3-way matching.`);
-      await refresh();
-    } catch (billError) {
-      setError(billError instanceof Error ? billError.message : 'Failed to generate vendor bill.');
+  async function handleApproveGrn(grnId: string) {
+    if (!canApprove) {
+      setError('Only management or a project manager may post a goods receipt note.');
+      return;
     }
+    await runAction('GRN posting', () => updateGrnStatus(grnId, 'posted'));
+  }
+
+  async function handleCreateBill(grn: GrnRow) {
+    const created = await runAction('Purchase bill creation', () => createVendorBillFromGrn(grn));
+    if (created) {
+      setMessage(
+        `Purchase bill ${created.billNumber} raised — three-way match: ${created.matchStatus.replace(/_/g, ' ')}.`,
+      );
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // Create PB
+  // ---------------------------------------------------------------
+  function handleOpenPbModal() {
+    setPbSource(billableGrns.length > 0 ? 'grn' : 'manual');
+    setPbGrnId(billableGrns[0]?.id || '');
+    setPbVendorId('');
+    setPbInvoiceValue('');
+    setPbTolerance('0');
+    setPbSupplierBillNo('');
+    setPbSupplierBillDate(new Date().toISOString().split('T')[0]);
+    setPbModalOpen(true);
+  }
+
+  async function handleCreatePb(event: FormEvent) {
+    event.preventDefault();
+
+    if (pbSource === 'grn') {
+      const grn = billableGrns.find((option) => option.id === pbGrnId);
+      if (!grn) {
+        setError('Select the posted GRN this bill is being raised against.');
+        return;
+      }
+      setCreatingPb(true);
+      const created = await runAction('Purchase bill creation', () =>
+        createVendorBillFromGrn({ id: grn.id } as GrnRow, {
+          invoiceValue: pbInvoiceValue ? Number(pbInvoiceValue) : undefined,
+          tolerance: Number(pbTolerance) || 0,
+          fileName: pbSupplierBillNo.trim() || undefined,
+        }),
+      );
+      setCreatingPb(false);
+
+      if (created) {
+        setPbModalOpen(false);
+        setActiveTab('billing');
+        setMessage(
+          `Purchase bill ${created.billNumber} created from GRN ${grn.grn_number} — three-way match: ${created.matchStatus.replace(/_/g, ' ')}. Open it from the Bills tab to complete the remaining sections.`,
+        );
+      }
+      return;
+    }
+
+    // Manual bill: no GRN, so a project and supplier must be chosen.
+    if (selectedProjectId === 'all') {
+      setError('Choose a specific project before raising a purchase bill without a GRN.');
+      return;
+    }
+    if (!pbVendorId) {
+      setError('Select the supplier this purchase bill is from.');
+      return;
+    }
+
+    setCreatingPb(true);
+    const created = await runAction('Purchase bill creation', () =>
+      savePurchaseBill({
+        project_id: selectedProjectId,
+        vendor_id: pbVendorId,
+        bill_date: new Date().toISOString().split('T')[0],
+        bill_received_date: new Date().toISOString().split('T')[0],
+        supplier_bill_no: pbSupplierBillNo.trim() || undefined,
+        supplier_bill_date: pbSupplierBillDate || undefined,
+        subtotal_amount: pbInvoiceValue ? Number(pbInvoiceValue) : 0,
+        tax_amount: 0,
+        payment_days: 30,
+        status: 'draft',
+      }),
+    );
+    setCreatingPb(false);
+
+    if (created) {
+      setPbModalOpen(false);
+      setActiveTab('billing');
+      setMessage(
+        `Draft purchase bill ${created.billNumber} created. Open it from the Bills tab to enter the entries and commercial detail.`,
+      );
+    }
+  }
+
+  /** Persists the full purchase-bill form. Only `status` used to be saved. */
+  async function handleSaveBillForm(billId: string, payload: Record<string, unknown>) {
+    await runAction('Purchase bill save', () => savePurchaseBill({ id: billId, ...payload }));
+  }
+
+  async function handleBillStatusChange(billId: string, status: string) {
+    if (['approved', 'paid', 'rejected'].includes(status) && !canApproveBills) {
+      setError('Only upper management may approve a bill or release payment.');
+      return;
+    }
+    await runAction('Purchase bill status update', () => updateVendorBillStatus(billId, status));
   }
 
   return (
@@ -907,7 +1230,10 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
         <POWorkspace
           purchaseOrders={data.purchaseOrders}
           activeRole={activeRole as any}
+          vendorOptions={vendorChoices}
+          onSavePo={handleSavePoForm}
           onApprove={handleApprovePo}
+          onReceiveGoods={handleOpenGrnModal}
           onPrintPo={(po) => printPurchaseOrderReport(po)}
           onRefresh={refresh}
         />
@@ -917,10 +1243,19 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
         <GrnWorkspace
           grns={data.grns}
           activeRole={activeRole as any}
+          vendorOptions={vendorChoices}
+          purchaseOrders={data.purchaseOrders}
+          onApproveGrn={handleApproveGrn}
+          onCreateBill={(grnId) => {
+            const match = data.grns.find((g) => g.id === grnId);
+            if (match) void handleCreateBill(match);
+          }}
           onDownloadReport={(grnId) => {
             const match = data.grns.find((g) => g.id === grnId);
             if (match) printGrnReport(match);
           }}
+          onRefresh={refresh}
+          onError={setError}
         />
       )}
 
@@ -928,6 +1263,17 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
         <BillsWorkspace
           bills={data.vendorBills}
           activeRole={activeRole as any}
+          vendorOptions={vendorChoices}
+          billableGrns={billableGrns}
+          onCreateBill={handleOpenPbModal}
+          onSaveBill={handleSaveBillForm}
+          onStatusChange={handleBillStatusChange}
+          onPrintBill={(billId) => {
+            const match = data.vendorBills.find((b) => b.id === billId);
+            if (match) printPurchaseBillReport(match);
+          }}
+          onRefresh={refresh}
+          onError={setError}
         />
       )}
 
@@ -1118,6 +1464,35 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
               <button type="button" onClick={() => setPoModalOpen(false)} className="rounded-md p-1 hover:bg-muted"><X className="h-5 w-5" /></button>
             </div>
             <form onSubmit={handleSavePo} className="mt-4 space-y-4 max-h-[75vh] overflow-y-auto pr-1">
+              {/* Vendor. Fixed by the accepted quotation when there is one, and
+                  otherwise chosen explicitly from the registry — never inferred. */}
+              <div>
+                <label className="text-xs font-bold text-foreground">Vendor / Supplier</label>
+                {selectedQuotationForPo ? (
+                  <div className="mt-1 rounded-md border border-border bg-muted/40 p-2 text-sm font-semibold text-foreground">
+                    {selectedQuotationForPo.vendors?.display_name
+                      || selectedQuotationForPo.vendors?.legal_name
+                      || selectedQuotationForPo.vendor_name
+                      || 'Vendor from accepted quotation'}
+                    <span className="ml-2 text-xs font-normal text-muted-foreground">
+                      (from accepted quotation {selectedQuotationForPo.quotation_number || ''})
+                    </span>
+                  </div>
+                ) : (
+                  <select
+                    required
+                    value={selectedVendorForPo}
+                    onChange={(e) => setSelectedVendorForPo(e.target.value)}
+                    className="mt-1 w-full rounded-md border border-border bg-card p-2 text-sm text-foreground outline-none"
+                  >
+                    <option value="">Select a vendor…</option>
+                    {vendorChoices.map((vendor) => (
+                      <option key={vendor.id} value={vendor.id}>{vendor.label}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
+
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="text-xs font-bold text-foreground">Delivery Site Store Location</label>
@@ -1132,6 +1507,67 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
                 <label className="text-xs font-bold text-foreground">Payment Terms</label>
                 <input type="text" required value={poPaymentTerms} onChange={(e) => setPoPaymentTerms(e.target.value)} className="mt-1 w-full rounded-md border border-border bg-card p-2 text-sm text-foreground outline-none" />
               </div>
+
+              {/* Line items are editable here, since they set the order value. */}
+              <div>
+                <label className="text-xs font-bold text-foreground">Order Line Items</label>
+                <div className="mt-2 space-y-2">
+                  {poLines.map((line, idx) => (
+                    <div key={idx} className="grid grid-cols-12 items-end gap-2 rounded-md border border-border p-2 text-xs">
+                      <span className="col-span-4 font-bold text-foreground">{line.item_description}</span>
+                      <div className="col-span-2">
+                        <label className="text-[10px] text-muted-foreground">Qty</label>
+                        <input
+                          type="number" min={0} step="any" required value={line.quantity}
+                          onChange={(e) => {
+                            const quantity = Number(e.target.value);
+                            setPoLines((prev) => prev.map((l, i) => i === idx
+                              ? { ...l, quantity, line_total: quantity * l.unit_rate * (1 + l.tax_rate / 100) }
+                              : l));
+                          }}
+                          className="w-full rounded border border-border p-1 text-right font-bold"
+                        />
+                      </div>
+                      <div className="col-span-2">
+                        <label className="text-[10px] text-muted-foreground">Unit Rate (₹)</label>
+                        <input
+                          type="number" min={0} step="any" required value={line.unit_rate}
+                          onChange={(e) => {
+                            const unit_rate = Number(e.target.value);
+                            setPoLines((prev) => prev.map((l, i) => i === idx
+                              ? { ...l, unit_rate, line_total: l.quantity * unit_rate * (1 + l.tax_rate / 100) }
+                              : l));
+                          }}
+                          className="w-full rounded border border-border p-1 text-right font-bold"
+                        />
+                      </div>
+                      <div className="col-span-2">
+                        <label className="text-[10px] text-muted-foreground">Tax %</label>
+                        <input
+                          type="number" min={0} step="any" value={line.tax_rate}
+                          onChange={(e) => {
+                            const tax_rate = Number(e.target.value);
+                            setPoLines((prev) => prev.map((l, i) => i === idx
+                              ? { ...l, tax_rate, line_total: l.quantity * l.unit_rate * (1 + tax_rate / 100) }
+                              : l));
+                          }}
+                          className="w-full rounded border border-border p-1 text-right"
+                        />
+                      </div>
+                      <span className="col-span-2 text-right font-bold text-foreground">
+                        {formatCurrency(line.line_total)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-2 flex justify-end gap-4 border-t border-border pt-2 text-sm">
+                  <span className="font-bold text-muted-foreground">Order Total</span>
+                  <span className="font-bold text-foreground">
+                    {formatCurrency(poLines.reduce((sum, l) => sum + (Number(l.line_total) || 0), 0))}
+                  </span>
+                </div>
+              </div>
+
               <div>
                 <label className="text-xs font-bold text-foreground">Terms and Conditions</label>
                 <textarea rows={3} required value={poTermsAndConditions} onChange={(e) => setPoTermsAndConditions(e.target.value)} className="mt-1 w-full rounded-md border border-border bg-card p-2 text-sm text-foreground outline-none" />
@@ -1139,6 +1575,161 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
               <div className="flex justify-end gap-2 border-t border-border pt-4">
                 <button type="button" onClick={() => setPoModalOpen(false)} className="rounded-md border border-border px-4 py-2 text-sm font-bold hover:bg-muted">Cancel</button>
                 <button type="submit" className="rounded-md bg-primary px-4 py-2 text-sm font-bold text-primary-foreground hover:bg-primary/90">Create Purchase Order</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* 7. Create Purchase Bill (PB) Modal */}
+      {pbModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-2xl rounded-xl border border-border bg-card p-6 shadow-xl">
+            <div className="flex items-center justify-between border-b border-border pb-3">
+              <div>
+                <h3 className="text-lg font-bold text-foreground">Create Purchase Bill (PB)</h3>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  Raise a bill from a posted GRN for automatic three-way matching, or start a bill without one.
+                </p>
+              </div>
+              <button type="button" onClick={() => setPbModalOpen(false)} className="rounded-md p-1 hover:bg-muted"><X className="h-5 w-5" /></button>
+            </div>
+
+            <form onSubmit={handleCreatePb} className="mt-4 space-y-4 max-h-[75vh] overflow-y-auto pr-1">
+              <div>
+                <label className="text-xs font-bold text-foreground">Bill Source</label>
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setPbSource('grn')}
+                    disabled={billableGrns.length === 0}
+                    className={`rounded-lg border p-3 text-left text-xs transition-all disabled:opacity-50 ${
+                      pbSource === 'grn'
+                        ? 'border-primary bg-primary/10 text-foreground'
+                        : 'border-border bg-background text-muted-foreground hover:bg-muted'
+                    }`}
+                  >
+                    <span className="block font-bold">From a posted GRN</span>
+                    <span className="mt-0.5 block">
+                      {billableGrns.length > 0
+                        ? `${billableGrns.length} unbilled GRN(s). PO, GRN and invoice values are matched automatically.`
+                        : 'No posted, unbilled GRNs available.'}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPbSource('manual')}
+                    className={`rounded-lg border p-3 text-left text-xs transition-all ${
+                      pbSource === 'manual'
+                        ? 'border-primary bg-primary/10 text-foreground'
+                        : 'border-border bg-background text-muted-foreground hover:bg-muted'
+                    }`}
+                  >
+                    <span className="block font-bold">Without a GRN</span>
+                    <span className="mt-0.5 block">
+                      Creates a draft bill against a supplier. No three-way match is possible.
+                    </span>
+                  </button>
+                </div>
+              </div>
+
+              {pbSource === 'grn' ? (
+                <div>
+                  <label className="text-xs font-bold text-foreground">Posted GRN</label>
+                  <select
+                    required
+                    value={pbGrnId}
+                    onChange={(e) => setPbGrnId(e.target.value)}
+                    className="mt-1 w-full rounded-md border border-border bg-card p-2 text-sm text-foreground outline-none"
+                  >
+                    <option value="">Select a GRN…</option>
+                    {billableGrns.map((grn) => (
+                      <option key={grn.id} value={grn.id}>
+                        {grn.grn_number} — {grn.vendor_name}
+                        {grn.po_number ? ` (PO ${grn.po_number})` : ''} — {formatCurrency(grn.value)}
+                      </option>
+                    ))}
+                  </select>
+                  {pbGrnId && (
+                    <p className="mt-1.5 text-xs text-muted-foreground">
+                      The supplier, project, purchase order and line items are taken from the GRN.
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <div>
+                  <label className="text-xs font-bold text-foreground">Supplier</label>
+                  <select
+                    required
+                    value={pbVendorId}
+                    onChange={(e) => setPbVendorId(e.target.value)}
+                    className="mt-1 w-full rounded-md border border-border bg-card p-2 text-sm text-foreground outline-none"
+                  >
+                    <option value="">Select a supplier…</option>
+                    {vendorChoices.map((vendor) => (
+                      <option key={vendor.id} value={vendor.id}>{vendor.label}</option>
+                    ))}
+                  </select>
+                  {selectedProjectId === 'all' && (
+                    <p className="mt-1.5 text-xs font-semibold text-amber-600">
+                      Choose a specific project above before creating a bill without a GRN.
+                    </p>
+                  )}
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-xs font-bold text-foreground">Supplier&rsquo;s Bill / Invoice No.</label>
+                  <input
+                    type="text" value={pbSupplierBillNo}
+                    onChange={(e) => setPbSupplierBillNo(e.target.value)}
+                    placeholder="As printed on the supplier invoice"
+                    className="mt-1 w-full rounded-md border border-border bg-card p-2 text-sm text-foreground outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-bold text-foreground">Supplier&rsquo;s Bill Date</label>
+                  <input
+                    type="date" value={pbSupplierBillDate}
+                    onChange={(e) => setPbSupplierBillDate(e.target.value)}
+                    className="mt-1 w-full rounded-md border border-border bg-card p-2 text-sm text-foreground outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-bold text-foreground">Invoice Value (₹)</label>
+                  <input
+                    type="number" min={0} step="any" value={pbInvoiceValue}
+                    onChange={(e) => setPbInvoiceValue(e.target.value)}
+                    placeholder={pbSource === 'grn' ? 'Leave blank to use the GRN value' : '0.00'}
+                    className="mt-1 w-full rounded-md border border-border bg-card p-2 text-sm text-foreground outline-none"
+                  />
+                </div>
+                {pbSource === 'grn' && (
+                  <div>
+                    <label className="text-xs font-bold text-foreground">Match Tolerance (₹)</label>
+                    <input
+                      type="number" min={0} step="any" value={pbTolerance}
+                      onChange={(e) => setPbTolerance(e.target.value)}
+                      className="mt-1 w-full rounded-md border border-border bg-card p-2 text-sm text-foreground outline-none"
+                    />
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      A variance beyond this blocks approval until it is resolved.
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex items-center justify-between border-t border-border pt-4">
+                <p className="text-xs text-muted-foreground">
+                  The bill opens in the Bills tab, where the remaining sections can be completed.
+                </p>
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => setPbModalOpen(false)} className="rounded-md border border-border px-4 py-2 text-sm font-bold hover:bg-muted">Cancel</button>
+                  <button type="submit" disabled={creatingPb} className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-bold text-white shadow-sm transition-colors hover:bg-emerald-700 disabled:opacity-50">
+                    {creatingPb ? 'Creating…' : 'Create Purchase Bill'}
+                  </button>
+                </div>
               </div>
             </form>
           </div>
@@ -1154,6 +1745,16 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
               <button type="button" onClick={() => setGrnModalOpen(false)} className="rounded-md p-1 hover:bg-muted"><X className="h-5 w-5" /></button>
             </div>
             <form onSubmit={handleSaveGrn} className="mt-4 space-y-4 max-h-[75vh] overflow-y-auto pr-1">
+              <div className="rounded-md border border-border bg-muted/40 p-3 text-xs">
+                <span className="font-bold text-foreground">Supplier: </span>
+                <span className="text-muted-foreground">
+                  {selectedPoForGrn.vendors?.display_name || selectedPoForGrn.vendors?.legal_name || 'From purchase order'}
+                </span>
+                <span className="mx-2 text-border">|</span>
+                <span className="font-bold text-foreground">Against PO: </span>
+                <span className="text-muted-foreground">{selectedPoForGrn.po_number}</span>
+              </div>
+
               <div className="grid grid-cols-3 gap-4">
                 <div>
                   <label className="text-xs font-bold text-foreground">Receipt Date</label>
@@ -1161,56 +1762,130 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
                 </div>
                 <div>
                   <label className="text-xs font-bold text-foreground">Delivery Challan / Invoice No.</label>
-                  <input type="text" required value={grnChallanNumber} onChange={(e) => setGrnChallanNumber(e.target.value)} className="mt-1 w-full rounded-md border border-border bg-card p-2 text-sm text-foreground outline-none" />
+                  <input type="text" required value={grnChallanNumber} onChange={(e) => setGrnChallanNumber(e.target.value)} placeholder="As printed on the supplier challan" className="mt-1 w-full rounded-md border border-border bg-card p-2 text-sm text-foreground outline-none" />
+                </div>
+                <div>
+                  <label className="text-xs font-bold text-foreground">Challan Date</label>
+                  <input type="date" value={grnChallanDate} onChange={(e) => setGrnChallanDate(e.target.value)} className="mt-1 w-full rounded-md border border-border bg-card p-2 text-sm text-foreground outline-none" />
                 </div>
                 <div>
                   <label className="text-xs font-bold text-foreground">Vehicle Number</label>
-                  <input type="text" value={grnVehicleNumber} onChange={(e) => setGrnVehicleNumber(e.target.value)} className="mt-1 w-full rounded-md border border-border bg-card p-2 text-sm text-foreground outline-none" />
+                  <input type="text" value={grnVehicleNumber} onChange={(e) => setGrnVehicleNumber(e.target.value)} placeholder="e.g. GJ-05-AB-1234" className="mt-1 w-full rounded-md border border-border bg-card p-2 text-sm text-foreground outline-none" />
                 </div>
-              </div>
-              <div>
-                <label className="text-xs font-bold text-foreground">Quantity Verification & Inspection</label>
-                <div className="mt-2 space-y-2">
-                  {grnLines.map((line, idx) => (
-                    <div key={idx} className="grid grid-cols-6 gap-2 items-center rounded-md border border-border p-2 text-xs">
-                      <span className="col-span-2 font-bold">Ordered: {line.ordered_qty}</span>
-                      <div>
-                        <label className="text-[10px] text-muted-foreground">Received</label>
-                        <input type="number" value={line.received_qty} onChange={(e) => {
-                          const copy = [...grnLines];
-                          copy[idx].received_qty = Number(e.target.value);
-                          copy[idx].accepted_qty = Number(e.target.value) - copy[idx].rejected_qty;
-                          setGrnLines(copy);
-                        }} className="w-full rounded border border-border p-1 text-right font-bold" />
-                      </div>
-                      <div>
-                        <label className="text-[10px] text-muted-foreground">Rejected</label>
-                        <input type="number" value={line.rejected_qty} onChange={(e) => {
-                          const copy = [...grnLines];
-                          copy[idx].rejected_qty = Number(e.target.value);
-                          copy[idx].accepted_qty = copy[idx].received_qty - Number(e.target.value);
-                          setGrnLines(copy);
-                        }} className="w-full rounded border border-border p-1 text-right font-bold text-rose-500" />
-                      </div>
-                      <div className="col-span-2">
-                        <label className="text-[10px] text-muted-foreground">Inspection Remark</label>
-                        <input type="text" value={line.remarks} onChange={(e) => {
-                          const copy = [...grnLines];
-                          copy[idx].remarks = e.target.value;
-                          setGrnLines(copy);
-                        }} className="w-full rounded border border-border p-1" />
-                      </div>
-                    </div>
-                  ))}
+                <div>
+                  <label className="text-xs font-bold text-foreground">Transporter</label>
+                  <input type="text" value={grnTransporter} onChange={(e) => setGrnTransporter(e.target.value)} className="mt-1 w-full rounded-md border border-border bg-card p-2 text-sm text-foreground outline-none" />
+                </div>
+                <div>
+                  <label className="text-xs font-bold text-foreground">Godown / Store</label>
+                  <input type="text" value={grnGodown} onChange={(e) => setGrnGodown(e.target.value)} className="mt-1 w-full rounded-md border border-border bg-card p-2 text-sm text-foreground outline-none" />
                 </div>
               </div>
 
-              <div className="flex justify-between items-center border-t border-border pt-4">
-                <input type="file" multiple onChange={(e) => setGrnAttachments(Array.from(e.target.files || []))} className="text-sm file:mr-4 file:py-1 file:px-3 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-primary/10 file:text-primary hover:file:bg-primary/20" />
+              <div>
+                <label className="text-xs font-bold text-foreground">Quality Decision</label>
+                <select value={grnQualityDecision} onChange={(e) => setGrnQualityDecision(e.target.value)} className="mt-1 w-full rounded-md border border-border bg-card p-2 text-sm text-foreground outline-none">
+                  <option value="accepted">Accepted</option>
+                  <option value="pending">Pending inspection</option>
+                  <option value="partially_accepted">Partially accepted</option>
+                  <option value="rejected">Rejected</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-foreground">Quantity Verification &amp; Inspection</label>
+                <div className="mt-2 space-y-2">
+                  {grnLines.map((line, idx) => {
+                    const balance = Math.max(line.ordered_qty - line.already_received_qty, 0);
+                    const overReceived = line.received_qty > balance;
+                    const splitInvalid = line.accepted_qty + line.rejected_qty > line.received_qty;
+                    return (
+                      <div key={line.purchase_order_line_id ?? idx} className="rounded-md border border-border p-2 text-xs">
+                        <div className="mb-1.5 flex flex-wrap items-center gap-x-3 gap-y-1">
+                          <span className="font-bold text-foreground">{line.item_description}</span>
+                          <span className="text-muted-foreground">Ordered {line.ordered_qty}</span>
+                          <span className="text-muted-foreground">Already received {line.already_received_qty}</span>
+                          <span className="font-semibold text-primary">Outstanding {balance}</span>
+                          <span className="text-muted-foreground">Rate {formatCurrency(line.unit_rate)}</span>
+                        </div>
+                        <div className="grid grid-cols-6 items-start gap-2">
+                          <div>
+                            <label className="text-[10px] text-muted-foreground">Received</label>
+                            <input
+                              type="number" min={0} max={balance} step="any" value={line.received_qty}
+                              onChange={(e) => {
+                                const received = Number(e.target.value);
+                                setGrnLines((prev) => prev.map((l, i) => i === idx
+                                  ? { ...l, received_qty: received, accepted_qty: Math.max(received - l.rejected_qty, 0) }
+                                  : l));
+                              }}
+                              className={`w-full rounded border p-1 text-right font-bold ${overReceived ? 'border-rose-500 text-rose-600' : 'border-border'}`}
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[10px] text-muted-foreground">Rejected</label>
+                            <input
+                              type="number" min={0} step="any" value={line.rejected_qty}
+                              onChange={(e) => {
+                                const rejected = Number(e.target.value);
+                                setGrnLines((prev) => prev.map((l, i) => i === idx
+                                  ? { ...l, rejected_qty: rejected, accepted_qty: Math.max(l.received_qty - rejected, 0) }
+                                  : l));
+                              }}
+                              className="w-full rounded border border-border p-1 text-right font-bold text-rose-500"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[10px] text-muted-foreground">Accepted</label>
+                            <input
+                              type="number" min={0} step="any" value={line.accepted_qty}
+                              onChange={(e) => {
+                                const accepted = Number(e.target.value);
+                                setGrnLines((prev) => prev.map((l, i) => i === idx ? { ...l, accepted_qty: accepted } : l));
+                              }}
+                              className={`w-full rounded border p-1 text-right font-bold ${splitInvalid ? 'border-rose-500 text-rose-600' : 'border-border'} text-emerald-600`}
+                            />
+                          </div>
+                          <div className="col-span-3">
+                            <label className="text-[10px] text-muted-foreground">Inspection Remark</label>
+                            <input
+                              type="text" value={line.remarks}
+                              onChange={(e) => {
+                                const remarks = e.target.value;
+                                setGrnLines((prev) => prev.map((l, i) => i === idx ? { ...l, remarks } : l));
+                              }}
+                              className="w-full rounded border border-border p-1"
+                            />
+                          </div>
+                        </div>
+                        {(overReceived || splitInvalid) && (
+                          <p className="mt-1 font-semibold text-rose-600">
+                            {overReceived
+                              ? `Received cannot exceed the outstanding quantity (${balance}).`
+                              : 'Accepted plus rejected cannot exceed received.'}
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-foreground">Overall Remarks</label>
+                <textarea rows={2} value={grnRemarks} onChange={(e) => setGrnRemarks(e.target.value)} className="mt-1 w-full rounded-md border border-border bg-card p-2 text-sm text-foreground outline-none" />
+              </div>
+
+              <div className="flex items-center justify-between border-t border-border pt-4">
+                <p className="text-xs text-muted-foreground">
+                  {canApprove
+                    ? 'This receipt will be posted to inventory on save.'
+                    : 'This receipt will be submitted for approval; inventory updates once it is posted.'}
+                </p>
                 <div className="flex gap-2">
                   <button type="button" onClick={() => setGrnModalOpen(false)} className="rounded-md border border-border px-4 py-2 text-sm font-bold hover:bg-muted">Cancel</button>
-                  <button type="submit" className="rounded-md bg-emerald-600 hover:bg-emerald-700 px-4 py-2 text-sm font-bold text-white shadow-sm transition-colors">
-                    Save GRN
+                  <button type="submit" disabled={savingGrn} className="rounded-md bg-emerald-600 hover:bg-emerald-700 px-4 py-2 text-sm font-bold text-white shadow-sm transition-colors disabled:opacity-50">
+                    {savingGrn ? 'Saving…' : canApprove ? 'Save & Post GRN' : 'Submit GRN'}
                   </button>
                 </div>
               </div>

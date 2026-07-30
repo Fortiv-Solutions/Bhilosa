@@ -199,6 +199,7 @@ export interface GanttTask {
   id: string;
   projectId: string;
   name: string;
+  description?: string;
   startDate: string;
   endDate: string;
   progress: number;
@@ -206,7 +207,10 @@ export interface GanttTask {
   isCriticalPath: boolean;
   assigneeId?: string | null;
   assigneeName?: string | null;
-  priority?: 'LOW' | 'MEDIUM' | 'HIGH';
+  createdByName?: string | null;
+  approvalStatus?: 'NOT_SUBMITTED' | 'AWAITING_APPROVAL' | 'APPROVED' | 'REJECTED';
+  approvedByName?: string | null;
+  priority?: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
   status?: 'TODO' | 'IN_PROGRESS' | 'COMPLETED' | 'ON_HOLD' | 'DELAYED' | 'CANCELLED';
   siteTowerBlock?: string;
   phase?: string;

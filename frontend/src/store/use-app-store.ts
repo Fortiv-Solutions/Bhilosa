@@ -129,7 +129,7 @@ interface AppState {
   updateTask: (
     projectId: string,
     taskId: string,
-    updates: Partial<Pick<GanttTask, 'assigneeId' | 'assigneeName' | 'priority' | 'status' | 'progress'>>
+    updates: Partial<GanttTask>
   ) => void;
   
   addVendor: (vendor: Omit<Vendor, 'id' | 'rating'>) => { error?: string; success: boolean };
@@ -367,13 +367,17 @@ export const useAppStore = create<AppState>((set) => ({
                   tasks: proj.tasks.map(t => t.id === newRow.id ? {
                     ...t,
                     name: newRow.title || newRow.name || t.name,
+                    description: newRow.description !== undefined ? newRow.description : t.description,
                     startDate: newRow.start_date !== undefined ? newRow.start_date || '' : t.startDate,
                     endDate: newRow.due_date || newRow.end_date || t.endDate,
                     progress: newRow.progress !== undefined ? Number(newRow.progress) : t.progress,
                     dependencies: newRow.dependencies !== undefined ? newRow.dependencies : t.dependencies,
-                    isCriticalPath: newRow.priority ? newRow.priority === 'HIGH' : t.isCriticalPath,
+                    isCriticalPath: newRow.priority ? (newRow.priority === 'HIGH' || newRow.priority === 'CRITICAL') : t.isCriticalPath,
                     assigneeId: newRow.assignee_id || newRow.assigned_to || t.assigneeId,
                     assigneeName: newRow.assignee_name || newRow.assigned_name || t.assigneeName,
+                    createdByName: newRow.created_by_name || newRow.assigned_by_name || t.createdByName,
+                    approvalStatus: newRow.approval_status || t.approvalStatus,
+                    approvedByName: newRow.approved_by_name || t.approvedByName,
                     priority: newRow.priority || t.priority,
                     status: newRow.status || t.status,
                   } : t)
@@ -693,13 +697,17 @@ export const useAppStore = create<AppState>((set) => ({
               id: t.id,
               projectId: proj.id,
               name: t.title || t.name || 'Untitled Task',
+              description: t.description || '',
               startDate: t.start_date || '',
               endDate: t.due_date || t.end_date || '',
               progress: Number(t.progress ?? (t.status === 'COMPLETED' ? 100 : 0)),
               dependencies: t.dependencies || null,
-              isCriticalPath: t.priority === 'HIGH',
+              isCriticalPath: t.priority === 'HIGH' || t.priority === 'CRITICAL',
               assigneeId: t.assignee_id || t.assigned_to || null,
               assigneeName: t.assignee_name || t.assigned_name || null,
+              createdByName: t.created_by_name || t.assigned_by_name || 'Project Manager',
+              approvalStatus: t.approval_status || (t.status === 'COMPLETED' ? 'AWAITING_APPROVAL' : 'NOT_SUBMITTED'),
+              approvedByName: t.approved_by_name || null,
               priority: t.priority || 'MEDIUM',
               status: t.status || 'TODO',
             }));
@@ -1606,6 +1614,10 @@ A draft purchase request has been prepared in the Procurement Module.
   },
 
   addTask: (projectId, task) => {
+    const state = useAppStore.getState();
+    const creatorName = state.currentUser?.name || 'Project Manager';
+    const creatorId = state.currentUser?.id || null;
+
     if (!isLiveSupabase()) return;
 
     (async () => {
@@ -1628,6 +1640,7 @@ A draft purchase request has been prepared in the Procurement Module.
           project_id: dbSiteId,
           name: task.name,
           title: task.name,
+          description: task.description || null,
           start_date: task.startDate || null,
           due_date: task.endDate || null,
           end_date: task.endDate || null,
@@ -1635,12 +1648,19 @@ A draft purchase request has been prepared in the Procurement Module.
           assignee_id: assigneeId,
           assigned_name: task.assigneeName || null,
           assignee_name: task.assigneeName || null,
-          priority: task.priority,
-          status: task.status,
+          created_by: creatorId,
+          created_by_name: creatorName,
+          assigned_by_name: creatorName,
+          priority: task.priority || 'MEDIUM',
+          status: task.status || 'TODO',
+          approval_status: 'NOT_SUBMITTED',
           done: task.status === 'COMPLETED',
           progress: task.status === 'COMPLETED' ? 100 : 0,
         });
         if (error) throw error;
+        
+        // Refresh local tasks
+        void state.fetchDbTasks();
       } catch (err) {
         console.error('Failed to add task to Supabase:', err);
       }
@@ -1648,6 +1668,7 @@ A draft purchase request has been prepared in the Procurement Module.
   },
 
   updateTask: (projectId, taskId, updates) => {
+    const state = useAppStore.getState();
     if (!isLiveSupabase()) return;
 
     (async () => {
@@ -1670,6 +1691,16 @@ A draft purchase request has been prepared in the Procurement Module.
         }
 
         const payload: any = {};
+        if (updates.name !== undefined) {
+          payload.name = updates.name;
+          payload.title = updates.name;
+        }
+        if (updates.description !== undefined) payload.description = updates.description;
+        if (updates.startDate !== undefined) payload.start_date = updates.startDate;
+        if (updates.endDate !== undefined) {
+          payload.due_date = updates.endDate;
+          payload.end_date = updates.endDate;
+        }
         if (updates.status !== undefined) {
           payload.status = updates.status;
           payload.done = updates.status === 'COMPLETED';
@@ -1684,12 +1715,34 @@ A draft purchase request has been prepared in the Procurement Module.
           payload.assigned_name = updates.assigneeName;
           payload.assignee_name = updates.assigneeName;
         }
+        if (updates.approvalStatus !== undefined) payload.approval_status = updates.approvalStatus;
+        if (updates.approvedByName !== undefined) payload.approved_by_name = updates.approvedByName;
 
         const { error } = await supabase
           .from('tasks')
           .update(payload)
           .eq('id', taskId);
         if (error) throw error;
+
+        // Synchronize local state
+        set((prevState) => ({
+          projects: prevState.projects.map((proj) => {
+            if (proj.id !== projectId) return proj;
+            return {
+              ...proj,
+              tasks: proj.tasks.map((t: any) => {
+                if (t.id !== taskId) return t;
+                return {
+                  ...t,
+                  ...updates,
+                  assigneeId: assigneeId !== undefined ? assigneeId : t.assigneeId,
+                  assigneeName: updates.assigneeName !== undefined ? updates.assigneeName : t.assigneeName,
+                  progress: progress !== undefined ? progress : t.progress,
+                };
+              }),
+            };
+          }),
+        }));
       } catch (err) {
         console.error('Failed to update task in Supabase:', err);
       }
