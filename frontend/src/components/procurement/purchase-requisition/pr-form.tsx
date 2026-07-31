@@ -455,7 +455,11 @@ export function PrForm(props: PrFormProps) {
               <Field label="Prepared By">
                 <input
                   type="text"
-                  value={form.prepared_by ?? form.department ?? 'Rohan Mehta (Site Eng)'}
+                  value={
+                    (form.prepared_by && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(form.prepared_by) ? form.prepared_by : null) ??
+                    (form.department && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(form.department) ? form.department : null) ??
+                    'Rohan Mehta (Site Eng)'
+                  }
                   onChange={(e) => update({ prepared_by: e.target.value, department: e.target.value })}
                   placeholder="Prepared by name"
                   className={FIELD}

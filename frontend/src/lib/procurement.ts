@@ -115,8 +115,13 @@ export type PurchaseRequisitionRow = {
   vendor_code?: string | null;
   scope_of_service?: string | null;
   contact_person?: string | null;
+  prepared_by?: string | null;
   created_by?: string | null;
   created_by_name?: string | null;
+  profiles?: {
+    name: string | null;
+    email: string | null;
+  } | null;
   updated_at?: string;
   created_at?: string;
   purchase_requisition_lines?: ProcurementLineRow[];
@@ -671,7 +676,11 @@ export async function listProcurementDashboard(projectId?: string): Promise<Proc
     projectFilter(
       supabase
         .from('purchase_requisitions')
-        .select('*, purchase_requisition_lines(*)')
+        .select(`
+          *,
+          purchase_requisition_lines(*),
+          profiles!purchase_requisitions_prepared_by_fkey(name, email)
+        `)
         .order('created_at', { ascending: false })
         .limit(50),
     ),

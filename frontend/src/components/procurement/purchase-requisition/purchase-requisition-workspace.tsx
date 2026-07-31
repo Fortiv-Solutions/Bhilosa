@@ -172,7 +172,12 @@ function prRowToFormState(row: PurchaseRequisitionRow): PrFormState {
     terms_and_conditions: row.terms_and_conditions || '',
     department: row.department || '',
     unlocked_project: (row as any).unlocked_project != null ? Number((row as any).unlocked_project) : 1.00,
-    prepared_by: (row as any).prepared_by || row.department || 'Rohan Mehta (Site Eng)',
+    prepared_by: (() => {
+      const raw = row.profiles?.name || (row as any).prepared_by || row.department;
+      return (raw && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(raw).trim()))
+        ? String(raw)
+        : 'Rohan Mehta (Site Eng)';
+    })(),
     discount_amount: Number(row.discount_amount || 0),
     freight_amount: Number(row.freight_amount || 0),
     other_charges: Number(row.other_charges || 0),
