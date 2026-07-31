@@ -6,10 +6,9 @@
 
 import { useMemo, useState, type ReactNode } from 'react';
 import {
-  FileText, Wallet, Truck, Paperclip, Building2, X,
+  FileText, Wallet, Truck, Building2, X,
   AlertTriangle, Layers, Trash2, Search, CheckCircle2,
   Sparkles, ShieldCheck, Clock, Bot,
-  Printer,
 } from 'lucide-react';
 import { formatCurrency } from '@/components/procurement/shared';
 import { computeCostSummary, computeBudgetStatus, validatePrForm, type BudgetSnapshot } from '@/lib/erp/purchase-requisition/service';
@@ -19,7 +18,6 @@ import {
 } from '@/lib/erp/purchase-requisition/types';
 import { PrStatusBadge, BudgetStatusBadge } from './pr-badges';
 import { PrItemTable } from './pr-item-table';
-import { printPurchaseRequisitionReport } from '@/lib/procurement';
 
 export interface SourceMrChip {
   mrId: string;
@@ -28,11 +26,6 @@ export interface SourceMrChip {
   activity: string | null;
   importedItems: number;
   pendingQty: number;
-}
-
-interface PendingFile {
-  file: File;
-  category: string;
 }
 
 interface PrFormProps {
@@ -52,9 +45,9 @@ interface PrFormProps {
   budgetHeads: { id: string; code: string; name: string }[];
   costCodes: { id: string; code: string; name: string }[];
   projectOptions: ProcurementProjectOption[];
-  pendingFiles: PendingFile[];
-  onAddFiles: (files: FileList | null, category: string) => void;
-  onRemoveFile: (index: number) => void;
+  pendingFiles?: any[];
+  onAddFiles?: (files: FileList | null, category: string) => void;
+  onRemoveFile?: (index: number) => void;
   readOnly?: boolean;
   lastSavedAt: string | null;
   actions?: ReactNode;
@@ -497,16 +490,9 @@ export function PrForm(props: PrFormProps) {
       <div className="sticky bottom-0 z-30 -mx-4 border-t border-border bg-card/95 px-4 shadow-[0_-4px_12px_rgba(0,0,0,0.04)] backdrop-blur">
         <div className="mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-2 py-2.5">
           <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-            <button onClick={props.onCancel} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-2 font-bold hover:bg-muted transition-colors cursor-pointer"><X className="h-3.5 w-3.5" /> Close</button>
-            <button onClick={() => printPurchaseRequisitionReport(props.form)} className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-700 transition-colors cursor-pointer"><Printer className="h-3.5 w-3.5" /> Print</button>
-
-            <label className="inline-flex cursor-pointer items-center gap-1 rounded-lg border border-border px-3 py-2 text-xs font-bold text-foreground hover:bg-muted transition-colors">
-              <Paperclip className="h-3.5 w-3.5 text-primary" /> Attach File ({props.pendingFiles.length})
-              <input type="file" multiple className="hidden" onChange={(e) => { props.onAddFiles(e.target.files, 'Supporting Doc'); e.currentTarget.value = ''; }} />
-            </label>
-
+            <button onClick={props.onCancel} className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 font-bold text-foreground hover:bg-muted transition-colors cursor-pointer"><X className="h-3.5 w-3.5" /> Close</button>
             {props.secondaryActions}
-            {props.lastSavedAt && <span className="ml-1">Last saved {props.lastSavedAt}</span>}
+            {props.lastSavedAt && <span className="ml-1 text-[11px]">Last saved {props.lastSavedAt}</span>}
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {props.actions}
