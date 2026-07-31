@@ -130,3 +130,23 @@ export const SCOPE_TAG_LABELS: Record<Exclude<ScopeTag, 'total'>, string> = {
   building_finishes: 'Building Finishes Work',
   site_infra: 'Site Infra Work',
 };
+
+import { fetchPortfolioSummary, fetchBudgetAlerts, type PortfolioBudgetSummary, type BudgetAlertRow } from './supabase-budget';
+
+export type BudgetDashboardData = {
+  summaries: PortfolioBudgetSummary[];
+  alerts: BudgetAlertRow[];
+};
+
+export async function listBudgetDashboard(projectId?: string | null): Promise<BudgetDashboardData> {
+  try {
+    const [summaries, alerts] = await Promise.all([
+      fetchPortfolioSummary(projectId).catch(() => []),
+      fetchBudgetAlerts(projectId).catch(() => []),
+    ]);
+    return { summaries, alerts };
+  } catch (err) {
+    console.error('Failed to load budget dashboard data:', err);
+    return { summaries: [], alerts: [] };
+  }
+}
