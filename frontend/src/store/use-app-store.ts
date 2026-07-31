@@ -790,7 +790,6 @@ export const useAppStore = create<AppState>((set) => ({
 
           return { ...proj, teamMembers: combined };
         });
-        });
         return { projects: updatedProjects };
       });
     } catch (err) {
