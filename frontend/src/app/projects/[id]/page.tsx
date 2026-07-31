@@ -3687,7 +3687,7 @@ Rules:
         </div>
 
         {/* Nav Items */}
-        <nav className="flex flex-col items-center flex-1 py-3 gap-1">
+        <nav className="flex flex-col items-center flex-1 pt-0 pb-3 gap-1">
           {[
             { id: 'project-management', label: 'Overview',       Icon: Building2       },
             { id: 'inbox',              label: 'Inbox',           Icon: MessageSquare   },
