@@ -567,23 +567,32 @@ async function nextDocumentNumber(prefix: string): Promise<string> {
  * arbitrary user and made the approval audit trail unusable as a financial
  * control.
  */
-async function currentProfileId(): Promise<string | null> {
+async function currentProfileDetails(): Promise<{ id: string; name: string } | null> {
   try {
     const { data, error } = await supabase.auth.getUser();
     if (error || !data.user?.id) return null;
 
     const { data: userProfile } = await supabase
       .from('profiles')
-      .select('id')
+      .select('id, name')
       .eq('id', data.user.id)
       .is('deleted_at', null)
       .eq('is_active', true)
       .maybeSingle();
 
-    return userProfile?.id ?? null;
+    if (!userProfile) return null;
+    return {
+      id: userProfile.id,
+      name: userProfile.name || data.user.email?.split('@')[0] || 'Logged In User',
+    };
   } catch {
     return null;
   }
+}
+
+async function currentProfileId(): Promise<string | null> {
+  const profile = await currentProfileDetails();
+  return profile?.id ?? null;
 }
 
 /** Throws unless there is an authenticated, active profile. */
@@ -1197,7 +1206,9 @@ export async function convertMaterialRequestToPr(input: ConvertToPrInput): Promi
       return { data: { purchaseRequisitionId: newPrId }, error: null };
     }
 
-    const profileId = await currentProfileId();
+    const userDetails = await currentProfileDetails();
+    const profileId = userDetails?.id || await currentProfileId();
+    const userName = userDetails?.name || materialRequest.profiles?.name || 'Rohan Mehta (Site Eng)';
 
     const { data: existing } = await supabase
       .from('purchase_requisitions')
@@ -1205,7 +1216,7 @@ export async function convertMaterialRequestToPr(input: ConvertToPrInput): Promi
       .eq('material_request_id', materialRequest.id)
       .limit(1)
       .maybeSingle();
-      
+
     if (existing) {
       throw new Error('A Purchase Requisition has already been created for this Material Request.');
     }
@@ -1234,7 +1245,9 @@ export async function convertMaterialRequestToPr(input: ConvertToPrInput): Promi
         pr_type: 'material',
         wbs_code: materialRequest.site_block ?? null,
         delivery_address: materialRequest.projects?.name ?? null,
+        prepared_by: profileId,
         created_by: profileId,
+        created_by_name: userName,
         updated_by: profileId,
       })
       .select('id')
@@ -1271,7 +1284,7 @@ export async function convertMaterialRequestToPr(input: ConvertToPrInput): Promi
           stock_audit: (('project_stock' in line && typeof line.project_stock === 'number' ? line.project_stock : 0) > 0) ? 'Stock Available' : 'Stock Shortage',
           project_and_block: materialRequest.projects?.name ?? materialRequest.project_id,
           work_activity: materialRequest.work_activity ?? 'General Site Activity',
-          raised_by: materialRequest.profiles?.name ?? materialRequest.raised_by ?? 'Site Engineer',
+          raised_by: userName,
           submitted_at: materialRequest.submitted_at ?? materialRequest.created_at,
           created_by: profileId,
           updated_by: profileId,
