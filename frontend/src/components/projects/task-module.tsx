@@ -321,53 +321,11 @@ export function TaskModule({ project, overviewData }: { project: any, overviewDa
         className="group relative rounded-xl border border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-900 p-4 shadow-sm transition-all hover:border-[#b68d40]/30 hover:shadow-md flex flex-col gap-3"
       >
         <div className="flex items-start justify-between gap-2">
-          <div className="flex flex-col">
+          <div className="flex flex-col flex-1 min-w-0">
             <div className="flex items-center gap-1.5 flex-wrap mb-1.5">
-              <h4 className={`text-sm font-bold leading-tight ${taskStatus === 'COMPLETED' ? 'text-gray-400 line-through' : 'text-gray-900 dark:text-white'}`}>
-                {task.name}
-              </h4>
-            </div>
-            
-            <div className="relative group/dropdown">
-              <button className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
-                <MoreVertical className="w-4 h-4" />
-              </button>
-              {/* Context Menu Dropdown (Simplified for hover) */}
-              <div className="absolute right-0 top-full mt-1 w-36 rounded-xl border border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-900 shadow-xl opacity-0 invisible group-hover/dropdown:opacity-100 group-hover/dropdown:visible transition-all z-10 p-1.5 space-y-1">
-                <select
-                  value={taskStatus}
-                  onChange={(e) => updateTask(project.id, task.id, { status: e.target.value as any })}
-                  className="w-full appearance-none rounded-lg px-2.5 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 outline-none hover:bg-gray-50 dark:hover:bg-gray-800 cursor-pointer"
-                >
-                  <option value="TODO">To Do</option>
-                  <option value="IN_PROGRESS">In Progress</option>
-                  <option value="COMPLETED">Completed</option>
-                </select>
-                <div className="h-px bg-gray-100 dark:bg-gray-800 my-0.5"></div>
-                <select
-                  value={taskPriorityValue}
-                  onChange={(e) => updateTask(project.id, task.id, { priority: e.target.value as any })}
-                  className="w-full appearance-none rounded-lg px-2.5 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 outline-none hover:bg-gray-50 dark:hover:bg-gray-800 cursor-pointer"
-                >
-                  <option value="LOW">Low</option>
-                  <option value="MEDIUM">Medium</option>
-                  <option value="HIGH">High</option>
-                </select>
-                <div className="h-px bg-gray-100 dark:bg-gray-800 my-0.5"></div>
-                <button
-                  onClick={() => {
-                    if (confirm('Are you sure you want to delete this task?')) {
-                      deleteTask(project.id, task.id);
-                    }
-                  }}
-                  className="w-full flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 cursor-pointer transition-colors whitespace-nowrap"
-                >
-                  <Trash2 className="w-3.5 h-3.5 shrink-0" />
-                  <span>Delete Task</span>
-                </button>
-              </div>
-            </div>
-          </div>
+              <span className={`w-fit rounded-md border px-1.5 py-0.5 text-[8px] font-black uppercase tracking-wider ${priorityColors[taskPriorityValue] || priorityColors.MEDIUM}`}>
+                {taskPriorityValue}
+              </span>
 
               {task.phase && (
                 <span className="bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300 border border-gray-200 dark:border-gray-700 text-[8px] font-bold px-1.5 py-0.5 rounded-md">
@@ -420,13 +378,55 @@ export function TaskModule({ project, overviewData }: { project: any, overviewDa
             )}
           </div>
           
-          <button 
-            onClick={() => openEditModal(task)}
-            className="p-1 rounded-lg text-gray-400 hover:text-[#b68d40] hover:bg-gray-100 dark:hover:bg-gray-800 transition"
-            title="Edit Task Details"
-          >
-            <Edit3 className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-1">
+            <button 
+              onClick={() => openEditModal(task)}
+              className="p-1 rounded-lg text-gray-400 hover:text-[#b68d40] hover:bg-gray-100 dark:hover:bg-gray-800 transition"
+              title="Edit Task Details"
+            >
+              <Edit3 className="w-4 h-4" />
+            </button>
+
+            <div className="relative group/dropdown">
+              <button className="p-1 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
+                <MoreVertical className="w-4 h-4" />
+              </button>
+              {/* Context Menu Dropdown */}
+              <div className="absolute right-0 top-full mt-1 w-36 rounded-xl border border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-900 shadow-xl opacity-0 invisible group-hover/dropdown:opacity-100 group-hover/dropdown:visible transition-all z-10 p-1.5 space-y-1">
+                <select
+                  value={taskStatus}
+                  onChange={(e) => updateTask(project.id, task.id, { status: e.target.value as any })}
+                  className="w-full appearance-none rounded-lg px-2.5 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 outline-none hover:bg-gray-50 dark:hover:bg-gray-800 cursor-pointer"
+                >
+                  <option value="TODO">To Do</option>
+                  <option value="IN_PROGRESS">In Progress</option>
+                  <option value="COMPLETED">Completed</option>
+                </select>
+                <div className="h-px bg-gray-100 dark:bg-gray-800 my-0.5"></div>
+                <select
+                  value={taskPriorityValue}
+                  onChange={(e) => updateTask(project.id, task.id, { priority: e.target.value as any })}
+                  className="w-full appearance-none rounded-lg px-2.5 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 outline-none hover:bg-gray-50 dark:hover:bg-gray-800 cursor-pointer"
+                >
+                  <option value="LOW">Low</option>
+                  <option value="MEDIUM">Medium</option>
+                  <option value="HIGH">High</option>
+                </select>
+                <div className="h-px bg-gray-100 dark:bg-gray-800 my-0.5"></div>
+                <button
+                  onClick={() => {
+                    if (confirm('Are you sure you want to delete this task?')) {
+                      deleteTask(project.id, task.id);
+                    }
+                  }}
+                  className="w-full flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 cursor-pointer transition-colors whitespace-nowrap"
+                >
+                  <Trash2 className="w-3.5 h-3.5 shrink-0" />
+                  <span>Delete Task</span>
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
 
         {/* Assigned By & Assignee Details */}
