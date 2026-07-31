@@ -2,7 +2,13 @@
 
 import { useState } from 'react';
 import { Truck, ListChecks, Smartphone, ArrowLeft, Plus } from 'lucide-react';
-import { createFullGoodsReceiptNote, updateGrnStatus, type GrnRow as DbGrnRow } from '@/lib/procurement';
+import {
+  createFullGoodsReceiptNote,
+  updateGrnStatus,
+  type GrnRow as DbGrnRow,
+  type PurchaseOrderRow,
+  type VendorOption,
+} from '@/lib/procurement';
 import type { Role } from '@/lib/roles';
 import { GrnStatsBar, type GrnRow } from './grn-stats-bar';
 import { GrnTableView } from './grn-table-view';
@@ -36,12 +42,29 @@ function toDisplayGrn(g: DbGrnRow): GrnRow {
 interface GrnWorkspaceProps {
   grns?: DbGrnRow[];
   activeRole?: Role;
+  /** Active suppliers, for the supplier dropdown on the GRN form. */
+  vendorOptions?: VendorOption[];
+  /** Issued purchase orders a receipt can be linked to. */
+  purchaseOrders?: PurchaseOrderRow[];
   onApproveGrn?: (grnId: string) => void;
+  /** Raises a purchase bill from a posted GRN. */
+  onCreateBill?: (grnId: string) => void;
   onDownloadReport?: (grnId: string) => void;
   onRefresh?: () => void | Promise<void>;
+  onError?: (message: string) => void;
 }
 
-export function GrnWorkspace({ grns = [], activeRole, onApproveGrn, onDownloadReport, onRefresh }: GrnWorkspaceProps) {
+export function GrnWorkspace({
+  grns = [],
+  activeRole,
+  vendorOptions = [],
+  purchaseOrders = [],
+  onApproveGrn,
+  onCreateBill,
+  onDownloadReport,
+  onRefresh,
+  onError,
+}: GrnWorkspaceProps) {
   const [viewMode, setViewMode] = useState<'list' | 'form'>('list');
   const [activeGrn, setActiveGrn] = useState<GrnRow | null>(null);
   const [selectedTab, setSelectedTab] = useState<string>('all');
@@ -56,14 +79,14 @@ export function GrnWorkspace({ grns = [], activeRole, onApproveGrn, onDownloadRe
 
   const handleCreateNewGrn = () => {
     const todayStr = new Date().toISOString().slice(0, 10);
-    const dateFormatted = todayStr.replace(/-/g, '');
-    const randomSeq = Math.floor(1000 + Math.random() * 9000);
 
+    // The GRN number is allocated by the database on save (a client-side
+    // Math.random() suffix used to risk duplicates), so it starts blank.
     const newBlankGrn: GrnRow = {
       id: '',
-      grn_number: `GRN-${dateFormatted}-${randomSeq}`,
+      grn_number: '',
       po_number: '',
-      gate_entry_no: 'GE-001',
+      gate_entry_no: '',
       vehicle_no: '',
       received_date: todayStr,
       vendor_name: '',
@@ -83,48 +106,100 @@ export function GrnWorkspace({ grns = [], activeRole, onApproveGrn, onDownloadRe
     if (newStatus === 'approved') onApproveGrn?.(id);
   };
 
+  /**
+   * Saves the GRN form.
+   *
+   * A GRN must carry the links that make it meaningful — the project (a NOT
+   * NULL column the old client-side insert never set, so every create failed),
+   * the supplier, and ideally the purchase order it is received against.
+   * `Approved` is applied as a separate role-checked transition rather than
+   * being written directly, which previously let a receipt be created already
+   * posted and skip inspection.
+   */
   const handleFormSubmit = async (formData: FullGrnFormState) => {
-    try {
-      // Map workflow status to Supabase status
-      const supabaseStatus = 
-        formData.status === 'Draft' ? 'draft' :
-        formData.status === 'Pending Verification' ? 'pending_verification' :
-        formData.status === 'Pending Approval' ? 'pending_approval' :
-        formData.status === 'Approved' ? 'posted' : 'draft';
+    const workflowStatus =
+      formData.status === 'Draft' ? 'draft' :
+      formData.status === 'Pending Verification' ? 'pending_verification' :
+      formData.status === 'Pending Approval' ? 'pending_approval' :
+      formData.status === 'Approved' ? 'posted' : 'draft';
 
-      if (!activeGrn?.id) {
-        // Creating new GRN connected to Supabase
-        const res = await createFullGoodsReceiptNote({
-          grn_number: formData.gr_no || activeGrn?.grn_number || 'GRN-NEW',
-          grn_date: formData.grn_date,
-          challan_no: formData.challan_no,
-          vehicle_no: formData.vehicle_no,
-          supplier_name: formData.supplier_name,
-          godown_name: formData.godown_name,
-          remarks: formData.remarks,
-          status: supabaseStatus,
-          uploaded_invoice_url: formData.uploaded_invoice_url,
-        });
+    // Never create straight into `posted`; submit for approval instead.
+    const createStatus = workflowStatus === 'posted' ? 'pending_approval' : workflowStatus;
 
-        if (res.error) {
-          alert(`Failed to save GRN to Supabase: ${res.error.message}`);
-          return;
-        }
-      } else {
-        // Updating existing GRN status in Supabase
-        const res = await updateGrnStatus(activeGrn.id, supabaseStatus);
-        if (res.error) {
-          alert(`Failed to update GRN status: ${res.error.message}`);
-          return;
-        }
+    // The PO is identified either by the header's "from POs" reference or by
+    // the PO number on the first purchase entry line.
+    const poReference = formData.from_pos?.trim() || formData.purchase_entries?.[0]?.po_no?.trim() || '';
+    const linkedPo = poReference
+      ? purchaseOrders.find((po) => po.po_number === poReference || po.id === poReference)
+      : undefined;
+    const vendorId =
+      vendorOptions.find((v) => (v.display_name || v.legal_name) === formData.supplier_name)?.id ||
+      linkedPo?.vendor_id;
 
-        if (formData.status === 'Approved') {
-          onApproveGrn?.(activeGrn.id);
-        }
+    if (!activeGrn?.id) {
+      if (!linkedPo && !vendorId) {
+        onError?.('Select the purchase order or the supplier this goods receipt is against.');
+        return;
       }
-    } catch (err: any) {
-      alert(`Error saving GRN: ${err?.message || 'Failed'}`);
-      return;
+
+      const res = await createFullGoodsReceiptNote({
+        grn_number: formData.gr_no || '',
+        grn_date: formData.grn_date,
+        purchase_order_id: linkedPo?.id,
+        vendor_id: vendorId,
+        project_id: linkedPo?.project_id,
+        challan_no: formData.challan_no,
+        vehicle_no: formData.vehicle_no,
+        supplier_name: formData.supplier_name,
+        godown_name: formData.godown_name,
+        transporter_name: formData.transporter_name,
+        dealer_name: formData.dealer_name,
+        qc_no: formData.qc_no,
+        // Weighbridge readings, recorded in their own columns rather than
+        // being crammed into the inspection fields as they once were.
+        in_weight: formData.in_wt1 ? String(formData.in_wt1) : undefined,
+        out_weight: formData.out_wt1 ? String(formData.out_wt1) : undefined,
+        net_weight: formData.net_weight1 ? String(formData.net_weight1) : undefined,
+        volume_in_brass: formData.volume_in_brass ? String(formData.volume_in_brass) : undefined,
+        asset_item: formData.asset_item,
+        asset_amount: formData.asset_amount,
+        remarks: formData.remarks,
+        status: createStatus,
+        uploaded_invoice_url: formData.uploaded_invoice_url,
+        uploaded_invoice_path: formData.uploaded_invoice_path,
+        uploaded_invoice_name: formData.uploaded_invoice_name,
+        // Each purchase entry becomes a real GRN line, so received quantities
+        // are persisted instead of being dropped at the workspace boundary.
+        lines: (formData.purchase_entries || [])
+          .filter((entry) => (Number(entry.received_qty) || 0) > 0)
+          .map((entry) => {
+            const received = Number(entry.received_qty) || 0;
+            const returned = Number(entry.return_qty) || 0;
+            const poLine = linkedPo?.purchase_order_lines?.find(
+              (l) => l.item_description === entry.item_description,
+            );
+            return {
+              item_id: poLine?.item_id || null,
+              purchase_order_line_id: poLine?.id || null,
+              received_qty: received,
+              rejected_qty: returned,
+              accepted_qty: Math.max(received - returned, 0),
+              unit_rate: Number(poLine?.unit_rate) || 0,
+              remarks: entry.test_report_no || undefined,
+            };
+          }),
+      });
+
+      if (res.error) {
+        onError?.(`Could not save the goods receipt note: ${res.error.message}`);
+        return;
+      }
+    } else {
+      const res = await updateGrnStatus(activeGrn.id, workflowStatus);
+      if (res.error) {
+        onError?.(`Could not update the goods receipt note: ${res.error.message}`);
+        return;
+      }
     }
 
     setViewMode('list');
@@ -207,6 +282,7 @@ export function GrnWorkspace({ grns = [], activeRole, onApproveGrn, onDownloadRe
 
           <GrnForm
             grn={activeGrn}
+            vendorOptions={vendorOptions}
             onPrint={() => {
               if (onDownloadReport && activeGrn.id) {
                 onDownloadReport(activeGrn.id);

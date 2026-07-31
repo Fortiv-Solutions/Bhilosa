@@ -1,8 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { CreditCard, ListChecks } from 'lucide-react';
-import { updateVendorBillStatus, type VendorBillRow as DbVendorBillRow } from '@/lib/procurement';
+import { CreditCard, ListChecks, Plus } from 'lucide-react';
+import type { VendorBillRow as DbVendorBillRow, VendorOption, GrnOption } from '@/lib/procurement';
 import type { Role } from '@/lib/roles';
 import { BillsStatsBar, type VendorBillRow } from './bills-stats-bar';
 import { BillsTableView } from './bills-table-view';
@@ -18,21 +18,24 @@ function toDisplayBill(b: DbVendorBillRow): VendorBillRow {
     ? 'approved'
     : 'auto_draft_grn';
   const supplier = b.vendors?.display_name || b.vendors?.legal_name || b.vendor_name || '—';
+  const row = b as DbVendorBillRow & Record<string, unknown>;
   return {
     id: b.id,
     bill_no: b.bill_number,
-    accounting_date: b.bill_date,
-    bill_no_of_supplier: b.bill_book_number || '—',
-    bill_date_of_supplier: b.bill_date,
+    accounting_date: (row.accounting_date as string) || b.bill_date,
+    bill_no_of_supplier: (row.supplier_bill_no as string) || b.bill_book_number || '—',
+    bill_date_of_supplier: (row.supplier_bill_date as string) || b.bill_date,
     project_name: '—',
-    company_name: '—',
+    company_name: (row.company_name as string) || '—',
     supplier_name: supplier,
     total_tax_code_amount: Number(b.tax_amount) || 0,
     net_amt: Number(b.subtotal_amount) || 0,
-    tax_code_amount_transportation: 0,
-    tds_posting_amount: 0,
+    tax_code_amount_transportation: Number(row.stax_amount) || 0,
+    tds_posting_amount: Number(row.other_deductions) || 0,
     total_bill_amount: Number(b.total_amount) || 0,
-    final_bill_amount: Number(b.total_amount) || 0,
+    // Net payable, not the gross total — the two differ once retention,
+    // advance adjustment and other deductions are applied.
+    final_bill_amount: Number(row.net_payable_amount) || Number(b.total_amount) || 0,
     status,
     vendor_name: supplier,
     po_number: b.po_number ?? null,
@@ -41,37 +44,144 @@ function toDisplayBill(b: DbVendorBillRow): VendorBillRow {
   };
 }
 
+/** Maps the form's display status onto the vendor_bills workflow value. */
+const FORM_STATUS_TO_DB: Record<string, string> = {
+  Draft: 'draft',
+  'Pending Verification': 'pending_verification',
+  'Pending Approval': 'pending_approval',
+  Approved: 'approved',
+};
+
 interface BillsWorkspaceProps {
   bills?: DbVendorBillRow[];
   activeRole?: Role;
+  /** Active suppliers, for the supplier dropdown on the bill form. */
+  vendorOptions?: VendorOption[];
+  /** Posted GRNs with no bill yet, offered as the source for a new bill. */
+  billableGrns?: GrnOption[];
+  /** Opens the Create PB flow. */
+  onCreateBill?: () => void;
+  /** Persists the whole bill form. */
+  onSaveBill?: (billId: string, payload: Record<string, unknown>) => void | Promise<void>;
+  /** Moves a bill through its workflow (role-checked server-side). */
+  onStatusChange?: (billId: string, status: string) => void | Promise<void>;
   /** Generates the report-format Purchase Bill PDF and opens it in a new tab. */
   onPrintBill?: (billId: string) => void;
   onRefresh?: () => void | Promise<void>;
+  onError?: (message: string) => void;
 }
 
-export function BillsWorkspace({ bills = [], onPrintBill, onRefresh }: BillsWorkspaceProps) {
+export function BillsWorkspace({
+  bills = [],
+  activeRole,
+  vendorOptions = [],
+  billableGrns = [],
+  onCreateBill,
+  onSaveBill,
+  onStatusChange,
+  onPrintBill,
+  onRefresh,
+  onError,
+}: BillsWorkspaceProps) {
   const [viewMode, setViewMode] = useState<'list' | 'form'>('list');
   const [activeBill, setActiveBill] = useState<VendorBillRow | null>(null);
   const [selectedTab, setSelectedTab] = useState<string>('all');
 
   const displayBills = bills.map(toDisplayBill);
+  const canApproveBills = activeRole === 'UPPER_MANAGEMENT';
+
+  /** Lets the form's supplier name resolve back to a real vendor id. */
+  const vendorByName = new Map(vendorOptions.map((v) => [v.display_name || v.legal_name, v.id]));
 
   const handleOpenForm = (bill: VendorBillRow) => {
     setActiveBill(bill);
     setViewMode('form');
   };
 
+  /**
+   * Persists the entire purchase-bill form.
+   *
+   * Previously this mapped `formData.status` and threw the rest away, so all
+   * ten sections — entries, charges, retention, advance adjustments, payment
+   * vouchers, PO details, GRN remarks, ledger postings — were discarded on
+   * every save. Approval is applied as a separate, role-checked transition.
+   */
   const handleFormSubmit = async (formData: FullBillsFormState) => {
-    if (activeBill?.id) {
-      const statusMap: Record<string, string> = {
-        'Draft': 'draft',
-        'Pending Verification': 'pending_verification',
-        'Pending Approval': 'pending_approval',
-        'Approved': 'approved',
-      };
-      const dbStatus = statusMap[formData.status] || 'draft';
-      await updateVendorBillStatus(activeBill.id, dbStatus);
+    if (!activeBill?.id) {
+      onError?.('This bill has no id and cannot be saved. Reopen it from the bills table.');
+      return;
     }
+
+    const dbStatus = FORM_STATUS_TO_DB[formData.status] || 'draft';
+
+    // A non-approver may still edit the bill; they just cannot approve it.
+    if (dbStatus === 'approved' && !canApproveBills) {
+      onError?.('Saved without approval: only upper management may approve a purchase bill.');
+    }
+
+    await onSaveBill?.(activeBill.id, {
+      vendor_id: formData.supplier_name && vendorByName.get(formData.supplier_name)
+        ? vendorByName.get(formData.supplier_name)
+        : undefined,
+      bill_received_date: formData.bill_received_date || undefined,
+      accounting_date: formData.accounting_date || undefined,
+      supplier_bill_no: formData.bill_no_of_supplier || formData.supplier_bill_no || undefined,
+      supplier_bill_date: formData.bill_date_of_supplier || formData.supplier_bill_date || undefined,
+      company_name: formData.company_name || undefined,
+      contractor_name: formData.contractor_name || undefined,
+      party_name: formData.party_name || undefined,
+      company_status: formData.company_status || undefined,
+      tax_status: formData.tax_status || undefined,
+      work_order_type: formData.work_order_type || undefined,
+      work_order_no: formData.work_order_no || undefined,
+      area_work_order_no: formData.area_work_order_no || undefined,
+      sub_project: formData.sub_project || undefined,
+      from_pos: formData.from_pos || undefined,
+      from_challans: formData.from_challans || undefined,
+      payment_days: formData.payment_days,
+      bill_due_date: formData.bill_due_date || undefined,
+      auto_debit: formData.auto_debit,
+      perc: formData.perc,
+      lumpsum_other_charges: formData.lumpsum_other_charges,
+      lumpsum_loading_unloading_charges: formData.lumpsum_loading_unloading_charges,
+      lumpsum_freight_charges: formData.lumpsum_freight_charges,
+      lumpsum_discount_amount: formData.lumpsum_discount_amount,
+      roundoff_adjustment: formData.roundoff_adjustment,
+      total_adjusted_amount: formData.total_adjusted_amount,
+      cheque_amount: formData.cheque_amount,
+      total_cheque_payments: formData.total_cheque_payments,
+      debit_details: formData.debit_details,
+      credit_details: formData.credit_details,
+      lbt_payable_by_us: formData.lbt_payable_by_us,
+      additional_transportation_stax_applicable:
+        formData.additional_transportation_service_tax_applicable,
+      stax_principal_amount: formData.stax_principal_amount,
+      transportation_stax_rate: formData.transportation_stax_rate,
+      stax_amount: formData.stax_amount,
+      lbt_principal_amount: formData.lbt_principal_amount,
+      lbt_tax_rate: formData.lbt_tax_rate,
+      lbt_amount: formData.lbt_amount,
+      project_location: formData.project_location || undefined,
+      supplier_location: formData.supplier_location || undefined,
+      narration: formData.narration || undefined,
+      assigned_approval_role: formData.assigned_approval_role || undefined,
+      bill_has_already_signed: formData.bill_has_already_signed,
+      status_issue_relation_count: formData.status_issue_relation_count || undefined,
+      unlocked_fy: formData.unlocked_fy,
+      // Approval is never granted through a plain save.
+      status: dbStatus === 'approved' && !canApproveBills ? 'pending_approval' : dbStatus,
+      lines: (formData.purchase_bill_entries || []).map((entry) => ({ ...entry })),
+      form_payload: {
+        advance_payment_entries: formData.advance_payment_entries || [],
+        payment_vouchers: formData.payment_vouchers || [],
+        po_details_all: formData.po_details_all || [],
+        grn_remarks_list: formData.grn_remarks_list || [],
+        ledger_posting_info: formData.ledger_posting_info || [],
+        ledger_present: formData.ledger_present,
+        not_a_valid_bill_no: formData.not_a_valid_bill_no,
+      },
+    });
+
     setViewMode('list');
     setActiveBill(null);
     void onRefresh?.();
@@ -107,6 +217,25 @@ export function BillsWorkspace({ bills = [], onPrintBill, onRefresh }: BillsWork
           >
             <ListChecks className="h-3.5 w-3.5" /> Bills Landing Table ({filteredBills.length})
           </button>
+          {onCreateBill && (
+            <button
+              type="button"
+              onClick={onCreateBill}
+              title={
+                billableGrns.length > 0
+                  ? `${billableGrns.length} posted GRN(s) available to bill`
+                  : 'Raise a purchase bill'
+              }
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-emerald-600 px-3 text-xs font-bold text-white shadow-xs transition-colors hover:bg-emerald-700"
+            >
+              <Plus className="h-3.5 w-3.5" /> Create PB
+              {billableGrns.length > 0 && (
+                <span className="ml-0.5 rounded-full bg-white/20 px-1.5 text-[10px] font-bold">
+                  {billableGrns.length}
+                </span>
+              )}
+            </button>
+          )}
         </div>
       </div>
 

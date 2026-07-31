@@ -20,7 +20,7 @@ const nextConfig: NextConfig = {
     "/api/ocr/extract-invoice": ["./tessdata/**"],
   },
   async rewrites() {
-    let supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://abxzyhgaityhgwbltjwu.supabase.co";
+    let supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://uanazwednpluwllhfzlh.supabase.co";
     supabaseUrl = supabaseUrl.replace(/\/$/, "");
     if (!supabaseUrl.startsWith("http://") && !supabaseUrl.startsWith("https://")) {
       supabaseUrl = `https://${supabaseUrl}`;

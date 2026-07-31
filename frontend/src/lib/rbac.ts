@@ -75,3 +75,24 @@ export function canAccessPath(role: Role, pathname: string): boolean {
     return pathname === allowedPath || pathname.startsWith(`${allowedPath}/`);
   });
 }
+
+/**
+ * Where a role lands immediately after signing in.
+ *
+ * Every role can reach /dashboard, so that is the safe default; PR_TEAM is sent
+ * straight to its procurement workspace instead. The result is validated through
+ * canAccessPath so a future ROLE_ALLOWED_PATHS change can never strand a user on a
+ * page their role is then redirected away from.
+ */
+const ROLE_LANDING_PATH: Record<Role, string> = {
+  UPPER_MANAGEMENT: '/dashboard',
+  PROJECT_MANAGER: '/dashboard',
+  PR_TEAM: '/procurement',
+};
+
+export function getRoleLandingPath(role: Role | null | undefined): string {
+  if (!role) return '/dashboard';
+  const preferred = ROLE_LANDING_PATH[role];
+  if (preferred && canAccessPath(role, preferred)) return preferred;
+  return canAccessPath(role, '/dashboard') ? '/dashboard' : '/';
+}

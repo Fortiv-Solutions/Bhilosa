@@ -1,806 +1,912 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
-import { formatIndianCurrency } from '@/utils/format-currency';
-import { ChevronDown, ChevronRight, FileSpreadsheet, Search, Pencil, Save, X, Trash2, CheckCircle2, History, Building2, Layers, Plus, AlertTriangle, FileClock, Clock, UserCheck, Sparkles, ShieldAlert, Check, Lightbulb, Copy } from 'lucide-react';
-import type { MasterBudgetCategory, MasterBudgetItem } from '@/lib/budget';
-import { CENTRAL_PARK_MASTER_BUDGET_CATEGORIES } from '@/lib/central-park-budget-data';
-import { fetchFullMasterBudgetCategoriesFromSupabase, fetchRevisionHistoryFromSupabase, saveBudgetRevisionToSupabase, subscribeToBudgetRealtimeChanges, CENTRAL_PARK_PROJECT_ID } from '@/lib/supabase-budget';
+// ============================================================================
+// PRAMUKH GROUP ERP V2 — MASTER BUDGET SHEET
+// File: frontend/src/components/budget/master-sheet-tab.tsx
+//
+// What was wrong before:
+//   * handleConfirmSaveWithJustification imported saveBudgetRevisionToSupabase and
+//     never called it. Every "Save Budget (v2)" was setState only — the change order
+//     vanished on refresh and budget_revisions stayed empty (0 rows in production).
+//   * The diff compared `categories[cIdx].items[iIdx]` by array index, so a realtime
+//     refresh mid-edit produced a corrupt change log. Now keyed by row id.
+//   * Cost/BUA divided by a hardcoded 615000 in five places and printed the literal
+//     "6,15,000 Sqft". Now uses projects.bua_sqft from the provider.
+//   * Default prop was CENTRAL_PARK_MASTER_BUDGET_CATEGORIES (3,276 lines of mock).
+//   * Revision history was seeded with a fabricated 'rev-log-v1' entry.
+//   * Scope filter inferred scope from which qty column was non-zero instead of the
+//     scope_tag column that exists in the database.
+//   * "AI Suggestions" modal displayed invented market rates as fact. Removed.
+//   * No loading state, no error handling, no export.
+// ============================================================================
+
+import React, { useCallback, useMemo, useState } from 'react';
+import {
+  AlertTriangle,
+  Building2,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Clock,
+  Download,
+  FileClock,
+  FileSpreadsheet,
+  History,
+  Loader2,
+  LockKeyhole,
+  Pencil,
+  Save,
+  Search,
+  Trash2,
+  UserCheck,
+  X,
+} from 'lucide-react';
+import type { MasterBudgetCategory, MasterBudgetItem, ScopeTag } from '@/lib/budget';
+import { SCOPE_TAG_LABELS } from '@/lib/budget';
+import {
+  BudgetDataError,
+  downloadCsv,
+  saveMasterBudgetRevision,
+  toCsv,
+  type MasterBudgetItemPatch,
+} from '@/lib/supabase-budget';
+import type { BudgetPermissions } from '@/lib/budget-permissions';
+import { useBudgetData } from './budget-data-context';
+import { BudgetError, BudgetGate } from './budget-states';
 import ExcelImporterModal from './excel-importer-modal';
 
-interface BudgetRevisionAuditLog {
-  id: string;
-  versionLabel: string;
-  timestamp: string;
-  editedBy: string;
-  justification: string;
-  oldTotalCost: number;
-  newTotalCost: number;
-  netDiffAmount: number;
-  itemDetails: {
-    subActivity: string;
-    category: string;
-    oldQty: number;
-    newQty: number;
-    oldRate: number;
-    newRate: number;
-    oldCost: number;
-    newCost: number;
-  }[];
+type EditMap = Record<
+  string,
+  { qtyRcc: number | null; qtyFinishes: number | null; qtyInfra: number | null; rate: number }
+>;
+
+function deriveQtyTotal(edit: EditMap[string], fallback: number): number {
+  const sum = (edit.qtyRcc ?? 0) + (edit.qtyFinishes ?? 0) + (edit.qtyInfra ?? 0);
+  return sum > 0 ? sum : fallback;
 }
 
-interface MasterSheetTabProps {
-  categories?: MasterBudgetCategory[];
-  onAddLineItem?: () => void;
-  canManage?: boolean;
-}
+export default function MasterSheetTab({ permissions }: { permissions: BudgetPermissions }) {
+  const {
+    projectId,
+    projectName,
+    isPortfolio,
+    categories,
+    buaSqft,
+    revisions,
+    config,
+    refresh,
+    setEditing,
+  } = useBudgetData();
 
-export default function MasterSheetTab({
-  categories: initialCategories = CENTRAL_PARK_MASTER_BUDGET_CATEGORIES,
-  canManage = true,
-}: MasterSheetTabProps) {
-  const [categories, setCategories] = useState<MasterBudgetCategory[]>(initialCategories);
-  const [openCategories, setOpenCategories] = useState<Record<string, boolean>>(() => {
-    const initMap: Record<string, boolean> = {};
-    initialCategories.forEach((c) => {
-      initMap[c.id] = true;
-    });
-    return initMap;
-  });
   const [searchQuery, setSearchQuery] = useState('');
-  const [scopeFilter, setScopeFilter] = useState<'all' | 'building_rcc' | 'building_finishes' | 'site_infra'>('all');
+  const [scopeFilter, setScopeFilter] = useState<'all' | Exclude<ScopeTag, 'total'>>('all');
+  // Absent key => expanded (see `?? true` at the read sites), so no seeding effect
+  // is needed and switching project cannot leave categories wrongly collapsed.
+  const [openCategories, setOpenCategories] = useState<Record<string, boolean>>({});
+
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [edits, setEdits] = useState<EditMap>({});
+  const [showJustificationModal, setShowJustificationModal] = useState(false);
+  const [showDiscardModal, setShowDiscardModal] = useState(false);
+  const [showHistoryModal, setShowHistoryModal] = useState(false);
+  const [justification, setJustification] = useState('');
   const [isImporterOpen, setIsImporterOpen] = useState(false);
 
-  // Upper Management Interactive Edit Mode & Revision History States
-  const [isEditMode, setIsEditMode] = useState(false);
-  const [versionNumber, setVersionNumber] = useState(1);
-  const [editedCategories, setEditedCategories] = useState<MasterBudgetCategory[]>(initialCategories);
-  const [versionNotice, setVersionNotice] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
-  // Revision Modals & AI Benchmark States
-  const [showSaveJustificationModal, setShowSaveJustificationModal] = useState(false);
-  const [showUnsavedConfirmModal, setShowUnsavedConfirmModal] = useState(false);
-  const [showRevisionHistoryModal, setShowRevisionHistoryModal] = useState(false);
-  const [showAiBenchmarkModal, setShowAiBenchmarkModal] = useState(false);
-  const [revisionJustificationText, setRevisionJustificationText] = useState('');
+  const masterRevisions = useMemo(
+    () => revisions.filter((r) => r.scope === 'master_budget' || r.scope === 'excel_import'),
+    [revisions],
+  );
 
-  // Initial Revision History Audit Log
-  const [revisionHistoryLogs, setRevisionHistoryLogs] = useState<BudgetRevisionAuditLog[]>([
-    {
-      id: 'rev-log-v1',
-      versionLabel: 'Version v1 (Baseline Excel Upload)',
-      timestamp: '20 Jul 2026, 10:00',
-      editedBy: 'Pramukh Group Executive Board',
-      justification: 'Approved baseline budget schedule imported from Central_Park_Budget (1).xlsx',
-      oldTotalCost: 1453638820,
-      newTotalCost: 1453638820,
-      netDiffAmount: 0,
-      itemDetails: [],
+  const currentVersion = useMemo(
+    () => masterRevisions.reduce((max, r) => Math.max(max, r.version_number), 0),
+    [masterRevisions],
+  );
+
+  const itemsById = useMemo(() => {
+    const map = new Map<string, MasterBudgetItem>();
+    for (const cat of categories) for (const item of cat.items) map.set(item.id, item);
+    return map;
+  }, [categories]);
+
+  /** An item with pending edits applied. */
+  const resolveItem = useCallback(
+    (item: MasterBudgetItem): MasterBudgetItem => {
+      const edit = edits[item.id];
+      if (!edit) return item;
+      const qtyTotal = deriveQtyTotal(edit, item.qtyTotal);
+      const cost = Math.round(qtyTotal * edit.rate);
+      return {
+        ...item,
+        qtyRcc: edit.qtyRcc,
+        qtyFinishes: edit.qtyFinishes,
+        qtyInfra: edit.qtyInfra,
+        qtyTotal,
+        rate: edit.rate,
+        cost,
+        costPerBua: buaSqft > 0 ? Number((cost / buaSqft).toFixed(2)) : 0,
+      };
     },
-  ]);
+    [edits, buaSqft],
+  );
 
-  // Live Supabase Sync Hook
-  useEffect(() => {
-    async function loadLiveData() {
-      const liveCats = await fetchFullMasterBudgetCategoriesFromSupabase(CENTRAL_PARK_PROJECT_ID);
-      if (liveCats && liveCats.length > 0) {
-        setCategories(liveCats);
-        const openMap: Record<string, boolean> = {};
-        liveCats.forEach((c) => { openMap[c.id] = true; });
-        setOpenCategories(openMap);
-      }
+  const dirtyItemIds = useMemo(
+    () =>
+      Object.keys(edits).filter((id) => {
+        const original = itemsById.get(id);
+        if (!original) return false;
+        const next = resolveItem(original);
+        return (
+          next.cost !== original.cost ||
+          next.rate !== original.rate ||
+          next.qtyTotal !== original.qtyTotal
+        );
+      }),
+    [edits, itemsById, resolveItem],
+  );
 
-      const revLogs = await fetchRevisionHistoryFromSupabase(CENTRAL_PARK_PROJECT_ID);
-      if (revLogs && revLogs.length > 0) {
-        setRevisionHistoryLogs(revLogs.map(r => ({
-          id: r.id,
-          versionLabel: r.version_label,
-          timestamp: new Date(r.created_at).toLocaleString(),
-          editedBy: r.edited_by_name || 'Pramukh User',
-          justification: r.justification_reason,
-          oldTotalCost: r.old_total_cost,
-          newTotalCost: r.new_total_cost,
-          netDiffAmount: r.net_diff_amount,
-          itemDetails: [],
-        })));
-        setVersionNumber(Math.max(...revLogs.map(r => r.version_number)) + 1);
-      }
-    }
+  const hasUnsavedChanges = dirtyItemIds.length > 0;
 
-    loadLiveData();
-
-    const unsubscribe = subscribeToBudgetRealtimeChanges(CENTRAL_PARK_PROJECT_ID, () => {
-      loadLiveData();
-    });
-
-    return () => {
-      unsubscribe();
-    };
-  }, []);
-
-  function toggleCategory(catId: string) {
-    setOpenCategories((prev) => ({ ...prev, [catId]: !prev[catId] }));
-  }
-
-  function handleStartEdit() {
-    setEditedCategories(JSON.parse(JSON.stringify(categories)));
-    setIsEditMode(true);
-    setVersionNotice(null);
-  }
-
-  const hasUnsavedChanges = isEditMode && JSON.stringify(editedCategories) !== JSON.stringify(categories);
-
-  function handleCancelAttempt() {
-    if (hasUnsavedChanges) {
-      setShowUnsavedConfirmModal(true);
-    } else {
-      handleDiscardChanges();
-    }
-  }
-
-  function handleDiscardChanges() {
-    setEditedCategories(JSON.parse(JSON.stringify(categories)));
-    setIsEditMode(false);
-    setShowUnsavedConfirmModal(false);
-    setShowSaveJustificationModal(false);
-  }
-
-  function handleInitiateSave() {
-    if (!hasUnsavedChanges) {
-      setIsEditMode(false);
-      return;
-    }
-    setRevisionJustificationText('');
-    setShowSaveJustificationModal(true);
-  }
-
-  function handleConfirmSaveWithJustification() {
-    if (!revisionJustificationText.trim()) {
-      alert('Please enter a Change Order / Revision Justification reason before saving.');
-      return;
-    }
-
-    const changedItemDetails: BudgetRevisionAuditLog['itemDetails'] = [];
-    let oldGrandTotal = 0;
-    let newGrandTotal = 0;
-
-    const updatedCategories: MasterBudgetCategory[] = editedCategories.map((cat, cIdx) => {
-      const origCat = categories[cIdx];
-
-      const items = cat.items.map((item, iIdx) => {
-        const origItem = origCat.items[iIdx];
-        const qtyTotal = (item.qtyRcc || 0) + (item.qtyFinishes || 0) + (item.qtyInfra || 0) || item.qtyTotal || 1;
-        const cost = Math.round(item.rate * qtyTotal);
-        const costPerBua = Number((cost / 615000).toFixed(2));
-
-        if (origItem) {
-          oldGrandTotal += origItem.cost;
-          newGrandTotal += cost;
-
-          if (origItem.cost !== cost || origItem.rate !== item.rate || origItem.qtyTotal !== qtyTotal) {
-            changedItemDetails.push({
-              subActivity: item.item,
-              category: cat.categoryName,
-              oldQty: origItem.qtyTotal,
-              newQty: qtyTotal,
-              oldRate: origItem.rate,
-              newRate: item.rate,
-              oldCost: origItem.cost,
-              newCost: cost,
-            });
-          }
-        }
-
-        return { ...item, qtyTotal, cost, costPerBua };
-      });
-
-      const totalCost = Math.round(items.reduce((sum, i) => sum + i.cost, 0));
-      const totalCostPerBua = Number((totalCost / 615000).toFixed(2));
-      return { ...cat, items, totalCost, totalCostPerBua };
-    });
-
-    const newVerNo = versionNumber + 1;
-    const netDiff = newGrandTotal - oldGrandTotal;
-
-    const newLog: BudgetRevisionAuditLog = {
-      id: `rev-log-v${newVerNo}`,
-      versionLabel: `Version v${newVerNo} (Change Order)`,
-      timestamp: new Date().toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
-      editedBy: 'Pramukh Group Management User',
-      justification: revisionJustificationText,
-      oldTotalCost: oldGrandTotal,
-      newTotalCost: newGrandTotal,
-      netDiffAmount: netDiff,
-      itemDetails: changedItemDetails,
-    };
-
-    setRevisionHistoryLogs((prev) => [newLog, ...prev]);
-    setCategories(updatedCategories);
-    setVersionNumber(newVerNo);
-    setIsEditMode(false);
-    setShowSaveJustificationModal(false);
-    setShowUnsavedConfirmModal(false);
-    setVersionNotice(`Budget Version updated to v${newVerNo}. Change Order logged into Revision History.`);
-  }
-
-  function handleItemChange(
-    catId: string,
-    itemId: string,
-    field: keyof MasterBudgetItem,
-    value: string | number | null
-  ) {
-    setEditedCategories((prevCategories) =>
-      prevCategories.map((cat) => {
-        if (cat.id !== catId) return cat;
+  const resolvedCategories = useMemo<MasterBudgetCategory[]>(
+    () =>
+      categories.map((cat) => {
+        const items = cat.items.map(resolveItem);
+        const totalCost = items.reduce((s, i) => s + i.cost, 0);
         return {
           ...cat,
-          items: cat.items.map((item) => {
-            if (item.id !== itemId) return item;
-
-            const updatedItem = { ...item, [field]: value };
-            if (field === 'qtyRcc' || field === 'qtyFinishes' || field === 'qtyInfra' || field === 'rate') {
-              const rcc = typeof updatedItem.qtyRcc === 'number' ? updatedItem.qtyRcc : Number(updatedItem.qtyRcc) || 0;
-              const fin = typeof updatedItem.qtyFinishes === 'number' ? updatedItem.qtyFinishes : Number(updatedItem.qtyFinishes) || 0;
-              const inf = typeof updatedItem.qtyInfra === 'number' ? updatedItem.qtyInfra : Number(updatedItem.qtyInfra) || 0;
-              const rate = typeof updatedItem.rate === 'number' ? updatedItem.rate : Number(updatedItem.rate) || 0;
-
-              const qtyTotal = (rcc || 0) + (fin || 0) + (inf || 0) || updatedItem.qtyTotal || 1;
-              const cost = Math.round(rate * qtyTotal);
-              const costPerBua = Number((cost / 615000).toFixed(2));
-
-              return {
-                ...updatedItem,
-                qtyTotal,
-                cost,
-                costPerBua,
-              };
-            }
-            return updatedItem;
-          }),
+          items,
+          totalCost,
+          totalCostPerBua: buaSqft > 0 ? Number((totalCost / buaSqft).toFixed(2)) : 0,
         };
-      })
+      }),
+    [categories, resolveItem, buaSqft],
+  );
+
+  const filteredCategories = useMemo(() => {
+    const needle = searchQuery.trim().toLowerCase();
+    return resolvedCategories
+      .map((cat) => ({
+        ...cat,
+        items: cat.items.filter((item) => {
+          const matchesQuery =
+            !needle ||
+            item.item.toLowerCase().includes(needle) ||
+            cat.categoryName.toLowerCase().includes(needle) ||
+            String(item.srNo).toLowerCase().includes(needle);
+          // Uses the stored scope_tag, not a guess from the qty columns.
+          const matchesScope = scopeFilter === 'all' || item.scopeTag === scopeFilter;
+          return matchesQuery && matchesScope;
+        }),
+      }))
+      .filter((cat) => cat.items.length > 0);
+  }, [resolvedCategories, searchQuery, scopeFilter]);
+
+  const totals = useMemo(() => {
+    const baseline = resolvedCategories.reduce((s, c) => s + c.totalCost, 0);
+    const lineItems = resolvedCategories.reduce((s, c) => s + c.items.length, 0);
+    return {
+      baseline,
+      lineItems,
+      costPerBua: buaSqft > 0 ? Number((baseline / buaSqft).toFixed(2)) : 0,
+    };
+  }, [resolvedCategories, buaSqft]);
+
+  function toggleCategory(catId: string) {
+    setOpenCategories((prev) => ({ ...prev, [catId]: !(prev[catId] ?? true) }));
+  }
+
+  function beginEdit() {
+    setEdits({});
+    setSaveError(null);
+    setNotice(null);
+    setIsEditMode(true);
+    setEditing(true);
+  }
+
+  function discardEdits() {
+    setEdits({});
+    setIsEditMode(false);
+    setEditing(false);
+    setShowDiscardModal(false);
+    setShowJustificationModal(false);
+  }
+
+  function attemptCancel() {
+    if (hasUnsavedChanges) setShowDiscardModal(true);
+    else discardEdits();
+  }
+
+  function handleFieldChange(
+    item: MasterBudgetItem,
+    field: 'qtyRcc' | 'qtyFinishes' | 'qtyInfra' | 'rate',
+    raw: string,
+  ) {
+    setEdits((prev) => {
+      const base =
+        prev[item.id] ??
+        {
+          qtyRcc: item.qtyRcc ?? null,
+          qtyFinishes: item.qtyFinishes ?? null,
+          qtyInfra: item.qtyInfra ?? null,
+          rate: item.rate,
+        };
+
+      const next = { ...base };
+      if (field === 'rate') {
+        const parsed = Number(raw);
+        next.rate = Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+      } else {
+        next[field] = raw === '' ? null : Math.max(0, Number(raw) || 0);
+      }
+      return { ...prev, [item.id]: next };
+    });
+  }
+
+  async function handleSave() {
+    if (!justification.trim()) {
+      setSaveError('A change-order justification is required.');
+      return;
+    }
+
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const patches: MasterBudgetItemPatch[] = dirtyItemIds.map((id) => {
+        const original = itemsById.get(id)!;
+        const next = resolveItem(original);
+        return {
+          id,
+          qty_rcc: next.qtyRcc ?? null,
+          qty_finishes: next.qtyFinishes ?? null,
+          qty_infra: next.qtyInfra ?? null,
+          qty_total: next.qtyTotal,
+          estimated_rate: next.rate,
+        };
+      });
+
+      const revision = await saveMasterBudgetRevision(projectId, justification, patches);
+
+      setEdits({});
+      setIsEditMode(false);
+      setEditing(false);
+      setShowJustificationModal(false);
+      setJustification('');
+      await refresh();
+      setNotice(
+        `Saved to Supabase as ${revision.version_label}. ${patches.length} line item(s) revised, net change ₹${Math.round(
+          revision.net_diff_amount,
+        ).toLocaleString('en-IN')}.`,
+      );
+    } catch (err) {
+      setSaveError(
+        err instanceof BudgetDataError || err instanceof Error
+          ? err.message
+          : 'Unable to save the budget revision.',
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function handleExport() {
+    const headers = [
+      'Category', 'Category Code', 'Sr No', 'Item Description', 'Scope', 'Item Type',
+      'Building RCC Qty', 'Building Finishes Qty', 'Site Infra Qty', 'Total Qty', 'Unit',
+      'Estimated Rate', 'Budgeted Cost', 'Cost per BUA', 'PO Committed', 'Actual Billed',
+    ];
+    const body = resolvedCategories.flatMap((cat) =>
+      cat.items.map((i) => [
+        cat.categoryName, cat.categoryCode, i.srNo, i.item, i.scopeTag, i.itemType,
+        i.qtyRcc, i.qtyFinishes, i.qtyInfra, i.qtyTotal, i.unit, i.rate, i.cost,
+        i.costPerBua, i.poAmount, i.actualTotalCost,
+      ]),
+    );
+    downloadCsv(
+      `master-budget-${isPortfolio ? 'all-projects' : projectName.replace(/\s+/g, '-').toLowerCase()}-v${currentVersion}.csv`,
+      toCsv(headers, body),
     );
   }
 
-  const activeCategoriesList = isEditMode ? editedCategories : categories;
-
-  const totalBaselineCost = Math.round(
-    activeCategoriesList.reduce((sum, cat) => {
-      const catSum = cat.items.reduce((iSum, item) => iSum + (item.cost || 0), 0);
-      return sum + catSum;
-    }, 0)
-  );
-
-  const totalCostPerBua = Number((totalBaselineCost / 615000).toFixed(2));
-  const totalLineItemsCount = activeCategoriesList.reduce((sum, cat) => sum + cat.items.length, 0);
-
-  const filteredCategories = activeCategoriesList
-    .map((cat) => {
-      const filteredItems = cat.items.filter((item) => {
-        const matchesQuery =
-          item.item.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          cat.categoryName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          String(item.srNo).toLowerCase().includes(searchQuery.toLowerCase());
-
-        let matchesScope = true;
-        if (scopeFilter === 'building_rcc') matchesScope = (item.qtyRcc || 0) > 0;
-        if (scopeFilter === 'building_finishes') matchesScope = (item.qtyFinishes || 0) > 0;
-        if (scopeFilter === 'site_infra') matchesScope = (item.qtyInfra || 0) > 0;
-
-        return matchesQuery && matchesScope;
-      });
-
-      return {
-        ...cat,
-        items: filteredItems,
-      };
-    })
-    .filter((cat) => cat.items.length > 0);
+  const canEdit = permissions.canEditMasterBudget && !isPortfolio;
 
   return (
-    <div className="space-y-5 select-none">
-      {/* Upper Management Audit Banner */}
-      {versionNotice && (
-        <div className="flex items-center justify-between rounded-xl border border-emerald-300 bg-emerald-50 p-3.5 text-xs text-emerald-800 dark:border-emerald-900/40 dark:bg-emerald-950/30 dark:text-emerald-300">
-          <div className="flex items-center gap-2 font-bold">
-            <CheckCircle2 className="h-4 w-4 text-emerald-600 flex-shrink-0" />
-            {versionNotice}
-          </div>
-          <button onClick={() => setVersionNotice(null)} className="text-emerald-700 hover:text-emerald-900">
-            <X className="h-4 w-4" />
+    <BudgetGate
+      emptyTitle="No master budget for this project"
+      emptyDetail={
+        permissions.canImportBudget
+          ? 'Import an Excel budget schedule to create the baseline.'
+          : 'Ask Upper Management to import the baseline budget schedule.'
+      }
+      emptyAction={
+        permissions.canImportBudget && !isPortfolio ? (
+          <button
+            type="button"
+            onClick={() => setIsImporterOpen(true)}
+            className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-primary px-4 text-xs font-bold text-primary-foreground shadow-sm hover:bg-primary/90"
+          >
+            <FileSpreadsheet className="h-3.5 w-3.5" aria-hidden="true" /> Import Excel
           </button>
-        </div>
-      )}
-
-      {/* Baseline Summary Bar */}
-      <div className="rounded-xl border border-border bg-card p-4 shadow-sm flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <div className="rounded-xl bg-primary/10 p-3 text-primary">
-            <Building2 className="h-6 w-6" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h2 className="font-heading text-lg font-bold text-foreground tracking-tight">Central Park Master Budget</h2>
-              <span className="rounded-full bg-primary/10 px-2.5 py-0.5 text-[10px] font-extrabold uppercase text-primary">
-                Version v{versionNumber}
-              </span>
+        ) : undefined
+      }
+      loadingLabel="Loading master budget from Supabase…"
+    >
+      <div className="space-y-5">
+        {notice && (
+          <div
+            role="status"
+            className="flex items-start justify-between gap-3 rounded-xl border border-emerald-300 bg-emerald-50 p-3.5 text-xs text-emerald-800 dark:border-emerald-900/40 dark:bg-emerald-950/30 dark:text-emerald-300"
+          >
+            <div className="flex items-start gap-2 font-bold">
+              <Check className="mt-0.5 h-4 w-4 flex-shrink-0 text-emerald-600" aria-hidden="true" />
+              {notice}
             </div>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              Built-up Area (BUA): <strong className="text-foreground">6,15,000 Sqft</strong> | Total Baseline Categories: <strong className="text-foreground">{activeCategoriesList.length}</strong> | Line Items: <strong className="text-foreground">{totalLineItemsCount}</strong>
-            </p>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-6 border-t md:border-t-0 md:border-l border-border pt-3 md:pt-0 md:pl-6 text-xs">
-          <div>
-            <p className="text-[11px] font-extrabold uppercase tracking-wider text-muted-foreground">Total Baseline Cost</p>
-            <p className="text-xl font-mono font-black text-foreground">₹{totalBaselineCost.toLocaleString('en-IN')}</p>
-          </div>
-
-          <div>
-            <p className="text-[11px] font-extrabold uppercase tracking-wider text-muted-foreground">Cost / BUA</p>
-            <p className="text-xl font-mono font-black text-primary">₹{totalCostPerBua.toFixed(2)}</p>
-          </div>
-        </div>
-      </div>
-
-      {/* Control Actions & Search */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="relative">
-            <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search by item description or category..."
-              className="h-8.5 w-72 rounded-lg border border-border bg-card pl-8 pr-3 text-xs font-medium outline-none focus:ring-1 focus:ring-primary"
-            />
-          </div>
-
-          <div className="flex items-center gap-1.5 text-xs">
-            <span className="font-bold text-muted-foreground">Scope:</span>
-            <select
-              value={scopeFilter}
-              onChange={(e) => setScopeFilter(e.target.value as any)}
-              className="h-8.5 rounded-lg border border-border bg-card px-2.5 text-xs font-bold text-foreground outline-none"
-            >
-              <option value="all">All Scope Items</option>
-              <option value="building_rcc">Building RCC Work</option>
-              <option value="building_finishes">Building Finishes Work</option>
-              <option value="site_infra">Site Infra Work</option>
-            </select>
-          </div>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Secondary AI & Audit Tools Group */}
-          <div className="flex items-center rounded-lg border border-border bg-card p-0.5 shadow-2xs">
             <button
               type="button"
-              onClick={() => setShowAiBenchmarkModal(true)}
-              className="inline-flex h-7.5 items-center gap-1.5 rounded-md px-2.5 text-xs font-bold text-primary hover:bg-primary/10 transition-colors"
-              title="View AI Market Rate Suggestions"
+              onClick={() => setNotice(null)}
+              aria-label="Dismiss"
+              className="text-emerald-700 hover:text-emerald-900"
             >
-              <Sparkles className="h-3.5 w-3.5" />
-              AI Suggestions
-            </button>
-            <div className="h-4 w-px bg-border my-auto" />
-            <button
-              type="button"
-              onClick={() => setShowRevisionHistoryModal(true)}
-              className="inline-flex h-7.5 items-center gap-1.5 rounded-md px-2.5 text-xs font-semibold text-foreground hover:bg-muted transition-colors"
-              title="View Revision Audit Log"
-            >
-              <History className="h-3.5 w-3.5 text-amber-600" />
-              History ({revisionHistoryLogs.length})
+              <X className="h-4 w-4" />
             </button>
           </div>
+        )}
 
-          {/* Primary Action Buttons */}
-          {isEditMode ? (
-            <div className="flex items-center gap-1.5">
-              <button
-                type="button"
-                onClick={handleCancelAttempt}
-                className="inline-flex h-8.5 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-xs font-semibold text-muted-foreground hover:bg-muted transition-colors"
-              >
-                <X className="h-3.5 w-3.5" /> Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleInitiateSave}
-                className="inline-flex h-8.5 items-center gap-1.5 rounded-lg bg-emerald-600 px-3.5 text-xs font-bold text-white shadow-sm hover:bg-emerald-700 transition-colors"
-              >
-                <Save className="h-3.5 w-3.5" /> Save Budget (v{versionNumber + 1})
-              </button>
+        {saveError && <BudgetError message={saveError} />}
+
+        {config.budget_lock_enabled && (
+          <div className="flex items-center gap-2 rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs font-bold text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/25 dark:text-amber-300">
+            <LockKeyhole className="h-4 w-4 flex-shrink-0" aria-hidden="true" />
+            This project&apos;s budget is locked. Baseline edits and imports are blocked until the
+            lock is lifted in Config.
+          </div>
+        )}
+
+        {/* BASELINE SUMMARY */}
+        <div className="flex flex-col gap-4 rounded-xl border border-border bg-card p-4 shadow-sm md:flex-row md:items-center md:justify-between">
+          <div className="flex items-center gap-3">
+            <div className="rounded-xl bg-primary/10 p-3 text-primary">
+              <Building2 className="h-6 w-6" aria-hidden="true" />
             </div>
-          ) : (
-            canManage && (
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="font-heading text-lg font-bold tracking-tight text-foreground">
+                  {projectName} — Master Budget
+                </h2>
+                <span className="rounded-full bg-primary/10 px-2.5 py-0.5 text-[10px] font-extrabold uppercase text-primary">
+                  {currentVersion > 0 ? `Version v${currentVersion}` : 'Baseline'}
+                </span>
+              </div>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                Built-up Area:{' '}
+                <strong className="text-foreground">
+                  {buaSqft > 0 ? `${buaSqft.toLocaleString('en-IN')} Sqft` : 'not set'}
+                </strong>{' '}
+                | Categories: <strong className="text-foreground">{resolvedCategories.length}</strong>{' '}
+                | Line Items: <strong className="text-foreground">{totals.lineItems}</strong>
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-6 border-t border-border pt-3 text-xs md:border-l md:border-t-0 md:pl-6 md:pt-0">
+            <div>
+              <p className="text-[11px] font-extrabold uppercase tracking-wider text-muted-foreground">
+                Total Baseline Cost
+              </p>
+              <p className="font-mono text-xl font-black text-foreground">
+                ₹{totals.baseline.toLocaleString('en-IN')}
+              </p>
+            </div>
+            <div>
+              <p className="text-[11px] font-extrabold uppercase tracking-wider text-muted-foreground">
+                Cost / BUA
+              </p>
+              <p className="font-mono text-xl font-black text-primary">
+                {buaSqft > 0 ? `₹${totals.costPerBua.toFixed(2)}` : '—'}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* CONTROLS */}
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="relative">
+              <Search
+                className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground"
+                aria-hidden="true"
+              />
+              <input
+                type="search"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search item, category or Sr No…"
+                aria-label="Search master budget"
+                className="h-8.5 w-72 rounded-lg border border-border bg-card pl-8 pr-3 text-xs font-medium outline-none focus:ring-1 focus:ring-primary"
+              />
+            </div>
+
+            <label className="flex items-center gap-1.5 text-xs">
+              <span className="font-bold text-muted-foreground">Scope:</span>
+              <select
+                value={scopeFilter}
+                onChange={(e) => setScopeFilter(e.target.value as typeof scopeFilter)}
+                className="h-8.5 rounded-lg border border-border bg-card px-2.5 text-xs font-bold text-foreground outline-none"
+              >
+                <option value="all">All Scope Items</option>
+                {(Object.keys(SCOPE_TAG_LABELS) as Exclude<ScopeTag, 'total'>[]).map((tag) => (
+                  <option key={tag} value={tag}>
+                    {SCOPE_TAG_LABELS[tag]}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowHistoryModal(true)}
+              className="inline-flex h-8.5 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-xs font-semibold text-foreground shadow-2xs transition-colors hover:bg-muted"
+            >
+              <History className="h-3.5 w-3.5 text-amber-600" aria-hidden="true" />
+              History ({masterRevisions.length})
+            </button>
+
+            <button
+              type="button"
+              onClick={handleExport}
+              disabled={!permissions.canExport || totals.lineItems === 0}
+              className="inline-flex h-8.5 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-xs font-bold text-foreground shadow-2xs hover:bg-muted disabled:opacity-50"
+            >
+              <Download className="h-3.5 w-3.5" aria-hidden="true" /> Export CSV
+            </button>
+
+            {isEditMode ? (
               <div className="flex items-center gap-1.5">
                 <button
                   type="button"
-                  onClick={handleStartEdit}
-                  className="inline-flex h-8.5 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-xs font-bold text-foreground shadow-2xs hover:bg-muted transition-colors"
+                  onClick={attemptCancel}
+                  disabled={saving}
+                  className="inline-flex h-8.5 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-xs font-semibold text-muted-foreground transition-colors hover:bg-muted disabled:opacity-50"
                 >
-                  <Pencil className="h-3.5 w-3.5 text-primary" /> Edit Mode
+                  <X className="h-3.5 w-3.5" aria-hidden="true" /> Cancel
                 </button>
                 <button
                   type="button"
-                  onClick={() => setIsImporterOpen(true)}
-                  className="inline-flex h-8.5 items-center gap-1.5 rounded-lg bg-primary px-3.5 text-xs font-bold text-primary-foreground shadow-sm hover:bg-primary/90 transition-colors"
+                  onClick={() => {
+                    setJustification('');
+                    setSaveError(null);
+                    setShowJustificationModal(true);
+                  }}
+                  disabled={!hasUnsavedChanges || saving}
+                  className="inline-flex h-8.5 items-center gap-1.5 rounded-lg bg-emerald-600 px-3.5 text-xs font-bold text-white shadow-sm transition-colors hover:bg-emerald-700 disabled:opacity-50"
                 >
-                  <FileSpreadsheet className="h-3.5 w-3.5" /> Import Excel
+                  <Save className="h-3.5 w-3.5" aria-hidden="true" />
+                  Save ({dirtyItemIds.length})
                 </button>
               </div>
-            )
-          )}
-        </div>
-      </div>
-
-      {/* Master Baseline Budget Table */}
-      <div className="overflow-hidden rounded-xl border border-border bg-card shadow-2xs">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs whitespace-nowrap font-sans border-collapse">
-            <thead>
-              <tr className="border-b border-border bg-muted/70 text-[11px] font-bold uppercase tracking-wider text-muted-foreground select-none">
-                <th className="px-3.5 py-3 w-12 text-center border-r border-border">SR NO.</th>
-                <th className="px-4 py-3 min-w-[260px] border-r border-border">ITEM DESCRIPTION</th>
-                <th className="px-3.5 py-3 text-right font-mono border-r border-border">BUILDING RCC QTY</th>
-                <th className="px-3.5 py-3 text-right font-mono border-r border-border">BUILDING FINISHES QTY</th>
-                <th className="px-3.5 py-3 text-right font-mono border-r border-border">SITE INFRA QTY</th>
-                <th className="px-3.5 py-3 text-right font-mono font-bold text-foreground border-r border-border bg-muted/30">TOTAL QTY</th>
-                <th className="px-3 py-3 text-center border-r border-border">UNIT</th>
-                <th className="px-4 py-3 text-right font-mono border-r border-border">EST. RATE (₹)</th>
-                <th className="px-4 py-3 text-right font-mono font-black text-foreground border-r border-border bg-muted/40">BUDGETED COST (₹)</th>
-                <th className="px-4 py-3 text-right font-mono font-bold text-primary">COST / BUA (₹)</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border">
-              {filteredCategories.map((category) => {
-                const isOpen = openCategories[category.id] ?? true;
-                const catBaselineTotal = Math.round(category.items.reduce((sum, i) => sum + (i.cost || 0), 0));
-                const catCostPerBua = Number((catBaselineTotal / 615000).toFixed(2));
-
-                return (
-                  <React.Fragment key={category.id}>
-                    {/* Category Accordion Bar */}
-                    <tr
-                      onClick={() => toggleCategory(category.id)}
-                      className="cursor-pointer bg-muted/70 font-bold text-foreground hover:bg-muted/90 transition-colors align-middle"
-                    >
-                      <td colSpan={2} className="px-4 py-2.5 border-r border-border">
-                        <div className="flex items-center gap-2">
-                          {isOpen ? <ChevronDown className="h-4 w-4 text-primary flex-shrink-0" /> : <ChevronRight className="h-4 w-4 text-muted-foreground flex-shrink-0" />}
-                          <span className="text-xs font-black uppercase tracking-wide text-foreground">{category.categoryName}</span>
-                          <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-extrabold text-primary">
-                            {category.items.length} items
-                          </span>
-                        </div>
-                      </td>
-                      <td colSpan={6} className="px-4 py-2.5 text-right text-xs font-bold text-muted-foreground uppercase tracking-wider border-r border-border">
-                        Category Baseline Total:
-                      </td>
-                      <td className="px-4 py-2.5 text-right font-mono font-black text-xs text-foreground border-r border-border bg-muted/60">
-                        ₹{catBaselineTotal.toLocaleString('en-IN')}
-                      </td>
-                      <td className="px-4 py-2.5 text-right font-mono font-black text-xs text-primary">
-                        ₹{catCostPerBua.toFixed(2)}
-                      </td>
-                    </tr>
-
-                    {/* Category Budget Items */}
-                    {isOpen &&
-                      category.items.map((item) => (
-                        <tr key={item.id} className="group hover:bg-muted/30 transition-colors align-middle">
-                          <td className="px-3.5 py-2 text-center font-bold text-muted-foreground border-r border-border">{item.srNo}</td>
-                          <td className="px-4 py-2 font-semibold text-foreground whitespace-normal min-w-[260px] max-w-[340px] break-words border-r border-border leading-tight">
-                            {item.item}
-                          </td>
-
-                          {/* RCC QTY */}
-                          <td className="px-3.5 py-2 text-right font-mono text-muted-foreground border-r border-border">
-                            {isEditMode ? (
-                              <input
-                                type="number"
-                                value={item.qtyRcc ?? ''}
-                                onChange={(e) => handleItemChange(category.id, item.id, 'qtyRcc', e.target.value === '' ? null : Number(e.target.value))}
-                                className="h-7 w-20 text-right rounded border border-primary/40 bg-card px-1.5 text-xs font-mono font-bold outline-none"
-                              />
-                            ) : (
-                              item.qtyRcc ? item.qtyRcc.toLocaleString('en-IN') : '-'
-                            )}
-                          </td>
-
-                          {/* FINISHES QTY */}
-                          <td className="px-3.5 py-2 text-right font-mono text-muted-foreground border-r border-border">
-                            {isEditMode ? (
-                              <input
-                                type="number"
-                                value={item.qtyFinishes ?? ''}
-                                onChange={(e) => handleItemChange(category.id, item.id, 'qtyFinishes', e.target.value === '' ? null : Number(e.target.value))}
-                                className="h-7 w-20 text-right rounded border border-primary/40 bg-card px-1.5 text-xs font-mono font-bold outline-none"
-                              />
-                            ) : (
-                              item.qtyFinishes ? item.qtyFinishes.toLocaleString('en-IN') : '-'
-                            )}
-                          </td>
-
-                          {/* INFRA QTY */}
-                          <td className="px-3.5 py-2 text-right font-mono text-muted-foreground border-r border-border">
-                            {isEditMode ? (
-                              <input
-                                type="number"
-                                value={item.qtyInfra ?? ''}
-                                onChange={(e) => handleItemChange(category.id, item.id, 'qtyInfra', e.target.value === '' ? null : Number(e.target.value))}
-                                className="h-7 w-20 text-right rounded border border-primary/40 bg-card px-1.5 text-xs font-mono font-bold outline-none"
-                              />
-                            ) : (
-                              item.qtyInfra ? item.qtyInfra.toLocaleString('en-IN') : '-'
-                            )}
-                          </td>
-
-                          {/* TOTAL QTY */}
-                          <td className="px-3.5 py-2 text-right font-mono font-extrabold text-foreground border-r border-border bg-muted/20">
-                            {item.qtyTotal ? item.qtyTotal.toLocaleString('en-IN') : '1'}
-                          </td>
-
-                          {/* UNIT */}
-                          <td className="px-3 py-2 text-center font-medium text-muted-foreground border-r border-border">{item.unit || 'LS'}</td>
-
-                          {/* EST. RATE */}
-                          <td className="px-4 py-2 text-right font-mono font-semibold text-foreground border-r border-border">
-                            {isEditMode ? (
-                              <input
-                                type="number"
-                                value={item.rate}
-                                onChange={(e) => handleItemChange(category.id, item.id, 'rate', Number(e.target.value))}
-                                className="h-7 w-24 text-right rounded border border-primary/40 bg-card px-1.5 text-xs font-mono font-bold outline-none"
-                              />
-                            ) : (
-                              item.rate ? item.rate.toLocaleString('en-IN') : '0'
-                            )}
-                          </td>
-
-                          {/* BUDGETED COST */}
-                          <td className="px-4 py-2 text-right font-mono font-black text-foreground border-r border-border bg-muted/30">
-                            {Math.round(item.cost).toLocaleString('en-IN')}
-                          </td>
-
-                          {/* COST / BUA */}
-                          <td className="px-4 py-2 text-right font-mono font-bold text-primary">
-                            ₹{(item.costPerBua || 0).toFixed(2)}
-                          </td>
-                        </tr>
-                      ))}
-                  </React.Fragment>
-                );
-              })}
-
-              {/* Grand TOTAL Row */}
-              <tr className="border-t-2 border-border bg-slate-900 text-slate-100 font-black text-xs align-middle">
-                <td colSpan={2} className="px-4 py-3.5 text-amber-400 font-black uppercase tracking-widest text-sm border-r border-slate-700">
-                  PROJECT TOTAL BASELINE COST
-                </td>
-                <td colSpan={6} className="px-4 py-3.5 text-right font-mono text-slate-300 border-r border-slate-700 font-extrabold uppercase tracking-wider text-xs">
-                  Grand Total Baseline:
-                </td>
-                <td className="px-4 py-3.5 text-right font-mono text-amber-300 font-black text-sm border-r border-slate-700 bg-slate-950">
-                  ₹{totalBaselineCost.toLocaleString('en-IN')}
-                </td>
-                <td className="px-4 py-3.5 text-right font-mono text-emerald-400 font-black text-sm">
-                  ₹{totalCostPerBua.toFixed(2)}
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* AI MARKET RATE BENCHMARK ADVISORY SUGGESTIONS MODAL (SUGGEST ONLY - NO DIRECT APPLY) */}
-      {showAiBenchmarkModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 backdrop-blur-sm p-4 overflow-y-auto select-none">
-          <div className="w-full max-w-2xl rounded-2xl border border-border bg-card p-6 shadow-2xl space-y-4">
-            <div className="flex items-center justify-between border-b border-border pb-3">
-              <div className="flex items-center gap-3">
-                <div className="rounded-xl bg-primary/10 p-2.5 text-primary">
-                  <Sparkles className="h-6 w-6" />
-                </div>
-                <div>
-                  <h3 className="font-heading text-base font-bold text-foreground">AI Market Rate Advisory Suggestions</h3>
-                  <p className="text-xs text-muted-foreground">AI benchmark insights compared against regional Gujarat market rates (Advisory Only)</p>
-                </div>
+            ) : (
+              <div className="flex items-center gap-1.5">
+                {canEdit && (
+                  <button
+                    type="button"
+                    onClick={beginEdit}
+                    className="inline-flex h-8.5 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-xs font-bold text-foreground shadow-2xs transition-colors hover:bg-muted"
+                  >
+                    <Pencil className="h-3.5 w-3.5 text-primary" aria-hidden="true" /> Edit Mode
+                  </button>
+                )}
+                {permissions.canImportBudget && !isPortfolio && (
+                  <button
+                    type="button"
+                    onClick={() => setIsImporterOpen(true)}
+                    className="inline-flex h-8.5 items-center gap-1.5 rounded-lg bg-primary px-3.5 text-xs font-bold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90"
+                  >
+                    <FileSpreadsheet className="h-3.5 w-3.5" aria-hidden="true" /> Import Excel
+                  </button>
+                )}
               </div>
-              <button onClick={() => setShowAiBenchmarkModal(false)} className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted">
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
-            <div className="space-y-3 text-xs">
-              <div className="rounded-xl border border-amber-200 bg-amber-50/60 p-3.5 flex items-start gap-3 dark:border-amber-900/40 dark:bg-amber-950/20">
-                <ShieldAlert className="h-5 w-5 text-amber-600 flex-shrink-0 mt-0.5" />
-                <div className="space-y-1">
-                  <p className="font-bold text-amber-900 dark:text-amber-300">💡 AI Suggestion: Cement Rate Benchmark Advisory</p>
-                  <p className="text-amber-800 dark:text-amber-400">
-                    Your estimated baseline rate for <strong>UltraTech PPC Cement</strong> is <strong>₹385/bag</strong>. Regional market benchmark is <strong>₹365/bag</strong> (+5.47% premium).
-                  </p>
-                  <p className="text-[11px] text-muted-foreground italic pt-1">
-                    Recommendation: Use <strong>Edit Budget Mode</strong> to manually adjust if vendor contract allows.
-                  </p>
-                </div>
-              </div>
-
-              <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-3.5 flex items-start gap-3 dark:border-emerald-900/40 dark:bg-emerald-950/20">
-                <Lightbulb className="h-5 w-5 text-emerald-600 flex-shrink-0 mt-0.5" />
-                <div className="space-y-1">
-                  <p className="font-bold text-emerald-900 dark:text-emerald-300">💡 AI Suggestion: TFE Steel Rebar Savings Opportunity</p>
-                  <p className="text-emerald-800 dark:text-emerald-400">
-                    Your baseline rate for <strong>Fe 550D Steel Rebar</strong> is <strong>₹62,500/Ton</strong>. Regional benchmark is <strong>₹61,200/Ton</strong> (-2.08% potential bulk savings).
-                  </p>
-                  <p className="text-[11px] text-muted-foreground italic pt-1">
-                    Recommendation: Negotiate volume discount on next 450 Ton shipment.
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            <div className="rounded-xl border border-border bg-muted/20 p-3 text-[11px] text-muted-foreground font-semibold flex items-center justify-between">
-              <span>* AI suggestions are purely advisory and will NOT mutate your baseline budget values directly.</span>
-              <button
-                type="button"
-                onClick={() => {
-                  setShowAiBenchmarkModal(false);
-                  handleStartEdit();
-                }}
-                className="inline-flex items-center gap-1 text-primary hover:underline font-bold"
-              >
-                <Pencil className="h-3 w-3" /> Open Edit Mode to Apply
-              </button>
-            </div>
-
-            <div className="flex items-center justify-end border-t border-border pt-3">
-              <button
-                type="button"
-                onClick={() => setShowAiBenchmarkModal(false)}
-                className="h-9 rounded-lg bg-primary px-5 text-xs font-bold text-primary-foreground shadow-2xs"
-              >
-                Close Suggestions
-              </button>
-            </div>
+            )}
           </div>
         </div>
-      )}
 
-      {/* Master Importer Modal */}
-      <ExcelImporterModal
-        isOpen={isImporterOpen}
-        onClose={() => setIsImporterOpen(false)}
-        onImportSuccess={(newItems) => {
-          setVersionNumber((prev) => prev + 1);
-          setVersionNotice(`Master Excel Sheet successfully parsed & updated to v${versionNumber + 1}!`);
-        }}
-        existingCategories={categories}
-      />
+        {isPortfolio && (
+          <p className="rounded-lg border border-border bg-muted/30 p-2.5 text-[11px] font-semibold text-muted-foreground">
+            Portfolio view is read-only and aggregates every project. Select a single project to
+            edit or import a baseline.
+          </p>
+        )}
 
-      {/* REVISION JUSTIFICATION PROMPT MODAL (Triggered on Save) */}
-      {showSaveJustificationModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 backdrop-blur-sm p-4 select-none">
-          <div className="w-full max-w-lg rounded-2xl border border-border bg-card p-6 shadow-2xl space-y-4">
-            <div className="flex items-center gap-3 border-b border-border pb-3">
-              <div className="rounded-xl bg-primary/10 p-2.5 text-primary">
-                <FileClock className="h-6 w-6" />
-              </div>
-              <div>
-                <h3 className="font-heading text-base font-bold text-foreground">Change Order / Revision Justification</h3>
-                <p className="text-xs text-muted-foreground">Mandatory audit justification for bumping baseline budget to Version v{versionNumber + 1}</p>
-              </div>
-            </div>
+        {/* MASTER TABLE */}
+        <div className="overflow-hidden rounded-xl border border-border bg-card shadow-2xs">
+          <div className="max-h-[70vh] overflow-auto">
+            <table className="w-full border-collapse text-left text-xs whitespace-nowrap font-sans">
+              <thead className="sticky top-0 z-10">
+                <tr className="border-b border-border bg-muted/90 text-[11px] font-bold uppercase tracking-wider text-muted-foreground backdrop-blur">
+                  <th className="w-12 border-r border-border px-3.5 py-3 text-center">Sr No.</th>
+                  <th className="min-w-[260px] border-r border-border px-4 py-3">Item Description</th>
+                  <th className="border-r border-border px-3.5 py-3 text-right font-mono">RCC Qty</th>
+                  <th className="border-r border-border px-3.5 py-3 text-right font-mono">Finishes Qty</th>
+                  <th className="border-r border-border px-3.5 py-3 text-right font-mono">Infra Qty</th>
+                  <th className="border-r border-border bg-muted/30 px-3.5 py-3 text-right font-mono font-bold text-foreground">
+                    Total Qty
+                  </th>
+                  <th className="border-r border-border px-3 py-3 text-center">Unit</th>
+                  <th className="border-r border-border px-4 py-3 text-right font-mono">Est. Rate (₹)</th>
+                  <th className="border-r border-border bg-muted/40 px-4 py-3 text-right font-mono font-black text-foreground">
+                    Budgeted Cost (₹)
+                  </th>
+                  <th className="px-4 py-3 text-right font-mono font-bold text-primary">Cost / BUA (₹)</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {filteredCategories.map((category) => {
+                  const isOpen = openCategories[category.id] ?? true;
+                  const catTotal = category.items.reduce((s, i) => s + i.cost, 0);
+                  const catPerBua = buaSqft > 0 ? catTotal / buaSqft : 0;
 
-            <div className="space-y-2">
-              <label className="text-xs font-extrabold uppercase tracking-wider text-muted-foreground">
-                Enter Change Order Reason / Justification <span className="text-red-500">*</span>
+                  return (
+                    <React.Fragment key={category.id}>
+                      <tr
+                        onClick={() => toggleCategory(category.id)}
+                        className="cursor-pointer bg-muted/70 align-middle font-bold text-foreground transition-colors hover:bg-muted/90"
+                      >
+                        <td colSpan={2} className="border-r border-border px-4 py-2.5">
+                          <div className="flex items-center gap-2">
+                            {isOpen ? (
+                              <ChevronDown className="h-4 w-4 flex-shrink-0 text-primary" aria-hidden="true" />
+                            ) : (
+                              <ChevronRight className="h-4 w-4 flex-shrink-0 text-muted-foreground" aria-hidden="true" />
+                            )}
+                            <span className="text-xs font-black uppercase tracking-wide text-foreground">
+                              {category.categoryName}
+                            </span>
+                            <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-extrabold text-primary">
+                              {category.items.length} items
+                            </span>
+                          </div>
+                        </td>
+                        <td
+                          colSpan={6}
+                          className="border-r border-border px-4 py-2.5 text-right text-xs font-bold uppercase tracking-wider text-muted-foreground"
+                        >
+                          Category Baseline Total:
+                        </td>
+                        <td className="border-r border-border bg-muted/60 px-4 py-2.5 text-right font-mono text-xs font-black text-foreground">
+                          ₹{catTotal.toLocaleString('en-IN')}
+                        </td>
+                        <td className="px-4 py-2.5 text-right font-mono text-xs font-black text-primary">
+                          {buaSqft > 0 ? `₹${catPerBua.toFixed(2)}` : '—'}
+                        </td>
+                      </tr>
+
+                      {isOpen &&
+                        category.items.map((item) => {
+                          const isDirty = dirtyItemIds.includes(item.id);
+                          return (
+                            <tr
+                              key={item.id}
+                              className={`group align-middle transition-colors hover:bg-muted/30 ${
+                                isDirty ? 'bg-amber-50/60 dark:bg-amber-950/20' : ''
+                              }`}
+                            >
+                              <td className="border-r border-border px-3.5 py-2 text-center font-bold text-muted-foreground">
+                                {item.srNo}
+                              </td>
+                              <td className="min-w-[260px] max-w-[340px] whitespace-normal break-words border-r border-border px-4 py-2 font-semibold leading-tight text-foreground">
+                                {item.item}
+                                <span className="ml-1.5 text-[10px] font-normal uppercase text-muted-foreground">
+                                  {item.scopeTag ? SCOPE_TAG_LABELS[item.scopeTag as Exclude<ScopeTag, 'total'>] : ''}
+                                </span>
+                              </td>
+
+                              <QtyCell
+                                value={item.qtyRcc}
+                                editable={isEditMode}
+                                onChange={(v) => handleFieldChange(item, 'qtyRcc', v)}
+                                ariaLabel={`Building RCC quantity for ${item.item}`}
+                              />
+                              <QtyCell
+                                value={item.qtyFinishes}
+                                editable={isEditMode}
+                                onChange={(v) => handleFieldChange(item, 'qtyFinishes', v)}
+                                ariaLabel={`Building finishes quantity for ${item.item}`}
+                              />
+                              <QtyCell
+                                value={item.qtyInfra}
+                                editable={isEditMode}
+                                onChange={(v) => handleFieldChange(item, 'qtyInfra', v)}
+                                ariaLabel={`Site infra quantity for ${item.item}`}
+                              />
+
+                              <td className="border-r border-border bg-muted/20 px-3.5 py-2 text-right font-mono font-extrabold text-foreground">
+                                {item.qtyTotal.toLocaleString('en-IN')}
+                              </td>
+                              <td className="border-r border-border px-3 py-2 text-center font-medium text-muted-foreground">
+                                {item.unit || 'LS'}
+                              </td>
+
+                              <td className="border-r border-border px-4 py-2 text-right font-mono font-semibold text-foreground">
+                                {isEditMode ? (
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    step="0.01"
+                                    value={item.rate}
+                                    onChange={(e) => handleFieldChange(item, 'rate', e.target.value)}
+                                    aria-label={`Estimated rate for ${item.item}`}
+                                    className="h-7 w-24 rounded border border-primary/40 bg-card px-1.5 text-right font-mono text-xs font-bold outline-none focus:ring-1 focus:ring-primary"
+                                  />
+                                ) : (
+                                  item.rate.toLocaleString('en-IN')
+                                )}
+                              </td>
+
+                              <td className="border-r border-border bg-muted/30 px-4 py-2 text-right font-mono font-black text-foreground">
+                                {Math.round(item.cost).toLocaleString('en-IN')}
+                              </td>
+                              <td className="px-4 py-2 text-right font-mono font-bold text-primary">
+                                {buaSqft > 0 ? `₹${(item.costPerBua ?? 0).toFixed(2)}` : '—'}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                    </React.Fragment>
+                  );
+                })}
+
+                <tr className="border-t-2 border-border bg-slate-900 align-middle text-xs font-black text-slate-100">
+                  <td
+                    colSpan={2}
+                    className="border-r border-slate-700 px-4 py-3.5 text-sm font-black uppercase tracking-widest text-amber-400"
+                  >
+                    Project Total Baseline Cost
+                  </td>
+                  <td
+                    colSpan={6}
+                    className="border-r border-slate-700 px-4 py-3.5 text-right font-mono text-xs font-extrabold uppercase tracking-wider text-slate-300"
+                  >
+                    Grand Total Baseline:
+                  </td>
+                  <td className="border-r border-slate-700 bg-slate-950 px-4 py-3.5 text-right font-mono text-sm font-black text-amber-300">
+                    ₹{totals.baseline.toLocaleString('en-IN')}
+                  </td>
+                  <td className="px-4 py-3.5 text-right font-mono text-sm font-black text-emerald-400">
+                    {buaSqft > 0 ? `₹${totals.costPerBua.toFixed(2)}` : '—'}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {filteredCategories.length === 0 && (
+          <p className="rounded-lg border border-dashed border-border bg-muted/20 p-6 text-center text-xs font-semibold text-muted-foreground">
+            No line items match the current search or scope filter.
+          </p>
+        )}
+
+        {/* IMPORTER — mounted only while open so its wizard state resets cleanly
+            and its hooks always run in the same order. */}
+        {isImporterOpen && !isPortfolio && (
+          <ExcelImporterModal
+            projectId={projectId}
+            existingCategories={categories}
+            onClose={() => setIsImporterOpen(false)}
+            onImported={async (result) => {
+              await refresh();
+              setNotice(
+                `Excel import v${result.version_number} saved to Supabase: ${result.inserted} added, ${result.updated} updated${
+                  result.archived ? `, ${result.archived} archived` : ''
+                }. New baseline ₹${Math.round(result.new_total).toLocaleString('en-IN')}.`,
+              );
+            }}
+          />
+        )}
+
+        {/* JUSTIFICATION MODAL */}
+        {showJustificationModal && (
+          <Modal
+            title="Change Order / Revision Justification"
+            subtitle={`Mandatory audit justification for baseline version v${currentVersion + 1}`}
+            icon={FileClock}
+            onClose={() => setShowJustificationModal(false)}
+          >
+            <div className="space-y-3">
+              <p className="rounded-lg border border-border bg-muted/30 p-2.5 text-[11px] font-semibold text-muted-foreground">
+                {dirtyItemIds.length} line item(s) will be revised. This writes a permanent entry to
+                budget_revisions and cascades to allocations and the variance sheet.
+              </p>
+              <label className="block space-y-2">
+                <span className="text-xs font-extrabold uppercase tracking-wider text-muted-foreground">
+                  Change order reason <span className="text-red-500">*</span>
+                </span>
+                <textarea
+                  value={justification}
+                  onChange={(e) => setJustification(e.target.value)}
+                  placeholder="e.g. Steel market price hike +12% and additional RCC Slab 13 scope approved by the Board."
+                  className="min-h-28 w-full rounded-xl border border-border bg-background p-3 text-xs font-medium text-foreground outline-none focus:ring-1 focus:ring-primary"
+                />
               </label>
-              <textarea
-                value={revisionJustificationText}
-                onChange={(e) => setRevisionJustificationText(e.target.value)}
-                placeholder="e.g. Steel market price hike +12% & Additional RCC Slab 13 scope approved by Board of Directors..."
-                className="min-h-28 w-full rounded-xl border border-border bg-background p-3 text-xs font-medium text-foreground outline-none focus:ring-1 focus:ring-primary"
-              />
+              {saveError && <BudgetError message={saveError} />}
             </div>
 
             <div className="flex items-center justify-end gap-3 border-t border-border pt-3">
               <button
                 type="button"
-                onClick={() => setShowSaveJustificationModal(false)}
-                className="h-9 rounded-lg border border-border bg-card px-4 text-xs font-semibold text-muted-foreground hover:bg-muted"
+                onClick={() => setShowJustificationModal(false)}
+                disabled={saving}
+                className="h-9 rounded-lg border border-border bg-card px-4 text-xs font-semibold text-muted-foreground hover:bg-muted disabled:opacity-50"
               >
-                Back to Editing
+                Back to editing
               </button>
               <button
                 type="button"
-                onClick={handleConfirmSaveWithJustification}
-                className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-emerald-600 px-5 text-xs font-bold text-white shadow-sm hover:bg-emerald-700"
+                onClick={() => void handleSave()}
+                disabled={saving || !justification.trim()}
+                className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-emerald-600 px-5 text-xs font-bold text-white shadow-sm hover:bg-emerald-700 disabled:opacity-50"
               >
-                <Save className="h-4 w-4" /> Save &amp; Log Version v{versionNumber + 1}
+                {saving ? (
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Save className="h-4 w-4" aria-hidden="true" />
+                )}
+                {saving ? 'Saving to Supabase…' : `Save & log v${currentVersion + 1}`}
               </button>
             </div>
-          </div>
-        </div>
-      )}
+          </Modal>
+        )}
 
-      {/* REVISION AUDIT HISTORY MODAL */}
-      {showRevisionHistoryModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 backdrop-blur-sm p-4 overflow-y-auto select-none">
-          <div className="w-full max-w-4xl rounded-2xl border border-border bg-card p-6 shadow-2xl my-8">
-            <div className="flex items-center justify-between border-b border-border pb-4">
-              <div className="flex items-center gap-3">
-                <div className="rounded-xl bg-amber-100 p-2.5 text-amber-700 dark:bg-amber-950/50">
-                  <History className="h-6 w-6" />
-                </div>
-                <div>
-                  <h2 className="font-heading text-lg font-bold text-foreground">Master Budget Version Audit History</h2>
-                  <p className="text-xs text-muted-foreground">Complete audit log of all baseline revisions, change order reasons &amp; cost version shifts</p>
-                </div>
-              </div>
-              <button onClick={() => setShowRevisionHistoryModal(false)} className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted">
-                <X className="h-5 w-5" />
+        {/* DISCARD MODAL */}
+        {showDiscardModal && (
+          <Modal
+            title="Unsaved budget changes"
+            subtitle={`${dirtyItemIds.length} line item(s) have been modified.`}
+            icon={AlertTriangle}
+            onClose={() => setShowDiscardModal(false)}
+          >
+            <div className="flex flex-col gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowDiscardModal(false);
+                  setJustification('');
+                  setShowJustificationModal(true);
+                }}
+                className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 text-xs font-bold text-white shadow-sm hover:bg-emerald-700"
+              >
+                <Save className="h-4 w-4" aria-hidden="true" /> Save changes
+              </button>
+              <button
+                type="button"
+                onClick={discardEdits}
+                className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-lg border border-red-200 bg-red-50 px-4 text-xs font-bold text-red-700 hover:bg-red-100 dark:border-red-900/40 dark:bg-red-950/30 dark:text-red-300"
+              >
+                <Trash2 className="h-4 w-4" aria-hidden="true" /> Discard changes
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowDiscardModal(false)}
+                className="inline-flex h-9 w-full items-center justify-center rounded-lg border border-border bg-card px-4 text-xs font-semibold text-muted-foreground hover:bg-muted"
+              >
+                Keep editing
               </button>
             </div>
+          </Modal>
+        )}
 
-            <div className="mt-5 space-y-4 max-h-[60vh] overflow-y-auto pr-1">
-              {revisionHistoryLogs.map((log) => (
-                <div key={log.id} className="rounded-xl border border-border bg-muted/20 p-4 space-y-3">
-                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-border pb-3">
+        {/* REVISION HISTORY */}
+        {showHistoryModal && (
+          <Modal
+            title="Master Budget version audit history"
+            subtitle="Every change order recorded in budget_revisions"
+            icon={History}
+            wide
+            onClose={() => setShowHistoryModal(false)}
+          >
+            <div className="max-h-[60vh] space-y-4 overflow-y-auto pr-1">
+              {masterRevisions.length === 0 && (
+                <p className="rounded-lg border border-dashed border-border bg-muted/20 p-6 text-center text-xs font-semibold text-muted-foreground">
+                  No revisions recorded yet. The first change order or Excel import will appear here.
+                </p>
+              )}
+
+              {masterRevisions.map((log) => (
+                <div key={log.id} className="space-y-3 rounded-xl border border-border bg-muted/20 p-4">
+                  <div className="flex flex-col gap-2 border-b border-border pb-3 sm:flex-row sm:items-center sm:justify-between">
                     <div>
-                      <div className="flex items-center gap-2">
-                        <span className="font-black text-sm text-foreground">{log.versionLabel}</span>
-                        {log.itemDetails.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-sm font-black text-foreground">{log.version_label}</span>
+                        {log.items && log.items.length > 0 && (
                           <span className="rounded-full bg-primary/10 px-2.5 py-0.5 text-[10px] font-extrabold text-primary">
-                            {log.itemDetails.length} Line Items Revised
+                            {log.items.length} line item(s) revised
                           </span>
                         )}
+                        <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-bold uppercase text-muted-foreground">
+                          {log.scope.replace(/_/g, ' ')}
+                        </span>
                       </div>
-                      <p className="text-xs text-muted-foreground mt-0.5 flex items-center gap-2">
-                        <UserCheck className="h-3.5 w-3.5 text-emerald-600" /> {log.editedBy} • <Clock className="h-3.5 w-3.5" /> {log.timestamp}
+                      <p className="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
+                        <UserCheck className="h-3.5 w-3.5 text-emerald-600" aria-hidden="true" />
+                        {log.edited_by_name}
+                        <Clock className="h-3.5 w-3.5" aria-hidden="true" />
+                        {new Date(log.created_at).toLocaleString('en-IN')}
                       </p>
                     </div>
-
                     <div className="text-right">
-                      <p className="text-[10px] font-extrabold uppercase text-muted-foreground">Baseline Cost Shift</p>
-                      <p className={`text-sm font-mono font-black ${log.netDiffAmount > 0 ? 'text-red-600' : log.netDiffAmount < 0 ? 'text-emerald-600' : 'text-foreground'}`}>
-                        {log.netDiffAmount > 0 ? '+' : ''}₹{log.netDiffAmount.toLocaleString('en-IN')}
+                      <p className="text-[10px] font-extrabold uppercase text-muted-foreground">
+                        Baseline cost shift
+                      </p>
+                      <p
+                        className={`font-mono text-sm font-black ${
+                          log.net_diff_amount > 0
+                            ? 'text-red-600'
+                            : log.net_diff_amount < 0
+                              ? 'text-emerald-600'
+                              : 'text-foreground'
+                        }`}
+                      >
+                        {log.net_diff_amount > 0 ? '+' : ''}₹
+                        {Math.round(log.net_diff_amount).toLocaleString('en-IN')}
                       </p>
                     </div>
                   </div>
 
-                  <div className="rounded-lg bg-card p-3 border border-border">
-                    <p className="text-[11px] font-extrabold uppercase text-muted-foreground tracking-wider">Change Order / Justification Reason:</p>
-                    <p className="text-xs text-foreground font-semibold mt-1">"{log.justification}"</p>
+                  <div className="rounded-lg border border-border bg-card p-3">
+                    <p className="text-[11px] font-extrabold uppercase tracking-wider text-muted-foreground">
+                      Justification
+                    </p>
+                    <p className="mt-1 text-xs font-semibold text-foreground">
+                      &ldquo;{log.justification_reason}&rdquo;
+                    </p>
                   </div>
 
-                  {/* Modified Line Items Breakdown */}
-                  {log.itemDetails.length > 0 && (
-                    <div className="rounded-lg border border-border bg-background overflow-hidden">
+                  {log.items && log.items.length > 0 && (
+                    <div className="overflow-x-auto rounded-lg border border-border bg-background">
                       <table className="w-full text-left text-xs whitespace-nowrap">
                         <thead className="bg-muted/60 text-[10px] font-bold uppercase text-muted-foreground">
                           <tr>
-                            <th className="px-3 py-2">Category &amp; Sub Activity</th>
-                            <th className="px-3 py-2 text-right">Old Qty → New Qty</th>
-                            <th className="px-3 py-2 text-right">Old Rate → New Rate</th>
-                            <th className="px-3 py-2 text-right">Cost Difference</th>
+                            <th className="px-3 py-2">Category &amp; sub activity</th>
+                            <th className="px-3 py-2 text-right">Qty</th>
+                            <th className="px-3 py-2 text-right">Rate</th>
+                            <th className="px-3 py-2 text-right">Cost difference</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-border text-[11px]">
-                          {log.itemDetails.map((item, i) => (
-                            <tr key={i} className="hover:bg-muted/20">
+                          {log.items.map((item) => (
+                            <tr key={item.id} className="hover:bg-muted/20">
                               <td className="px-3 py-2 font-bold text-foreground">
-                                <div>{item.subActivity}</div>
-                                <div className="text-[10px] text-muted-foreground font-normal">{item.category}</div>
+                                <div>{item.sub_activity}</div>
+                                <div className="text-[10px] font-normal text-muted-foreground">
+                                  {item.category_name}
+                                </div>
                               </td>
-                              <td className="px-3 py-2 text-right font-mono text-muted-foreground">{item.oldQty.toLocaleString('en-IN')} → <span className="font-bold text-foreground">{item.newQty.toLocaleString('en-IN')}</span></td>
-                              <td className="px-3 py-2 text-right font-mono text-muted-foreground">₹{item.oldRate.toLocaleString('en-IN')} → <span className="font-bold text-foreground">₹{item.newRate.toLocaleString('en-IN')}</span></td>
-                              <td className={`px-3 py-2 text-right font-mono font-black ${item.newCost - item.oldCost > 0 ? 'text-red-600' : 'text-emerald-600'}`}>
-                                {item.newCost - item.oldCost > 0 ? '+' : ''}₹{(item.newCost - item.oldCost).toLocaleString('en-IN')}
+                              <td className="px-3 py-2 text-right font-mono text-muted-foreground">
+                                {Number(item.old_qty).toLocaleString('en-IN')} →{' '}
+                                <span className="font-bold text-foreground">
+                                  {Number(item.new_qty).toLocaleString('en-IN')}
+                                </span>
+                              </td>
+                              <td className="px-3 py-2 text-right font-mono text-muted-foreground">
+                                ₹{Number(item.old_rate).toLocaleString('en-IN')} →{' '}
+                                <span className="font-bold text-foreground">
+                                  ₹{Number(item.new_rate).toLocaleString('en-IN')}
+                                </span>
+                              </td>
+                              <td
+                                className={`px-3 py-2 text-right font-mono font-black ${
+                                  Number(item.new_cost) - Number(item.old_cost) > 0
+                                    ? 'text-red-600'
+                                    : 'text-emerald-600'
+                                }`}
+                              >
+                                {Number(item.new_cost) - Number(item.old_cost) > 0 ? '+' : ''}₹
+                                {Math.round(
+                                  Number(item.new_cost) - Number(item.old_cost),
+                                ).toLocaleString('en-IN')}
                               </td>
                             </tr>
                           ))}
@@ -811,66 +917,95 @@ export default function MasterSheetTab({
                 </div>
               ))}
             </div>
+          </Modal>
+        )}
+      </div>
+    </BudgetGate>
+  );
+}
 
-            <div className="flex items-center justify-end border-t border-border pt-4 mt-4">
-              <button
-                type="button"
-                onClick={() => setShowRevisionHistoryModal(false)}
-                className="h-9 rounded-lg bg-primary px-5 text-xs font-bold text-primary-foreground shadow-2xs"
-              >
-                Close Revision History
-              </button>
+// ----------------------------------------------------------------------------
+// Presentational helpers
+// ----------------------------------------------------------------------------
+
+function QtyCell({
+  value,
+  editable,
+  onChange,
+  ariaLabel,
+}: {
+  value: number | null | undefined;
+  editable: boolean;
+  onChange: (raw: string) => void;
+  ariaLabel: string;
+}) {
+  return (
+    <td className="border-r border-border px-3.5 py-2 text-right font-mono text-muted-foreground">
+      {editable ? (
+        <input
+          type="number"
+          min={0}
+          step="0.01"
+          value={value ?? ''}
+          onChange={(e) => onChange(e.target.value)}
+          aria-label={ariaLabel}
+          className="h-7 w-20 rounded border border-primary/40 bg-card px-1.5 text-right font-mono text-xs font-bold outline-none focus:ring-1 focus:ring-primary"
+        />
+      ) : value ? (
+        value.toLocaleString('en-IN')
+      ) : (
+        '—'
+      )}
+    </td>
+  );
+}
+
+function Modal({
+  title,
+  subtitle,
+  icon: Icon,
+  children,
+  onClose,
+  wide = false,
+}: {
+  title: string;
+  subtitle: string;
+  icon: typeof History;
+  children: React.ReactNode;
+  onClose: () => void;
+  wide?: boolean;
+}) {
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+      className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/65 p-4 backdrop-blur-sm"
+    >
+      <div
+        className={`w-full ${wide ? 'max-w-4xl' : 'max-w-lg'} my-8 space-y-4 rounded-2xl border border-border bg-card p-6 shadow-2xl`}
+      >
+        <div className="flex items-center justify-between border-b border-border pb-3">
+          <div className="flex items-center gap-3">
+            <div className="rounded-xl bg-primary/10 p-2.5 text-primary">
+              <Icon className="h-6 w-6" aria-hidden="true" />
+            </div>
+            <div>
+              <h3 className="font-heading text-base font-bold text-foreground">{title}</h3>
+              <p className="text-xs text-muted-foreground">{subtitle}</p>
             </div>
           </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted"
+          >
+            <X className="h-5 w-5" />
+          </button>
         </div>
-      )}
-
-      {/* UNSAVED CHANGES CONFIRMATION POPUP MODAL */}
-      {showUnsavedConfirmModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 backdrop-blur-sm p-4 select-none">
-          <div className="w-full max-w-md rounded-2xl border border-border bg-card p-6 shadow-2xl space-y-4">
-            <div className="flex items-center gap-3">
-              <div className="rounded-xl bg-amber-100 p-2.5 text-amber-700 dark:bg-amber-950/50">
-                <AlertTriangle className="h-6 w-6" />
-              </div>
-              <div>
-                <h3 className="font-heading text-base font-bold text-foreground">Unsaved Budget Changes Detected</h3>
-                <p className="text-xs text-muted-foreground mt-0.5">You have modified budget values. What would you like to do?</p>
-              </div>
-            </div>
-
-            <div className="rounded-xl border border-amber-200 bg-amber-50/50 p-3 text-xs text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-300">
-              Changes will only apply when you click <strong>Save &amp; Apply Changes</strong>.
-            </div>
-
-            <div className="flex flex-col gap-2 pt-2">
-              <button
-                type="button"
-                onClick={handleInitiateSave}
-                className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 text-xs font-bold text-white shadow-sm hover:bg-emerald-700"
-              >
-                <Save className="h-4 w-4" /> Save &amp; Apply Changes (v{versionNumber + 1})
-              </button>
-
-              <button
-                type="button"
-                onClick={handleDiscardChanges}
-                className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-lg border border-red-200 bg-red-50 px-4 text-xs font-bold text-red-700 hover:bg-red-100 dark:border-red-900/40 dark:bg-red-950/30 dark:text-red-300"
-              >
-                <Trash2 className="h-4 w-4" /> Discard Changes
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setShowUnsavedConfirmModal(false)}
-                className="inline-flex h-9 w-full items-center justify-center rounded-lg border border-border bg-card px-4 text-xs font-semibold text-muted-foreground hover:bg-muted"
-              >
-                Keep Editing
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+        {children}
+      </div>
     </div>
   );
 }

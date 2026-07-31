@@ -15,8 +15,13 @@ export const isSupabaseConfigured = Boolean(
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-// Map frontend project IDs to Supabase site UUIDs
-// central-park UUID verified against live Supabase projects table on 2026-07-29
+// Map legacy hardcoded frontend project IDs to Supabase project UUIDs.
+// Prefer passing the real projects.id UUID (the app store now loads projects from
+// the database); this map exists only for older call sites that still use slugs.
+//
+// 2026-07-30: 'central-park' previously pointed at f6704467-df8c-4f51-a49b-ddfdc40c39af,
+// which does not exist in the projects table. Every budget/procurement lookup that
+// resolved through it silently returned zero rows. Corrected to the real CP-001 row.
 const projectToSiteMap: Record<string, string> = {
   'one-tapi': 'a1b2c3d4-0000-0000-0000-000000000001',
   'aranya-3': 'a1b2c3d4-0000-0000-0000-000000000002',

@@ -5,6 +5,7 @@ import { ShoppingBag, ListChecks, Plus } from 'lucide-react';
 import type { PurchaseOrderRow } from '@/lib/procurement';
 import type { Role } from '@/lib/roles';
 import { PoStatsBar } from './po-stats-bar';
+import type { VendorOption } from '@/lib/procurement';
 import { PoTableView } from './po-table-view';
 import { PoForm, type FullPoFormState } from './po-form';
 import { POPdfPreviewModal } from './po-pdf-preview-modal';
@@ -12,13 +13,26 @@ import { POPdfPreviewModal } from './po-pdf-preview-modal';
 interface POWorkspaceProps {
   purchaseOrders?: PurchaseOrderRow[];
   activeRole?: Role;
+  /** Active suppliers, for the vendor dropdown on the PO form. */
+  vendorOptions?: VendorOption[];
   onSavePo?: (poData: FullPoFormState) => void;
   onApprove?: (po: PurchaseOrderRow) => void;
+  /** Opens the goods-receipt flow for an issued PO. */
+  onReceiveGoods?: (po: PurchaseOrderRow) => void;
   onPrintPo?: (po: PurchaseOrderRow) => void;
   onRefresh?: () => void | Promise<void>;
 }
 
-export function POWorkspace({ purchaseOrders = [], activeRole, onSavePo, onApprove, onPrintPo, onRefresh }: POWorkspaceProps) {
+export function POWorkspace({
+  purchaseOrders = [],
+  activeRole,
+  vendorOptions = [],
+  onSavePo,
+  onApprove,
+  onReceiveGoods,
+  onPrintPo,
+  onRefresh,
+}: POWorkspaceProps) {
   const [viewMode, setViewMode] = useState<'list' | 'form'>('list');
   const [activePo, setActivePo] = useState<PurchaseOrderRow | null>(null);
   const [previewPo, setPreviewPo] = useState<PurchaseOrderRow | null>(null);
@@ -121,6 +135,7 @@ export function POWorkspace({ purchaseOrders = [], activeRole, onSavePo, onAppro
       {viewMode === 'form' && activePo ? (
         <PoForm
           po={activePo}
+          vendorOptions={vendorOptions}
           onPrint={() => {
             if (activePo) setPreviewPo(activePo);
           }}
@@ -147,6 +162,7 @@ export function POWorkspace({ purchaseOrders = [], activeRole, onSavePo, onAppro
               setPreviewPo(po);
             }}
             onApprove={onApprove}
+            onReceiveGoods={onReceiveGoods}
             canApprove={canApprove}
           />
         </>

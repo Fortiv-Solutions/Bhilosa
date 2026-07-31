@@ -44,6 +44,15 @@ const ROLE_ALIASES: Record<string, Role> = {
   procurement_manager: 'PR_TEAM',
   purchase: 'PR_TEAM',
   purchase_team: 'PR_TEAM',
+  // Site-level operators map to PR_TEAM, which carries procurement operations
+  // but no approval rights. They previously fell through to the
+  // PROJECT_MANAGER default below, which showed them approve controls they are
+  // not entitled to — and which the database now rejects outright.
+  site_engineer: 'PR_TEAM',
+  engineer: 'PR_TEAM',
+  store_keeper: 'PR_TEAM',
+  storekeeper: 'PR_TEAM',
+  store: 'PR_TEAM',
 };
 
 export function normalizeDatabaseRole(role?: string | null): Role {

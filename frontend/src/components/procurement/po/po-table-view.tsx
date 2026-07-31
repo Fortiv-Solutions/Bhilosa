@@ -11,14 +11,24 @@ import {
   Printer,
   Eye,
   Check,
+  PackageCheck,
 } from 'lucide-react';
 import type { PurchaseOrderRow } from '@/lib/procurement';
+
+/** PO states in which goods may still be received. */
+const RECEIVABLE_STATUSES = new Set([
+  'approved',
+  'sent_to_vendor',
+  'acknowledged',
+  'partially_delivered',
+]);
 
 interface PoTableViewProps {
   purchaseOrders: PurchaseOrderRow[];
   onOpenPoForm: (po: PurchaseOrderRow) => void;
   onPrintPo?: (po: PurchaseOrderRow) => void;
   onApprove?: (po: PurchaseOrderRow) => void;
+  onReceiveGoods?: (po: PurchaseOrderRow) => void;
   canApprove?: boolean;
 }
 
@@ -27,7 +37,7 @@ function formatDate(dateStr: string | null | undefined): string {
   return new Date(dateStr).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
 }
 
-export function PoTableView({ purchaseOrders, onOpenPoForm, onPrintPo, onApprove, canApprove }: PoTableViewProps) {
+export function PoTableView({ purchaseOrders, onOpenPoForm, onPrintPo, onApprove, onReceiveGoods, canApprove }: PoTableViewProps) {
   if (purchaseOrders.length === 0) {
     return (
       <div className="rounded-2xl border border-dashed border-border bg-card p-12 text-center shadow-xs">
@@ -179,6 +189,16 @@ export function PoTableView({ purchaseOrders, onOpenPoForm, onPrintPo, onApprove
                           >
                             <Check className="h-3.5 w-3.5 text-emerald-600" />
                             <span>Approve &amp; Send</span>
+                          </button>
+                        )}
+                        {onReceiveGoods && RECEIVABLE_STATUSES.has((po.status || '').toLowerCase()) && (
+                          <button
+                            onClick={() => onReceiveGoods(po)}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-1.5 text-xs font-bold text-sky-800 dark:text-sky-200 hover:bg-sky-500/20 transition-all shadow-2xs"
+                            title="Record a goods receipt against this Purchase Order"
+                          >
+                            <PackageCheck className="h-3.5 w-3.5 text-sky-600" />
+                            <span>Receive Goods</span>
                           </button>
                         )}
                         {isDraft ? (

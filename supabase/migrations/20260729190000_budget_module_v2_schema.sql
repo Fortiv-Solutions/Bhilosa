@@ -1,4 +1,11 @@
 -- ============================================================================
+-- SUPERSEDED: every function and trigger defined below is replaced by
+-- 20260730120000_budget_module_production_hardening.sql, which also creates the
+-- budget_categories table this file forgot. Two wrong enum casts
+-- ('committed'::erp_ledger_transaction_type) have been corrected in place so a
+-- clean `supabase db reset` no longer leaves a landmine, but do not add logic
+-- here — edit the hardening migration instead.
+-- ============================================================================
 -- PRAMUKH GROUP ERP V2 — PRODUCTION-GRADE BUDGET MODULE & CROSS-MODULE SCHEMA
 -- File: supabase/migrations/20260729190000_budget_module_v2_schema.sql
 -- Description: Comprehensive database schema for Master Budget, In-Context Revisions,
@@ -173,7 +180,7 @@ BEGIN
       ) VALUES (
         NEW.project_id,
         NEW.budget_allocation_id,
-        'committed'::erp_ledger_transaction_type,
+        'commitment'::erp_budget_txn_type,
         'purchase_orders',
         NEW.id,
         NEW.total_amount,
@@ -212,7 +219,7 @@ BEGIN
       ) VALUES (
         NEW.project_id,
         NEW.budget_allocation_id,
-        'actual'::erp_ledger_transaction_type,
+        'actual'::erp_budget_txn_type,
         'vendor_bills',
         NEW.id,
         NEW.net_amount,

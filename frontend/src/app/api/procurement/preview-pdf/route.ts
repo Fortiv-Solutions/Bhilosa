@@ -1,10 +1,29 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabase } from '@/utils/supabase-client';
+import { requireSupabaseUser } from '@/lib/supabase/server';
 
+/**
+ * Renders a printable PR or PO.
+ *
+ * This was an unauthenticated GET that returned a complete commercial
+ * document — line items, rates, totals, vendor and project names — for any
+ * id supplied in the query string. It now requires a valid session, and reads
+ * through that user's own client so row level security applies to the query
+ * rather than the request running with blanket anon access.
+ */
 export async function GET(req: NextRequest) {
+  const auth = await requireSupabaseUser(req);
+  if ('error' in auth) {
+    return NextResponse.json({ error: auth.error }, { status: auth.status });
+  }
+  const { supabase } = auth;
+
   const { searchParams } = new URL(req.url);
   const type = searchParams.get('type') || 'PR';
   const id = searchParams.get('id') || '';
+
+  if (!id) {
+    return NextResponse.json({ error: 'A document id is required.' }, { status: 400 });
+  }
 
   let title = 'Purchase Requisition';
   let docNumber = 'PR-2026-001';

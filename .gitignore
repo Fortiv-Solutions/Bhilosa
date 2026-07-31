@@ -14,8 +14,8 @@ node_modules/
 coverage/
 
 # next.js
-.next/
-.next-3001/
+**/.next/
+**/.next-*/
 out/
 
 # production

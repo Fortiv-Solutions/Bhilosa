@@ -8,7 +8,7 @@ import MobileNavbar from "@/components/mobile-navbar";
 import HeaderNavbar from "@/components/header-navbar";
 import SubNavBar from "@/components/sub-navbar";
 import { useAppStore } from "@/store/use-app-store";
-import { canAccessPath } from "@/lib/rbac";
+import { canAccessPath, getRoleLandingPath } from "@/lib/rbac";
 
 export default function LayoutWrapper({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -55,16 +55,23 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
     };
   }, [initialized, isLoggedIn, isLoginPage]);
 
+  // Unauthenticated visitors are sent to the login page, which is the application's
+  // landing page. (This replaces an auth bypass that force-redirected /login to
+  // /dashboard, making the login screen unreachable.)
   useEffect(() => {
-    // Auth bypass: always redirect /login to /dashboard
-    if (initialized && isLoginPage) {
-      router.replace('/dashboard');
+    if (initialized && !isLoggedIn && !isLoginPage) {
+      const returnTo = pathname && pathname !== '/' ? `?next=${encodeURIComponent(pathname)}` : '';
+      router.replace(`/login${returnTo}`);
     }
-  }, [initialized, isLoginPage, router]);
+  }, [initialized, isLoggedIn, isLoginPage, pathname, router]);
+
+  // NOTE: redirecting an already-authenticated user away from /login is owned by the
+  // login page itself, because only it knows about the ?next= destination. Doing it
+  // here as well would race and drop that deep link.
 
   useEffect(() => {
     if (initialized && isLoggedIn && !isLoginPage && !canAccessPath(activeRole, pathname)) {
-      router.replace('/dashboard');
+      router.replace(getRoleLandingPath(activeRole));
     }
   }, [activeRole, initialized, isLoggedIn, isLoginPage, pathname, router]);
 

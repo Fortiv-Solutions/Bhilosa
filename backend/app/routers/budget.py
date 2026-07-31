@@ -1,220 +1,514 @@
 # ============================================================================
 # PRAMUKH GROUP ERP V2 — FASTAPI BUDGET ROUTER
 # File: backend/app/routers/budget.py
-# Description: Production REST API endpoints for Master Budget, In-Context Revisions,
-#              Variance Reconciliation, Bill-Wise Ledger, S-Curve & Cross-Module Sync.
+#
+# Every endpoint now reads live Supabase data.
+#
+# What was wrong before: this module imported no database client at all. All five
+# endpoints returned hardcoded literals —
+#     total_bac = 1453638820.0
+#     total_actual = 329480000.0
+#     retention_gauge = {"retention_held": 619500.0, ...}
+#     variance_drivers = [four invented rows]
+#     lifecycle_data = [a 12-month S-curve with invented milestones]
+# — and POST /budget/master/revision returned a success envelope while writing
+# nothing. GET /budget/master served master_budget_seed.py rather than the database.
+# VarianceUpdateRequest and LedgerEntryRequest were declared with no endpoints.
+#
+# Auth: requests must carry the caller's Supabase JWT. Reads and writes run under
+# that identity, so row-level security applies to API traffic exactly as it does in
+# the browser — the backend is not an RLS bypass.
 # ============================================================================
 
-from fastapi import APIRouter, HTTPException, Query, Body, Depends
-from typing import List, Optional, Dict, Any
-from pydantic import BaseModel
-import os
-import datetime
+from collections import defaultdict
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, Header, HTTPException, Query
+from pydantic import BaseModel, Field
+
+from ..services import supabase_rest as sb
 
 router = APIRouter()
 
-CENTRAL_PARK_PROJECT_ID = "00000000-0000-0000-0000-000000000001"
 
 # ----------------------------------------------------------------------------
-# PYDANTIC SCHEMAS
+# REQUEST SCHEMAS
 # ----------------------------------------------------------------------------
 
-class MasterBudgetItemSchema(BaseModel):
+class MasterBudgetItemPatch(BaseModel):
     id: str
-    srNo: str
-    category: str
-    item: str
-    qtyRcc: Optional[float] = None
-    qtyFinishes: Optional[float] = None
-    qtyInfra: Optional[float] = None
-    qtyTotal: float
-    unit: str
-    rate: float
-    cost: float
-    costPerBua: Optional[float] = None
-    itemType: Optional[str] = "material"
-    scopeTag: Optional[str] = "building_rcc"
+    qty_rcc: Optional[float] = None
+    qty_finishes: Optional[float] = None
+    qty_infra: Optional[float] = None
+    qty_total: float = Field(ge=0)
+    estimated_rate: float = Field(ge=0)
 
-class MasterBudgetCategorySchema(BaseModel):
-    id: str
-    categoryName: str
-    categoryCode: str
-    items: List[MasterBudgetItemSchema]
-    totalCost: float
-    totalCostPerBua: float
 
 class BudgetRevisionRequest(BaseModel):
     project_id: str
-    new_version_number: int
-    justification_reason: str
-    old_total_cost: float
-    new_total_cost: float
-    edited_by: str = "Pramukh Group Management User"
-    updated_items: List[Dict[str, Any]] = []
+    justification_reason: str = Field(min_length=1)
+    edited_by: Optional[str] = None
+    updated_items: List[MasterBudgetItemPatch] = Field(min_length=1)
+
+
+class VarianceItemPatch(BaseModel):
+    id: str
+    actual_bill_qty: float = Field(ge=0)
+    actual_bill_rate: float = Field(ge=0)
+    remark: str = ""
+
 
 class VarianceUpdateRequest(BaseModel):
     project_id: str
-    item_id: str
-    actual_bill_qty: float
-    actual_bill_rate: float
-    remark: Optional[str] = ""
+    justification_reason: str = ""
+    edited_by: Optional[str] = None
+    items: List[VarianceItemPatch] = Field(min_length=1)
 
-class LedgerEntryRequest(BaseModel):
-    project_id: str
-    bill_number: str
-    vendor_name: str
-    sub_activity: str
-    gross_bill_amount: float
-    retention_deduction: float = 0
-    mob_advance_deduction: float = 0
-    net_payable_amount: float
-    payment_status: str = "Paid"
 
 # ----------------------------------------------------------------------------
-# 1. OVERVIEW DASHBOARD ENDPOINT
+# HELPERS
 # ----------------------------------------------------------------------------
+
+def _token(authorization: Optional[str]) -> str:
+    token = sb.bearer_from_header(authorization)
+    if not token:
+        raise HTTPException(
+            status_code=401,
+            detail="Authorization header with a Supabase access token is required.",
+        )
+    return token
+
+
+def _project_filter(project_id: Optional[str]) -> Dict[str, str]:
+    """Empty dict means portfolio-wide (no project_id filter)."""
+    if not project_id or project_id.lower() in ("all", "null", "none"):
+        return {}
+    return {"project_id": f"eq.{project_id}"}
+
+
+def _require_project(project_id: Optional[str]) -> str:
+    if not project_id or project_id.lower() in ("all", "null", "none"):
+        raise HTTPException(status_code=400, detail="A specific project_id is required.")
+    return project_id
+
+
+# ----------------------------------------------------------------------------
+# 1. EXECUTIVE OVERVIEW
+# ----------------------------------------------------------------------------
+
 @router.get("/budget/overview")
-def get_budget_overview(project_id: str = Query(CENTRAL_PARK_PROJECT_ID)):
+def get_budget_overview(
+    project_id: Optional[str] = Query(None, description="Project UUID, or omit for the portfolio"),
+    authorization: Optional[str] = Header(None),
+):
     """
-    Returns Executive Budget Overview metrics: BAC, EAC, Actual Outflow, Variance,
-    Category Dual-Bar chart data, Top Variance Drivers, Ledger Security & Retention.
-    Cross-module syncs with Procurement POs and Verified RA Bills.
+    Executive budget metrics computed from portfolio_budget_summary plus the top
+    variance drivers ranked from budget_variance_items.
     """
-    total_bac = 1453638820.0  # ₹145.36 Cr
-    total_actual = 329480000.0 # ₹32.95 Cr
-    total_eac = 1478000000.0  # ₹147.80 Cr
-    net_variance = total_actual - total_bac
-    cost_per_bua = total_bac / 615000.0
+    token = _token(authorization)
+    filters = _project_filter(project_id)
+
+    summary_rows = sb.select("portfolio_budget_summary", token, filters=filters)
+    if not summary_rows:
+        raise HTTPException(status_code=404, detail="No budget summary found for that project.")
+
+    def total(field: str) -> float:
+        return sum(sb.to_float(row.get(field)) for row in summary_rows)
+
+    baseline = total("baseline_amount")
+    allocated = total("allocated_amount") or baseline
+    committed = total("committed_amount")
+    spent = total("spent_amount")
+    bua = total("bua_sqft")
+
+    # Variance drivers: only lines with real billing activity can drive variance.
+    variance_rows = sb.select(
+        "budget_variance_items",
+        token,
+        columns="sub_activity,category_name,budget_cost,actual_total_cost,cost_variance_amount,cost_variance_percent",
+        filters={**filters, "actual_total_cost": "gt.0"},
+        order="cost_variance_amount.asc",
+        limit=200,
+    )
+
+    drivers = sorted(
+        (
+            {
+                "name": row.get("sub_activity"),
+                "category": row.get("category_name"),
+                # Signed: positive = saving, negative = overrun (matches the DB trigger).
+                "amount": sb.to_float(row.get("cost_variance_amount")),
+                "percent": sb.to_float(row.get("cost_variance_percent")),
+                "type": "Saving" if sb.to_float(row.get("cost_variance_amount")) >= 0 else "Overrun",
+            }
+            for row in variance_rows
+        ),
+        key=lambda d: abs(d["amount"]),
+        reverse=True,
+    )[:12]
+
+    realised_overrun = sum(abs(d["amount"]) for d in drivers if d["type"] == "Overrun")
 
     return {
         "status": "success",
-        "project_id": project_id,
-        "project_name": "Central Park Residential Project",
-        "bua_sqft": 615000,
+        "project_id": project_id or "all",
+        "projects": [
+            {
+                "project_id": row.get("project_id"),
+                "project_code": row.get("project_code"),
+                "project_name": row.get("project_name"),
+            }
+            for row in summary_rows
+        ],
+        "bua_sqft": bua,
         "metrics": {
-            "total_bac": total_bac,
-            "total_actual": total_actual,
-            "total_eac": total_eac,
-            "net_variance": net_variance,
-            "cost_per_bua": round(cost_per_bua, 2),
-            "billed_percentage": round((total_actual / total_bac) * 100, 2),
-            "utilization_percent": round((total_actual / total_bac) * 100, 2),
+            "baseline_amount": baseline,
+            "allocated_amount": allocated,
+            "committed_amount": committed,
+            "spent_amount": spent,
+            "available_amount": allocated - committed - spent,
+            # EAC = approved baseline + realised overruns. Savings are not netted
+            # off, because an unspent allowance is not a guaranteed recovery.
+            "estimate_at_completion": baseline + realised_overrun,
+            # Signed variance, consistent with the frontend and the DB trigger.
+            "net_variance": baseline - spent,
+            "utilization_percent": round(((committed + spent) / allocated) * 100, 2) if allocated else 0.0,
+            "billed_percent": round((spent / baseline) * 100, 2) if baseline else 0.0,
+            "cost_per_bua": round(baseline / bua, 2) if bua else 0.0,
+            "overrun_amount": total("overrun_amount"),
+            "line_item_count": sum(sb.to_int(row.get("line_item_count")) for row in summary_rows),
+            "category_count": sum(sb.to_int(row.get("category_count")) for row in summary_rows),
         },
         "retention_gauge": {
-            "retention_held": 619500.0,
-            "mob_advance_adjusted": 2000000.0,
-            "pending_payable_outflow": 12000700.0,
+            "retention_held": total("retention_held"),
+            "advance_outstanding": total("advance_amount"),
+            "open_alert_count": sum(sb.to_int(row.get("open_alert_count")) for row in summary_rows),
         },
-        "variance_drivers": [
-            {"name": "Civil Labour Slab 12 Measurement Update", "category": "Civil Labour Cost", "type": "Overrun", "amount": 4130000, "pct": "+2.2%"},
-            {"name": "UltraTech Cement Bag Price Hike", "category": "Cement & Concrete", "type": "Overrun", "amount": 2545000, "pct": "+6.0%"},
-            {"name": "Diaphragm Wall Slurry Optimization", "category": "Substructure Works", "type": "Savings", "amount": -990000, "pct": "-6.1%"},
-            {"name": "Steel Rebar Bulk Volume Discount", "category": "Steel Supply", "type": "Savings", "amount": -4300000, "pct": "-6.9%"},
-        ]
+        "variance_drivers": drivers,
     }
 
+
 # ----------------------------------------------------------------------------
-# 2. MASTER BUDGET FETCH ENDPOINT
+# 2. MASTER BUDGET
 # ----------------------------------------------------------------------------
+
 @router.get("/budget/master")
-def get_master_budget(project_id: str = Query(CENTRAL_PARK_PROJECT_ID)):
-    """
-    Fetches Master Baseline Budget categories & items for Central Park (24 categories).
-    Supports multi-project querying by project_id.
-    """
-    from .master_budget_seed import CENTRAL_PARK_MASTER_BUDGET_CATEGORIES
-    return {
-        "status": "success",
-        "project_id": project_id,
-        "version_number": 1,
-        "bua_sqft": 615000,
-        "total_categories_count": len(CENTRAL_PARK_MASTER_BUDGET_CATEGORIES),
-        "categories": CENTRAL_PARK_MASTER_BUDGET_CATEGORIES
+def get_master_budget(
+    project_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
+    """Master budget categories and line items, joined to their variance actuals."""
+    token = _token(authorization)
+    filters = _project_filter(project_id)
+
+    categories = sb.select(
+        "budget_categories",
+        token,
+        columns="id,project_id,category_name,category_code,sort_order",
+        filters=filters,
+        order="sort_order.asc",
+        limit=1000,
+    )
+    items = sb.select(
+        "master_budget_items",
+        token,
+        columns=(
+            "id,project_id,category_id,category_name,sr_no,item_description,"
+            "qty_rcc,qty_finishes,qty_infra,qty_total,unit,estimated_rate,"
+            "budgeted_cost,cost_per_bua,scope_tag,item_type,sort_order,version_number"
+        ),
+        filters={**filters, "is_active": "eq.true", "deleted_at": "is.null"},
+        order="sort_order.asc",
+        limit=5000,
+    )
+    variances = sb.select(
+        "budget_variance_items",
+        token,
+        columns="master_budget_item_id,po_qty,po_rate,po_amount,actual_bill_qty,actual_bill_rate,actual_total_cost,work_status,remark",
+        filters=filters,
+        limit=5000,
+    )
+
+    variance_by_item = {
+        row["master_budget_item_id"]: row for row in variances if row.get("master_budget_item_id")
     }
+    items_by_category: Dict[Any, List[Dict[str, Any]]] = defaultdict(list)
+    for item in items:
+        items_by_category[item.get("category_id")].append(item)
 
-# ----------------------------------------------------------------------------
-# 3. SAVE BUDGET REVISION (v1 -> v2) ENDPOINT
-# ----------------------------------------------------------------------------
-@router.post("/budget/master/revision")
-def save_budget_revision(payload: BudgetRevisionRequest):
-    """
-    Saves an In-Context Change Order / Budget Revision (e.g. v1 -> v2),
-    bumping project version number and recording mandatory audit justification.
-    """
-    if not payload.justification_reason.strip():
-        raise HTTPException(status_code=400, detail="Change Order Justification reason is mandatory.")
+    payload_categories = []
+    for category in categories:
+        cat_items = items_by_category.get(category["id"], [])
+        mapped = []
+        for item in cat_items:
+            variance = variance_by_item.get(item["id"], {})
+            mapped.append(
+                {
+                    "id": item["id"],
+                    "srNo": item.get("sr_no"),
+                    "item": item.get("item_description"),
+                    "qtyRcc": item.get("qty_rcc"),
+                    "qtyFinishes": item.get("qty_finishes"),
+                    "qtyInfra": item.get("qty_infra"),
+                    "qtyTotal": sb.to_float(item.get("qty_total"), 1.0),
+                    "unit": item.get("unit") or "LS",
+                    "rate": sb.to_float(item.get("estimated_rate")),
+                    "cost": sb.to_float(item.get("budgeted_cost")),
+                    "costPerBua": sb.to_float(item.get("cost_per_bua")),
+                    "scopeTag": item.get("scope_tag"),
+                    "itemType": item.get("item_type"),
+                    "poAmount": sb.to_float(variance.get("po_amount")),
+                    "actualTotalCost": sb.to_float(variance.get("actual_total_cost")),
+                    "workStatus": variance.get("work_status") or "Not Started",
+                    "remark": variance.get("remark"),
+                }
+            )
 
-    revision_id = f"rev-log-v{payload.new_version_number}"
-    net_diff = payload.new_total_cost - payload.old_total_cost
-
-    return {
-        "status": "success",
-        "message": f"Budget Version updated to v{payload.new_version_number}. Change Order logged into Revision History.",
-        "revision": {
-            "id": revision_id,
-            "version_number": payload.new_version_number,
-            "version_label": f"Version v{payload.new_version_number} (Change Order)",
-            "justification": payload.justification_reason,
-            "old_total_cost": payload.old_total_cost,
-            "new_total_cost": payload.new_total_cost,
-            "net_diff_amount": net_diff,
-            "edited_by": payload.edited_by,
-            "timestamp": datetime.datetime.now().strftime("%d %b %Y, %H:%M")
-        }
-    }
-
-# ----------------------------------------------------------------------------
-# 4. REVISION HISTORY AUDIT TRAIL ENDPOINT
-# ----------------------------------------------------------------------------
-@router.get("/budget/revisions")
-def get_budget_revisions(project_id: str = Query(CENTRAL_PARK_PROJECT_ID)):
-    """
-    Fetches complete Change Order revision audit log history for a project.
-    """
-    return {
-        "status": "success",
-        "project_id": project_id,
-        "revisions": [
+        total_cost = sum(entry["cost"] for entry in mapped)
+        payload_categories.append(
             {
-                "id": "rev-log-v1",
-                "versionLabel": "Version v1 (Baseline Excel Upload)",
-                "timestamp": "20 Jul 2026, 10:00",
-                "editedBy": "Pramukh Group Executive Board",
-                "justification": "Approved baseline budget schedule imported from Central_Park_Budget (1).xlsx",
-                "oldTotalCost": 1453638820,
-                "newTotalCost": 1453638820,
-                "netDiffAmount": 0,
-                "itemDetails": []
+                "id": category["id"],
+                "categoryName": category.get("category_name"),
+                "categoryCode": category.get("category_code"),
+                "items": mapped,
+                "totalCost": total_cost,
+                "totalCommitted": sum(entry["poAmount"] for entry in mapped),
+                "totalSpent": sum(entry["actualTotalCost"] for entry in mapped),
             }
-        ]
-    }
+        )
 
-# ----------------------------------------------------------------------------
-# 5. CASH FLOW S-CURVE ENDPOINT
-# ----------------------------------------------------------------------------
-@router.get("/budget/scurve")
-def get_budget_scurve(project_id: str = Query(CENTRAL_PARK_PROJECT_ID)):
-    """
-    Fetches 12-Month Planned vs Actual vs Forecast Cash Outflow S-Curve dataset
-    mapped to major construction site milestones.
-    """
     return {
         "status": "success",
-        "project_id": project_id,
-        "peak_outflow_month": "Jul 26 (₹7.30 Cr)",
-        "spi": 1.02,
-        "lifecycle_data": [
-            {"month": "Jan 26", "plannedCumulative": 2.5, "actualCumulative": 2.4, "forecastCumulative": 2.4, "monthlyPlanned": 250, "monthlyActual": 240, "milestones": "Site Excavation & D-Wall Start", "varianceStatus": "On Track"},
-            {"month": "Feb 26", "plannedCumulative": 5.8, "actualCumulative": 5.6, "forecastCumulative": 5.6, "monthlyPlanned": 330, "monthlyActual": 320, "milestones": "Piling & Substructure Concreting", "varianceStatus": "On Track"},
-            {"month": "Mar 26", "plannedCumulative": 10.2, "actualCumulative": 10.5, "forecastCumulative": 10.5, "monthlyPlanned": 440, "monthlyActual": 490, "milestones": "Basement Slab Pouring", "varianceStatus": "Ahead"},
-            {"month": "Apr 26", "plannedCumulative": 15.6, "actualCumulative": 15.9, "forecastCumulative": 15.9, "monthlyPlanned": 540, "monthlyActual": 540, "milestones": "Ground & Podium Floor RCC", "varianceStatus": "On Track"},
-            {"month": "May 26", "plannedCumulative": 21.8, "actualCumulative": 22.1, "forecastCumulative": 22.1, "monthlyPlanned": 620, "monthlyActual": 620, "milestones": "Tower A Slab 1 to 5 RCC", "varianceStatus": "On Track"},
-            {"month": "Jun 26", "plannedCumulative": 28.5, "actualCumulative": 29.2, "forecastCumulative": 29.2, "monthlyPlanned": 670, "monthlyActual": 710, "milestones": "Tower A Slab 6 to 10 & Masonry", "varianceStatus": "Ahead"},
-            {"month": "Jul 26", "plannedCumulative": 35.8, "actualCumulative": 32.95, "forecastCumulative": 35.9, "monthlyPlanned": 730, "monthlyActual": 375, "milestones": "RA Bill 14 Slab 12 & Civil Labour", "varianceStatus": "On Track"},
-            {"month": "Aug 26", "plannedCumulative": 42.4, "actualCumulative": None, "forecastCumulative": 43.1, "monthlyPlanned": 660, "monthlyActual": None, "milestones": "Top Slab Pour & MEP Rough-Ins", "varianceStatus": "On Track"},
-            {"month": "Sep 26", "plannedCumulative": 48.6, "actualCumulative": None, "forecastCumulative": 49.5, "monthlyPlanned": 620, "monthlyActual": None, "milestones": "External Façade Glazing Launch", "varianceStatus": "On Track"},
-            {"month": "Oct 26", "plannedCumulative": 53.8, "actualCumulative": None, "forecastCumulative": 54.8, "monthlyPlanned": 520, "monthlyActual": None, "milestones": "Plumbing, Electrical & Elevator Install", "varianceStatus": "On Track"},
-            {"month": "Nov 26", "plannedCumulative": 57.5, "actualCumulative": None, "forecastCumulative": 58.6, "monthlyPlanned": 370, "monthlyActual": None, "milestones": "Internal Finishes & Flooring", "varianceStatus": "On Track"},
-            {"month": "Dec 26", "plannedCumulative": 60.0, "actualCumulative": None, "forecastCumulative": 61.2, "monthlyPlanned": 250, "monthlyActual": None, "milestones": "Handover & Final Retention Release", "varianceStatus": "On Track"},
-        ]
+        "project_id": project_id or "all",
+        "total_categories_count": len(payload_categories),
+        "total_line_items": sum(len(c["items"]) for c in payload_categories),
+        "total_baseline_cost": sum(c["totalCost"] for c in payload_categories),
+        "categories": payload_categories,
     }
+
+
+# ----------------------------------------------------------------------------
+# 3. SAVE A MASTER BUDGET REVISION
+# ----------------------------------------------------------------------------
+
+@router.post("/budget/master/revision")
+def save_budget_revision(
+    payload: BudgetRevisionRequest,
+    authorization: Optional[str] = Header(None),
+):
+    """
+    Commit a change order through rpc_save_master_budget_revision — one transaction
+    that writes the audit trail, updates the line items, and cascades to allocations
+    and the variance sheet. The database enforces the budget lock.
+    """
+    token = _token(authorization)
+
+    revision = sb.rpc(
+        "rpc_save_master_budget_revision",
+        token,
+        {
+            "p_project_id": _require_project(payload.project_id),
+            "p_justification": payload.justification_reason.strip(),
+            "p_edited_by_name": payload.edited_by or "Pramukh ERP API",
+            "p_items": [item.model_dump() for item in payload.updated_items],
+        },
+    )
+
+    return {"status": "success", "revision": revision}
+
+
+# ----------------------------------------------------------------------------
+# 4. SAVE VARIANCE RECONCILIATION
+# ----------------------------------------------------------------------------
+
+@router.post("/budget/variance")
+def save_variance_reconciliation(
+    payload: VarianceUpdateRequest,
+    authorization: Optional[str] = Header(None),
+):
+    """Commit billed quantities/rates through rpc_save_variance_reconciliation."""
+    token = _token(authorization)
+
+    revision = sb.rpc(
+        "rpc_save_variance_reconciliation",
+        token,
+        {
+            "p_project_id": _require_project(payload.project_id),
+            "p_justification": payload.justification_reason,
+            "p_edited_by_name": payload.edited_by or "Pramukh ERP API",
+            "p_items": [item.model_dump() for item in payload.items],
+        },
+    )
+
+    return {"status": "success", "revision": revision}
+
+
+# ----------------------------------------------------------------------------
+# 5. REVISION HISTORY
+# ----------------------------------------------------------------------------
+
+@router.get("/budget/revisions")
+def get_budget_revisions(
+    project_id: Optional[str] = Query(None),
+    scope: Optional[str] = Query(None, description="master_budget | variance_reconciliation | excel_import"),
+    authorization: Optional[str] = Header(None),
+):
+    token = _token(authorization)
+    filters = _project_filter(project_id)
+    if scope:
+        filters["scope"] = f"eq.{scope}"
+
+    revisions = sb.select(
+        "budget_revisions",
+        token,
+        columns=(
+            "id,project_id,version_number,version_label,justification_reason,"
+            "old_total_cost,new_total_cost,net_diff_amount,edited_by_name,status,scope,created_at,"
+            "budget_revision_items(id,sub_activity,category_name,old_qty,new_qty,old_rate,new_rate,old_cost,new_cost)"
+        ),
+        filters=filters,
+        order="created_at.desc",
+        limit=100,
+    )
+
+    return {"status": "success", "project_id": project_id or "all", "revisions": revisions}
+
+
+# ----------------------------------------------------------------------------
+# 6. BILL-WISE LEDGER
+# ----------------------------------------------------------------------------
+
+@router.get("/budget/ledger")
+def get_bill_ledger(
+    project_id: Optional[str] = Query(None),
+    payment_status: Optional[str] = Query(None),
+    limit: int = Query(500, le=5000),
+    authorization: Optional[str] = Header(None),
+):
+    """Project-wise bill-wise ledger, read from budget_bill_ledger_view."""
+    token = _token(authorization)
+    filters = _project_filter(project_id)
+    if payment_status and payment_status != "All":
+        filters["payment_status"] = f"eq.{payment_status}"
+
+    rows = sb.select(
+        "budget_bill_ledger_view",
+        token,
+        filters=filters,
+        order="bill_date_of_supplier.desc",
+        limit=limit,
+    )
+
+    return {
+        "status": "success",
+        "project_id": project_id or "all",
+        "row_count": len(rows),
+        "totals": {
+            "gross_billed": sum(sb.to_float(r.get("gross_bill_amount")) for r in rows),
+            "net_payable": sum(sb.to_float(r.get("final_bill_amount")) for r in rows),
+            "retention_held": sum(sb.to_float(r.get("retention_deduction")) for r in rows),
+            "advances_adjusted": sum(sb.to_float(r.get("advance_payment")) for r in rows),
+            "paid_to_date": sum(sb.to_float(r.get("jv_payment")) for r in rows),
+            "outstanding": sum(sb.to_float(r.get("expected_payment")) for r in rows),
+        },
+        "rows": rows,
+    }
+
+
+# ----------------------------------------------------------------------------
+# 7. CASH-FLOW S-CURVE
+# ----------------------------------------------------------------------------
+
+@router.get("/budget/scurve")
+def get_budget_scurve(
+    project_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
+    """
+    Monthly cash-flow curve from budget_monthly_cashflow_view (posted ledger
+    transactions). The planned series is an explicit straight-line spread of the
+    baseline across the observed months — it is a reference line, not a
+    schedule-derived forecast, and is labelled as such.
+    """
+    token = _token(authorization)
+    filters = _project_filter(project_id)
+
+    monthly = sb.select(
+        "budget_monthly_cashflow_view",
+        token,
+        filters=filters,
+        order="month_start.asc",
+        limit=500,
+    )
+    summary_rows = sb.select("portfolio_budget_summary", token, filters=filters)
+    baseline = sum(sb.to_float(row.get("baseline_amount")) for row in summary_rows)
+
+    buckets: Dict[str, Dict[str, float]] = defaultdict(lambda: {"actual": 0.0, "committed": 0.0})
+    for row in monthly:
+        key = str(row.get("month_start"))[:7]
+        buckets[key]["actual"] += sb.to_float(row.get("actual_amount"))
+        buckets[key]["committed"] += sb.to_float(row.get("committed_amount"))
+
+    months = sorted(buckets.keys())
+    planned_per_month = baseline / len(months) if months else 0.0
+
+    lifecycle: List[Dict[str, Any]] = []
+    cum_actual = cum_committed = cum_planned = 0.0
+    for key in months:
+        bucket = buckets[key]
+        cum_actual += bucket["actual"]
+        cum_committed += bucket["committed"]
+        cum_planned += planned_per_month
+        lifecycle.append(
+            {
+                "month": key,
+                "plannedCumulative": round(cum_planned / 10_000_000, 2),
+                "actualCumulative": round(cum_actual / 10_000_000, 2),
+                "committedCumulative": round(cum_committed / 10_000_000, 2),
+                "monthlyPlanned": round(planned_per_month / 100_000, 2),
+                "monthlyActual": round(bucket["actual"] / 100_000, 2),
+                "monthlyCommitted": round(bucket["committed"] / 100_000, 2),
+            }
+        )
+
+    peak = max(lifecycle, key=lambda p: p["monthlyActual"], default=None)
+
+    return {
+        "status": "success",
+        "project_id": project_id or "all",
+        "planned_series_basis": "straight-line spread of approved baseline across months with ledger activity",
+        "baseline_amount": baseline,
+        "peak_outflow_month": peak["month"] if peak else None,
+        "peak_outflow_amount_lakhs": peak["monthlyActual"] if peak else 0.0,
+        "lifecycle_data": lifecycle,
+    }
+
+
+# ----------------------------------------------------------------------------
+# 8. ALERTS
+# ----------------------------------------------------------------------------
+
+@router.get("/budget/alerts")
+def get_budget_alerts(
+    project_id: Optional[str] = Query(None),
+    status: str = Query("pending"),
+    authorization: Optional[str] = Header(None),
+):
+    token = _token(authorization)
+    filters = _project_filter(project_id)
+    if status and status != "all":
+        filters["status"] = f"eq.{status}"
+
+    alerts = sb.select(
+        "budget_alerts",
+        token,
+        columns=(
+            "id,project_id,budget_allocation_id,alert_type,severity,threshold_percent,"
+            "actual_percent,message,status,created_at,budget_allocations(allocation_name)"
+        ),
+        filters=filters,
+        order="created_at.desc",
+        limit=200,
+    )
+
+    return {"status": "success", "alert_count": len(alerts), "alerts": alerts}

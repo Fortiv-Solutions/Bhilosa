@@ -517,7 +517,7 @@ erp_source_system
 `unit_of_measurements` · `item_categories` · `item_master` · `inventory_locations` · `stock_balances` · `stock_ledger` · `stock_reservations` · `stock_transfers` · `stock_transfer_lines` · `material_issue_slips` · `material_issue_lines` · `consumption_variances`
 
 #### Procurement (16 tables)
-`material_requests` · `material_request_lines` · `purchase_requisitions` · `purchase_requisition_lines` · `purchase_requisition_assignments` · `rfqs` · `rfq_vendors` · `vendor_quotations` · `quotation_lines` · `quotation_scores` · `vendor_selections` · `purchase_orders` · `purchase_order_lines` · `delivery_trackings` · `goods_receipt_notes` · `goods_receipt_note_lines`
+`material_requests` · `material_request_lines` · `purchase_requisitions` · `purchase_requisition_lines` · `purchase_requisition_assignments` · `rfqs` · `rfq_vendors` · `vendor_quotations` · `quotation_lines` · `quotation_scores` · `vendor_selections` · `purchase_orders` · `purchase_order_lines` · `goods_receipt_notes` · `goods_receipt_note_lines`
 
 #### Vendors (6 tables)
 `vendors` · `vendor_contacts` · `vendor_documents` · `vendor_categories` · `vendor_category_map` · `vendor_performance_reviews`
@@ -818,8 +818,6 @@ PO generated                 → procurement.ts                   → purchase_o
 
 PO PDF generated             → fetch('/api/procurement/...pdf') → pdf_generator.py → Supabase Storage
                                                                    entity_attachments
-
-Delivery tracked             → procurement.ts                   → delivery_trackings
 
 GRN created and posted       → procurement.ts                   → goods_receipt_notes
                                                                    goods_receipt_note_lines

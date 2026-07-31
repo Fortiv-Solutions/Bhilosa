@@ -88,7 +88,9 @@ export function PRTableView({ rows, onEdit, onPdf }: PRTableViewProps) {
                     : 'Central Park';
 
                 const workActivity = firstLine?.work_activity || row.activity_name || 'Brick Masonry & Wall Construction';
-                const preparedBy = firstLine?.raised_by || row.created_by_name || row.department || 'Rohan Mehta (Site Eng)';
+                const isUuidStr = (s?: string | null) => Boolean(s && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s.trim()));
+                const rawPrepared = row.profiles?.name || (firstLine?.raised_by && !isUuidStr(firstLine.raised_by) ? firstLine.raised_by : null) || row.created_by_name || row.department;
+                const preparedBy = rawPrepared && !isUuidStr(rawPrepared) ? rawPrepared : 'Rohan Mehta (Site Eng)';
                 const priorityVal = firstLine?.priority || row.priority || 'medium';
 
                 return (
