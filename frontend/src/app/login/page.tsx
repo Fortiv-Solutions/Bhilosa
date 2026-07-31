@@ -41,18 +41,20 @@ function PramukhLogo({ className = '' }: { className?: string }) {
 }
 
 // ── Sky backdrop ────────────────────────────────────────────────────────────────
-// Dense, realistic cloudscape inspired by the reference image. Multiple SVG blur
-// layers create volumetric depth: thin wisps up high, mid-altitude puffs, a thick
-// cumulus bank filling the lower third, and a solid white floor at the very bottom.
+// Dense, realistic cloudscape recolored to the ERP brand palette (warm gold
+// #b68d40 fading to the app's neutral cream/slate background) instead of blue.
+// Multiple SVG blur layers create volumetric depth: thin wisps up high,
+// mid-altitude puffs, a thick cumulus bank filling the lower third, and a
+// solid white floor at the very bottom.
 function SkyBackdrop() {
   return (
     <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
-      {/* Daytime sky gradient — softer blue-to-white transition */}
-      <div className="absolute inset-0 bg-[linear-gradient(180deg,#7ec8eb_0%,#9ad5f0_14%,#b3e1f5_28%,#cceafa_42%,#dff0fb_54%,#eef7fd_66%,#f5fafd_78%,#fbfdfe_88%,#ffffff_100%)] dark:hidden" />
+      {/* Daytime gradient — warm gold-to-cream transition matching the brand accent */}
+      <div className="absolute inset-0 bg-[linear-gradient(180deg,#ead9b0_0%,#f0e2bf_14%,#f4e9cc_28%,#f7eed9_42%,#f9f2e2_54%,#fbf5e9_66%,#fdf8f0_78%,#fefaf6_88%,#ffffff_100%)] dark:hidden" />
 
-      {/* Night sky for dark mode */}
+      {/* Night backdrop for dark mode — matches the app's dark navy background */}
       <div className="absolute inset-0 hidden dark:block dark:bg-[linear-gradient(180deg,#060a16_0%,#0a1124_30%,#101a35_62%,#0a1020_86%,#080d1b_100%)]" />
-      <div className="absolute inset-0 hidden dark:block dark:bg-[radial-gradient(120%_80%_at_50%_112%,rgba(56,89,160,0.38)_0%,transparent_62%)]" />
+      <div className="absolute inset-0 hidden dark:block dark:bg-[radial-gradient(120%_80%_at_50%_112%,rgba(182,141,64,0.28)_0%,transparent_62%)]" />
 
       {/* Faint crossing arcs behind the card */}
       <svg
@@ -163,8 +165,8 @@ function SkyBackdrop() {
       </svg>
 
       {/* Dark mode: a low horizon glow instead of clouds. */}
-      <div className="absolute -bottom-[20%] left-1/2 hidden h-[52%] w-[120%] -translate-x-1/2 rounded-[50%] bg-indigo-400/10 blur-[90px] dark:block" />
-      <div className="absolute -bottom-[26%] right-[-12%] hidden h-[54%] w-[70%] rounded-full bg-sky-400/8 blur-[100px] dark:block" />
+      <div className="absolute -bottom-[20%] left-1/2 hidden h-[52%] w-[120%] -translate-x-1/2 rounded-[50%] bg-amber-400/10 blur-[90px] dark:block" />
+      <div className="absolute -bottom-[26%] right-[-12%] hidden h-[54%] w-[70%] rounded-full bg-amber-500/8 blur-[100px] dark:block" />
     </div>
   );
 }
@@ -191,8 +193,8 @@ function LoginShell() {
 function BrandMark() {
   return (
     <div className="absolute left-5 top-5 z-20 flex select-none items-center gap-3 sm:left-8 sm:top-7">
-      <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-slate-900 text-[#e2b45f] shadow-lg shadow-slate-900/20 ring-1 ring-amber-500/30 dark:bg-slate-900 dark:text-[#d1a349] dark:ring-amber-400/40">
-        <PramukhLogo className="h-5 w-5" />
+      <span className="flex h-9 w-9 items-center justify-center text-[#b68d40] dark:text-[#d1a349]">
+        <PramukhLogo className="h-6 w-6" />
       </span>
       <span className="font-heading text-lg font-black tracking-[0.2em] uppercase bg-gradient-to-r from-[#a6802f] via-[#d1a349] to-[#8a641c] bg-clip-text text-transparent drop-shadow-xs">
         PRAGATI
@@ -285,9 +287,9 @@ function LoginView() {
         className="relative z-10 w-full max-w-[380px] overflow-hidden rounded-[28px] border border-white/70 bg-white/45 p-7 shadow-[0_24px_70px_-20px_rgba(31,58,95,0.28)] backdrop-blur-2xl sm:p-8 dark:border-white/10 dark:bg-slate-900/45 dark:shadow-[0_24px_70px_-20px_rgba(0,0,0,0.7)]"
         aria-labelledby="login-heading"
       >
-        {/* Soft interior tint: mint at the top-left, lilac at the bottom-right */}
+        {/* Soft interior tint: warm gold at the top-left, cream at the bottom-right */}
         <div
-          className="pointer-events-none absolute inset-0 bg-[radial-gradient(120%_90%_at_0%_0%,rgba(178,240,235,0.5)_0%,transparent_55%),radial-gradient(110%_90%_at_100%_100%,rgba(206,201,246,0.45)_0%,transparent_55%)] dark:bg-[radial-gradient(120%_90%_at_0%_0%,rgba(56,189,181,0.1)_0%,transparent_55%),radial-gradient(110%_90%_at_100%_100%,rgba(129,120,220,0.12)_0%,transparent_55%)]"
+          className="pointer-events-none absolute inset-0 bg-[radial-gradient(120%_90%_at_0%_0%,rgba(182,141,64,0.16)_0%,transparent_55%),radial-gradient(110%_90%_at_100%_100%,rgba(182,141,64,0.1)_0%,transparent_55%)] dark:bg-[radial-gradient(120%_90%_at_0%_0%,rgba(182,141,64,0.14)_0%,transparent_55%),radial-gradient(110%_90%_at_100%_100%,rgba(182,141,64,0.1)_0%,transparent_55%)]"
           aria-hidden="true"
         />
 
