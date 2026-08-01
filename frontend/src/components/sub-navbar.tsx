@@ -44,11 +44,10 @@ export default function SubNavBar() {
       ]
     },
     {
-      name: 'Workforce',
-      paths: ['/labour', '/equipment'],
+      name: 'Work Orders',
+      paths: ['/work-orders'],
       tabs: [
-        { label: 'Labour', path: '/labour' },
-        { label: 'Equipment', path: '/equipment' }
+        { label: 'Work Orders', path: '/work-orders' }
       ]
     },
     {

@@ -7,7 +7,7 @@ import {
   MessageSquare,
   Building2,
   ShoppingCart,
-  Users,
+  ClipboardCheck,
   CircleDollarSign,
   FileText,
   Settings2,
@@ -37,11 +37,11 @@ export default function Sidebar() {
       icon: ShoppingCart,
       groupPaths: ['/procurement', '/vendors', '/inventory']
     },
-    { 
-      label: 'Workforce', 
-      path: '/labour', 
-      icon: Users,
-      groupPaths: ['/labour', '/equipment']
+    {
+      label: 'Work Orders',
+      path: '/work-orders',
+      icon: ClipboardCheck,
+      groupPaths: ['/work-orders']
     },
     { 
       label: 'Financials', 
