@@ -612,12 +612,58 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
   }
 
   function renderSecondaryActions(): ReactNode {
-    if (!form?.id) return null;
-    const row = props.rows.find((r) => r.id === form.id);
-    return (<>
-      {row && <button onClick={() => setPreviewPr(row)} title="Preview and Print Purchase Requisition PDF" className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-2 font-bold hover:bg-muted cursor-pointer"><FileDown className="h-3.5 w-3.5" /> Print / PDF Report</button>}
-      <button onClick={() => setHistoryOpen(true)} className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-2 font-bold hover:bg-muted cursor-pointer"><History className="h-3.5 w-3.5" /> History</button>
-    </>);
+    if (!form) return null;
+    const computedEstCost = computeCostSummary(form).totalEstimatedCost;
+    const row = props.rows.find((r) => r.id === form.id) || {
+      id: form.id || 'draft-preview',
+      project_id: form.project_id || 'central-park',
+      site_id: form.site_id || null,
+      material_request_id: null,
+      pr_number: form.pr_number || 'PR-Draft',
+      title: form.general_remarks || 'Purchase Requisition',
+      estimated_cost: computedEstCost || 0,
+      finance_required: false,
+      status: form.status as any,
+      current_approval_stage: null,
+      requested_date: form.pr_date || new Date().toISOString().split('T')[0],
+      required_date: form.required_date || null,
+      company_name: form.company_name || 'Pramukh Group Infrastructure Ltd.',
+      department: form.department || 'Site Store',
+      prepared_by: form.prepared_by || null,
+      purchase_requisition_lines: form.lines.map((l, i) => ({
+        id: l.key || `line-${i}`,
+        item_description: l.item_description,
+        quantity: Number(l.pr_quantity || 0),
+        estimated_rate: Number(l.estimated_rate || 0),
+        unit: l.unit || 'nos',
+        line_total: Number(l.pr_quantity || 0) * Number(l.estimated_rate || 0),
+        work_activity: l.work_activity || null,
+        item_group: l.item_group || null,
+        specification: l.specification || null,
+      })),
+    };
+
+    return (
+      <>
+        <button
+          type="button"
+          onClick={() => setPreviewPr(row as any)}
+          title="Preview and Print Purchase Requisition PDF"
+          className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-2 text-xs font-bold text-foreground hover:bg-muted transition-colors cursor-pointer"
+        >
+          <FileDown className="h-3.5 w-3.5 text-primary" /> Print / PDF Report
+        </button>
+        {form.id && (
+          <button
+            type="button"
+            onClick={() => setHistoryOpen(true)}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-2 text-xs font-bold text-foreground hover:bg-muted transition-colors cursor-pointer"
+          >
+            <History className="h-3.5 w-3.5" /> History
+          </button>
+        )}
+      </>
+    );
   }
 
   // ---- FORM MODE (DEFAULT ON LANDING) ----
