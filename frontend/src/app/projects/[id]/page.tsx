@@ -63,8 +63,10 @@ import { TaskModule } from '@/components/projects/task-module';
 import { ProcurementModule } from '@/components/procurement/procurement-module';
 import { supabase, getDbSiteId, isSupabaseConfigured } from '@/utils/supabase-client';
 import { attachmentUrl } from '@/lib/inbox';
-import { isLiveSupabase } from '@/lib/erp/supabase-modules';
+import { isLiveSupabase, createSiteActivity, completeSiteActivity } from '@/lib/erp/supabase-modules';
 import { getDPRs, approveDPR, rejectDPR } from '@/lib/dpr';
+import { getSiteActivities } from '@/lib/site-activities';
+import type { SiteActivity } from '@/utils/mock-data';
 import { isUpperManagement } from '@/lib/rbac';
 import { getPendingApprovals } from '@/lib/approvals';
 import { getQCInspections, getSafetyIncidents } from '@/lib/safety-qc';
@@ -209,8 +211,12 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   const [dprLogs, setDprLogs] = useState<any[]>([]);
   const [dprLoading, setDprLoading] = useState(true);
 
+  // Site Ops: predefined activities + timeline
+  const [siteActivities, setSiteActivities] = useState<SiteActivity[]>([]);
+  const [siteActivitiesLoading, setSiteActivitiesLoading] = useState(true);
+
   // New Client-Facing DPR Redesign States
-  const [operationsSubTab, setOperationsSubTab] = useState<'feed' | 'agencies' | 'issues' | 'photos' | 'client-report' | 'history'>('feed');
+  const [operationsSubTab, setOperationsSubTab] = useState<'timeline' | 'feed' | 'agencies' | 'issues' | 'photos' | 'client-report' | 'history'>('feed');
   const [selectedDPRDate, setSelectedDPRDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const [clientDPRReport, setClientDPRReport] = useState<any>(null);
   const [delayEvents, setDelayEvents] = useState<any[]>([]);
@@ -592,6 +598,28 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
     };
 
     fetchDPRs();
+
+    const fetchSiteActivities = async () => {
+      setSiteActivitiesLoading(true);
+      try {
+        const rows = await getSiteActivities(dbSiteId);
+        const mapped: SiteActivity[] = (rows || []).map((row: any) => ({
+          id: row.id,
+          projectId: project.id,
+          title: row.title,
+          plannedStartDate: row.planned_start_date || '',
+          plannedEndDate: row.planned_end_date || '',
+          actualEndDate: row.actual_end_date || null,
+          createdAt: row.created_at,
+        }));
+        if (isMounted) setSiteActivities(mapped);
+      } catch (err) {
+        console.error('Error fetching site activities:', err);
+      } finally {
+        if (isMounted) setSiteActivitiesLoading(false);
+      }
+    };
+    fetchSiteActivities();
 
     // Fetch site issues / delay events from mobile app
     const fetchDelayEvents = async () => {
@@ -1435,6 +1463,14 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   const [issues, setIssues] = useState('');
   const [risks, setRisks] = useState('');
   const [progressDelta, setProgressDelta] = useState(0.2);
+  const [selectedActivityId, setSelectedActivityId] = useState('');
+  const [delayReason, setDelayReason] = useState('');
+
+  // Site Activity Timeline form states (Site Ops > Activity Timeline)
+  const [activityTitle, setActivityTitle] = useState('');
+  const [activityPlannedStart, setActivityPlannedStart] = useState('');
+  const [activityPlannedEnd, setActivityPlannedEnd] = useState('');
+  const [isAddingActivity, setIsAddingActivity] = useState(false);
 
   // Material Transaction Form states
   const [selectedMatId, setSelectedMatId] = useState('');
@@ -2149,11 +2185,23 @@ Rules:
     }
   };
 
+  // Delay detection for the currently-selected activity on the DPR log form
+  const todayStr = new Date().toISOString().split('T')[0];
+  const selectedActivity = siteActivities.find(a => a.id === selectedActivityId);
+  const isActivityDelayed = !!selectedActivity && !selectedActivity.actualEndDate && !!selectedActivity.plannedEndDate && selectedActivity.plannedEndDate < todayStr;
+  const activityDelayDays = isActivityDelayed
+    ? Math.max(1, Math.round((new Date(todayStr).getTime() - new Date(selectedActivity!.plannedEndDate).getTime()) / 86400000))
+    : 0;
+
   // Submit Daily Activity
   const handleDailyActivitySubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!engineerName || !workCompleted) return;
-    
+    if (isActivityDelayed && !delayReason.trim()) {
+      showQcAlert('Please provide a reason for the delay before submitting.', 'error');
+      return;
+    }
+
     addDailyActivity(project!.id, {
       projectId: project!.id,
       engineerName,
@@ -2161,13 +2209,67 @@ Rules:
       workCompleted,
       issues: issues || null,
       risks: risks || null,
-      progressDelta: parseFloat(progressDelta.toString())
+      progressDelta: parseFloat(progressDelta.toString()),
+      activityId: selectedActivityId || null,
+      activityName: selectedActivity?.title ?? null,
+      activityPlannedEndDate: selectedActivity?.plannedEndDate ?? null,
+      isDelayed: isActivityDelayed,
+      delayDays: activityDelayDays,
+      delayReason: isActivityDelayed ? delayReason.trim() : null,
     });
 
     // Reset Form
     setWorkCompleted('');
     setIssues('');
     setRisks('');
+    setSelectedActivityId('');
+    setDelayReason('');
+  };
+
+  // Add a predefined site activity (Site Ops > Activity Timeline)
+  const handleAddSiteActivity = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activityTitle.trim() || !activityPlannedStart || !activityPlannedEnd) return;
+
+    setIsAddingActivity(true);
+    try {
+      const result = await createSiteActivity(project!.id, {
+        title: activityTitle.trim(),
+        plannedStartDate: activityPlannedStart,
+        plannedEndDate: activityPlannedEnd,
+      });
+
+      setSiteActivities(prev => [
+        ...prev,
+        {
+          id: result.data?.id || `local-${Date.now()}`,
+          projectId: project!.id,
+          title: activityTitle.trim(),
+          plannedStartDate: activityPlannedStart,
+          plannedEndDate: activityPlannedEnd,
+          actualEndDate: null,
+        },
+      ]);
+
+      setActivityTitle('');
+      setActivityPlannedStart('');
+      setActivityPlannedEnd('');
+    } catch (err) {
+      console.error('Error creating site activity:', err);
+      showQcAlert('Could not save the activity. Please try again.', 'error');
+    } finally {
+      setIsAddingActivity(false);
+    }
+  };
+
+  const handleCompleteSiteActivity = async (activityId: string) => {
+    const completedDate = new Date().toISOString().split('T')[0];
+    setSiteActivities(prev => prev.map(a => a.id === activityId ? { ...a, actualEndDate: completedDate } : a));
+    try {
+      await completeSiteActivity(activityId);
+    } catch (err) {
+      console.error('Error completing site activity:', err);
+    }
   };
 
   // Submit Material Transaction
@@ -4630,6 +4732,17 @@ Rules:
                 <div className="flex border-b border-border/60 pb-2 mb-4 gap-2.5 sm:gap-4 overflow-x-auto print:hidden">
                   <button
                     type="button"
+                    onClick={() => setOperationsSubTab('timeline')}
+                    className={`pb-1 text-xs font-bold transition-all relative border-b-2 whitespace-nowrap ${
+                      operationsSubTab === 'timeline'
+                        ? 'border-primary text-primary'
+                        : 'border-transparent text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    🗓️ Activity Timeline
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => setOperationsSubTab('feed')}
                     className={`pb-1 text-xs font-bold transition-all relative border-b-2 whitespace-nowrap ${
                       operationsSubTab === 'feed'
@@ -4696,7 +4809,105 @@ Rules:
                   </button>
                 </div>
 
-                {operationsSubTab === 'feed' ? (
+                {operationsSubTab === 'timeline' ? (
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                    <div className="lg:col-span-1 bg-white dark:bg-gray-900 p-4 rounded-3xl border border-border/60 shadow-sm space-y-4 h-fit">
+                      <h3 className="font-heading font-extrabold text-foreground text-xs uppercase tracking-wider border-l-2 border-primary pl-2">
+                        Add Planned Activity
+                      </h3>
+                      <form onSubmit={handleAddSiteActivity} className="space-y-4">
+                        <div>
+                          <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Activity Name</label>
+                          <input
+                            type="text"
+                            required
+                            value={activityTitle}
+                            onChange={(e) => setActivityTitle(e.target.value)}
+                            placeholder="e.g. RCC Slab Casting - Tower A"
+                            className="w-full text-xs mt-1.5 p-2.5 rounded-xl border border-border bg-gray-50 dark:bg-gray-950 text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                          />
+                        </div>
+                        <div className="grid grid-cols-2 gap-2.5">
+                          <div>
+                            <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Planned Start</label>
+                            <input
+                              type="date"
+                              required
+                              value={activityPlannedStart}
+                              onChange={(e) => setActivityPlannedStart(e.target.value)}
+                              className="w-full text-xs mt-1.5 p-2.5 rounded-xl border border-border bg-gray-50 dark:bg-gray-950 text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Planned Finish</label>
+                            <input
+                              type="date"
+                              required
+                              value={activityPlannedEnd}
+                              onChange={(e) => setActivityPlannedEnd(e.target.value)}
+                              className="w-full text-xs mt-1.5 p-2.5 rounded-xl border border-border bg-gray-50 dark:bg-gray-950 text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                            />
+                          </div>
+                        </div>
+                        <button
+                          type="submit"
+                          disabled={isAddingActivity || currentUser.role === 'PR_TEAM'}
+                          className="w-full text-xs font-bold bg-primary hover:bg-orange-850 text-white py-3 rounded-xl shadow-xs transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                        >
+                          {isAddingActivity ? 'Adding…' : 'Add Activity'}
+                        </button>
+                      </form>
+                    </div>
+
+                    <div className="lg:col-span-2 space-y-3">
+                      <h3 className="font-heading font-bold text-foreground text-xs uppercase tracking-wider">Planned Activities</h3>
+                      {siteActivitiesLoading ? (
+                        <div className="py-12 text-center text-muted-foreground text-xs">Loading activities...</div>
+                      ) : siteActivities.length === 0 ? (
+                        <div className="bg-white dark:bg-gray-900 p-6 rounded-2xl border border-border/60 shadow-sm text-center text-xs text-muted-foreground">
+                          No activities defined yet. Add one to start tracking against a timeline.
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          {siteActivities.map((a) => {
+                            const overdue = !a.actualEndDate && !!a.plannedEndDate && a.plannedEndDate < todayStr;
+                            const completed = !!a.actualEndDate;
+                            return (
+                              <div key={a.id} className="bg-white dark:bg-gray-900 p-3.5 rounded-2xl border border-border/60 shadow-sm flex items-center justify-between gap-3">
+                                <div className="min-w-0">
+                                  <div className="text-xs font-bold text-foreground truncate">{a.title}</div>
+                                  <div className="text-[10px] text-muted-foreground mt-0.5">
+                                    {a.plannedStartDate} → {a.plannedEndDate}
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-2 flex-shrink-0">
+                                  <span className={`text-[10px] font-bold px-2 py-1 rounded-full border ${
+                                    completed
+                                      ? 'bg-emerald-50 border-emerald-200 text-emerald-600 dark:bg-emerald-950/20 dark:text-emerald-400'
+                                      : overdue
+                                        ? 'bg-rose-50 border-rose-200 text-rose-600 dark:bg-rose-950/20 dark:text-rose-400'
+                                        : 'bg-amber-50 border-amber-200 text-amber-600 dark:bg-amber-950/20 dark:text-amber-400'
+                                  }`}>
+                                    {completed ? 'Completed' : overdue ? 'Overdue' : 'On Track'}
+                                  </span>
+                                  {!completed && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleCompleteSiteActivity(a.id)}
+                                      className="text-[10px] font-bold text-primary hover:underline whitespace-nowrap"
+                                    >
+                                      Mark Complete
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ) : operationsSubTab === 'feed' ? (
                   <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
                     {/* 1. Submit DPR Form (Pushed to top on mobile via source-order, right-hand column on desktop) */}
                     <div className="lg:col-span-1 lg:order-2 bg-white dark:bg-gray-900 p-4 rounded-3xl border border-border/60 shadow-sm space-y-4 h-fit">
@@ -4715,6 +4926,39 @@ Rules:
                             placeholder="e.g. Priya Nair"
                             className="w-full text-xs mt-1.5 p-2.5 rounded-xl border border-border bg-gray-50 dark:bg-gray-950 text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
                           />
+                        </div>
+
+                        <div>
+                          <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Activity</label>
+                          <select
+                            required
+                            value={selectedActivityId}
+                            onChange={(e) => { setSelectedActivityId(e.target.value); setDelayReason(''); }}
+                            className="w-full text-xs mt-1.5 p-2.5 rounded-xl border border-border bg-gray-50 dark:bg-gray-950 text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                          >
+                            <option value="">Select an activity…</option>
+                            {siteActivities.filter(a => !a.actualEndDate).map(a => (
+                              <option key={a.id} value={a.id}>{a.title}</option>
+                            ))}
+                          </select>
+                          {isActivityDelayed && (
+                            <div className="mt-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2.5 dark:border-rose-900/40 dark:bg-rose-950/30">
+                              <p className="text-[11px] font-bold text-rose-700 dark:text-rose-300">
+                                ⚠️ &quot;{selectedActivity?.title}&quot; was due on {selectedActivity?.plannedEndDate} — {activityDelayDays} day{activityDelayDays === 1 ? '' : 's'} overdue.
+                              </p>
+                              <label className="text-[10px] font-bold text-rose-700 dark:text-rose-300 uppercase tracking-wider mt-2 block">
+                                Reason for Delay *
+                              </label>
+                              <textarea
+                                required
+                                value={delayReason}
+                                onChange={(e) => setDelayReason(e.target.value)}
+                                rows={2}
+                                placeholder="e.g. Material shortage, labour crunch, weather..."
+                                className="w-full text-xs mt-1 p-2.5 rounded-xl border border-rose-200 bg-white dark:bg-gray-950 dark:border-rose-900/40 text-foreground focus:outline-none focus:ring-1 focus:ring-rose-400 resize-none"
+                              />
+                            </div>
+                          )}
                         </div>
 
                         <div>
