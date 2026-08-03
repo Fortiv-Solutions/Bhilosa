@@ -4922,125 +4922,194 @@ Rules:
                         </div>
                       </div>
 
-                      {/* Chronologically Sorted Timeline List */}
+                      {/* Phase-Grouped Accordions View */}
                       {siteActivitiesLoading ? (
-                        <div className="py-12 text-center text-muted-foreground text-xs">Loading master schedule...</div>
+                        <div className="py-12 text-center text-muted-foreground text-xs font-semibold">Loading master schedule...</div>
                       ) : (() => {
-                        // 1. Filter by trade category, building, search term
+                        // 1. Filter activities
                         const filtered = siteActivities.filter((a) => {
                           const titleLower = a.title.toLowerCase();
-                          
-                          // Category filter
                           if (timelineFilter === 'RCC' && !titleLower.includes('rcc') && !titleLower.includes('excavation') && !titleLower.includes('footing') && !titleLower.includes('anchor') && !titleLower.includes('backfilling')) return false;
                           if (timelineFilter === 'MASONRY' && !titleLower.includes('masonry') && !titleLower.includes('brick')) return false;
                           if (timelineFilter === 'PLASTER' && !titleLower.includes('plaster')) return false;
-                          
-                          // Building filter
                           if (timelineBuilding === 'BC' && titleLower.includes('(a & d)')) return false;
                           if (timelineBuilding === 'AD' && titleLower.includes('(b & c)')) return false;
-
-                          // Search input
                           if (timelineSearch.trim() && !titleLower.includes(timelineSearch.toLowerCase().trim())) return false;
-
                           return true;
                         });
 
-                        // 2. Sort chronologically by plannedStartDate ascending
-                        const sorted = [...filtered].sort((a, b) => {
-                          const dateA = a.plannedStartDate || '';
-                          const dateB = b.plannedStartDate || '';
-                          return dateA.localeCompare(dateB);
-                        });
+                        // 2. Define construction phases
+                        const phases = [
+                          {
+                            id: 'substructure',
+                            title: 'Phase 1: Substructure & Foundation',
+                            icon: '🏗️',
+                            filterFn: (title: string) => {
+                              const t = title.toLowerCase();
+                              return t.includes('excavation') || t.includes('anchor') || t.includes('footing') || t.includes('backfilling');
+                            }
+                          },
+                          {
+                            id: 'basement',
+                            title: 'Phase 2: Basements & Ground Floor',
+                            icon: '🏬',
+                            filterFn: (title: string) => {
+                              const t = title.toLowerCase();
+                              return t.includes('lower basement') || t.includes('upper basement') || t.includes('ground floor');
+                            }
+                          },
+                          {
+                            id: 'superstructure',
+                            title: 'Phase 3: Superstructure Slabs (Floors 1st - 15th)',
+                            icon: '🏢',
+                            filterFn: (title: string) => {
+                              const t = title.toLowerCase();
+                              return t.includes('floor top slab') || t.includes('st floor') || t.includes('nd floor') || t.includes('rd floor') || t.includes('th floor');
+                            }
+                          },
+                          {
+                            id: 'finishing',
+                            title: 'Phase 4: Finishing, Masonry & Services',
+                            icon: '🎨',
+                            filterFn: (title: string) => {
+                              const t = title.toLowerCase();
+                              return !t.includes('excavation') && !t.includes('anchor') && !t.includes('footing') && !t.includes('backfilling') &&
+                                     !t.includes('lower basement') && !t.includes('upper basement') && !t.includes('ground floor') &&
+                                     !t.includes('floor top slab') && !t.includes('st floor') && !t.includes('nd floor') && !t.includes('rd floor') && !t.includes('th floor');
+                            }
+                          }
+                        ];
 
-                        if (sorted.length === 0) {
-                          return (
-                            <div className="bg-white dark:bg-gray-900 p-8 rounded-3xl border border-border/60 shadow-sm text-center text-xs text-muted-foreground">
-                              No schedule activities found matching the selected filters.
-                            </div>
-                          );
-                        }
+                        // Calculate overall metrics
+                        const totalCount = filtered.length;
+                        const completedCount = filtered.filter(a => !!a.actualEndDate).length;
+                        const overdueCount = filtered.filter(a => !a.actualEndDate && !!a.plannedEndDate && a.plannedEndDate < todayStr).length;
+                        const inProgressCount = filtered.filter(a => !a.actualEndDate && !!a.plannedStartDate && a.plannedStartDate <= todayStr && (!a.plannedEndDate || a.plannedEndDate >= todayStr)).length;
 
                         return (
-                          <div className="space-y-2.5 max-h-[620px] overflow-y-auto pr-1">
-                            <div className="flex items-center justify-between text-[10px] font-bold text-muted-foreground px-1 uppercase tracking-wider">
-                              <span>Showing {sorted.length} of {siteActivities.length} Scheduled Activities</span>
-                              <span>Sorted Chronologically ↑</span>
+                          <div className="space-y-4">
+                            {/* Executive KPI Header Bar */}
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                              <div className="p-3 rounded-2xl bg-white dark:bg-gray-900 border border-border/70 shadow-2xs">
+                                <div className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Total Scheduled</div>
+                                <div className="text-lg font-black text-foreground mt-0.5">{totalCount} <span className="text-xs font-semibold text-muted-foreground">Activities</span></div>
+                              </div>
+                              <div className="p-3 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-700 dark:text-amber-400 shadow-2xs">
+                                <div className="text-[10px] font-bold uppercase tracking-wider">⚡ In Progress</div>
+                                <div className="text-lg font-black mt-0.5">{inProgressCount}</div>
+                              </div>
+                              <div className="p-3 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-600 dark:text-rose-400 shadow-2xs">
+                                <div className="text-[10px] font-bold uppercase tracking-wider">⚠️ Overdue</div>
+                                <div className="text-lg font-black mt-0.5">{overdueCount}</div>
+                              </div>
+                              <div className="p-3 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 shadow-2xs">
+                                <div className="text-[10px] font-bold uppercase tracking-wider">✓ Completed</div>
+                                <div className="text-lg font-black mt-0.5">{completedCount}</div>
+                              </div>
                             </div>
 
-                            {sorted.map((a, idx) => {
-                              const overdue = !a.actualEndDate && !!a.plannedEndDate && a.plannedEndDate < todayStr;
-                              const completed = !!a.actualEndDate;
-                              const inProgress = !completed && !!a.plannedStartDate && a.plannedStartDate <= todayStr && (!a.plannedEndDate || a.plannedEndDate >= todayStr);
-                              
-                              const isRcc = a.title.toLowerCase().includes('rcc') || a.title.toLowerCase().includes('footing') || a.title.toLowerCase().includes('excavation');
-                              const isMasonry = a.title.toLowerCase().includes('masonry');
-                              const isPlaster = a.title.toLowerCase().includes('plaster');
+                            {/* Phase Accordions */}
+                            <div className="space-y-3 max-h-[640px] overflow-y-auto pr-1">
+                              {phases.map((phase) => {
+                                const phaseItems = filtered.filter(a => phase.filterFn(a.title));
+                                if (phaseItems.length === 0) return null;
 
-                              return (
-                                <div 
-                                  key={a.id || idx} 
-                                  className={`p-3.5 bg-white dark:bg-gray-900 border rounded-2xl shadow-xs transition-all flex items-center justify-between gap-3 text-left hover:shadow-sm ${
-                                    completed 
-                                      ? 'border-emerald-200 dark:border-emerald-950/40 bg-emerald-50/10' 
-                                      : inProgress 
-                                        ? 'border-amber-300 dark:border-amber-900/60 ring-1 ring-amber-500/20' 
-                                        : overdue 
-                                          ? 'border-rose-200 dark:border-rose-950/40' 
-                                          : 'border-border/60'
-                                  }`}
-                                >
-                                  <div className="flex items-start gap-3 min-w-0">
-                                    <div className={`p-2.5 rounded-xl shrink-0 mt-0.5 text-xs font-bold ${
-                                      isRcc 
-                                        ? 'bg-blue-50 text-blue-600 dark:bg-blue-950/40 dark:text-blue-400' 
-                                        : isMasonry 
-                                          ? 'bg-amber-50 text-amber-600 dark:bg-amber-950/40 dark:text-amber-400' 
-                                          : isPlaster 
-                                            ? 'bg-purple-50 text-purple-600 dark:bg-purple-950/40 dark:text-purple-400' 
-                                            : 'bg-gray-50 text-gray-600 dark:bg-gray-800 dark:text-gray-300'
-                                    }`}>
-                                      {isRcc ? '🏗️' : isMasonry ? '🧱' : isPlaster ? '🪵' : '📋'}
-                                    </div>
-                                    <div className="min-w-0">
-                                      <div className="text-xs font-extrabold text-foreground truncate">{a.title}</div>
-                                      <div className="flex items-center gap-2 text-[10px] text-muted-foreground mt-1 flex-wrap font-medium">
-                                        <span className="font-bold text-foreground/80 bg-muted/40 px-2 py-0.5 rounded">
-                                          📅 {a.plannedStartDate || 'TBD'} → {a.plannedEndDate || 'TBD'}
-                                        </span>
-                                        {a.actualEndDate && (
-                                          <span className="text-emerald-600 dark:text-emerald-400 font-bold">
-                                            Finished: {a.actualEndDate}
-                                          </span>
-                                        )}
+                                const phaseCompleted = phaseItems.filter(a => !!a.actualEndDate).length;
+                                const phaseInProgress = phaseItems.filter(a => !a.actualEndDate && !!a.plannedStartDate && a.plannedStartDate <= todayStr && (!a.plannedEndDate || a.plannedEndDate >= todayStr)).length;
+                                const phaseOverdue = phaseItems.filter(a => !a.actualEndDate && !!a.plannedEndDate && a.plannedEndDate < todayStr).length;
+                                const pct = Math.round((phaseCompleted / phaseItems.length) * 100) || 0;
+
+                                return (
+                                  <details key={phase.id} open className="group border border-border/80 rounded-2xl bg-white dark:bg-gray-900 shadow-2xs overflow-hidden transition-all">
+                                    <summary className="p-3.5 flex items-center justify-between gap-3 cursor-pointer select-none bg-muted/20 hover:bg-muted/40 transition-colors">
+                                      <div className="flex items-center gap-3 min-w-0">
+                                        <span className="text-base">{phase.icon}</span>
+                                        <div className="min-w-0">
+                                          <div className="text-xs font-black text-foreground">{phase.title}</div>
+                                          <div className="flex items-center gap-2 text-[10px] text-muted-foreground mt-0.5">
+                                            <span>{phaseItems.length} Activities</span>
+                                            <span>•</span>
+                                            <span className="text-emerald-600 font-bold">{phaseCompleted} Done</span>
+                                            {phaseInProgress > 0 && <span className="text-amber-600 font-bold">• {phaseInProgress} Active</span>}
+                                            {phaseOverdue > 0 && <span className="text-rose-600 font-bold">• {phaseOverdue} Delayed</span>}
+                                          </div>
+                                        </div>
                                       </div>
-                                    </div>
-                                  </div>
 
-                                  <div className="flex items-center gap-2 shrink-0">
-                                    <span className={`text-[10px] font-bold px-2.5 py-1 rounded-full border ${
-                                      completed
-                                        ? 'bg-emerald-50 border-emerald-200 text-emerald-600 dark:bg-emerald-950/30 dark:text-emerald-400'
-                                        : inProgress
-                                          ? 'bg-amber-50 border-amber-300 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400 font-extrabold animate-pulse'
-                                          : overdue
-                                            ? 'bg-rose-50 border-rose-200 text-rose-600 dark:bg-rose-950/30 dark:text-rose-400'
-                                            : 'bg-blue-50 border-blue-200 text-blue-600 dark:bg-blue-950/30 dark:text-blue-400'
-                                    }`}>
-                                      {completed ? '✓ Completed' : inProgress ? '⚡ In Progress' : overdue ? '⚠️ Overdue' : '⏳ Scheduled'}
-                                    </span>
-                                    {!completed && (
-                                      <button
-                                        type="button"
-                                        onClick={() => handleCompleteSiteActivity(a.id)}
-                                        className="text-[10px] font-bold text-primary hover:underline whitespace-nowrap bg-primary/5 hover:bg-primary/10 px-2.5 py-1 rounded-xl transition-colors cursor-pointer border border-primary/20"
-                                      >
-                                        Mark Done
-                                      </button>
-                                    )}
-                                  </div>
-                                </div>
-                              );
-                            })}
+                                      <div className="flex items-center gap-3 shrink-0">
+                                        <div className="w-24 hidden sm:block">
+                                          <div className="flex justify-between text-[9px] font-bold text-muted-foreground mb-1">
+                                            <span>Progress</span>
+                                            <span>{pct}%</span>
+                                          </div>
+                                          <div className="w-full bg-muted rounded-full h-1.5 overflow-hidden">
+                                            <div className="bg-primary h-1.5 rounded-full transition-all duration-300" style={{ width: `${pct}%` }}></div>
+                                          </div>
+                                        </div>
+                                        <span className="text-xs font-bold text-muted-foreground group-open:rotate-180 transition-transform duration-200">▼</span>
+                                      </div>
+                                    </summary>
+
+                                    <div className="p-3 border-t border-border/60 divide-y divide-border/40 space-y-1 bg-white dark:bg-gray-900">
+                                      {phaseItems.map((a, idx) => {
+                                        const overdue = !a.actualEndDate && !!a.plannedEndDate && a.plannedEndDate < todayStr;
+                                        const completed = !!a.actualEndDate;
+                                        const inProgress = !completed && !!a.plannedStartDate && a.plannedStartDate <= todayStr && (!a.plannedEndDate || a.plannedEndDate >= todayStr);
+
+                                        // Extract tower badge if present
+                                        let towerBadge = '';
+                                        if (a.title.toLowerCase().includes('(b & c)')) towerBadge = 'B & C';
+                                        else if (a.title.toLowerCase().includes('(a & d)')) towerBadge = 'A & D';
+
+                                        const cleanTitle = a.title.replace(/\s*\([^)]+\)/g, '').trim();
+
+                                        return (
+                                          <div key={a.id || idx} className="py-2.5 flex items-center justify-between gap-3 text-left hover:bg-muted/10 px-2 rounded-xl transition-colors">
+                                            <div className="min-w-0 flex-1">
+                                              <div className="flex items-center gap-2 flex-wrap">
+                                                <span className="text-xs font-bold text-foreground">{cleanTitle}</span>
+                                                {towerBadge && (
+                                                  <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-md bg-muted text-muted-foreground border border-border/50">
+                                                    🏢 Tower {towerBadge}
+                                                  </span>
+                                                )}
+                                              </div>
+                                              <div className="text-[10px] text-muted-foreground mt-0.5 font-medium">
+                                                📅 <span className="font-bold">{a.plannedStartDate || 'TBD'} → {a.plannedEndDate || 'TBD'}</span>
+                                              </div>
+                                            </div>
+
+                                            <div className="flex items-center gap-2 shrink-0">
+                                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                                                completed
+                                                  ? 'bg-emerald-50 border-emerald-200 text-emerald-600 dark:bg-emerald-950/30'
+                                                  : inProgress
+                                                    ? 'bg-amber-50 border-amber-300 text-amber-700 dark:bg-amber-950/30 font-extrabold animate-pulse'
+                                                    : overdue
+                                                      ? 'bg-rose-50 border-rose-200 text-rose-600 dark:bg-rose-950/30'
+                                                      : 'bg-blue-50 border-blue-200 text-blue-600 dark:bg-blue-950/30'
+                                              }`}>
+                                                {completed ? '✓ Completed' : inProgress ? '⚡ Active' : overdue ? '⚠️ Delayed' : '⏳ Scheduled'}
+                                              </span>
+
+                                              {!completed && (
+                                                <button
+                                                  type="button"
+                                                  onClick={() => handleCompleteSiteActivity(a.id)}
+                                                  className="text-[10px] font-bold text-primary hover:underline bg-primary/5 hover:bg-primary/10 px-2.5 py-1 rounded-xl transition-colors cursor-pointer border border-primary/20"
+                                                >
+                                                  Mark Done
+                                                </button>
+                                              )}
+                                            </div>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  </details>
+                                );
+                              })}
+                            </div>
                           </div>
                         );
                       })()}
