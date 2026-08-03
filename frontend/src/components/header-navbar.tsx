@@ -163,7 +163,13 @@ export default function HeaderNavbar() {
                     notifications.map((n) => (
                       <div
                         key={n.id}
-                        onClick={() => markNotificationRead(n.id)}
+                        onClick={() => {
+                          markNotificationRead(n.id);
+                          if (n.actionUrl) {
+                            setIsNotificationsOpen(false);
+                            router.push(n.actionUrl);
+                          }
+                        }}
                         className={`flex flex-col gap-0.5 p-2.5 rounded-lg transition-colors cursor-pointer text-left mt-0.5 ${
                           !n.read 
                             ? 'bg-primary/5 hover:bg-primary/10 border-l-2 border-primary pl-2' 

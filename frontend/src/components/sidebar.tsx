@@ -38,10 +38,10 @@ export default function Sidebar() {
       groupPaths: ['/procurement', '/vendors', '/inventory']
     },
     {
-      label: 'Billing',
-      path: '/billing',
-      icon: FileText,
-      groupPaths: ['/billing', '/work-orders', '/service-bills']
+      label: 'Work Orders',
+      path: '/work-orders',
+      icon: ClipboardCheck,
+      groupPaths: ['/work-orders']
     },
     { 
       label: 'Financials', 

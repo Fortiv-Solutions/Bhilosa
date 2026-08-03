@@ -7,6 +7,7 @@ import FloatingChatbot from "@/components/floating-chatbot";
 import MobileNavbar from "@/components/mobile-navbar";
 import HeaderNavbar from "@/components/header-navbar";
 import SubNavBar from "@/components/sub-navbar";
+import NotificationPoller from "@/components/notification-poller";
 import { useAppStore } from "@/store/use-app-store";
 import { canAccessPath, getRoleLandingPath } from "@/lib/rbac";
 
@@ -142,6 +143,7 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
           </div>
         </main>
         <FloatingChatbot />
+        <NotificationPoller />
       </div>
     );
   }
@@ -164,6 +166,7 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
           </div>
         </div>
       </div>
+      <NotificationPoller />
     </div>
   );
 }

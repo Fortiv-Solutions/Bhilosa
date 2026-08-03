@@ -42,6 +42,7 @@ export type AIConversation = {
 import { supabase, getDbSiteId, getFrontendProjectId, getDbUserId, getSupabaseJsonHeaders } from '@/utils/supabase-client';
 import { bootstrapInboxData, getSessionProfile, signOut as signOutSupabase } from '@/lib/inbox';
 import { normalizeDatabaseRole } from '@/lib/rbac';
+import { markNotificationRead as markNotificationReadInDb } from '@/lib/notifications';
 import {
   addProjectMemberByName,
   createBoqRecord,
@@ -60,6 +61,9 @@ type AppNotification = {
   message: string;
   time: string;
   read: boolean;
+  /** Set when this notification is backed by a DB `notifications` row (e.g. service_bill_raised), so read-state can round-trip. */
+  dbId?: string;
+  actionUrl?: string;
 };
 
 const DEFAULT_USER: User = {
@@ -129,6 +133,7 @@ interface AppState {
   addBOQItem: (projectId: string, item: Omit<BOQItem, 'id' | 'approved' | 'consumedQty'>) => void;
   markNotificationRead: (id: string) => void;
   clearNotifications: () => void;
+  addNotification: (n: Omit<AppNotification, 'id' | 'time' | 'read'> & { id?: string }) => void;
   addQCItem: (projectId: string, title: string) => void;
   addInvoice: (projectId: string, amount: number, desc: string) => void;
   addTeamMember: (projectId: string, name: string, role: string) => void;
@@ -1572,11 +1577,31 @@ A draft purchase request has been prepared in the Procurement Module.
     };
   }),
 
-  markNotificationRead: (id) => set((state) => ({
-    notifications: state.notifications.map(n => n.id === id ? { ...n, read: true } : n)
-  })),
+  markNotificationRead: (id) => {
+    set((state) => {
+      const target = state.notifications.find((n) => n.id === id);
+      if (target?.dbId) {
+        void markNotificationReadInDb(target.dbId);
+      }
+      return {
+        notifications: state.notifications.map(n => n.id === id ? { ...n, read: true } : n)
+      };
+    });
+  },
 
   clearNotifications: () => set({ notifications: [] }),
+
+  addNotification: (n) => set((state) => {
+    if (n.dbId && state.notifications.some((existing) => existing.dbId === n.dbId)) {
+      return {};
+    }
+    return {
+      notifications: [
+        { id: n.id || `n_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, time: 'Just now', read: false, ...n },
+        ...state.notifications,
+      ],
+    };
+  }),
 
   addQCItem: (projectId, title) => {
     if (isLiveSupabase()) {

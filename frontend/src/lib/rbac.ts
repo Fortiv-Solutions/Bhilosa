@@ -38,6 +38,8 @@ export const ROLE_ALLOWED_PATHS: Record<Role, string[]> = {
     '/projects',
     '/activities',
     '/work-orders',
+    '/billing',
+    '/service-bills',
     '/boq',
     '/budget',
     '/materials',
