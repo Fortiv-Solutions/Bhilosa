@@ -1688,7 +1688,7 @@ A draft purchase request has been prepared in the Procurement Module.
         }
 
         const { data: inserted, error } = await supabase.from('tasks').insert({
-          id: uuidRegex.test(task.id || '') ? task.id : undefined,
+          id: uuidRegex.test((task as any).id || '') ? (task as any).id : undefined,
           project_id: dbSiteId,
           name: task.name,
           title: task.name,

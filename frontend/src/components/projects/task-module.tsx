@@ -230,6 +230,7 @@ export function TaskModule({ project, overviewData }: { project: any, overviewDa
     event.preventDefault();
     setTaskFormError('');
 
+    const normalizedName = taskName.trim();
     if (!normalizedName) {
       setTaskFormError('Please enter a task name.');
       return;
