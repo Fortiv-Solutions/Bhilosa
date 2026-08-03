@@ -105,7 +105,6 @@ type ProjectTab =
   | 'site-operations'
   | 'budget'
   | 'work-order'
-  | 'billing'
   | 'analytics'
   | 'tasks'
   | 'equipment-tracking'
@@ -3755,7 +3754,6 @@ Rules:
     { id: 'quality-control', label: 'Quality Control', icon: ShieldCheck },
     { id: 'site-operations', label: 'Site Operations', icon: Wrench },
     { id: 'budget', label: 'Budget', icon: Coins },
-    {id: 'billing', label: 'Billing', icon: FileSpreadsheet },
     { id: 'tasks', label: 'Tasks', icon: ListTodo },
     { id: 'inbox', label: 'Inbox', icon: MessageSquare },
     { id: 'vendor-management', label: 'Vendor Scorecard', icon: Award },
@@ -3802,7 +3800,6 @@ Rules:
             { id: 'vendor-management',  label: 'Vendors',         Icon: Award           },
             { id: 'document-control',   label: 'Documents',       Icon: FileText        },
             { id: 'budget',             label: 'Budget',          Icon: Coins           },
-            { id: 'billing',            label: 'Billing',         Icon: FileSpreadsheet },
           ].map(({ id, label, Icon }) => {
             const isActive = activeTab === id;
             return (

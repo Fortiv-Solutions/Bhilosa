@@ -45,9 +45,10 @@ export default function SubNavBar() {
     },
     {
       name: 'Work Orders',
-      paths: ['/work-orders'],
+      paths: ['/work-orders', '/service-bills'],
       tabs: [
-        { label: 'Work Orders', path: '/work-orders' }
+        { label: 'Work Orders', path: '/work-orders' },
+        { label: 'Service Bills', path: '/service-bills' }
       ]
     },
     {
