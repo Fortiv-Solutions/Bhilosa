@@ -213,6 +213,10 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   // Site Ops: predefined activities + timeline
   const [siteActivities, setSiteActivities] = useState<SiteActivity[]>([]);
   const [siteActivitiesLoading, setSiteActivitiesLoading] = useState(true);
+  const [timelineFilter, setTimelineFilter] = useState<'ALL' | 'RCC' | 'MASONRY' | 'PLASTER'>('ALL');
+  const [timelineBuilding, setTimelineBuilding] = useState<'ALL' | 'BC' | 'AD'>('ALL');
+  const [timelineSearch, setTimelineSearch] = useState<string>('');
+  const [isAddActivityModalOpen, setIsAddActivityModalOpen] = useState(false);
 
   // New Client-Facing DPR Redesign States
   const [operationsSubTab, setOperationsSubTab] = useState<'timeline' | 'feed' | 'agencies' | 'issues' | 'photos' | 'client-report' | 'history'>('feed');
@@ -2253,6 +2257,7 @@ Rules:
       setActivityTitle('');
       setActivityPlannedStart('');
       setActivityPlannedEnd('');
+      setIsAddActivityModalOpen(false);
     } catch (err) {
       console.error('Error creating site activity:', err);
       showQcAlert('Could not save the activity. Please try again.', 'error');
@@ -4637,15 +4642,6 @@ Rules:
                                     <span className="truncate pr-2 uppercase tracking-wider text-[8px]">Progress</span>
                                     <span>{tsk.progress}%</span>
                                   </div>
-
-                                  {isOverdue && (
-                                    <div
-                                      className="absolute -right-2 top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 animate-pulse border-2 border-white dark:border-gray-900"
-                                      title="Overdue Schedule Alert"
-                                    >
-                                      <span className="absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75 animate-ping"></span>
-                                    </div>
-                                  )}
                                 </div>
                               </div>
                             );
@@ -4807,381 +4803,381 @@ Rules:
                 </div>
 
                 {operationsSubTab === 'timeline' ? (
-                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-                    <div className="lg:col-span-1 bg-white dark:bg-gray-900 p-4 rounded-3xl border border-border/60 shadow-sm space-y-4 h-fit">
-                      <h3 className="font-heading font-extrabold text-foreground text-xs uppercase tracking-wider border-l-2 border-primary pl-2">
-                        Add Planned Activity
-                      </h3>
-                      <form onSubmit={handleAddSiteActivity} className="space-y-4">
+                  <div className="space-y-4">
+                    {/* Timeline Controls Header */}
+                    <div className="bg-white dark:bg-gray-900 p-4 rounded-3xl border border-border/60 shadow-sm space-y-3">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                         <div>
-                          <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Activity Name</label>
-                          <input
-                            type="text"
-                            required
-                            value={activityTitle}
-                            onChange={(e) => setActivityTitle(e.target.value)}
-                            placeholder="e.g. RCC Slab Casting - Tower A"
-                            className="w-full text-xs mt-1.5 p-2.5 rounded-xl border border-border bg-gray-50 dark:bg-gray-950 text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-                          />
+                          <h3 className="font-heading font-extrabold text-foreground text-xs uppercase tracking-wider">
+                            🗓️ Master Construction Activity Timeline
+                          </h3>
+                          <p className="text-[10px] text-muted-foreground mt-0.5">
+                            Chronologically arranged work schedule derived from project master plan.
+                          </p>
                         </div>
-                        <div className="grid grid-cols-2 gap-2.5">
-                          <div>
-                            <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Planned Start</label>
+                        
+                        <div className="flex items-center gap-2">
+                          {/* Search Input */}
+                          <div className="relative">
                             <input
-                              type="date"
-                              required
-                              value={activityPlannedStart}
-                              onChange={(e) => setActivityPlannedStart(e.target.value)}
-                              className="w-full text-xs mt-1.5 p-2.5 rounded-xl border border-border bg-gray-50 dark:bg-gray-950 text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                              type="text"
+                              placeholder="Search schedule (e.g. 5th Floor, Masonry)..."
+                              value={timelineSearch}
+                              onChange={(e) => setTimelineSearch(e.target.value)}
+                              className="text-xs px-3 py-2 pl-8 rounded-xl border border-border bg-gray-50 dark:bg-gray-950 text-foreground w-full sm:w-56 focus:outline-none focus:ring-1 focus:ring-primary"
                             />
+                            <Search className="w-3.5 h-3.5 text-muted-foreground absolute left-2.5 top-2.5" />
                           </div>
-                          <div>
-                            <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Planned Finish</label>
-                            <input
-                              type="date"
-                              required
-                              value={activityPlannedEnd}
-                              onChange={(e) => setActivityPlannedEnd(e.target.value)}
-                              className="w-full text-xs mt-1.5 p-2.5 rounded-xl border border-border bg-gray-50 dark:bg-gray-950 text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-                            />
-                          </div>
-                        </div>
-                        <button
-                          type="submit"
-                          disabled={isAddingActivity || currentUser.role === 'PR_TEAM'}
-                          className="w-full text-xs font-bold bg-primary hover:bg-orange-850 text-white py-3 rounded-xl shadow-xs transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-                        >
-                          {isAddingActivity ? 'Adding…' : 'Add Activity'}
-                        </button>
-                      </form>
-                    </div>
 
-                    <div className="lg:col-span-2 space-y-3">
-                      <h3 className="font-heading font-bold text-foreground text-xs uppercase tracking-wider">Planned Activities</h3>
-                      {siteActivitiesLoading ? (
-                        <div className="py-12 text-center text-muted-foreground text-xs">Loading activities...</div>
-                      ) : siteActivities.length === 0 ? (
-                        <div className="bg-white dark:bg-gray-900 p-6 rounded-2xl border border-border/60 shadow-sm text-center text-xs text-muted-foreground">
-                          No activities defined yet. Add one to start tracking against a timeline.
+                          {/* Single Pop-up Trigger Button */}
+                          <button
+                            type="button"
+                            onClick={() => setIsAddActivityModalOpen(true)}
+                            className="inline-flex items-center gap-1.5 px-4 py-2 bg-primary hover:bg-orange-850 text-white text-xs font-bold rounded-xl shadow-xs transition-colors whitespace-nowrap cursor-pointer"
+                          >
+                            <span>+ Add Planned Activity</span>
+                          </button>
                         </div>
-                      ) : (
-                        <div className="space-y-2">
-                          {siteActivities.map((a) => {
-                            const overdue = !a.actualEndDate && !!a.plannedEndDate && a.plannedEndDate < todayStr;
-                            const completed = !!a.actualEndDate;
-                            return (
-                              <div key={a.id} className="bg-white dark:bg-gray-900 p-3.5 rounded-2xl border border-border/60 shadow-sm flex items-center justify-between gap-3">
-                                <div className="min-w-0">
-                                  <div className="text-xs font-bold text-foreground truncate">{a.title}</div>
-                                  <div className="text-[10px] text-muted-foreground mt-0.5">
-                                    {a.plannedStartDate} → {a.plannedEndDate}
+                      </div>
+
+                        {/* Trade Category Tabs & Building Selector */}
+                        <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-border/40">
+                          <div className="flex items-center gap-1 overflow-x-auto pb-1 text-[11px] font-bold">
+                            <button
+                              type="button"
+                              onClick={() => setTimelineFilter('ALL')}
+                              className={`px-3 py-1 rounded-xl transition-colors cursor-pointer whitespace-nowrap ${
+                                timelineFilter === 'ALL'
+                                  ? 'bg-primary text-white font-extrabold shadow-xs'
+                                  : 'bg-muted/40 text-muted-foreground hover:text-foreground'
+                              }`}
+                            >
+                              All Trades
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setTimelineFilter('RCC')}
+                              className={`px-3 py-1 rounded-xl transition-colors cursor-pointer whitespace-nowrap ${
+                                timelineFilter === 'RCC'
+                                  ? 'bg-primary text-white font-extrabold shadow-xs'
+                                  : 'bg-muted/40 text-muted-foreground hover:text-foreground'
+                              }`}
+                            >
+                              🏗️ RCC & Structure
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setTimelineFilter('MASONRY')}
+                              className={`px-3 py-1 rounded-xl transition-colors cursor-pointer whitespace-nowrap ${
+                                timelineFilter === 'MASONRY'
+                                  ? 'bg-primary text-white font-extrabold shadow-xs'
+                                  : 'bg-muted/40 text-muted-foreground hover:text-foreground'
+                              }`}
+                            >
+                              🧱 Masonry Work
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setTimelineFilter('PLASTER')}
+                              className={`px-3 py-1 rounded-xl transition-colors cursor-pointer whitespace-nowrap ${
+                                timelineFilter === 'PLASTER'
+                                  ? 'bg-primary text-white font-extrabold shadow-xs'
+                                  : 'bg-muted/40 text-muted-foreground hover:text-foreground'
+                              }`}
+                            >
+                              🪵 Plaster Work
+                            </button>
+                          </div>
+
+                          {/* Tower / Building Toggle */}
+                          <div className="flex items-center gap-1 bg-muted/30 p-1 rounded-xl text-[10px] font-bold">
+                            <button
+                              type="button"
+                              onClick={() => setTimelineBuilding('ALL')}
+                              className={`px-2.5 py-0.5 rounded-lg transition-colors cursor-pointer ${
+                                timelineBuilding === 'ALL' ? 'bg-background text-foreground shadow-xs' : 'text-muted-foreground'
+                              }`}
+                            >
+                              All Towers
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setTimelineBuilding('BC')}
+                              className={`px-2.5 py-0.5 rounded-lg transition-colors cursor-pointer ${
+                                timelineBuilding === 'BC' ? 'bg-background text-foreground shadow-xs' : 'text-muted-foreground'
+                              }`}
+                            >
+                              Tower B & C
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setTimelineBuilding('AD')}
+                              className={`px-2.5 py-0.5 rounded-lg transition-colors cursor-pointer ${
+                                timelineBuilding === 'AD' ? 'bg-background text-foreground shadow-xs' : 'text-muted-foreground'
+                              }`}
+                            >
+                              Tower A & D
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Chronologically Sorted Timeline List */}
+                      {siteActivitiesLoading ? (
+                        <div className="py-12 text-center text-muted-foreground text-xs">Loading master schedule...</div>
+                      ) : (() => {
+                        // 1. Filter by trade category, building, search term
+                        const filtered = siteActivities.filter((a) => {
+                          const titleLower = a.title.toLowerCase();
+                          
+                          // Category filter
+                          if (timelineFilter === 'RCC' && !titleLower.includes('rcc') && !titleLower.includes('excavation') && !titleLower.includes('footing') && !titleLower.includes('anchor') && !titleLower.includes('backfilling')) return false;
+                          if (timelineFilter === 'MASONRY' && !titleLower.includes('masonry') && !titleLower.includes('brick')) return false;
+                          if (timelineFilter === 'PLASTER' && !titleLower.includes('plaster')) return false;
+                          
+                          // Building filter
+                          if (timelineBuilding === 'BC' && titleLower.includes('(a & d)')) return false;
+                          if (timelineBuilding === 'AD' && titleLower.includes('(b & c)')) return false;
+
+                          // Search input
+                          if (timelineSearch.trim() && !titleLower.includes(timelineSearch.toLowerCase().trim())) return false;
+
+                          return true;
+                        });
+
+                        // 2. Sort chronologically by plannedStartDate ascending
+                        const sorted = [...filtered].sort((a, b) => {
+                          const dateA = a.plannedStartDate || '';
+                          const dateB = b.plannedStartDate || '';
+                          return dateA.localeCompare(dateB);
+                        });
+
+                        if (sorted.length === 0) {
+                          return (
+                            <div className="bg-white dark:bg-gray-900 p-8 rounded-3xl border border-border/60 shadow-sm text-center text-xs text-muted-foreground">
+                              No schedule activities found matching the selected filters.
+                            </div>
+                          );
+                        }
+
+                        return (
+                          <div className="space-y-2.5 max-h-[620px] overflow-y-auto pr-1">
+                            <div className="flex items-center justify-between text-[10px] font-bold text-muted-foreground px-1 uppercase tracking-wider">
+                              <span>Showing {sorted.length} of {siteActivities.length} Scheduled Activities</span>
+                              <span>Sorted Chronologically ↑</span>
+                            </div>
+
+                            {sorted.map((a, idx) => {
+                              const overdue = !a.actualEndDate && !!a.plannedEndDate && a.plannedEndDate < todayStr;
+                              const completed = !!a.actualEndDate;
+                              const inProgress = !completed && !!a.plannedStartDate && a.plannedStartDate <= todayStr && (!a.plannedEndDate || a.plannedEndDate >= todayStr);
+                              
+                              const isRcc = a.title.toLowerCase().includes('rcc') || a.title.toLowerCase().includes('footing') || a.title.toLowerCase().includes('excavation');
+                              const isMasonry = a.title.toLowerCase().includes('masonry');
+                              const isPlaster = a.title.toLowerCase().includes('plaster');
+
+                              return (
+                                <div 
+                                  key={a.id || idx} 
+                                  className={`p-3.5 bg-white dark:bg-gray-900 border rounded-2xl shadow-xs transition-all flex items-center justify-between gap-3 text-left hover:shadow-sm ${
+                                    completed 
+                                      ? 'border-emerald-200 dark:border-emerald-950/40 bg-emerald-50/10' 
+                                      : inProgress 
+                                        ? 'border-amber-300 dark:border-amber-900/60 ring-1 ring-amber-500/20' 
+                                        : overdue 
+                                          ? 'border-rose-200 dark:border-rose-950/40' 
+                                          : 'border-border/60'
+                                  }`}
+                                >
+                                  <div className="flex items-start gap-3 min-w-0">
+                                    <div className={`p-2.5 rounded-xl shrink-0 mt-0.5 text-xs font-bold ${
+                                      isRcc 
+                                        ? 'bg-blue-50 text-blue-600 dark:bg-blue-950/40 dark:text-blue-400' 
+                                        : isMasonry 
+                                          ? 'bg-amber-50 text-amber-600 dark:bg-amber-950/40 dark:text-amber-400' 
+                                          : isPlaster 
+                                            ? 'bg-purple-50 text-purple-600 dark:bg-purple-950/40 dark:text-purple-400' 
+                                            : 'bg-gray-50 text-gray-600 dark:bg-gray-800 dark:text-gray-300'
+                                    }`}>
+                                      {isRcc ? '🏗️' : isMasonry ? '🧱' : isPlaster ? '🪵' : '📋'}
+                                    </div>
+                                    <div className="min-w-0">
+                                      <div className="text-xs font-extrabold text-foreground truncate">{a.title}</div>
+                                      <div className="flex items-center gap-2 text-[10px] text-muted-foreground mt-1 flex-wrap font-medium">
+                                        <span className="font-bold text-foreground/80 bg-muted/40 px-2 py-0.5 rounded">
+                                          📅 {a.plannedStartDate || 'TBD'} → {a.plannedEndDate || 'TBD'}
+                                        </span>
+                                        {a.actualEndDate && (
+                                          <span className="text-emerald-600 dark:text-emerald-400 font-bold">
+                                            Finished: {a.actualEndDate}
+                                          </span>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  <div className="flex items-center gap-2 shrink-0">
+                                    <span className={`text-[10px] font-bold px-2.5 py-1 rounded-full border ${
+                                      completed
+                                        ? 'bg-emerald-50 border-emerald-200 text-emerald-600 dark:bg-emerald-950/30 dark:text-emerald-400'
+                                        : inProgress
+                                          ? 'bg-amber-50 border-amber-300 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400 font-extrabold animate-pulse'
+                                          : overdue
+                                            ? 'bg-rose-50 border-rose-200 text-rose-600 dark:bg-rose-950/30 dark:text-rose-400'
+                                            : 'bg-blue-50 border-blue-200 text-blue-600 dark:bg-blue-950/30 dark:text-blue-400'
+                                    }`}>
+                                      {completed ? '✓ Completed' : inProgress ? '⚡ In Progress' : overdue ? '⚠️ Overdue' : '⏳ Scheduled'}
+                                    </span>
+                                    {!completed && (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleCompleteSiteActivity(a.id)}
+                                        className="text-[10px] font-bold text-primary hover:underline whitespace-nowrap bg-primary/5 hover:bg-primary/10 px-2.5 py-1 rounded-xl transition-colors cursor-pointer border border-primary/20"
+                                      >
+                                        Mark Done
+                                      </button>
+                                    )}
                                   </div>
                                 </div>
-                                <div className="flex items-center gap-2 flex-shrink-0">
-                                  <span className={`text-[10px] font-bold px-2 py-1 rounded-full border ${
-                                    completed
-                                      ? 'bg-emerald-50 border-emerald-200 text-emerald-600 dark:bg-emerald-950/20 dark:text-emerald-400'
-                                      : overdue
-                                        ? 'bg-rose-50 border-rose-200 text-rose-600 dark:bg-rose-950/20 dark:text-rose-400'
-                                        : 'bg-amber-50 border-amber-200 text-amber-600 dark:bg-amber-950/20 dark:text-amber-400'
-                                  }`}>
-                                    {completed ? 'Completed' : overdue ? 'Overdue' : 'On Track'}
-                                  </span>
-                                  {!completed && (
-                                    <button
-                                      type="button"
-                                      onClick={() => handleCompleteSiteActivity(a.id)}
-                                      className="text-[10px] font-bold text-primary hover:underline whitespace-nowrap"
-                                    >
-                                      Mark Complete
-                                    </button>
-                                  )}
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                ) : operationsSubTab === 'feed' ? (
-                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-                    {/* 1. Submit DPR Form (Pushed to top on mobile via source-order, right-hand column on desktop) */}
-                    <div className="lg:col-span-1 lg:order-2 bg-white dark:bg-gray-900 p-4 rounded-3xl border border-border/60 shadow-sm space-y-4 h-fit">
-                      <h3 className="font-heading font-extrabold text-foreground text-xs uppercase tracking-wider border-l-2 border-primary pl-2">
-                        Submit Daily Site Report
-                      </h3>
-                      
-                      <form onSubmit={handleDailyActivitySubmit} className="space-y-4">
-                        <div>
-                          <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Engineer Name</label>
-                          <input
-                            type="text"
-                            required
-                            value={engineerName}
-                            onChange={(e) => setEngineerName(e.target.value)}
-                            placeholder="e.g. Priya Nair"
-                            className="w-full text-xs mt-1.5 p-2.5 rounded-xl border border-border bg-gray-50 dark:bg-gray-950 text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-                          />
-                        </div>
+                              );
+                            })}
+                          </div>
+                        );
+                      })()}
 
-                        <div>
-                          <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Activity</label>
-                          <select
-                            required
-                            value={selectedActivityId}
-                            onChange={(e) => { setSelectedActivityId(e.target.value); setDelayReason(''); }}
-                            className="w-full text-xs mt-1.5 p-2.5 rounded-xl border border-border bg-gray-50 dark:bg-gray-950 text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-                          >
-                            <option value="">Select an activity…</option>
-                            {siteActivities.filter(a => !a.actualEndDate).map(a => (
-                              <option key={a.id} value={a.id}>{a.title}</option>
-                            ))}
-                          </select>
-                          {isActivityDelayed && (
-                            <div className="mt-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2.5 dark:border-rose-900/40 dark:bg-rose-950/30">
-                              <p className="text-[11px] font-bold text-rose-700 dark:text-rose-300">
-                                ⚠️ &quot;{selectedActivity?.title}&quot; was due on {selectedActivity?.plannedEndDate} — {activityDelayDays} day{activityDelayDays === 1 ? '' : 's'} overdue.
-                              </p>
-                              <label className="text-[10px] font-bold text-rose-700 dark:text-rose-300 uppercase tracking-wider mt-2 block">
-                                Reason for Delay *
-                              </label>
-                              <textarea
+                    {/* Add Planned Activity Popup Modal */}
+                    {isAddActivityModalOpen && (
+                      <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-in fade-in duration-200">
+                        <div className="bg-white dark:bg-gray-900 border border-border rounded-3xl p-6 shadow-2xl max-w-md w-full space-y-5 animate-in zoom-in-95 duration-200">
+                          <div className="flex items-center justify-between border-b border-border/60 pb-3">
+                            <h3 className="font-heading font-extrabold text-foreground text-sm uppercase tracking-wider border-l-3 border-primary pl-2.5">
+                              Add Planned Activity
+                            </h3>
+                            <button
+                              type="button"
+                              onClick={() => setIsAddActivityModalOpen(false)}
+                              className="text-muted-foreground hover:text-foreground text-xs font-bold w-7 h-7 rounded-full bg-muted/40 flex items-center justify-center cursor-pointer"
+                            >
+                              ✕
+                            </button>
+                          </div>
+
+                          <form onSubmit={handleAddSiteActivity} className="space-y-4 text-left">
+                            <div>
+                              <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Activity Name *</label>
+                              <input
+                                type="text"
                                 required
-                                value={delayReason}
-                                onChange={(e) => setDelayReason(e.target.value)}
-                                rows={2}
-                                placeholder="e.g. Material shortage, labour crunch, weather..."
-                                className="w-full text-xs mt-1 p-2.5 rounded-xl border border-rose-200 bg-white dark:bg-gray-950 dark:border-rose-900/40 text-foreground focus:outline-none focus:ring-1 focus:ring-rose-400 resize-none"
+                                value={activityTitle}
+                                onChange={(e) => setActivityTitle(e.target.value)}
+                                placeholder="e.g. RCC Slab Casting - Tower A"
+                                className="w-full text-xs mt-1.5 p-3 rounded-xl border border-border bg-gray-50 dark:bg-gray-950 text-foreground focus:outline-none focus:ring-1 focus:ring-primary font-semibold"
                               />
                             </div>
-                          )}
-                        </div>
+                            <div className="grid grid-cols-2 gap-3">
+                              <div>
+                                <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Planned Start *</label>
+                                <input
+                                  type="date"
+                                  required
+                                  value={activityPlannedStart}
+                                  onChange={(e) => setActivityPlannedStart(e.target.value)}
+                                  className="w-full text-xs mt-1.5 p-3 rounded-xl border border-border bg-gray-50 dark:bg-gray-950 text-foreground focus:outline-none focus:ring-1 focus:ring-primary font-semibold"
+                                />
+                              </div>
+                              <div>
+                                <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Planned Finish *</label>
+                                <input
+                                  type="date"
+                                  required
+                                  value={activityPlannedEnd}
+                                  onChange={(e) => setActivityPlannedEnd(e.target.value)}
+                                  className="w-full text-xs mt-1.5 p-3 rounded-xl border border-border bg-gray-50 dark:bg-gray-950 text-foreground focus:outline-none focus:ring-1 focus:ring-primary font-semibold"
+                                />
+                              </div>
+                            </div>
 
+                            <div className="flex items-center justify-end gap-2 pt-3 border-t border-border/40">
+                              <button
+                                type="button"
+                                onClick={() => setIsAddActivityModalOpen(false)}
+                                className="px-4 py-2.5 rounded-xl border border-border text-muted-foreground hover:text-foreground text-xs font-bold transition-colors cursor-pointer"
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                type="submit"
+                                disabled={isAddingActivity || currentUser.role === 'PR_TEAM'}
+                                className="px-5 py-2.5 text-xs font-bold bg-primary hover:bg-orange-850 text-white rounded-xl shadow-xs transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                              >
+                                {isAddingActivity ? 'Adding…' : 'Add Activity'}
+                              </button>
+                            </div>
+                          </form>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : operationsSubTab === 'feed' ? (
+                  <div className="space-y-4">
+                    {/* Activity Logs Timeline / Feed */}
+                    <div className="bg-white dark:bg-gray-900 p-6 rounded-3xl border border-border/60 shadow-sm space-y-4">
+                      <div className="flex items-center justify-between border-b border-border/40 pb-3">
                         <div>
-                          <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Weather Condition</label>
-                          <select
-                            value={weather}
-                            onChange={(e) => setWeather(e.target.value as typeof weather)}
-                            className="w-full text-xs mt-1.5 p-2.5 rounded-xl border border-border bg-gray-50 dark:bg-gray-950 text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-                          >
-                            <option value="Sunny">Sunny</option>
-                            <option value="Cloudy">Cloudy</option>
-                            <option value="Rainy">Rainy</option>
-                            <option value="Windy">Windy</option>
-                          </select>
-                        </div>
-
-                        <div>
-                          <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Work Completed Details</label>
-                          <textarea
-                            required
-                            value={workCompleted}
-                            onChange={(e) => setWorkCompleted(e.target.value)}
-                            rows={3}
-                            placeholder="Specify excavation status, concrete casting, shuttering, bricks, etc..."
-                            className="w-full text-xs mt-1.5 p-2.5 rounded-xl border border-border bg-gray-50 dark:bg-gray-950 text-foreground focus:outline-none focus:ring-1 focus:ring-primary resize-none"
-                          />
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-2.5">
-                          <div>
-                            <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Issues (Optional)</label>
-                            <input
-                              type="text"
-                              value={issues}
-                              onChange={(e) => setIssues(e.target.value)}
-                              placeholder="e.g. Transit delays"
-                              className="w-full text-xs mt-1.5 p-2.5 rounded-xl border border-border bg-gray-50 dark:bg-gray-950 text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-                            />
-                          </div>
-                          <div>
-                            <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Risks (Optional)</label>
-                            <input
-                              type="text"
-                              value={risks}
-                              onChange={(e) => setRisks(e.target.value)}
-                              placeholder="e.g. Mud slides"
-                              className="w-full text-xs mt-1.5 p-2.5 rounded-xl border border-border bg-gray-50 dark:bg-gray-950 text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-                            />
-                          </div>
-                        </div>
-
-                        <div>
-                          <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Progress Contribution (%)</label>
-                          <input
-                            type="number"
-                            step="0.05"
-                            required
-                            value={progressDelta}
-                            onChange={(e) => setProgressDelta(parseFloat(e.target.value))}
-                            className="w-full text-xs mt-1.5 p-2.5 rounded-xl border border-border bg-gray-50 dark:bg-gray-950 text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-                          />
-                        </div>
-
-                        <button
-                          type="submit"
-                          disabled={currentUser.role === 'PR_TEAM'}
-                          className="w-full text-xs font-bold bg-primary hover:bg-orange-850 text-white py-3 rounded-xl shadow-xs transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-                        >
-                          Log Site Activity
-                        </button>
-                      </form>
-                    </div>
-
-                    {/* 2. Site Diary & Timeline Feed (column 1 on desktop, stacked below form on mobile) */}
-                    <div className="lg:col-span-2 lg:order-1 space-y-4">
-                      {/* Header bar with Offline status */}
-                      <div className="bg-white dark:bg-gray-900 p-4 rounded-2xl border border-border/60 shadow-sm flex items-center justify-between">
-                        <div>
-                          <h3 className="font-heading font-bold text-foreground text-xs uppercase tracking-wider">Site Diary & DPR Logs</h3>
-                          <p className="text-xs text-muted-foreground mt-0.5">Live site logs, voice notes, photos, and offline data cache status.</p>
+                          <h4 className="font-heading font-extrabold text-foreground text-xs uppercase tracking-wider">
+                            📋 Activity Logs Timeline
+                          </h4>
+                          <p className="text-[10px] text-muted-foreground mt-0.5">
+                            Chronological timeline of all daily progress reports, field logs, and site activity submissions.
+                          </p>
                         </div>
                         <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-2.5 py-1 text-[10px] font-bold text-emerald-600 dark:text-emerald-500 border border-emerald-500/25">
                           <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                          Offline Sync Enabled (Cache Clean)
+                          Live Activity Feed Active
                         </span>
                       </div>
-
-                      {/* Voice Notes Recorder Simulator */}
-                      <div className="bg-white dark:bg-gray-900 p-4 rounded-2xl border border-border/60 shadow-sm space-y-3.5">
-                        <h4 className="font-heading font-bold text-foreground text-xs uppercase tracking-wider flex items-center gap-2">
-                          🎙️ Voice Notes Site Diary
-                        </h4>
-                        
-                        <div className="flex items-center justify-between gap-4 border border-border/50 p-3 rounded-xl bg-muted/5">
-                          {isRecording ? (
-                            <div className="flex items-center gap-3">
-                              <span className="relative flex h-2 w-2">
-                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
-                                <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span>
-                              </span>
-                              <span className="text-xs font-bold text-red-500 animate-pulse">Recording Site Update... (0:08)</span>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setIsRecording(false);
-                                  setVoiceNotes([...voiceNotes, `VoiceNote_${Date.now()}.mp3`]);
-                                }}
-                                className="text-[10px] bg-red-500 text-white font-bold px-2 py-1 rounded hover:bg-red-600 transition-colors cursor-pointer"
-                              >
-                                Stop & Save
-                              </button>
-                            </div>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => setIsRecording(true)}
-                              className="bg-primary hover:bg-orange-850 text-white text-xs font-bold px-3 py-2 rounded-lg transition-colors cursor-pointer"
+                      
+                      <div className="relative pl-6 border-l-2 border-primary/20 space-y-6 ml-2 mt-4 text-foreground">
+                        {dprLoading ? (
+                          <div className="py-12 text-center text-muted-foreground text-xs">Loading DPRs...</div>
+                        ) : dprLogs.map((dpr) => (
+                          <div key={dpr.id} className="relative space-y-2">
+                            {/* Timeline dot connector */}
+                            <div className="absolute -left-[31px] top-1.5 w-3 h-3 rounded-full bg-primary border-2 border-white dark:border-gray-900 shadow-sm" />
+                            
+                            <div 
+                              onClick={() => {
+                                setSelectedTimelineDPR(dpr);
+                              }}
+                              className="p-4 bg-white dark:bg-gray-900 border border-border/60 hover:border-primary/50 rounded-2xl shadow-xs hover:shadow-md transition-all space-y-2.5 cursor-pointer group relative"
                             >
-                              Record Voice Memo
-                            </button>
-                          )}
-                          <p className="text-[10px] text-muted-foreground font-semibold flex-1">Record audio notes directly from site walk-throughs. Syncs offline automatically.</p>
-                        </div>
-
-                        {/* Voice Notes List */}
-                        {voiceNotes.length > 0 && (
-                          <div className="space-y-1.5">
-                            <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Unprocessed Voice Updates ({voiceNotes.length})</p>
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                              {voiceNotes.map((note, index) => (
-                                <div key={index} className="flex items-center justify-between p-2 bg-muted/15 border border-border/40 rounded-lg text-xs font-semibold">
-                                  <span className="truncate">🎵 {note}</span>
-                                  <button
-                                    type="button"
-                                    onClick={() => setVoiceNotes(voiceNotes.filter(vn => vn !== note))}
-                                    className="text-rose-500 hover:text-rose-700 font-bold ml-2 cursor-pointer"
-                                  >
-                                    Delete
-                                  </button>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Daily Activity Timeline / Feed */}
-                      <div className="bg-white dark:bg-gray-900 p-6 rounded-3xl border border-border/60 shadow-sm space-y-4">
-                        <h4 className="font-heading font-bold text-foreground text-xs uppercase tracking-wider">
-                          Activity Logs Timeline
-                        </h4>
-                        
-                        <div className="relative pl-6 border-l-2 border-primary/20 space-y-6 ml-2 mt-4 text-foreground">
-                          {dprLoading ? (
-                            <div className="py-12 text-center text-muted-foreground text-xs">Loading DPRs...</div>
-                          ) : dprLogs.map((dpr) => (
-                            <div key={dpr.id} className="relative space-y-2">
-                              {/* Timeline dot connector */}
-                              <div className="absolute -left-[31px] top-1.5 w-3 h-3 rounded-full bg-primary border-2 border-white dark:border-gray-900 shadow-sm" />
-                              
-                              <div 
-                                onClick={() => {
-                                  setSelectedTimelineDPR(dpr);
-                                }}
-                                className="p-4 bg-white dark:bg-gray-900 border border-border/60 hover:border-primary/50 rounded-2xl shadow-xs hover:shadow-md transition-all space-y-2.5 cursor-pointer group relative"
-                              >
-                                <div className="flex items-center justify-between text-xs flex-wrap gap-2">
-                                  <span className="font-bold text-foreground">Engr. {dpr.created_by_name || dpr.submitted_by || 'Site Engineer'}</span>
-                                  <div className="flex items-center gap-3 text-muted-foreground">
-                                    <span className="bg-primary/5 text-primary px-2 py-0.5 rounded text-[10px] font-bold border border-primary/10">{dpr.weather_condition || dpr.weather_conditions || 'Clear'}</span>
-                                    <span className="font-semibold">{dpr.report_date || dpr.date || 'Today'}</span>
-                                  </div>
-                                </div>
-                                <p className="text-xs text-muted-foreground leading-relaxed font-semibold">
-                                  {dpr.activities?.map((a: any) => a.activity_name).filter(Boolean).join(', ') || dpr.summary || dpr.trade_name || 'Site activity logged'}
-                                </p>
-                                
-                                 {(() => {
-                                   const dprDate = dpr.report_date || dpr.date;
-                                   const explicitIssues = Array.isArray(dpr.issues) ? dpr.issues : [];
-                                   const textDelays = typeof dpr.delays === 'string' && dpr.delays.trim() ? [{ issue_description: dpr.delays }] : (Array.isArray(dpr.delays) ? dpr.delays : []);
-                                   const matchingDbDelays = delayEvents.filter(d => {
-                                     const cDate = (d.created_at || d.planned_date || '').split('T')[0];
-                                     return dprDate ? cDate === dprDate : false;
-                                   }).map(d => {
-                                     let cleanDesc = d.reason_code || 'Site Issue';
-                                     if (typeof d.reason_details === 'string') {
-                                       const descMatch = d.reason_details.match(/Description:\s*([\s\S]*)/);
-                                       if (descMatch && descMatch[1].trim()) cleanDesc = `${d.reason_code}: ${descMatch[1].trim()}`;
-                                       else cleanDesc = `${d.reason_code}: ${d.reason_details.replace(/Location:.*$/gm, '').replace(/Agency:.*$/gm, '').replace(/Severity:.*$/gm, '').trim()}`;
-                                     }
-                                     return { issue_description: cleanDesc };
-                                   });
-
-                                   const combined = [...explicitIssues, ...textDelays, ...matchingDbDelays];
-                                   const uniqueCombined = Array.from(new Map(combined.map(i => [(i.issue_description || i.reason || '').trim(), i])).values());
-                                   if (uniqueCombined.length === 0) return null;
-
-                                   return (
-                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-2 pt-2 border-t border-border/50 text-[10px] font-bold">
-                                       {uniqueCombined.map((issue: any, idx: number) => (
-                                         <p key={idx} className="text-rose-500 font-bold flex items-center gap-1">
-                                           <span>⚠️ Historical Delay ({dprDate || 'Logged'}):</span> {issue.issue_description || issue.reason}
-                                         </p>
-                                       ))}
-                                     </div>
-                                   );
-                                 })()}
-
-                                <div className="flex items-center justify-between pt-2 border-t border-border/40 text-[10px] text-muted-foreground font-medium">
-                                  <span>Tap card to view compiled DPR & breakdown</span>
-                                  <span className="text-primary font-bold group-hover:underline flex items-center gap-1">
-                                    View Detailed DPR →
-                                  </span>
+                              <div className="flex items-center justify-between text-xs flex-wrap gap-2">
+                                <span className="font-bold text-foreground">Engr. {dpr.created_by_name || dpr.submitted_by || 'Site Engineer'}</span>
+                                <div className="flex items-center gap-3 text-muted-foreground">
+                                  <span className="bg-primary/5 text-primary px-2 py-0.5 rounded text-[10px] font-bold border border-primary/10">{dpr.weather_condition || dpr.weather_conditions || 'Clear'}</span>
+                                  <span className="font-semibold">{dpr.report_date || dpr.date || 'Today'}</span>
                                 </div>
                               </div>
+                              <p className="text-xs text-muted-foreground leading-relaxed font-semibold">
+                                {dpr.activities?.map((a: any) => a.activity_name).filter(Boolean).join(', ') || dpr.summary || dpr.trade_name || 'Site activity logged'}
+                              </p>
+
+                              <div className="flex items-center justify-between pt-2 border-t border-border/40 text-[10px] text-muted-foreground font-medium">
+                                <span>Tap card to view compiled DPR & breakdown</span>
+                                <span className="text-primary font-bold group-hover:underline flex items-center gap-1">
+                                  View Detailed DPR →
+                                </span>
+                              </div>
                             </div>
-                          ))}
-                          
-                          {!dprLoading && dprLogs.length === 0 && (
-                            <div className="py-12 text-center text-gray-400">
-                              <ClipboardList className="w-10 h-10 mx-auto text-gray-300 mb-2" />
-                              <p className="text-xs">No daily activities logged for this project yet.</p>
-                            </div>
-                          )}
-                        </div>
+                          </div>
+                        ))}
+                        
+                        {!dprLoading && dprLogs.length === 0 && (
+                          <div className="py-12 text-center text-gray-400">
+                            <ClipboardList className="w-10 h-10 mx-auto text-gray-300 mb-2" />
+                            <p className="text-xs">No daily activities logged for this project yet.</p>
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -9403,17 +9399,25 @@ Rules:
                 </h4>
                 {(() => {
                   const parseModalLineCount = (line: any) => {
-                    const text = [line.activity_name, line.remarks, line.activity_text, selectedTimelineDPR.activities_completed, selectedTimelineDPR.summary].filter(Boolean).join(' ');
-                    const m = text.match(/(?:Persons|Workers|Laborers|Masons|Headcount)\s*[:=]\s*(\d+)/i) || text.match(/(\d+)\s*(?:persons|workers|laborers|masons|men)/i);
+                    if (typeof line.no_of_persons === 'number' && line.no_of_persons > 0) return line.no_of_persons;
+                    if (typeof line.persons === 'number' && line.persons > 0) return line.persons;
+                    if (typeof line.work_done_qty === 'number' && line.work_done_qty > 0) return line.work_done_qty;
+                    if (line.no_of_persons && !isNaN(parseInt(line.no_of_persons)) && parseInt(line.no_of_persons) > 0) return parseInt(line.no_of_persons);
+                    if (line.persons && !isNaN(parseInt(line.persons)) && parseInt(line.persons) > 0) return parseInt(line.persons);
+                    
+                    const lineText = [line.activity_name, line.remarks, line.activity_text].filter(Boolean).join(' ');
+                    const m = lineText.match(/(?:Persons|Workers|Laborers|Masons|Headcount)\s*[:=]\s*(\d+)/i) || lineText.match(/(\d+)\s*(?:persons|workers|laborers|masons|men)/i);
                     if (m) {
                       const val = parseInt(m[1], 10);
                       if (!isNaN(val) && val > 0) return val;
                     }
+                    
                     const num = Number(line.headcount || line.manpower_count);
-                    return (!isNaN(num) && num > 0 && num !== 12) ? num : 10;
+                    if (!isNaN(num) && num > 0) return num;
+                    return 5;
                   };
 
-                  const linesList = (selectedTimelineDPR.dpr_activity_lines && selectedTimelineDPR.dpr_activity_lines.length > 0)
+                  const rawLines = (selectedTimelineDPR.dpr_activity_lines && selectedTimelineDPR.dpr_activity_lines.length > 0)
                     ? selectedTimelineDPR.dpr_activity_lines
                     : (selectedTimelineDPR.activities && selectedTimelineDPR.activities.length > 0)
                     ? selectedTimelineDPR.activities
@@ -9426,67 +9430,127 @@ Rules:
                         remarks: selectedTimelineDPR.activities_completed || selectedTimelineDPR.summary || selectedTimelineDPR.workCompleted || '[In Progress] Loc: Tower A | Slab work done'
                       }];
 
+                  const linesList = rawLines.flatMap((line: any) => {
+                    const fullText = line.activity_name || line.completed_work || line.work_description || line.trade_name || '';
+                    if (typeof fullText === 'string' && (fullText.includes(';') || fullText.includes('\n'))) {
+                      const parts = fullText.split(/;\s*|\n+/).map((p: string) => p.trim()).filter(Boolean);
+                      if (parts.length > 1) {
+                        return parts.map((part: string) => {
+                          let title = part.replace(/^\d+\.\s*/, '');
+                          let tower = line.location_zone || line.location || line.tower_location || 'Tower A';
+                          let desc = line.remarks || line.description || line.comments_issues || '-';
+                          
+                          const match = title.match(/^([^()]+)\s*\(([^()]+)\)$/);
+                          if (match) {
+                            title = match[1].trim();
+                            tower = match[2].trim();
+                          }
+                          return {
+                            ...line,
+                            activity_name: title,
+                            completed_work: title,
+                            work_description: title,
+                            location: tower,
+                            location_zone: tower,
+                            tower_location: tower,
+                            remarks: desc !== '-' ? desc : '-',
+                            description: desc !== '-' ? desc : '-',
+                          };
+                        });
+                      }
+                    }
+                    
+                    // Single item check for parenthesis tower like "Activity Title (B & C)"
+                    if (typeof fullText === 'string') {
+                      let title = fullText.replace(/^\d+\.\s*/, '');
+                      let tower = line.location_zone || line.location || line.tower_location || 'Tower A';
+                      let desc = line.remarks || line.description || line.comments_issues || '-';
+                      const match = title.match(/^([^()]+)\s*\(([^()]+)\)$/);
+                      if (match) {
+                        title = match[1].trim();
+                        tower = match[2].trim();
+                        return [{
+                          ...line,
+                          activity_name: title,
+                          completed_work: title,
+                          work_description: title,
+                          location: tower,
+                          location_zone: tower,
+                          tower_location: tower,
+                          remarks: desc !== '-' ? desc : '-',
+                          description: desc !== '-' ? desc : '-',
+                        }];
+                      }
+                    }
+                    return [line];
+                  });
+
                   return (
-                    <div className="divide-y divide-border/40 border border-border/60 rounded-2xl overflow-hidden bg-white dark:bg-gray-900">
-                      {linesList.map((line: any, idx: number) => {
-                        const wCount = parseModalLineCount(line);
-                        return (
-                          <div key={idx} className="p-4 text-xs space-y-2">
-                            <div className="flex justify-between items-start flex-wrap gap-2">
-                              <div className="flex-1">
-                                {isEditingModalDPR ? (
-                                  <div className="space-y-1">
-                                    <span className="text-[10px] text-muted-foreground font-bold uppercase block">Activity Description</span>
+                    <div className="overflow-x-auto border border-border/70 rounded-2xl bg-white dark:bg-gray-900 shadow-xs">
+                      <table className="w-full text-left text-xs border-collapse">
+                        <thead>
+                          <tr className="bg-muted/40 text-muted-foreground uppercase text-[10px] font-bold tracking-wider border-b border-border/70">
+                            <th className="p-3 border-r border-border/50">Activity Name</th>
+                            <th className="p-3 border-r border-border/50">Tower</th>
+                            <th className="p-3 border-r border-border/50">Workers</th>
+                            <th className="p-3">Description (if any)</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-border/50 text-foreground">
+                          {linesList.map((line: any, idx: number) => {
+                            const getCleanDesc = (raw: any) => {
+                              if (!raw || typeof raw !== 'string') return '-';
+                              const cleaned = raw
+                                .replace(/^\[In Progress\]\s*/i, '')
+                                .replace(/^\[Completed\]\s*/i, '')
+                                .replace(/^\[Delayed\]\s*/i, '')
+                                .replace(/^Workers:\s*\d+\s*\|?\s*/i, '')
+                                .replace(/^Status:\s*\w+\s*\|?\s*/i, '')
+                                .trim();
+                              return (cleaned && cleaned !== '[In Progress]' && cleaned !== 'In Progress') ? cleaned : '-';
+                            };
+
+                            const wCount = parseModalLineCount(line);
+                            const actName = line.activity_name || line.completed_work || line.work_description || line.trade_name || 'Activity logged';
+                            const towerVal = line.location_zone || line.location || line.tower_location || 'Tower A';
+                            const descVal = getCleanDesc(line.description || line.comments_issues || line.remarks || line.voice_note);
+
+                            return (
+                              <tr key={idx} className="hover:bg-muted/10 transition-colors">
+                                <td className="p-3 font-bold border-r border-border/50 text-foreground">
+                                  {isEditingModalDPR ? (
                                     <input
                                       type="text"
-                                      value={line.activity_name || line.completed_work || line.trade_name || 'Slab work done'}
+                                      value={actName}
                                       onChange={(e) => {
                                         const updatedLines = [...linesList];
                                         updatedLines[idx] = { ...updatedLines[idx], activity_name: e.target.value, completed_work: e.target.value };
                                         setSelectedTimelineDPR({ ...selectedTimelineDPR, dpr_activity_lines: updatedLines, activities: updatedLines });
                                       }}
-                                      className="font-bold text-xs p-1.5 rounded border border-border bg-white dark:bg-gray-950 text-foreground w-full"
+                                      className="w-full text-xs font-bold p-1 rounded border border-border bg-white dark:bg-gray-950 text-foreground"
                                     />
-                                    <div className="flex gap-2 text-[10px]">
-                                      <input
-                                        type="text"
-                                        placeholder="Category"
-                                        value={line.trade_name || line.work_type || 'Civil/Structure'}
-                                        onChange={(e) => {
-                                          const updatedLines = [...linesList];
-                                          updatedLines[idx] = { ...updatedLines[idx], trade_name: e.target.value, work_type: e.target.value };
-                                          setSelectedTimelineDPR({ ...selectedTimelineDPR, dpr_activity_lines: updatedLines, activities: updatedLines });
-                                        }}
-                                        className="p-1 rounded border border-border bg-white dark:bg-gray-950 text-foreground w-1/2 font-medium"
-                                      />
-                                      <input
-                                        type="text"
-                                        placeholder="Agency"
-                                        value={line.contractor_name || selectedTimelineDPR.agency_name || 'Ram workers'}
-                                        onChange={(e) => {
-                                          const updatedLines = [...linesList];
-                                          updatedLines[idx] = { ...updatedLines[idx], contractor_name: e.target.value };
-                                          setSelectedTimelineDPR({ ...selectedTimelineDPR, dpr_activity_lines: updatedLines, activities: updatedLines, agency_name: e.target.value });
-                                        }}
-                                        className="p-1 rounded border border-border bg-white dark:bg-gray-950 text-foreground w-1/2 font-medium"
-                                      />
-                                    </div>
-                                  </div>
-                                ) : (
-                                  <>
-                                    <span className="font-bold text-sm text-foreground block">
-                                      {line.activity_name || line.completed_work || line.trade_name || line.work_type || 'Slab work done'}
-                                    </span>
-                                    <span className="text-[10px] text-muted-foreground font-semibold">
-                                      Category: <strong className="text-foreground">{line.trade_name || line.work_type || 'Civil/Structure'}</strong> • Agency: <strong className="text-foreground">{line.contractor_name || selectedTimelineDPR.agency_name || 'Ram workers'}</strong>
-                                    </span>
-                                  </>
-                                )}
-                              </div>
-                              <div className="flex items-center gap-2">
-                                {isEditingModalDPR ? (
-                                  <div className="flex items-center gap-1">
-                                    <span className="text-[10px] font-bold text-muted-foreground">Workers:</span>
+                                  ) : (
+                                    <span>{actName}</span>
+                                  )}
+                                </td>
+                                <td className="p-3 font-semibold border-r border-border/50 text-muted-foreground whitespace-nowrap">
+                                  {isEditingModalDPR ? (
+                                    <input
+                                      type="text"
+                                      value={towerVal}
+                                      onChange={(e) => {
+                                        const updatedLines = [...linesList];
+                                        updatedLines[idx] = { ...updatedLines[idx], location: e.target.value, location_zone: e.target.value };
+                                        setSelectedTimelineDPR({ ...selectedTimelineDPR, dpr_activity_lines: updatedLines, activities: updatedLines });
+                                      }}
+                                      className="w-full text-xs font-semibold p-1 rounded border border-border bg-white dark:bg-gray-950 text-foreground"
+                                    />
+                                  ) : (
+                                    <span>{towerVal}</span>
+                                  )}
+                                </td>
+                                <td className="p-3 font-bold border-r border-border/50 text-emerald-600 whitespace-nowrap">
+                                  {isEditingModalDPR ? (
                                     <input
                                       type="number"
                                       value={wCount}
@@ -9497,114 +9561,31 @@ Rules:
                                       }}
                                       className="w-16 text-xs font-bold p-1 rounded border border-emerald-500/40 bg-white dark:bg-gray-950 text-emerald-600 text-center"
                                     />
-                                  </div>
-                                ) : (
-                                  <>
-                                    <span className="text-emerald-600 bg-emerald-500/10 px-2.5 py-1 rounded-full border border-emerald-500/20 text-[11px] font-bold">
-                                      👷 {wCount} Workers
-                                    </span>
-                                    <span className="text-blue-600 bg-blue-500/10 px-2.5 py-1 rounded-full border border-blue-500/20 text-[11px] font-bold">
-                                      👔 1 Supervisor
-                                    </span>
-                                  </>
-                                )}
-                              </div>
-                            </div>
-
-                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 py-2 px-3 bg-muted/20 rounded-xl text-[11px] font-medium border border-border/40">
-                              <div>
-                                <span className="text-[9px] text-muted-foreground font-bold uppercase block">Location / Tower</span>
-                                {isEditingModalDPR ? (
-                                  <input
-                                    type="text"
-                                    value={line.location_zone || line.location || 'Tower A'}
-                                    onChange={(e) => {
-                                      const updatedLines = [...linesList];
-                                      updatedLines[idx] = { ...updatedLines[idx], location: e.target.value, location_zone: e.target.value };
-                                      setSelectedTimelineDPR({ ...selectedTimelineDPR, dpr_activity_lines: updatedLines, activities: updatedLines });
-                                    }}
-                                    className="w-full text-xs font-bold p-1 rounded border border-border bg-white dark:bg-gray-950 text-foreground"
-                                  />
-                                ) : (
-                                  <span className="text-foreground font-bold">{line.location_zone || line.location || 'Tower A'}</span>
-                                )}
-                              </div>
-                              <div>
-                                <span className="text-[9px] text-muted-foreground font-bold uppercase block">Shift</span>
-                                {isEditingModalDPR ? (
-                                  <input
-                                    type="text"
-                                    value={line.shift || 'Day Shift'}
-                                    onChange={(e) => {
-                                      const updatedLines = [...linesList];
-                                      updatedLines[idx] = { ...updatedLines[idx], shift: e.target.value };
-                                      setSelectedTimelineDPR({ ...selectedTimelineDPR, dpr_activity_lines: updatedLines, activities: updatedLines });
-                                    }}
-                                    className="w-full text-xs font-bold p-1 rounded border border-border bg-white dark:bg-gray-950 text-foreground"
-                                  />
-                                ) : (
-                                  <span className="text-foreground font-bold">{line.shift || 'Day Shift'}</span>
-                                )}
-                              </div>
-                              <div>
-                                <span className="text-[9px] text-muted-foreground font-bold uppercase block">Work Status</span>
-                                {isEditingModalDPR ? (
-                                  <input
-                                    type="text"
-                                    value={line.status || 'In Progress'}
-                                    onChange={(e) => {
-                                      const updatedLines = [...linesList];
-                                      updatedLines[idx] = { ...updatedLines[idx], status: e.target.value };
-                                      setSelectedTimelineDPR({ ...selectedTimelineDPR, dpr_activity_lines: updatedLines, activities: updatedLines });
-                                    }}
-                                    className="w-full text-xs font-bold p-1 rounded border border-border bg-white dark:bg-gray-950 text-amber-600"
-                                  />
-                                ) : (
-                                  <span className="text-amber-600 font-bold">{line.status || 'In Progress'}</span>
-                                )}
-                              </div>
-                              <div>
-                                <span className="text-[9px] text-muted-foreground font-bold uppercase block">Quantity Completed</span>
-                                {isEditingModalDPR ? (
-                                  <input
-                                    type="text"
-                                    value={line.quantity_completed || 'As specified'}
-                                    onChange={(e) => {
-                                      const updatedLines = [...linesList];
-                                      updatedLines[idx] = { ...updatedLines[idx], quantity_completed: e.target.value };
-                                      setSelectedTimelineDPR({ ...selectedTimelineDPR, dpr_activity_lines: updatedLines, activities: updatedLines });
-                                    }}
-                                    className="w-full text-xs font-bold p-1 rounded border border-border bg-white dark:bg-gray-950 text-foreground"
-                                  />
-                                ) : (
-                                  <span className="text-foreground font-bold">{line.quantity_completed ? `${line.quantity_completed} ${line.unit || ''}` : 'As specified'}</span>
-                                )}
-                              </div>
-                            </div>
-
-                            <div className="pt-1 text-[11px]">
-                              <span className="font-bold text-muted-foreground">Remarks / Field Notes:</span>
-                              {isEditingModalDPR ? (
-                                <textarea
-                                  rows={2}
-                                  value={line.remarks || line.activity_text || selectedTimelineDPR.activities_completed || ''}
-                                  onChange={(e) => {
-                                    const updatedLines = [...linesList];
-                                    updatedLines[idx] = { ...updatedLines[idx], remarks: e.target.value, activity_text: e.target.value };
-                                    setSelectedTimelineDPR({ ...selectedTimelineDPR, dpr_activity_lines: updatedLines, activities: updatedLines, activities_completed: e.target.value });
-                                  }}
-                                  className="w-full text-xs font-medium p-2 rounded-lg mt-1 border border-border bg-white dark:bg-gray-950 text-foreground leading-relaxed"
-                                  placeholder="Enter un-truncated remarks or field notes..."
-                                />
-                              ) : (
-                                <p className="text-foreground font-medium bg-muted/10 p-2.5 rounded-lg mt-1 border border-border/30 whitespace-pre-wrap leading-relaxed">
-                                  {line.remarks || line.activity_text || selectedTimelineDPR.activities_completed || 'No additional remarks.'}
-                                </p>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })}
+                                  ) : (
+                                    <span>👷 {wCount}</span>
+                                  )}
+                                </td>
+                                <td className="p-3 text-muted-foreground font-medium">
+                                  {isEditingModalDPR ? (
+                                    <input
+                                      type="text"
+                                      value={descVal !== '-' ? descVal : ''}
+                                      onChange={(e) => {
+                                        const updatedLines = [...linesList];
+                                        updatedLines[idx] = { ...updatedLines[idx], remarks: e.target.value, description: e.target.value };
+                                        setSelectedTimelineDPR({ ...selectedTimelineDPR, dpr_activity_lines: updatedLines, activities: updatedLines });
+                                      }}
+                                      className="w-full text-xs p-1 rounded border border-border bg-white dark:bg-gray-950 text-foreground"
+                                    />
+                                  ) : (
+                                    <span>{descVal}</span>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
                     </div>
                   );
                 })()}
@@ -9679,68 +9660,7 @@ Rules:
                 })()}
 
               {/* Historical Point-in-Time Reported Issues & Delays (Immutable Record) */}
-              {(() => {
-                const reportDateStr = selectedTimelineDPR.report_date || selectedTimelineDPR.date;
-                const explicitIssues = Array.isArray(selectedTimelineDPR.issues) ? selectedTimelineDPR.issues : [];
-                const textDelays = typeof selectedTimelineDPR.delays === 'string' && selectedTimelineDPR.delays.trim() 
-                  ? [{ issue_description: selectedTimelineDPR.delays, reason: selectedTimelineDPR.delays }] 
-                  : (Array.isArray(selectedTimelineDPR.delays) ? selectedTimelineDPR.delays : []);
-                
-                const matchingDbDelays = delayEvents.filter((d: any) => {
-                  const cDate = (d.created_at || d.planned_date || '').split('T')[0];
-                  return reportDateStr ? cDate <= reportDateStr : true;
-                }).map((d: any) => ({
-                  issue_description: `${d.reason_code || 'Site Issue'}${d.responsible_team ? ' (' + d.responsible_team + ')' : ''}: ${d.reason_details || ''}`,
-                  reason: d.reason_code || 'Site Issue',
-                  details: d.reason_details,
-                  status: d.status,
-                  created_at: d.created_at,
-                  resolution_notes: d.corrective_action || '',
-                  severity: d.impact_on_timeline || 'Medium'
-                }));
 
-                const allHistoricalIssues = [...explicitIssues, ...textDelays, ...matchingDbDelays];
-                const uniqueHistoricalIssues = Array.from(
-                  new Map(allHistoricalIssues.map(item => [(item.issue_description || item.reason || '').trim(), item])).values()
-                );
-
-                if (uniqueHistoricalIssues.length === 0) return null;
-
-                return (
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <h4 className="font-bold text-xs uppercase tracking-wider text-rose-500 border-l-2 border-rose-500 pl-2">
-                        Historical Site Delays Recorded on {reportDateStr || 'Report Date'} (Immutable Record)
-                      </h4>
-                      <span className="text-[10px] bg-rose-500/10 text-rose-600 px-2 py-0.5 rounded-full font-bold border border-rose-500/20">
-                        Snapshot Preserved
-                      </span>
-                    </div>
-                    <div className="space-y-2">
-                      {uniqueHistoricalIssues.map((iss: any, idx: number) => (
-                        <div key={idx} className="p-3 bg-rose-500/5 border border-rose-500/20 rounded-2xl text-xs text-rose-700 dark:text-rose-400 space-y-1">
-                          <div className="font-bold flex items-center justify-between">
-                            <span>⚠️ {iss.issue_description || iss.reason}</span>
-                            <div className="flex items-center gap-2">
-                              {iss.status && (
-                                <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold border ${
-                                  iss.status === 'resolved' ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20' : 'bg-rose-500/10 text-rose-600 border-rose-500/20'
-                                }`}>
-                                  {iss.status === 'resolved' ? 'Resolved Later' : 'Logged Stoppage'}
-                                </span>
-                              )}
-                              <span className="text-[10px] bg-rose-500/10 px-2 py-0.5 rounded-full border border-rose-500/20">{iss.severity || 'High Priority'}</span>
-                            </div>
-                          </div>
-                          {iss.resolution_notes && (
-                            <p className="text-[11px] text-muted-foreground mt-1">🔧 Action Plan / Resolution: {iss.resolution_notes}</p>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })()}
 
               {/* Attached Photos */}
               {((selectedTimelineDPR.site_verification && selectedTimelineDPR.site_verification.length > 0) ||
