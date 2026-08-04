@@ -33,13 +33,8 @@ export default function HeaderNavbar() {
 
   // Get current page name from pathname
   const getPageTitle = (path: string) => {
-    if (path.startsWith('/projects/')) {
-      const projId = path.split('/')[2];
-      const match = projects.find((p) => p.id === projId || path.includes(p.id));
-      if (match) return match.name;
-      if (path.includes('central-park')) return 'Central Park';
-      return 'Projects';
-    }
+    if (path === '/dashboard') return 'Overview';
+    if (path.startsWith('/projects/')) return 'Project Detail';
     if (path === '/projects') return 'Projects';
     if (path === '/activities') return 'Execution';
     if (path === '/procurement') return 'Procurement';
