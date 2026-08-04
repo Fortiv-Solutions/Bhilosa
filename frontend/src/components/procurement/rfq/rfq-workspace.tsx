@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import {
   FileText,
   Plus,
@@ -19,7 +19,7 @@ import type {
   PurchaseOrderRow,
   VendorRow,
 } from '@/lib/procurement';
-import { generatePurchaseOrder } from '@/lib/procurement';
+import { generatePurchaseOrder, generatePurchaseOrdersFromRfqForm, saveRfqFormDataToSupabase } from '@/lib/procurement';
 import { RfqStatsBar } from './rfq-stats-bar';
 import { RfqFilterBar, DEFAULT_RFQ_FILTERS, type RfqFiltersState } from './rfq-filter-bar';
 import { RfqTableView } from './rfq-table-view';
@@ -37,7 +37,10 @@ interface RFQWorkspaceProps {
   projectOptions: { id: string; name: string }[];
   activeRole: 'UPPER_MANAGEMENT' | 'PROJECT_MANAGER' | 'PR_TEAM' | string;
   selectedRfqId: string | null;
+  openPrId?: string | null;
+  onClearOpenPrId?: () => void;
   onSelectRfq: (id: string | null) => void;
+  onOpenAwardMatrix?: (rfqId: string) => void;
   onCreateRfq: (pr: PurchaseRequisitionRow) => void;
   onRecordQuote: (row: RfqRow) => void;
   onRecommend: (row: QuotationRow) => void;
@@ -45,6 +48,8 @@ interface RFQWorkspaceProps {
   onGeneratePo: (pr: PurchaseRequisitionRow, quotation: QuotationRow, selection: VendorSelectionRow) => void;
   /** Generates the report-format RFQ PDF for the RFQ raised against a PR. */
   onPrintRfq?: (rfqId: string) => void;
+  onRefresh?: () => void;
+  onNavigateToPo?: () => void;
 }
 
 export function RFQWorkspace(props: RFQWorkspaceProps) {
@@ -58,18 +63,39 @@ export function RFQWorkspace(props: RFQWorkspaceProps) {
     projectOptions,
     activeRole,
     selectedRfqId,
+    openPrId,
+    onClearOpenPrId,
     onSelectRfq,
+    onOpenAwardMatrix,
     onCreateRfq,
     onRecordQuote,
     onRecommend,
     onApproveSelection,
     onGeneratePo,
     onPrintRfq,
+    onRefresh,
+    onNavigateToPo,
   } = props;
 
   const [viewMode, setViewMode] = useState<'list' | 'form' | 'ai_pdf' | 'workbench'>('list');
+  const [openQuotationRfqId, setOpenQuotationRfqId] = useState<string | null>(null);
+  const [awardMatrixRfqId, setAwardMatrixRfqId] = useState<string | null>(null);
+  const [poNotification, setPoNotification] = useState<string | null>(null);
+
+  // Form active state
   const [activeFormPr, setActiveFormPr] = useState<PurchaseRequisitionRow | null>(null);
   const [filters, setFilters] = useState<RfqFiltersState>(DEFAULT_RFQ_FILTERS);
+
+  useEffect(() => {
+    if (openPrId) {
+      const pr = prs.find((p) => p.id === openPrId);
+      if (pr) {
+        setActiveFormPr(pr);
+        setViewMode('form');
+      }
+      onClearOpenPrId?.();
+    }
+  }, [openPrId, prs, onClearOpenPrId]);
 
   // STRICTLY FILTER FOR APPROVED PRS ONLY (and PRs with active RFQs)
   const approvedPrs = useMemo(() => {
@@ -136,104 +162,70 @@ export function RFQWorkspace(props: RFQWorkspaceProps) {
     setViewMode('form');
   };
 
-  const handleFormSubmit = async (formData: RfqFormState, isDirectPo: boolean) => {
-    if (isDirectPo && activeFormPr) {
-      // Direct PO Workflow: Trigger PO generation directly in Supabase.
-      const pickedSupplierId = formData.suppliers.find((s) => s.supplier_id)?.supplier_id || '';
-      const pickedVendor = vendors.find((v) => v.id === pickedSupplierId) || vendors[0];
-      const directVendorId = pickedVendor?.id || '';
+  const handleFormSubmit = async (formData: RfqFormState, shouldGeneratePo: boolean) => {
+    if (!activeFormPr) return;
 
-      const lines = formData.items.map((i) => ({
-        item_id: i.item_id,
-        item_description: i.item_description || i.specification || 'Direct PO Item',
-        quantity: Number(i.quantity || 1),
-        unit_rate: Number(i.previous_rate || 0),
-        tax_rate: 18,
-        line_total: Number(i.quantity || 1) * Number(i.previous_rate || 0),
-      }));
+    // Map RFQ status → PR status for Supabase update
+    const prStatusMap: Record<string, string> = {
+      'Auto-Draft': 'approved',
+      'Draft': 'approved',
+      'RFQ Sent': 'rfq_sent',
+      'Quotes Received': 'quotes_received',
+      'Under Evaluation': 'under_evaluation',
+      'Awarded': 'vendor_selected',
+      'PO Issued': 'po_issued',
+      'Cancelled': 'approved',
+    };
+    const nextPrStatus = prStatusMap[formData.status] || 'approved';
 
+    // Persist RFQ header, selected suppliers, line item rates, and delivery address to Supabase
+    try {
+      await saveRfqFormDataToSupabase({
+        pr: activeFormPr,
+        formData,
+        nextPrStatus,
+      });
+      await onRefresh?.();
+    } catch (err) {
+      console.error('Error saving RFQ data to Supabase:', err);
+    }
+
+    if (shouldGeneratePo) {
       try {
-        if (directVendorId) {
-          await generatePurchaseOrder({
-            purchaseRequisitionId: activeFormPr.id,
-            vendorId: directVendorId,
-            vendorSelectionId: null,
-            deliveryDate: formData.goal_delivery_date || new Date().toISOString().slice(0, 10),
-            deliveryLocation: formData.delivery_address || 'Project Site Store',
-            paymentTerms: 'Standard Net 30',
-            termsAndConditions: formData.remarks || null,
-            lines,
-          });
-        }
+        const res = await generatePurchaseOrdersFromRfqForm({
+          pr: activeFormPr,
+          formData,
+        });
+        await onRefresh?.();
+        const poText = res.poNumbers.length > 0 ? res.poNumbers.join(', ') : 'Draft PO';
+        setPoNotification(`Purchase Order ${poText} created successfully! Redirecting to Purchase Orders...`);
+        setTimeout(() => {
+          setPoNotification(null);
+          onNavigateToPo?.();
+        }, 1500);
       } catch (err) {
-        console.error('Direct PO creation error:', err);
+        console.error('Error generating POs from RFQ form:', err);
       }
 
-      const dummyQuote: QuotationRow = {
-        id: `quote-direct-${Date.now()}`,
-        rfq_id: `rfq-direct-${Date.now()}`,
-        vendor_id: directVendorId,
-        vendor_name:
-          pickedVendor?.display_name || pickedVendor?.legal_name || formData.contractor_name || 'Direct Vendor',
-        quotation_number: `QT-DIRECT-${Date.now()}`,
-        subtotal_amount: formData.items.reduce((s, i) => s + i.quantity * i.previous_rate, 0),
-        tax_amount: formData.items.reduce((s, i) => s + i.quantity * i.previous_rate * 0.18, 0),
-        total_amount: formData.items.reduce((s, i) => s + i.quantity * i.previous_rate * 1.18, 0),
-        status: 'accepted',
-        quotation_lines: formData.items.map((i) => ({
-          id: `line-${i.key}`,
-          quotation_id: `quote-direct-${Date.now()}`,
-          item_id: i.item_id,
-          item_description: i.item_description,
-          quantity: i.quantity,
-          unit_rate: i.previous_rate,
-          tax_rate: 18,
-          subtotal: i.quantity * i.previous_rate,
-          tax_amount: i.quantity * i.previous_rate * 0.18,
-          total_amount: i.quantity * i.previous_rate * 1.18,
-        })),
-      };
-
-      const dummySelection: VendorSelectionRow = {
-        id: `sel-direct-${Date.now()}`,
-        purchase_requisition_id: activeFormPr.id,
-        selected_vendor_id: directVendorId,
-        selected_quotation_id: dummyQuote.id,
-        selection_reason: 'Direct PO Process Selected in RFQ Form',
-        status: 'approved',
-        vendor_quotations: dummyQuote,
-      };
-
-      onGeneratePo(activeFormPr, dummyQuote, dummySelection);
       setViewMode('list');
       setActiveFormPr(null);
-    } else if (activeFormPr) {
-      // Quotation Request Workflow: RFQ Status Transition in Supabase
-      const prStatusMap: Record<string, string> = {
-        'Auto-Draft': 'approved',
-        'Draft': 'draft',
-        'RFQ Sent': 'rfq_sent',
-        'Waiting for Quotation': 'rfq_sent',
-        'Quotation Received & Approved': 'vendor_selected',
-        'Approved': 'vendor_selected',
-      };
-      const nextPrStatus = prStatusMap[formData.status] || 'rfq_sent';
+    } else {
       activeFormPr.status = nextPrStatus as any;
-
-      import('@/utils/supabase-client').then(({ supabase }) => {
-        supabase
-          .from('purchase_requisitions')
-          .update({ status: nextPrStatus })
-          .eq('id', activeFormPr.id)
-          .then(() => {});
-      });
-      setViewMode('list');
-      setActiveFormPr(null);
     }
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 relative">
+      {/* Toast Notification Banner */}
+      {poNotification && (
+        <div className="fixed bottom-6 right-6 z-50 flex items-center gap-3 rounded-xl border border-emerald-500/30 bg-emerald-950/90 text-emerald-200 px-4 py-3 shadow-2xl backdrop-blur-md">
+          <CheckCircle2 className="h-5 w-5 text-emerald-400 shrink-0" />
+          <div>
+            <p className="text-xs font-bold text-white">Success</p>
+            <p className="text-[11px] text-emerald-300/80">{poNotification}</p>
+          </div>
+        </div>
+      )}
       {/* View Switcher Header */}
       <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border bg-card p-2.5 shadow-sm">
         <div className="flex items-center gap-2 px-1 text-xs">
@@ -326,6 +318,7 @@ export function RFQWorkspace(props: RFQWorkspaceProps) {
             onViewComparison={(rfqId) => {
               onSelectRfq(rfqId);
             }}
+            onOpenAwardMatrix={onOpenAwardMatrix}
           />
         </>
       )}

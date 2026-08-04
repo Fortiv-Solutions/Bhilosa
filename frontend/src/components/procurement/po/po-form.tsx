@@ -23,6 +23,7 @@ import {
   Printer,
   Check,
   Upload,
+  Mail,
 } from 'lucide-react';
 import { type PurchaseOrderRow, type ProcurementLineRow, type VendorOption, updatePurchaseOrderTermsAndConditions, updatePurchaseOrderStatus, uploadChallanInvoiceDocument, printPurchaseOrderReport } from '@/lib/procurement';
 
@@ -194,7 +195,8 @@ export interface FullPoFormState {
   remarks: string;
   relation_count: number;
   ledger_present: number;
-  status: 'Draft' | 'Verification' | 'Issued' | 'Fulfilled' | 'Cancelled';
+  status: 'Draft' | 'Verification' | 'Issued' | 'Accepted_By_Vendor' | 'accepted_by_vendor' | 'Fulfilled' | 'Cancelled';
+  id?: string;
 }
 
 interface PoFormProps {
@@ -312,47 +314,69 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel }: 
             ? po.terms_and_conditions.split('\n')
             : (Array.isArray(po.terms_and_conditions) ? po.terms_and_conditions : []))
         : [
-            'PO Terms 1:- This is a Contract for Pramukh Group and/or any its affiliates, subsidiaries and/or group companies. Vendor agrees that it shall at all times recognize the validity and ownership of Pramukh and/or any of its affiliates, subsidiaries and/or group companies, as the case may be, over the intellectual property rights and shall not at any time put in issue their validity or ownership.',
+            'PO Terms 1:-  This is a Contract for Pramukh Group and/or any its affiliates, subsidiaries and/or group companies. Vendor agrees that it shall at all times recognize the validity and ownership of Pramukh and/or any of its affiliates, subsidiaries and/or group companies, as the case may be, over the intellectual property rights and shall not at any time put in issue their validity or ownership.',
+            '',
             '1. PRELIMINARY',
-            '1.1 This is a Contract for execution of job/Supply as required and specified at the time of Enquiry. i.e.',
+            '1.1 This is a Contract for execution of job/Supply as required and specified at the time of Enquiry.',
             '1.2 The Enquirer for the above mentioned supply is the company/ proprietary concern/individual.',
             '1.3 The terms and conditions mentioned hereunder are the terms and conditions of the Contract for the execution of the job mentioned under item 1.1 above.',
+            '',
             '2. REFERENCE FOR DOCUMENTATION',
             'Purchase Order number must appear on order confirmation, correspondence, drawings, invoices, shipping notes, packings and on any documents or papers connected with the order.',
+            '',
             '3. CONFIRMATION OF ORDER',
             'The Vendor shall acknowledge the receipt of the Purchase Order within ten days following the mailing of this order and shall thereby confirm his acceptance of this Purchase Order in its entirety without exceptions. The acknowledgment will bear on both purchase order and General Procurement Conditions.',
+            '',
             '4. WEIGHTS AND MEASUREMENTS',
             'a. All weights and measurements recorded by the Organisation on receipt of goods at site will be treated as final.',
             'b. Vendor\'s shipping documents and invoices must contain the following data:',
-            'i. Unit net weight',
-            'ii. Unit gross weight (packing included)',
-            'iii.Dimensions of packing.',
+            '   i. Unit net weight',
+            '   ii. Unit gross weight (packing included)',
+            '   iii. Dimensions of packing.',
+            '',
             '5. PACKING AND MARKING',
             'The Materials shall be suitably packed for safe transportation till receipt at site and should be commensurate with best possible practices of packing, unless specifically stipulated in the Technical specifications, to avoid any damage during transit.',
+            '',
             '6. CONTROL REGULATIONS',
-            'The supply, dispatch and delivery of goods shall be arranged by the Vendor in strict conformity with the statutory regulations including provision of Industries (Development and Regulation) Act1951 and any amendment thereof as applicable from time to time. The Organisation disowns any responsibility for any irregularity or contravention of any of the statutory regulations in manufacture or supply of the stores covered by this order.',
-            '7. RESPECT FOR DELIVERY DATES.',
+            'The supply, dispatch and delivery of goods shall be arranged by the Vendor in strict conformity with the statutory regulations including provision of Industries (Development and Regulation) Act 1951 and any amendment thereof as applicable from time to time. The Organisation disowns any responsibility for any irregularity or contravention of any of the statutory regulations in manufacture or supply of the stores covered by this order.',
+            '',
+            '7. RESPECT FOR DELIVERY DATES',
             'Time of delivery as mentioned in the Purchase Order shall be the essence of the contract and no variation shall be permitted except with prior authorization in writing from the Organisation. Goods should be delivered securely packed and in good order and condition at the place and within the time specified in the Purchase Order for their delivery.',
+            '',
             '8. DELAYS DUE TO FORCE MAJEURE',
             'A) Any delay in or failure of the performance of either part hereto shall not constitute default hereunder or give rise to any claims for damage, if any, to the extent such delays or failure of performance is caused by occurrences such as Acts of God or an enemy, expropriation or confiscation of facilities by Government authorities, acts of war, rebellion, sabotage or fires, floods, explosions, riots, or strikes. The Contractor shall keep records of the circumstances referred to above and bring these to the notice of the Project-in Charge/Site-in-Charge in writing immediately on such occurrences. The amount of time, if any, lost on any of these counts shall not be counted for the Contract period. Once decision of the Owner arrived at after consultation with the Contractor, shall be final and binding. Such a determined period of time be extended by the Owner to enable the Contractor to complete the job within such extended period of time.',
             'B) If Contractor is prevented or delayed from the performing any of its obligations under this Agreement by Force Majeure, then Contractor shall notify Owner the circumstances constituting the Force Majeure and the obligations performance of which is thereby delayed or prevented, within seven days of the occurrence of the events.',
+            '',
             '9. REJECTION, REMOVAL OF REJECTED GOODS AND REPLACEMENT',
             'A) In case the testing and inspection at any stage by Inspectors reveal the equipment, material and workmanship do not comply with specification and requirements, the same shall be removed by the Vendor at their / its own expense and risk within the time allowed by the Organisation.',
             'B) The Vendor will have to proceed with the replacement of that equipment or part of equipment without claiming any extra payment if so required by the Organisation. The time taken for replacement in such event will not be added to the contractual delivery period.',
-            '10. TAXES & DUTIES:',
+            '',
+            '10. TAXES & DUTIES',
             'A) GST (CGST, SGST, IGST as applicable), Customs Duty and applicable Cess as applicable shall be reimbursed for the materials consigned to Organisation as per limits indicated in the offer against documentary evidence to be furnished by the Supplier. Organisation shall pay only those taxes, duties and levies as indicated by Supplier at the time of bid submission/as agreed subsequently.(prior to opening of priced bids).',
             'B) The Vendor shall comply with all the provisions of the GST Act / Rules / requirements like providing of tax invoices, payment of taxes to the authorities within the due dates, filing of returns within the due dates etc. to enable Pramukh Group to take Input Tax Credit.',
+            '',
             '11. JURISDICTION',
             'The Vendor hereby agrees that the Courts situated in location of Organisation address and shall have the jurisdiction to hear and determine all actions and proceedings arising out of this contract.',
-            '12. Payment will be released, subject to Tax - Invoice uploaded on GST portal before payment due date.',
-            '13. Late Delivery Clause - Penalty would be charged from 1% - 10% per week OR as per management decision if delivery would be done after due date OR schedule date given by site.',
-            '14. TAX DEDUCTION AT SOURCE TO BE MADE U/S. 194Q FROM THE PURCHASE OF GOODS FROM YOU:',
+            '',
+            '12. PAYMENT TERMS',
+            'Payment will be released, subject to Tax - Invoice uploaded on GST portal before payment due date.',
+            '',
+            '13. LATE DELIVERY CLAUSE',
+            'Penalty would be charged from 1% - 10% per week OR as per management decision if delivery would be done after due date OR schedule date given by site.',
+            '',
+            '14. TAX DEDUCTION AT SOURCE TO BE MADE U/S. 194Q FROM THE PURCHASE OF GOODS FROM YOU',
             'As you are aware that w.e.f 1ST July, 2021, the provisions of Section 194Q for withholding of Tax at 0.10% on the value of purchase of goods are applicable. In view of the same, we shall deduct the required TDS at 0.10% from the value of purchase of goods from you. We are the purchasers who satisfies the conditions laid down in Section 194Q and hence we are required to deduct TDS from the value of Purchases from you at the applicable rates. Since we are liable to deduct TDS U/S. 194Q, you being the seller of goods , are not required to make TCS U/S. 206C(1H) at 0.10%. Hence please do not charge any TCS on your purchase Invoice in response to this PO. The rate of Withholding of tax U/S. 194Q shall be subject to the amendments made from time to time.',
+            '',
             'NOTE : Moreover, please confirm whether you have filed the Income Tax Returns for A.Y. 2019-2020 and A.Y. 2020-2021 along with the acceptance of this PO with copy of the acknowledgement / screen shot from the Income tax website. In the absence of such confirmation, we shall presume that you have not filed your Income tax returns for the required two years and therefore, the withholding of tax shall be made at higher rate of 5% from the value of purchase of goods from you which shall not be refunded nor adjusted in subsequent billing against this PO or any other PO. If you have already submitted the required details of the Income Tax Returns with us, please ignore this note.',
-            '15. Guarantee/ Warranty:',
-            'Under RERA act minimum 5 years from the date of possession for material or workmenship.',
-            '16. Delivery Date: As per site Schedule and mentioned in PO.',
-            '17. Price Basis - DAP at Site, Freight included'
+            '',
+            '15. GUARANTEE / WARRANTY',
+            'Under RERA act minimum 5 years from the date of possession for material or workmanship.',
+            '',
+            '16. DELIVERY DATE',
+            'As per site Schedule and mentioned in PO.',
+            '',
+            '17. PRICE BASIS',
+            'DAP at Site, Freight included.'
           ],
 
       // Tab 3 Comparative Statements
@@ -620,6 +644,7 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel }: 
 
     const finalFormState: FullPoFormState = {
       ...form,
+      id: po.id,
       uploaded_challan_url: updatedChallanUrl,
       uploaded_challan_path: updatedChallanPath,
       uploaded_invoice_url: updatedInvoiceUrl,
@@ -659,146 +684,7 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel }: 
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-6 text-xs">
-        {/* ========================================================================= */}
-        {/* TOP SECTION: SIDE-BY-SIDE SEPARATE UPLOADS (GRN-CHALLAN & GRN-INVOICE)   */}
-        {/* ========================================================================= */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* Card 1: Upload Delivery Challan (grn-challan) */}
-          <div className="rounded-xl border-2 border-dashed border-primary/40 bg-primary/5 p-4 space-y-3 flex flex-col justify-between">
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2.5">
-                  <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary text-primary-foreground font-bold shadow-xs">
-                    <Upload className="h-4 w-4" />
-                  </div>
-                  <div>
-                    <h3 className="font-heading font-bold text-foreground text-xs flex items-center gap-1.5">
-                      <span>Upload Delivery Challan</span>
-                      <span className="rounded-full bg-primary/20 px-1.5 py-0.5 text-[9px] text-primary font-mono uppercase">grn-challan</span>
-                    </h3>
-                    <p className="text-[11px] text-muted-foreground">
-                      Upload invoice/challan PDF or image to extract fields, auto-populate PO parameters, and connect to Supabase storage.
-                    </p>
-                  </div>
-                </div>
 
-                <div className="flex items-center gap-1.5">
-                  {form.uploaded_challan_url && (
-                    <a
-                      href={form.uploaded_challan_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 rounded-md border border-emerald-500/50 bg-emerald-500/10 px-2.5 py-1.5 text-[11px] font-bold text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/20 transition-all cursor-pointer shrink-0"
-                    >
-                      <FileCheck className="h-3.5 w-3.5" /> View Uploaded PDF
-                    </a>
-                  )}
-                  {form.uploaded_challan_name && (
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveDocument('grn-challan')}
-                      title="Remove attached Delivery Challan PDF"
-                      className="rounded-md border border-red-500/40 bg-red-500/10 p-1.5 text-red-600 dark:text-red-400 hover:bg-red-500/20 transition-colors cursor-pointer"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              <label className="relative flex items-center justify-center gap-2 rounded-lg border border-primary/30 bg-background px-3 py-2.5 text-xs font-bold text-foreground hover:bg-muted/50 cursor-pointer transition-all shadow-xs">
-                <input
-                  type="file"
-                  accept=".pdf,image/*"
-                  onChange={(e) => handleFileSelect(e, 'grn-challan')}
-                  className="absolute inset-0 opacity-0 cursor-pointer"
-                  disabled={uploadingChallan}
-                />
-                {uploadingChallan ? (
-                  <span className="flex items-center gap-1.5 text-primary animate-pulse font-mono text-xs">
-                    <Upload className="h-3.5 w-3.5 animate-spin" /> Saving Challan to Supabase...
-                  </span>
-                ) : form.uploaded_challan_name ? (
-                  <span className="flex items-center gap-1.5 text-emerald-600 font-medium truncate text-xs">
-                    <FileCheck className="h-3.5 w-3.5 text-emerald-500 shrink-0" /> Attached File: <strong className="truncate">{form.uploaded_challan_name}</strong> (Click to change file)
-                  </span>
-                ) : (
-                  <span className="flex items-center gap-1.5 text-muted-foreground text-xs">
-                    <Upload className="h-3.5 w-3.5 text-primary shrink-0" /> Drag &amp; Drop or Click to Upload Challan
-                  </span>
-                )}
-              </label>
-            </div>
-          </div>
-
-          {/* Card 2: Upload Supplier Invoice (grn-invoice) */}
-          <div className="rounded-xl border-2 border-dashed border-emerald-500/40 bg-emerald-500/5 p-4 space-y-3 flex flex-col justify-between">
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2.5">
-                  <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-600 text-white font-bold shadow-xs">
-                    <Upload className="h-4 w-4" />
-                  </div>
-                  <div>
-                    <h3 className="font-heading font-bold text-foreground text-xs flex items-center gap-1.5">
-                      <span>Upload Supplier Invoice</span>
-                      <span className="rounded-full bg-emerald-500/20 px-1.5 py-0.5 text-[9px] text-emerald-600 dark:text-emerald-400 font-mono uppercase">grn-invoice</span>
-                    </h3>
-                    <p className="text-[11px] text-muted-foreground">
-                      Upload invoice/challan PDF or image to extract fields, auto-populate PO parameters, and connect to Supabase storage.
-                    </p>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-1.5">
-                  {form.uploaded_invoice_url && (
-                    <a
-                      href={form.uploaded_invoice_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 rounded-md border border-emerald-500/50 bg-emerald-500/10 px-2.5 py-1.5 text-[11px] font-bold text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/20 transition-all cursor-pointer shrink-0"
-                    >
-                      <FileCheck className="h-3.5 w-3.5" /> View Uploaded PDF
-                    </a>
-                  )}
-                  {form.uploaded_invoice_name && (
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveDocument('grn-invoice')}
-                      title="Remove attached Supplier Invoice PDF"
-                      className="rounded-md border border-red-500/40 bg-red-500/10 p-1.5 text-red-600 dark:text-red-400 hover:bg-red-500/20 transition-colors cursor-pointer"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              <label className="relative flex items-center justify-center gap-2 rounded-lg border border-emerald-500/30 bg-background px-3 py-2.5 text-xs font-bold text-foreground hover:bg-muted/50 cursor-pointer transition-all shadow-xs">
-                <input
-                  type="file"
-                  accept=".pdf,image/*"
-                  onChange={(e) => handleFileSelect(e, 'grn-invoice')}
-                  className="absolute inset-0 opacity-0 cursor-pointer"
-                  disabled={uploadingInvoice}
-                />
-                {uploadingInvoice ? (
-                  <span className="flex items-center gap-1.5 text-emerald-600 animate-pulse font-mono text-xs">
-                    <Upload className="h-3.5 w-3.5 animate-spin" /> Saving Invoice to Supabase...
-                  </span>
-                ) : form.uploaded_invoice_name ? (
-                  <span className="flex items-center gap-1.5 text-emerald-600 font-medium truncate text-xs">
-                    <FileCheck className="h-3.5 w-3.5 text-emerald-500 shrink-0" /> Attached File: <strong className="truncate">{form.uploaded_invoice_name}</strong> (Click to change file)
-                  </span>
-                ) : (
-                  <span className="flex items-center gap-1.5 text-muted-foreground text-xs">
-                    <Upload className="h-3.5 w-3.5 text-emerald-600 shrink-0" /> Drag &amp; Drop or Click to Upload Invoice
-                  </span>
-                )}
-              </label>
-            </div>
-          </div>
-        </div>
         {/* ========================================================================= */}
         {/* SECTION 1: HEADER FIELDS (Strict Field Order as Requested)                */}
         {/* ========================================================================= */}
@@ -900,19 +786,7 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel }: 
               />
             </div>
 
-            {/* 9. Budget Applicable */}
-            <div className="flex items-center gap-2 pt-5">
-              <input
-                type="checkbox"
-                id="budget_applicable"
-                checked={form.budget_applicable}
-                onChange={(e) => updateHeader('budget_applicable', e.target.checked)}
-                className="h-4 w-4 rounded border-border text-primary focus:ring-primary"
-              />
-              <label htmlFor="budget_applicable" className="font-bold text-foreground text-xs cursor-pointer">
-                Budget Applicable
-              </label>
-            </div>
+
 
             {/* 10. Project Address */}
             <div className="sm:col-span-2 lg:col-span-3">
@@ -946,10 +820,22 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel }: 
                   value={form.supplier_name}
                   onChange={(e) => {
                     const name = e.target.value;
-                    const vendor = vendorOptions.find((v) => (v.display_name || v.legal_name) === name);
+                    const vendor = vendorOptions.find((v) => (v.display_name || v.legal_name) === name || v.legal_name === name || v.id === name);
+                    const fullName = vendor ? (vendor.display_name || vendor.legal_name) : name;
+                    const fullAddress = vendor ? [vendor.address, vendor.location, vendor.city].filter(Boolean).join(', ') : '';
+
                     setForm((prev) => ({
                       ...prev,
-                      supplier_name: name,
+                      supplier_name: fullName,
+                      po_in_the_name_of: vendor?.legal_name || fullName || prev.po_in_the_name_of,
+                      gst_no: vendor?.gst_number || prev.gst_no,
+                      pan_no: vendor?.pan_number || prev.pan_no,
+                      phone_no: vendor?.phone || prev.phone_no,
+                      mobile_no: vendor?.phone || prev.mobile_no,
+                      email_id: vendor?.email || prev.email_id,
+                      supplier_address: fullAddress || prev.supplier_address,
+                      location: vendor?.city || vendor?.location || prev.location,
+                      vendor_state: vendor?.city || prev.vendor_state,
                       ...(vendor ? { vendor_id: vendor.id } : {}),
                     }) as FullPoFormState);
                   }}
@@ -1064,17 +950,6 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel }: 
               />
             </div>
 
-            {/* 21. G.R.N No. */}
-            <div>
-              <label className="block text-[11px] font-bold uppercase text-muted-foreground mb-1">G.R.N No.</label>
-              <input
-                type="text"
-                value={form.grn_no_auto}
-                readOnly
-                className="w-full rounded-lg border border-border bg-muted/60 px-3 py-2 font-mono font-bold text-foreground cursor-not-allowed"
-              />
-            </div>
-
             {/* 22. From P.R. No. */}
             <div>
               <label className="block text-[11px] font-bold uppercase text-muted-foreground mb-1">From P.R. No.</label>
@@ -1108,32 +983,6 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel }: 
               />
             </div>
 
-            {/* 25. Import PO */}
-            <div className="flex items-center gap-2 pt-5">
-              <input
-                type="checkbox"
-                id="import_po"
-                checked={form.import_po}
-                onChange={(e) => updateHeader('import_po', e.target.checked)}
-                className="h-4 w-4 rounded border-border text-primary focus:ring-primary"
-              />
-              <label htmlFor="import_po" className="font-bold text-foreground text-xs cursor-pointer">
-                Import PO
-              </label>
-            </div>
-
-            {/* 26. Import Currency Exchange Rate */}
-            <div>
-              <label className="block text-[11px] font-bold uppercase text-muted-foreground mb-1">Import Currency Exchange Rate</label>
-              <input
-                type="number"
-                step="0.01"
-                value={form.import_currency_exchange_rate}
-                onChange={(e) => updateHeader('import_currency_exchange_rate', Number(e.target.value))}
-                className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono font-bold text-foreground"
-              />
-            </div>
-
             {/* 27. Our State */}
             <div>
               <label className="block text-[11px] font-bold uppercase text-muted-foreground mb-1">Our State</label>
@@ -1154,20 +1003,6 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel }: 
                 onChange={(e) => updateHeader('vendor_state', e.target.value)}
                 className="w-full rounded-lg border border-border bg-background px-3 py-2 font-bold text-foreground"
               />
-            </div>
-
-            {/* 29. Additional Transportation Service Tax / GST Applicable */}
-            <div className="flex items-center gap-2 pt-5">
-              <input
-                type="checkbox"
-                id="additional_trans_gst"
-                checked={form.additional_transportation_gst_applicable}
-                onChange={(e) => updateHeader('additional_transportation_gst_applicable', e.target.checked)}
-                className="h-4 w-4 rounded border-border text-primary focus:ring-primary"
-              />
-              <label htmlFor="additional_trans_gst" className="font-bold text-foreground text-xs cursor-pointer">
-                Additional Transportation GST Applicable
-              </label>
             </div>
 
             {/* 30. GST No. */}
@@ -1263,140 +1098,98 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel }: 
           {/* TAB 1: PURCHASE ORDER ENTRIES (Editable Table) */}
           {form.activeTab === 'entries' && (
             <div className="space-y-4">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-3">
                 <span className="text-xs font-bold uppercase text-muted-foreground">
                   Purchase Order Line Entries ({form.items.length})
                 </span>
-                <button
-                  type="button"
-                  onClick={handleAddLineItem}
-                  className="inline-flex items-center gap-1 rounded-lg bg-primary px-3 py-1.5 text-xs font-bold text-primary-foreground hover:bg-primary/90 transition-all shadow-xs cursor-pointer"
-                >
-                  <Plus className="h-3.5 w-3.5" /> Add Entry Row
-                </button>
+                <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-2">
+                    <label className="text-xs font-bold text-foreground">Open Till Date / Validity:</label>
+                    <input
+                      type="date"
+                      value={form.items[0]?.open_till_date || todayStr}
+                      onChange={(e) => {
+                        const dateVal = e.target.value;
+                        setForm((prev) => ({
+                          ...prev,
+                          items: prev.items.map((i) => ({ ...i, open_till_date: dateVal })),
+                        }));
+                      }}
+                      className="rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-bold text-foreground shadow-2xs outline-none"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleAddLineItem}
+                    className="inline-flex items-center gap-1 rounded-lg bg-primary px-3 py-1.5 text-xs font-bold text-primary-foreground hover:bg-primary/90 transition-all shadow-xs cursor-pointer"
+                  >
+                    <Plus className="h-3.5 w-3.5" /> Add Entry Row
+                  </button>
+                </div>
               </div>
 
               <div className="overflow-x-auto rounded-xl border border-border shadow-2xs">
-                <table className="w-full text-left text-xs whitespace-nowrap">
+                <table className="group w-full text-left text-xs whitespace-nowrap">
                   <thead className="bg-muted/60 font-heading text-[10px] font-bold uppercase tracking-wider text-muted-foreground border-b border-border">
                     <tr>
-                      <th className="px-3 py-3 text-center">Sr</th>
-                      <th className="px-3 py-3 font-bold text-primary min-w-[140px]">1. Item Group*</th>
-                      <th className="px-3 py-3 font-bold text-primary min-w-[180px]">2. Item Desc*</th>
-                      <th className="px-3 py-3 min-w-[110px]">3. Item Code</th>
-                      <th className="px-3 py-3 font-bold text-primary min-w-[130px]">4. Item Brand*</th>
-                      <th className="px-3 py-3 min-w-[160px]">5. Item Specification</th>
-                      <th className="px-3 py-3 text-center min-w-[90px]">6. Open PO</th>
-                      <th className="px-3 py-3 min-w-[110px]">7. Open Till Date</th>
-                      <th className="px-3 py-3 text-right min-w-[100px]">8. Approved Qty</th>
-                      <th className="px-3 py-3 font-bold text-primary text-center min-w-[80px]">9. Unit*</th>
-                      <th className="px-3 py-3 font-bold text-primary min-w-[100px]">10. Due On*</th>
-                      <th className="px-3 py-3 min-w-[140px]">11. Purchase Category</th>
-                      <th className="px-3 py-3 text-right min-w-[110px]">12. Estimated Rate</th>
-                      <th className="px-3 py-3 font-bold text-primary text-right min-w-[110px]">13. Basic Rate*</th>
-                      <th className="px-3 py-3 text-right min-w-[100px]">14. Discount Perc.</th>
-                      <th className="px-3 py-3 text-right min-w-[100px]">15. Discount Amt</th>
-                      <th className="px-3 py-3 text-right min-w-[100px]">16. Rate</th>
-                      <th className="px-3 py-3 min-w-[100px]">17. HSN Code</th>
-                      <th className="px-3 py-3 min-w-[100px]">18. Tax Code</th>
-                      <th className="px-3 py-3 text-right min-w-[120px]">19. Tax Code Amount</th>
-                      <th className="px-3 py-3 text-right min-w-[110px]">20. Previous Rate</th>
-                      <th className="px-3 py-3 text-right min-w-[110px]">21. Amt</th>
-                      <th className="px-3 py-3 text-right min-w-[110px]">22. Freight Chgs</th>
-                      <th className="px-3 py-3 text-right min-w-[130px]">23. Load / Unload Chgs</th>
-                      <th className="px-3 py-3 text-right min-w-[110px]">24. Others Chgs</th>
-                      <th className="px-3 py-3 text-center min-w-[110px]">25. Gst Applicable</th>
-                      <th className="px-3 py-3 text-right min-w-[110px]">26. Net Amt</th>
-                      <th className="px-3 py-3 text-right min-w-[130px]">27. Gst Principal Amt</th>
-                      <th className="px-3 py-3 text-right min-w-[110px]">28. GRN Balance Qty</th>
-                      <th className="px-3 py-3 text-right min-w-[90px]">29. GST Rate</th>
-                      <th className="px-3 py-3 text-center min-w-[70px]">Action</th>
+                      <th className="px-2 py-2 text-center transition-all duration-300 opacity-0 group-hover:opacity-100 max-w-0 group-hover:max-w-[40px] overflow-hidden whitespace-nowrap">Sr</th>
+                      <th className="px-2 py-2 font-bold text-primary min-w-[160px]">Item Description</th>
+                      <th className="px-2 py-2 text-right min-w-[70px]">Approved Qty</th>
+                      <th className="px-2 py-2 font-bold text-primary text-center min-w-[60px]">Unit</th>
+                      <th className="px-2 py-2 font-bold text-primary min-w-[90px]">Due Date</th>
+                      <th className="px-2 py-2 font-bold text-primary text-right min-w-[80px]">Unit Rate (₹)</th>
+                      <th className="px-2 py-2 text-right min-w-[60px]">Discount (%)</th>
+                      <th className="px-2 py-2 min-w-[70px]">HSN Code</th>
+                      <th className="px-2 py-2 text-right min-w-[80px]">Subtotal (₹)</th>
+                      <th className="px-2 py-2 text-right min-w-[65px]">Freight (₹)</th>
+                      <th className="px-2 py-2 text-right min-w-[65px]">Handling (₹)</th>
+                      <th className="px-2 py-2 text-right min-w-[65px]">Others (₹)</th>
+                      <th className="px-2 py-2 text-right min-w-[60px]">GST Rate (%)</th>
+                      <th className="px-2 py-2 text-right min-w-[90px]">Total Amount (₹)</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border/60">
                     {form.items.map((item, index) => (
                       <tr key={index} className="hover:bg-muted/30 transition-colors align-middle font-mono">
-                        <td className="px-3 py-2 text-center font-bold text-muted-foreground">{index + 1}</td>
-                        {/* 1. Item Group* */}
-                        <td className="px-3 py-2">
-                          <input
-                            type="text"
-                            value={item.item_group}
-                            onChange={(e) => updateLineItem(index, 'item_group', e.target.value)}
-                            className="w-32 rounded border border-border bg-background px-2 py-1 font-sans text-xs font-semibold text-foreground"
-                          />
+                        <td className="px-2 py-1.5 text-center font-bold text-muted-foreground transition-all duration-300 opacity-0 group-hover:opacity-100 max-w-0 group-hover:max-w-[40px] overflow-hidden whitespace-nowrap">{index + 1}</td>
+                        {/* Item Description + (Brand) */}
+                        <td className="px-2 py-1.5" title={item.item_desc}>
+                          <div className="flex items-center gap-1">
+                            <input
+                              type="text"
+                              title={item.item_desc}
+                              value={item.item_desc}
+                              onChange={(e) => updateLineItem(index, 'item_desc', e.target.value)}
+                              className="w-36 focus:w-64 hover:w-64 transition-all duration-200 rounded border border-border bg-background px-1.5 py-1 font-sans text-xs font-bold text-foreground relative z-10 hover:z-20 focus:z-20 hover:shadow-xs"
+                              required
+                            />
+                            {item.item_brand && (
+                              <span
+                                title={`Brand: ${item.item_brand}`}
+                                className="text-[10px] font-semibold text-primary/80 bg-primary/10 px-1 py-0.5 rounded border border-primary/20 whitespace-nowrap"
+                              >
+                                ({item.item_brand})
+                              </span>
+                            )}
+                          </div>
                         </td>
-                        {/* 2. Item Desc* */}
-                        <td className="px-3 py-2">
-                          <input
-                            type="text"
-                            value={item.item_desc}
-                            onChange={(e) => updateLineItem(index, 'item_desc', e.target.value)}
-                            className="w-44 rounded border border-border bg-background px-2 py-1 font-sans text-xs font-bold text-foreground"
-                            required
-                          />
-                        </td>
-                        {/* 3. Item Code */}
-                        <td className="px-3 py-2">
-                          <input
-                            type="text"
-                            value={item.item_code}
-                            onChange={(e) => updateLineItem(index, 'item_code', e.target.value)}
-                            className="w-24 rounded border border-border bg-background px-2 py-1 text-xs text-muted-foreground"
-                          />
-                        </td>
-                        {/* 4. Item Brand* */}
-                        <td className="px-3 py-2">
-                          <input
-                            type="text"
-                            value={item.item_brand}
-                            onChange={(e) => updateLineItem(index, 'item_brand', e.target.value)}
-                            className="w-28 rounded border border-border bg-background px-2 py-1 font-sans text-xs font-semibold text-foreground"
-                          />
-                        </td>
-                        {/* 5. Item Specification */}
-                        <td className="px-3 py-2">
-                          <input
-                            type="text"
-                            value={item.item_specification}
-                            onChange={(e) => updateLineItem(index, 'item_specification', e.target.value)}
-                            className="w-36 rounded border border-border bg-background px-2 py-1 text-xs text-muted-foreground"
-                          />
-                        </td>
-                        {/* 6. Open PO */}
-                        <td className="px-3 py-2 text-center">
-                          <input
-                            type="checkbox"
-                            checked={item.open_po}
-                            onChange={(e) => updateLineItem(index, 'open_po', e.target.checked)}
-                            className="h-4 w-4 rounded border-border text-primary focus:ring-primary"
-                          />
-                        </td>
-                        {/* 7. Open Till Date */}
-                        <td className="px-3 py-2">
-                          <input
-                            type="date"
-                            value={item.open_till_date}
-                            onChange={(e) => updateLineItem(index, 'open_till_date', e.target.value)}
-                            className="rounded border border-border bg-background px-2 py-1 text-xs"
-                          />
-                        </td>
-                        {/* 8. Approved Qty */}
-                        <td className="px-3 py-2">
+                        {/* Approved Qty */}
+                        <td className="px-2 py-1.5" title={`Qty: ${item.approved_qty} ${item.unit}`}>
                           <input
                             type="number"
                             step="0.01"
+                            title={`Qty: ${item.approved_qty}`}
                             value={item.approved_qty}
                             onChange={(e) => updateLineItem(index, 'approved_qty', Number(e.target.value))}
-                            className="w-20 rounded border border-border bg-background px-2 py-1 text-right text-xs font-bold text-foreground"
+                            className="w-14 focus:w-20 hover:w-20 transition-all duration-200 rounded border border-border bg-background px-1.5 py-1 text-right text-xs font-bold text-foreground relative z-10 hover:z-20 focus:z-20"
                           />
                         </td>
-                        {/* 9. Unit* */}
-                        <td className="px-3 py-2">
+                        {/* Unit */}
+                        <td className="px-2 py-1.5" title={`Unit: ${item.unit}`}>
                           <select
                             value={item.unit}
                             onChange={(e) => updateLineItem(index, 'unit', e.target.value)}
-                            className="rounded border border-border bg-background px-2 py-1 text-xs font-bold text-foreground"
+                            className="rounded border border-border bg-background px-1 py-1 text-xs font-bold text-foreground"
                           >
                             <option value="BAGS">BAGS</option>
                             <option value="BAG">BAG</option>
@@ -1406,140 +1199,97 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel }: 
                             <option value="NOS">NOS</option>
                           </select>
                         </td>
-                        {/* 10. Due On* */}
-                        <td className="px-3 py-2">
+                        {/* Due Date */}
+                        <td className="px-2 py-1.5" title={`Due Date: ${item.due_on}`}>
                           <input
                             type="date"
                             value={item.due_on}
                             onChange={(e) => updateLineItem(index, 'due_on', e.target.value)}
-                            className="rounded border border-border bg-background px-2 py-1 text-xs"
+                            className="rounded border border-border bg-background px-1.5 py-1 text-xs"
                           />
                         </td>
-                        {/* 11. Purchase Category */}
-                        <td className="px-3 py-2">
-                          <input
-                            type="text"
-                            value={item.purchase_category}
-                            onChange={(e) => updateLineItem(index, 'purchase_category', e.target.value)}
-                            className="w-32 rounded border border-border bg-background px-2 py-1 text-xs"
-                          />
-                        </td>
-                        {/* 12. Estimated Rate */}
-                        <td className="px-3 py-2">
+                        {/* Unit Rate (₹) */}
+                        <td className="px-2 py-1.5" title={`Unit Rate: ₹${item.basic_rate}`}>
                           <input
                             type="number"
                             step="0.01"
-                            value={item.estimated_rate}
-                            onChange={(e) => updateLineItem(index, 'estimated_rate', Number(e.target.value))}
-                            className="w-24 rounded border border-border bg-background px-2 py-1 text-right text-xs"
-                          />
-                        </td>
-                        {/* 13. Basic Rate* */}
-                        <td className="px-3 py-2">
-                          <input
-                            type="number"
-                            step="0.01"
+                            title={`Unit Rate: ₹${item.basic_rate}`}
                             value={item.basic_rate}
                             onChange={(e) => updateLineItem(index, 'basic_rate', Number(e.target.value))}
-                            className="w-24 rounded border-2 border-primary/50 bg-background px-2 py-1 text-right text-xs font-extrabold text-primary"
+                            className="w-20 focus:w-28 hover:w-28 transition-all duration-200 rounded border-2 border-primary/50 bg-background px-1.5 py-1 text-right text-xs font-extrabold text-primary relative z-10 hover:z-20 focus:z-20"
                           />
                         </td>
-                        {/* 14. Discount Perc. */}
-                        <td className="px-3 py-2">
+                        {/* Discount (%) */}
+                        <td className="px-2 py-1.5" title={`Discount: ${item.discount_perc}%`}>
                           <input
                             type="number"
                             step="0.01"
+                            title={`Discount: ${item.discount_perc}%`}
                             value={item.discount_perc}
                             onChange={(e) => updateLineItem(index, 'discount_perc', Number(e.target.value))}
-                            className="w-16 rounded border border-border bg-background px-2 py-1 text-right text-xs"
+                            className="w-12 focus:w-16 hover:w-16 transition-all duration-200 rounded border border-border bg-background px-1 py-1 text-right text-xs relative z-10 hover:z-20 focus:z-20"
                           />
                         </td>
-                        {/* 15. Discount Amt */}
-                        <td className="px-3 py-2">
-                          <input
-                            type="number"
-                            step="0.01"
-                            value={item.discount_amt}
-                            onChange={(e) => updateLineItem(index, 'discount_amt', Number(e.target.value))}
-                            className="w-20 rounded border border-border bg-background px-2 py-1 text-right text-xs"
-                          />
-                        </td>
-                        {/* 16. Rate */}
-                        <td className="px-3 py-2 text-right font-extrabold text-foreground">₹{item.rate}</td>
-                        {/* 17. HSN Code */}
-                        <td className="px-3 py-2">
+                        {/* HSN Code */}
+                        <td className="px-2 py-1.5" title={`HSN Code: ${item.hsn_code}`}>
                           <input
                             type="text"
+                            title={`HSN Code: ${item.hsn_code}`}
                             value={item.hsn_code}
                             onChange={(e) => updateLineItem(index, 'hsn_code', e.target.value)}
-                            className="w-24 rounded border border-border bg-background px-2 py-1 text-xs"
+                            className="w-16 focus:w-24 hover:w-24 transition-all duration-200 rounded border border-border bg-background px-1.5 py-1 text-xs relative z-10 hover:z-20 focus:z-20"
                           />
                         </td>
-                        {/* 18. Tax Code */}
-                        <td className="px-3 py-2 font-sans font-semibold">{item.tax_code}</td>
-                        {/* 19. Tax Code Amount */}
-                        <td className="px-3 py-2 text-right text-muted-foreground">₹{item.tax_code_amount.toLocaleString()}</td>
-                        {/* 20. Previous Rate */}
-                        <td className="px-3 py-2 text-right text-muted-foreground">₹{item.previous_rate}</td>
-                        {/* 21. Amt */}
-                        <td className="px-3 py-2 text-right font-bold text-foreground">₹{item.amt.toLocaleString()}</td>
-                        {/* 22. Freight Chgs */}
-                        <td className="px-3 py-2 text-right">
+                        {/* Subtotal (₹) */}
+                        <td className="px-2 py-1.5 text-right font-bold text-foreground text-xs" title={`Subtotal: ₹${item.amt.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`}>
+                          ₹{item.amt.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                        </td>
+                        {/* Freight (₹) */}
+                        <td className="px-2 py-1.5 text-right" title={`Freight: ₹${item.freight_chgs}`}>
                           <input
                             type="number"
                             step="0.01"
+                            title={`Freight: ₹${item.freight_chgs}`}
                             value={item.freight_chgs}
                             onChange={(e) => updateLineItem(index, 'freight_chgs', Number(e.target.value))}
-                            className="w-20 rounded border border-border bg-background px-2 py-1 text-right text-xs"
+                            className="w-14 focus:w-20 hover:w-20 transition-all duration-200 rounded border border-border bg-background px-1 py-1 text-right text-xs relative z-10 hover:z-20 focus:z-20"
                           />
                         </td>
-                        {/* 23. Load / Unload Chgs */}
-                        <td className="px-3 py-2 text-right">
+                        {/* Handling (₹) */}
+                        <td className="px-2 py-1.5 text-right" title={`Handling: ₹${item.load_unload_chgs}`}>
                           <input
                             type="number"
                             step="0.01"
+                            title={`Handling: ₹${item.load_unload_chgs}`}
                             value={item.load_unload_chgs}
                             onChange={(e) => updateLineItem(index, 'load_unload_chgs', Number(e.target.value))}
-                            className="w-20 rounded border border-border bg-background px-2 py-1 text-right text-xs"
+                            className="w-14 focus:w-20 hover:w-20 transition-all duration-200 rounded border border-border bg-background px-1 py-1 text-right text-xs relative z-10 hover:z-20 focus:z-20"
                           />
                         </td>
-                        {/* 24. Others Chgs */}
-                        <td className="px-3 py-2 text-right">
+                        {/* Others (₹) */}
+                        <td className="px-2 py-1.5 text-right" title={`Others: ₹${item.others_chgs}`}>
                           <input
                             type="number"
                             step="0.01"
+                            title={`Others: ₹${item.others_chgs}`}
                             value={item.others_chgs}
                             onChange={(e) => updateLineItem(index, 'others_chgs', Number(e.target.value))}
-                            className="w-20 rounded border border-border bg-background px-2 py-1 text-right text-xs"
+                            className="w-14 focus:w-20 hover:w-20 transition-all duration-200 rounded border border-border bg-background px-1 py-1 text-right text-xs relative z-10 hover:z-20 focus:z-20"
                           />
                         </td>
-                        {/* 25. Gst Applicable */}
-                        <td className="px-3 py-2 text-center">
+                        {/* GST Rate (%) */}
+                        <td className="px-2 py-1.5 text-right font-bold" title={`GST Rate: ${item.gst_rate}%`}>
                           <input
-                            type="checkbox"
-                            checked={item.gst_applicable}
-                            onChange={(e) => updateLineItem(index, 'gst_applicable', e.target.checked)}
-                            className="h-4 w-4 rounded border-border text-primary"
+                            type="number"
+                            title={`GST Rate: ${item.gst_rate}%`}
+                            value={item.gst_rate}
+                            onChange={(e) => updateLineItem(index, 'gst_rate', Number(e.target.value))}
+                            className="w-12 focus:w-16 hover:w-16 transition-all duration-200 rounded border border-border bg-background px-1 py-1 text-right text-xs font-bold relative z-10 hover:z-20 focus:z-20"
                           />
                         </td>
-                        {/* 26. Net Amt */}
-                        <td className="px-3 py-2 text-right font-extrabold text-foreground">₹{item.net_amt.toLocaleString()}</td>
-                        {/* 27. Gst Principal Amount */}
-                        <td className="px-3 py-2 text-right text-muted-foreground">₹{item.gst_principal_amount.toLocaleString()}</td>
-                        {/* 28. GRN Balance Qty */}
-                        <td className="px-3 py-2 text-right font-bold">{item.grn_balance_qty}</td>
-                        {/* 29. GST Rate */}
-                        <td className="px-3 py-2 text-right font-bold">{item.gst_rate}%</td>
-                        {/* Action Column */}
-                        <td className="px-3 py-2 text-center">
-                          <button
-                            type="button"
-                            onClick={() => handleRemoveLineItem(index)}
-                            className="p-1.5 text-muted-foreground hover:text-red-600 transition-colors cursor-pointer"
-                            title="Remove entry row"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </button>
+                        {/* Total Amount (₹) */}
+                        <td className="px-2 py-1.5 text-right font-extrabold text-foreground text-xs" title={`Line Total: ₹${item.net_amt.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`}>
+                          ₹{item.net_amt.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                         </td>
                       </tr>
                     ))}
@@ -2432,20 +2182,6 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel }: 
           </h3>
 
           <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2 lg:grid-cols-4">
-            {/* To GRN */}
-            <div className="flex items-center gap-2 pt-5">
-              <input
-                type="checkbox"
-                id="to_grn"
-                checked={form.to_grn}
-                onChange={(e) => updateHeader('to_grn', e.target.checked)}
-                className="h-4 w-4 rounded border-border text-primary focus:ring-primary"
-              />
-              <label htmlFor="to_grn" className="font-bold text-foreground text-xs cursor-pointer">
-                To GRN
-              </label>
-            </div>
-
             {/* Credit Period */}
             <div>
               <label className="block text-[11px] font-bold uppercase text-muted-foreground mb-1">Credit Period (In Days)</label>
@@ -2517,7 +2253,7 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel }: 
 
             {/* Status */}
             <div>
-              <label className="block text-[11px] font-bold uppercase text-primary mb-1">PO Status</label>
+              <label className="block text-[11px] font-bold uppercase text-primary mb-1">PO Stage &amp; Status</label>
               <select
                 value={form.status}
                 onChange={async (e) => {
@@ -2529,26 +2265,27 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel }: 
                 }}
                 className="w-full rounded-lg border-2 border-primary bg-background px-3 py-2 font-extrabold text-foreground cursor-pointer"
               >
-                <option value="Draft">Draft (Saved for Editing)</option>
-                <option value="Verification">Verification (Pending Audit Sign-off)</option>
-                <option value="Issued">Issued (Sent to Vendor)</option>
-                <option value="Fulfilled">Fulfilled (Material Delivered)</option>
+                <option value="Draft">Stage 1: Draft (Auto-Generated / Editable)</option>
+                <option value="Verification">Stage 2: Verification (Pending Audit &amp; Sign-off)</option>
+                <option value="Issued">Stage 3: Issued (Sent to Vendor)</option>
+                <option value="Accepted_By_Vendor">Stage 4: Accepted by Vendor (Order Confirmed)</option>
+                <option value="Fulfilled">Stage 5: Fulfilled (Site Material Delivered)</option>
                 <option value="Cancelled">Cancelled (Revoked)</option>
               </select>
             </div>
           </div>
         </div>
 
-        {/* Form Action Buttons */}
-        <div className="flex items-center justify-between border-t border-border pt-4">
+        {/* Form Action Buttons (Status-Driven Dynamic Visibility) */}
+        <div className="flex flex-wrap items-center justify-between border-t border-border pt-4 gap-4">
           <div className="flex items-center gap-4">
-            {/* PRINT BUTTON AT BOTTOM LEFT CORNER */}
+            {/* PRINT BUTTON */}
             <button
               type="button"
               onClick={() => onPrint ? onPrint() : printPurchaseOrderReport(form)}
               className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700 shadow-xs transition-all cursor-pointer"
             >
-              <Printer className="h-4 w-4" /> Print
+              <Printer className="h-4 w-4" /> Print PO PDF
             </button>
 
             <div className="text-xs font-bold text-muted-foreground">
@@ -2556,7 +2293,8 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel }: 
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Cancel Button */}
             <button
               type="button"
               onClick={onCancel}
@@ -2565,12 +2303,111 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel }: 
               Cancel
             </button>
 
-            <button
-              type="submit"
-              className="inline-flex items-center gap-2 rounded-lg bg-primary px-5 py-2 text-xs font-bold text-primary-foreground hover:bg-primary/90 shadow-md transition-all cursor-pointer"
-            >
-              <FileCheck className="h-4 w-4" /> Save Purchase Order
-            </button>
+            {/* STAGE 1: DRAFT BUTTONS */}
+            {((form.status || '').toLowerCase().includes('draft') || !form.status) && (
+              <>
+                <button
+                  type="submit"
+                  className="inline-flex items-center gap-2 rounded-lg bg-secondary px-4 py-2 text-xs font-bold text-secondary-foreground hover:bg-secondary/80 transition-all cursor-pointer"
+                >
+                  <FileCheck className="h-4 w-4" /> Save Draft
+                </button>
+
+                <button
+                  type="button"
+                  onClick={async () => {
+                    updateHeader('status', 'Verification');
+                    if (po.id) {
+                      await updatePurchaseOrderStatus(po.id, 'verification');
+                    }
+                    alert('PO submitted for Managerial Verification & Audit Sign-off!');
+                  }}
+                  className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-xs font-bold text-white hover:bg-indigo-700 shadow-md transition-all cursor-pointer"
+                >
+                  <Send className="h-4 w-4" /> Submit for Verification
+                </button>
+              </>
+            )}
+
+            {/* STAGE 2: VERIFICATION / PENDING APPROVAL BUTTONS */}
+            {((form.status || '').toLowerCase().includes('verif') || (form.status || '').toLowerCase().includes('audit')) && (
+              <>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    updateHeader('status', 'Draft');
+                    if (po.id) {
+                      await updatePurchaseOrderStatus(po.id, 'draft');
+                    }
+                  }}
+                  className="inline-flex items-center gap-2 rounded-lg border border-orange-500/30 bg-orange-500/10 px-3 py-2 text-xs font-bold text-orange-600 hover:bg-orange-500/20 transition-all cursor-pointer"
+                >
+                  Return to Draft
+                </button>
+
+                <button
+                  type="button"
+                  onClick={async () => {
+                    updateHeader('status', 'Issued');
+                    if (po.id) {
+                      await updatePurchaseOrderStatus(po.id, 'issued');
+                    }
+                    alert('PO Approved & Officially Issued to Vendor!');
+                  }}
+                  className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700 shadow-md transition-all cursor-pointer"
+                >
+                  <CheckCircle2 className="h-4 w-4" /> Approve &amp; Issue PO
+                </button>
+              </>
+            )}
+
+            {/* STAGE 3: ISSUED BUTTONS */}
+            {((form.status || '').toLowerCase().includes('issue') || (form.status || '').toLowerCase().includes('approve')) && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    alert(`PO ${form.po_number} emailed to Vendor (${form.email_id || form.supplier_name})!`);
+                  }}
+                  className="inline-flex items-center gap-2 rounded-lg bg-purple-600 px-3 py-2 text-xs font-bold text-white hover:bg-purple-700 transition-all cursor-pointer"
+                >
+                  <Mail className="h-4 w-4" /> Send Email to Vendor
+                </button>
+
+                <button
+                  type="button"
+                  onClick={async () => {
+                    updateHeader('status', 'Accepted_By_Vendor');
+                    if (po.id) {
+                      await updatePurchaseOrderStatus(po.id, 'accepted_by_vendor');
+                    }
+                    alert(`PO ${form.po_number} marked as Accepted by Vendor!\n📱 Site Engineers in Mobile App have been notified for site delivery & GRN.`);
+                  }}
+                  className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700 shadow-md transition-all cursor-pointer"
+                >
+                  <CheckCircle2 className="h-4 w-4" /> Record Vendor Acceptance
+                </button>
+              </>
+            )}
+
+            {/* STAGE 4: ACCEPTED BY VENDOR BADGE & NOTIFICATION INDICATOR */}
+            {(form.status || '').toLowerCase().includes('accepted') && (
+              <div className="flex items-center gap-2">
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/15 px-3 py-1.5 text-xs font-extrabold text-emerald-600 border border-emerald-500/30">
+                  <CheckCircle2 className="h-4 w-4" /> Accepted by Vendor (Order Confirmed)
+                </span>
+                <span className="text-[11px] font-semibold text-muted-foreground bg-muted px-2.5 py-1 rounded-md border border-border">
+                  📱 Mobile App Site Engineers Notified
+                </span>
+              </div>
+            )}
+
+            {/* STAGE 5: FULFILLED BADGE */}
+            {((form.status || '').toLowerCase().includes('fulfill') || (form.status || '').toLowerCase().includes('complet')) && (
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-500/15 px-3 py-1.5 text-xs font-extrabold text-blue-600 border border-blue-500/30">
+                <CheckCircle2 className="h-4 w-4" /> Fulfilled &amp; Material Delivered at Site
+              </span>
+            )}
           </div>
         </div>
       </form>

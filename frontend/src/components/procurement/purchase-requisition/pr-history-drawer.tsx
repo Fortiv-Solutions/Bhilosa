@@ -19,10 +19,10 @@ export function PrHistoryDrawer({ open, prId, prNumber, onClose }: PrHistoryDraw
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (!open || !prId) return;
+    if (!open || (!prId && !prNumber)) return;
     setLoading(true);
-    listPrActivity(prId).then(setRows).finally(() => setLoading(false));
-  }, [open, prId]);
+    listPrActivity(prId || '', prNumber).then(setRows).finally(() => setLoading(false));
+  }, [open, prId, prNumber]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose(); }
@@ -54,24 +54,55 @@ export function PrHistoryDrawer({ open, prId, prNumber, onClose }: PrHistoryDraw
             <p className="py-10 text-center text-sm text-muted-foreground">No activity recorded yet.</p>
           ) : (
             <ol className="relative space-y-4 border-l border-border pl-4">
-              {rows.map((r) => (
-                <li key={r.id} className="relative">
-                  <span className="absolute -left-[21px] top-1 h-2.5 w-2.5 rounded-full border-2 border-primary bg-card" />
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="text-sm font-bold text-foreground">{r.action}</p>
-                    <span className="text-[10px] text-muted-foreground">{new Date(r.created_at).toLocaleString('en-IN')}</span>
-                  </div>
-                  {(r.previous_status || r.new_status) && (
-                    <div className="mt-1 flex items-center gap-1 text-[11px] text-muted-foreground">
-                      {r.previous_status && <span className="capitalize">{statusMeta(r.previous_status).label}</span>}
-                      <ArrowRight className="h-3 w-3" />
-                      {r.new_status && <span className="font-semibold capitalize text-foreground">{statusMeta(r.new_status).label}</span>}
+              {rows.map((r, idx) => {
+                const now = new Date();
+                const logDate = r.created_at ? new Date(r.created_at) : now;
+                const diffMs = Math.max(0, now.getTime() - logDate.getTime());
+                const daysSince = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+                
+                const isOldest = idx === rows.length - 1;
+                const isCreation = r.action === 'PR Draft Created' || r.action === 'PR Created / Drafted' || r.previous_status === 'created';
+                
+                let fromStatus = r.previous_status || 'draft';
+                if (isCreation || (isOldest && (!r.previous_status || r.previous_status === 'created'))) {
+                  fromStatus = 'created';
+                }
+                const toStatus = r.new_status === 'approved' ? 'approved' : (r.new_status || 'draft');
+
+                const atStr = logDate.toLocaleString('en-IN', {
+                  timeZone: 'Asia/Kolkata',
+                  day: '2-digit',
+                  month: '2-digit',
+                  year: 'numeric',
+                  hour: '2-digit',
+                  minute: '2-digit',
+                  hour12: true,
+                }).toUpperCase().replace(',', '');
+
+                const rawActor = r.profiles?.name;
+                const actorName = (rawActor && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawActor))
+                  ? rawActor
+                  : 'Executive Director';
+
+                return (
+                  <li key={r.id} className="relative">
+                    <span className="absolute -left-[21px] top-1 h-2.5 w-2.5 rounded-full border-2 border-primary bg-card" />
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-xs font-bold text-foreground capitalize">
+                        {r.action || `${fromStatus} → ${toStatus}`}
+                      </p>
+                      <span className="text-[10px] font-semibold text-muted-foreground">{daysSince === 0 ? 'Today' : `${daysSince} day(s) ago`}</span>
                     </div>
-                  )}
-                  {r.comment && <p className="mt-1 rounded-md bg-muted/40 px-2 py-1 text-xs text-foreground">{r.comment}</p>}
-                  <p className="mt-1 text-[10px] uppercase tracking-wide text-muted-foreground">{r.profiles?.name || 'System'}{r.actor_role ? ` · ${r.actor_role.replaceAll('_', ' ')}` : ''}</p>
-                </li>
-              ))}
+
+                    <div className="mt-1 text-[11px] text-muted-foreground space-y-0.5">
+                      <p><span className="font-semibold text-foreground">FROM:</span> <span className="capitalize">{fromStatus}</span> &nbsp;|&nbsp; <span className="font-semibold text-foreground">TO:</span> <span className="capitalize">{toStatus}</span></p>
+                      <p><span className="font-semibold text-foreground">BY:</span> {actorName}</p>
+                      <p><span className="font-semibold text-foreground">AT:</span> {atStr}</p>
+                      {r.comment && <p className="mt-1 rounded-md bg-muted/40 px-2 py-1 text-xs text-foreground font-medium"><span className="font-bold">REMARKS:</span> {r.comment}</p>}
+                    </div>
+                  </li>
+                );
+              })}
             </ol>
           )}
         </div>

@@ -25,7 +25,6 @@ import type { MaterialRequestRow, PurchaseRequisitionRow, Role } from '@/lib/erp
 import {
   rejectMaterialRequest,
   markMrUnderReview,
-  askMrClarification,
   addManagementComment,
   reviewMaterialRequestInventory,
   issueMaterialFromStock,
@@ -50,7 +49,7 @@ const STATUS_CONFIG: Record<string, { label: string; className: string }> = {
   draft: { label: 'Clarification Req.', className: 'bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-400' },
   submitted: { label: 'Submitted', className: 'bg-blue-100 text-blue-800 dark:bg-blue-950/40 dark:text-blue-400' },
   in_review: { label: 'Under Review', className: 'bg-purple-100 text-purple-800 dark:bg-purple-950/40 dark:text-purple-400' },
-  approved: { label: 'Converted to PR', className: 'bg-sky-100 text-sky-800 dark:bg-sky-950/40 dark:text-sky-400' },
+  approved: { label: 'MR Approved', className: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-400' },
   rejected: { label: 'Rejected', className: 'bg-red-100 text-red-800 dark:bg-red-950/40 dark:text-red-400' },
   closed: { label: 'Fulfilled', className: 'bg-green-100 text-green-800 dark:bg-green-950/40 dark:text-green-400' },
   cancelled: { label: 'Cancelled', className: 'bg-gray-100 text-gray-700 dark:bg-gray-800/60 dark:text-gray-400' },
@@ -118,6 +117,7 @@ export function MRTableRow({ mr, linkedPr, activeRole, onAction, onConvertToPr }
   const hasPr = !!linkedPr;
   const overdue = isOverdue(mr.required_date) && mr.status !== 'closed' && mr.status !== 'rejected' && mr.status !== 'cancelled';
   const lines = mr.material_request_lines ?? [];
+  const firstLine = lines[0];
 
   async function handleAction(label: string, fn: () => Promise<{ data: unknown; error: Error | null }>) {
     setActionLoading(true);
@@ -168,8 +168,13 @@ export function MRTableRow({ mr, linkedPr, activeRole, onAction, onConvertToPr }
         </div>
 
         <div>
-          <span className="text-muted-foreground block text-[10px] uppercase tracking-wider font-bold">Work Activity</span>
-          <span className="font-semibold text-foreground mt-0.5 block">{mr.work_activity ?? '—'}</span>
+          <span className="text-muted-foreground block text-[10px] uppercase tracking-wider font-bold">Activity Name & Code</span>
+          <span className="font-semibold text-foreground mt-0.5 block truncate">
+            {mr.activity_name ?? firstLine?.activity_name ?? mr.work_activity ?? '—'}
+            {(mr.activity_code || firstLine?.activity_code) && (
+              <span className="ml-1 text-[10px] font-mono text-muted-foreground">({mr.activity_code ?? firstLine?.activity_code})</span>
+            )}
+          </span>
         </div>
 
         <div>
@@ -207,26 +212,15 @@ export function MRTableRow({ mr, linkedPr, activeRole, onAction, onConvertToPr }
                 <tr>
                   <th className="px-2 py-2 text-center w-10">Sr</th>
                   <th className="px-3 py-2">Activity Name</th>
-                  <th className="px-2.5 py-2">Code</th>
-                  <th className="px-2.5 py-2">Item Code</th>
                   <th className="px-3 py-2">Item Group</th>
                   <th className="px-4 py-2 font-bold text-foreground">Item Description</th>
                   <th className="px-2 py-2 text-center text-primary font-bold">Units *</th>
                   <th className="px-3 py-2 text-center text-primary font-bold">Req Date *</th>
                   <th className="px-3 py-2">Brand</th>
-                  <th className="px-3 py-2">Specification</th>
-                  <th className="px-2.5 py-2 text-right">Est Qty</th>
-                  <th className="px-2.5 py-2 text-right">Ind Qty</th>
-                  <th className="px-2.5 py-2 text-right">Iss Qty</th>
-                  <th className="px-2.5 py-2 text-right">Ex. Rec Qty</th>
-                  <th className="px-2.5 py-2 text-right">Ex. Adj Qty</th>
                   <th className="px-3 py-2 text-right text-primary font-bold bg-primary/5">Quantity *</th>
                   <th className="px-2.5 py-2 text-right">PR Bal Qty</th>
                   <th className="px-2.5 py-2 text-center">Lead Period</th>
                   <th className="px-3 py-2 text-center">Lead Date</th>
-                  <th className="px-3 py-2 text-right text-emerald-700 dark:text-emerald-400 font-bold">Project Stock</th>
-                  <th className="px-3 py-2 text-right text-sky-700 dark:text-sky-400 font-bold">Other Site Stock</th>
-                  <th className="px-2 py-2 text-center">Rel</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border bg-card">
@@ -239,27 +233,16 @@ export function MRTableRow({ mr, linkedPr, activeRole, onAction, onConvertToPr }
                   return (
                     <tr key={line.id} className="hover:bg-muted/30">
                       <td className="px-2 py-2 text-center font-bold text-muted-foreground">{srNo}</td>
-                      <td className="px-3 py-2 font-medium text-foreground">{line.activity_name ?? mr.work_activity ?? '—'}</td>
-                      <td className="px-2.5 py-2 text-muted-foreground font-mono text-[11px]">{line.activity_code ?? '—'}</td>
-                      <td className="px-2.5 py-2 text-muted-foreground font-mono text-[11px]">{line.item_code ?? '—'}</td>
+                      <td className="px-3 py-2 font-medium text-foreground">{line.activity_name ?? line.work_activity ?? mr.work_activity ?? '—'}</td>
                       <td className="px-3 py-2 text-muted-foreground">{line.item_group ?? '—'}</td>
                       <td className="px-4 py-2 font-bold text-foreground">{line.item_description}</td>
                       <td className="px-2 py-2 text-center font-bold text-primary">{line.unit ?? 'nos'}</td>
                       <td className="px-3 py-2 text-center font-medium text-foreground">{formatDate(reqDate)}</td>
-                      <td className="px-3 py-2 text-muted-foreground font-semibold">{line.item_brand ?? '—'}</td>
-                      <td className="px-3 py-2 text-muted-foreground">{line.item_specification ?? '—'}</td>
-                      <td className="px-2.5 py-2 text-right text-muted-foreground">{line.est_qty ?? '—'}</td>
-                      <td className="px-2.5 py-2 text-right text-muted-foreground">{line.ind_qty ?? '—'}</td>
-                      <td className="px-2.5 py-2 text-right text-muted-foreground">{line.iss_qty ?? '—'}</td>
-                      <td className="px-2.5 py-2 text-right text-muted-foreground">{line.extra_rec_qty ?? 0}</td>
-                      <td className="px-2.5 py-2 text-right text-muted-foreground">{line.extra_adj_qty ?? 0}</td>
+                      <td className="px-3 py-2 text-muted-foreground font-semibold">{line.item_brand ?? line.specification ?? '—'}</td>
                       <td className="px-3 py-2 text-right font-bold text-primary bg-primary/5 text-sm">{line.quantity}</td>
                       <td className="px-2.5 py-2 text-right font-semibold text-amber-600 dark:text-amber-400">{line.pr_bal_qty ?? '—'}</td>
                       <td className="px-2.5 py-2 text-center text-muted-foreground">{leadDays} days</td>
                       <td className="px-3 py-2 text-center font-medium text-muted-foreground">{formatDate(leadDate)}</td>
-                      <td className="px-3 py-2 text-right font-bold text-emerald-600 dark:text-emerald-400">{line.project_stock ?? 0}</td>
-                      <td className="px-3 py-2 text-right font-bold text-sky-600 dark:text-sky-400">{line.other_project_stock ?? 0}</td>
-                      <td className="px-2 py-2 text-center font-bold text-muted-foreground">{line.relation_count ?? 0}</td>
                     </tr>
                   );
                 })}
@@ -355,16 +338,7 @@ export function MRTableRow({ mr, linkedPr, activeRole, onAction, onConvertToPr }
               </button>
             )}
 
-            {!showClarifyForm && !showRejectForm && (
-              <button
-                onClick={() => setShowClarifyForm(true)}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-bold text-amber-700 hover:bg-amber-100 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-400"
-              >
-                <MessageSquare className="h-3.5 w-3.5" /> Clarify
-              </button>
-            )}
-
-            {!showRejectForm && !showClarifyForm && (
+            {!showRejectForm && (
               <button
                 onClick={() => setShowRejectForm(true)}
                 className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-bold text-red-700 hover:bg-red-100 dark:border-red-800 dark:bg-red-950/40 dark:text-red-400"
@@ -382,35 +356,6 @@ export function MRTableRow({ mr, linkedPr, activeRole, onAction, onConvertToPr }
               <MessageCircle className="h-3.5 w-3.5" /> + Executive Note
             </button>
           )}
-        </div>
-      )}
-
-      {/* CLARIFICATION FORM */}
-      {showClarifyForm && (
-        <div className="rounded-xl border border-amber-200 bg-amber-50 dark:bg-amber-950/30 p-3 space-y-2 text-xs">
-          <label className="font-bold text-amber-800 dark:text-amber-400">Ask Clarification from Site Engineer</label>
-          <textarea
-            value={clarificationInput}
-            onChange={(e) => setClarificationInput(e.target.value)}
-            rows={2}
-            placeholder="Details needed from site engineer..."
-            className="w-full rounded-md border border-amber-300 bg-background px-3 py-2 outline-none"
-          />
-          <div className="flex gap-2">
-            <button
-              onClick={async () => {
-                if (!clarificationInput.trim()) return;
-                await handleAction('Clarification requested.', () => askMrClarification(mr, clarificationInput));
-                setClarificationInput('');
-                setShowClarifyForm(false);
-              }}
-              disabled={!clarificationInput.trim() || actionLoading}
-              className="rounded-md bg-amber-600 px-3 py-1 text-white font-bold"
-            >
-              Send
-            </button>
-            <button onClick={() => setShowClarifyForm(false)} className="rounded-md border px-3 py-1 font-bold">Cancel</button>
-          </div>
         </div>
       )}
 

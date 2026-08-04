@@ -80,6 +80,9 @@ export function PoTableView({ purchaseOrders, onOpenPoForm, onPrintPo, onApprove
                 // `pending_approval` is the real DB status for a PO awaiting management sign-off.
                 const isPending = poStatus === 'pending_approval' || poStatus === 'verification' || poStatus === 'under_review';
                 const isIssued = poStatus === 'issued' || poStatus === 'approved' || poStatus === 'sent_to_vendor';
+                const isAcceptedByVendor = poStatus === 'accepted_by_vendor';
+                const isPartiallyReceived = poStatus === 'partially_received';
+                const isShortClosed = poStatus === 'short_closed';
                 const isFulfilled = poStatus === 'fulfilled' || poStatus === 'completed' || poStatus === 'delivered';
 
                 // Supplier Details
@@ -165,7 +168,19 @@ export function PoTableView({ purchaseOrders, onOpenPoForm, onPrintPo, onApprove
                         </span>
                       ) : isPending ? (
                         <span className="inline-flex items-center gap-1 rounded-md border border-purple-200 bg-purple-100 px-2 py-0.5 text-[10px] font-extrabold text-purple-800 dark:bg-purple-950/40 dark:text-purple-300">
-                          🔍 Pending Approval
+                          🔍 Pending Audit
+                        </span>
+                      ) : isPartiallyReceived ? (
+                        <span className="inline-flex items-center gap-1 rounded-md border border-cyan-300 bg-cyan-100 px-2 py-0.5 text-[10px] font-extrabold text-cyan-800 dark:bg-cyan-950/40 dark:text-cyan-300">
+                          📦 Partially Received
+                        </span>
+                      ) : isShortClosed ? (
+                        <span className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-slate-100 px-2 py-0.5 text-[10px] font-extrabold text-slate-800 dark:bg-slate-800/40 dark:text-slate-300">
+                          🔒 Short Closed
+                        </span>
+                      ) : isAcceptedByVendor ? (
+                        <span className="inline-flex items-center gap-1 rounded-md border border-emerald-300 bg-emerald-100 px-2 py-0.5 text-[10px] font-extrabold text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300">
+                          <CheckCircle2 className="h-3 w-3" /> Vendor Accepted
                         </span>
                       ) : isIssued ? (
                         <span className="inline-flex items-center gap-1 rounded-md border border-blue-200 bg-blue-100 px-2 py-0.5 text-[10px] font-extrabold text-blue-800 dark:bg-blue-950/40 dark:text-blue-300">

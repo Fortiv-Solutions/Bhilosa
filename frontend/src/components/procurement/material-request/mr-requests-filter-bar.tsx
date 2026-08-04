@@ -27,7 +27,7 @@ const STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: 'submitted', label: 'Submitted' },
   { value: 'in_review', label: 'Under Review' },
   { value: 'draft', label: 'Clarification Req.' },
-  { value: 'approved', label: 'Converted to PR' },
+  { value: 'approved', label: 'MR Approved' },
   { value: 'closed', label: 'Fulfilled' },
   { value: 'rejected', label: 'Rejected' },
   { value: 'cancelled', label: 'Cancelled' },
@@ -55,7 +55,6 @@ interface Props {
   loading: boolean;
   onRefresh: () => void;
   onReset: () => void;
-  onOpenCreate: () => void;
 }
 
 const SELECT = 'h-8 rounded-md border px-2.5 text-xs font-medium outline-none transition-colors';
@@ -70,7 +69,7 @@ function toggleCls(active: boolean) {
 
 export function MRRequestsFilterBar({
   search, onSearch, filters, onChangeFilters, sort, onChangeSort,
-  projectOptions, lockedProjectId, reviewers, loading, onRefresh, onReset, onOpenCreate,
+  projectOptions, lockedProjectId, reviewers, loading, onRefresh, onReset,
 }: Props) {
   // A pinned project is scope, not a user-applied filter — it must not count toward "Clear (n)".
   const activeCount =

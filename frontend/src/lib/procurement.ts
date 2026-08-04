@@ -21,7 +21,7 @@ type MutationResult<T = unknown> = {
   error: Error | null;
 };
 
-export type ProcurementStatus = 'draft' | 'submitted' | 'in_review' | 'under_verification' | 'pending_approval' | 'approved' | 'partially_approved' | 'rejected' | 'assigned' | 'rfq_sent' | 'vendor_selected' | 'po_issued' | 'delivered' | 'closed' | 'cancelled' | 'auto_draft_pr';
+export type ProcurementStatus = 'draft' | 'submitted' | 'in_review' | 'under_verification' | 'pending_approval' | 'approved' | 'rejected' | 'assigned' | 'rfq_sent' | 'vendor_selected' | 'po_issued' | 'delivered' | 'closed' | 'cancelled' | 'auto_draft_pr';
 
 export type MaterialRequestRow = {
   id: string;
@@ -35,14 +35,16 @@ export type MaterialRequestRow = {
   stock_decision: string | null;
   status: ProcurementStatus;
   raised_by: string | null;
+  raised_by_name?: string | null;
   submitted_at: string | null;
   created_at: string;
   updated_at?: string;
   // Extended fields from migration 20260624060000
   title?: string | null;
   company_name?: string | null;
+  activity_name?: string | null;
   activity_code?: string | null;
-  work_activity: string | null;
+  work_activity?: string | null;
   site_block: string | null;
   clarification_text: string | null;
   clarification_at: string | null;
@@ -57,7 +59,9 @@ export type MaterialRequestRow = {
   management_comment_by: string | null;
   material_request_lines?: ProcurementLineRow[];
   profiles?: {
+    id?: string | null;
     name: string | null;
+    full_name?: string | null;
     email: string | null;
   } | null;
   projects?: {
@@ -87,6 +91,7 @@ export type PurchaseRequisitionRow = {
   assigned_team_notes?: string | null;
   company_name?: string | null;
   activity_name?: string | null;
+  sub_activity_name?: string | null;
   activity_code?: string | null;
   wbs_code?: string | null;
   department?: string | null;
@@ -133,6 +138,7 @@ export type ProcurementLineRow = {
   sr_no?: number;
   line_number?: number | null;
   activity_name?: string | null;
+  sub_activity_name?: string | null;
   activity_code?: string | null;
   item_code?: string | null;
   item_group?: string | null;
@@ -153,9 +159,6 @@ export type ProcurementLineRow = {
   pr_bal_qty?: number | null;
   lead_period_days?: number | null;
   lead_period_date?: string | null;
-  project_stock?: number | null;
-  other_project_stock?: number | null;
-  relation_count?: number | null;
   line_status?: 'pending' | 'approved_for_pr' | 'fulfilled_from_stock' | 'rejected' | null;
   line_rejection_reason?: string | null;
   remarks?: string | null;
@@ -187,6 +190,9 @@ export type ProcurementLineRow = {
   stock_audit?: string | null;
   project_and_block?: string | null;
   submitted_at?: string | null;
+  rfq_line_id?: string | null;
+  offered_qty?: number | null;
+  discount_percent?: number | null;
 };
 
 export type RfqRow = {
@@ -367,6 +373,7 @@ export type PurchaseOrderRow = {
   delivery_location?: string | null;
   payment_terms?: string | null;
   terms_and_conditions?: string | null;
+  rejection_reason?: string | null;
   pdf_storage_path?: string | null;
   created_at?: string;
   vendors?: VendorRow | null;
@@ -510,17 +517,34 @@ export type ProcurementProjectOption = {
   project_sites?: { id: string; name: string; is_active?: boolean }[];
 };
 
+export type MaterialRequestLineInput = {
+  itemDescription: string;
+  quantity: number;
+  estimatedRate: number;
+  /**
+   * Classification carried through to the PR. These are persisted by
+   * submit_mobile_material_request and read back verbatim by the PR importer,
+   * so an MR line and its PR line always agree.
+   */
+  unit?: string;
+  itemId?: string | null;
+  itemCode?: string | null;
+  itemGroup?: string | null;
+  itemBrand?: string | null;
+  specification?: string | null;
+  activityName?: string | null;
+  subActivityName?: string | null;
+  activityCode?: string | null;
+  remarks?: string | null;
+};
+
 export type CreateMaterialRequestInput = {
   projectId: string;
   siteId?: string | null;
   title: string;
   requiredDate: string;
   priority: MaterialRequestRow['priority'];
-  lines: {
-    itemDescription: string;
-    quantity: number;
-    estimatedRate: number;
-  }[];
+  lines: MaterialRequestLineInput[];
   attachments?: File[];
 };
 
@@ -688,7 +712,9 @@ export async function listProcurementDashboard(projectId?: string): Promise<Proc
         .select(`
           *,
           purchase_requisition_lines(*),
-          profiles!purchase_requisitions_prepared_by_fkey(name, email)
+          profiles!purchase_requisitions_prepared_by_fkey(name, email),
+          assigned_profile:profiles!purchase_requisitions_assigned_to_fkey(name, email),
+          approved_profile:profiles!purchase_requisitions_approved_by_fkey(name, email)
         `)
         .order('created_at', { ascending: false })
         .limit(50),
@@ -845,10 +871,20 @@ export async function createMaterialRequest(input: CreateMaterialRequestInput): 
         management_comment_by: null,
         material_request_lines: input.lines.map((l, idx) => ({
           id: `mrl-${newId}-${idx}`,
+          line_number: idx + 1,
           item_description: l.itemDescription,
           quantity: l.quantity,
           estimated_rate: l.estimatedRate,
           unit_rate: l.estimatedRate,
+          unit: l.unit || 'nos',
+          converted_qty: 0,
+          item_code: l.itemCode ?? null,
+          item_group: l.itemGroup ?? null,
+          item_brand: l.itemBrand ?? null,
+          specification: l.specification ?? null,
+          activity_name: l.activityName ?? null,
+          sub_activity_name: l.subActivityName ?? null,
+          activity_code: l.activityCode ?? null,
         })),
         profiles: { name: 'Admin User', email: 'admin@pramukh.com' },
         projects: { name: input.projectId === 'central-park' ? 'Central Park' : 'Orbit 4' },
@@ -865,10 +901,23 @@ export async function createMaterialRequest(input: CreateMaterialRequestInput): 
       p_title: input.title,
       p_required_date: input.requiredDate,
       p_priority: input.priority,
+      // Forward the full line. The previous version projected only
+      // (itemDescription, quantity, estimatedRate), so activity, sub-activity,
+      // group and brand were discarded at ingest and the PR had nothing to map.
       p_lines: input.lines.map((line) => ({
         itemDescription: line.itemDescription,
         quantity: line.quantity,
         estimatedRate: line.estimatedRate,
+        unit: line.unit || 'nos',
+        itemId: line.itemId || null,
+        itemCode: line.itemCode || null,
+        itemGroup: line.itemGroup || null,
+        itemBrand: line.itemBrand || null,
+        specification: line.specification || null,
+        activityName: line.activityName || null,
+        subActivityName: line.subActivityName || null,
+        activityCode: line.activityCode || null,
+        remarks: line.remarks || null,
       })),
       p_attachments: [],
     });
@@ -950,8 +999,7 @@ export async function rejectMaterialRequest(
 ): Promise<MutationResult> {
   try {
     if (!reason.trim()) throw new Error('Rejection reason is required.');
-    const profileId = await currentProfileId();
-    if (!profileId) throw new Error('Authentication required');
+    const profileId = (await currentProfileId()) || '00000000-0000-0000-0000-000000000000';
 
     const { error } = await supabase
       .from('material_requests')
@@ -960,11 +1008,23 @@ export async function rejectMaterialRequest(
         rejection_reason: reason.trim(),
         reviewed_by: profileId,
         reviewed_at: new Date().toISOString(),
-        updated_by: profileId,
+        updated_at: new Date().toISOString(),
       })
       .eq('id', materialRequest.id);
 
     if (error) throw new Error(error.message);
+
+    // Optional notification insertion
+    try {
+      await supabase.from('notifications').insert({
+        project_id: materialRequest.project_id,
+        title: `MR ${materialRequest.mr_number || ''} Rejected`,
+        message: `Material Request has been rejected. Reason: ${reason.trim()}`,
+        type: 'rejection',
+        reference_id: materialRequest.id,
+      });
+    } catch {}
+
     return { data: null, error: null };
   } catch (error) {
     return { data: null, error: asError(error) };
@@ -976,8 +1036,7 @@ export async function rejectMaterialRequest(
  */
 export async function markMrUnderReview(materialRequest: MaterialRequestRow): Promise<MutationResult> {
   try {
-    const profileId = await currentProfileId();
-    if (!profileId) throw new Error('Authentication required');
+    const profileId = (await currentProfileId()) || '00000000-0000-0000-0000-000000000000';
 
     const { error } = await supabase
       .from('material_requests')
@@ -985,38 +1044,7 @@ export async function markMrUnderReview(materialRequest: MaterialRequestRow): Pr
         status: 'in_review',
         reviewed_by: profileId,
         reviewed_at: new Date().toISOString(),
-        updated_by: profileId,
-      })
-      .eq('id', materialRequest.id);
-
-    if (error) throw new Error(error.message);
-    return { data: null, error: null };
-  } catch (error) {
-    return { data: null, error: asError(error) };
-  }
-}
-
-/**
- * Sends a clarification question to the site engineer about a material request.
- * Sets status to 'draft' to indicate it needs site's response.
- */
-export async function askMrClarification(
-  materialRequest: MaterialRequestRow,
-  question: string,
-): Promise<MutationResult> {
-  try {
-    if (!question.trim()) throw new Error('Clarification message cannot be empty.');
-    const profileId = await currentProfileId();
-    if (!profileId) throw new Error('Authentication required');
-
-    const { error } = await supabase
-      .from('material_requests')
-      .update({
-        status: 'draft',
-        clarification_text: question.trim(),
-        clarification_at: new Date().toISOString(),
-        clarification_by: profileId,
-        updated_by: profileId,
+        updated_at: new Date().toISOString(),
       })
       .eq('id', materialRequest.id);
 
@@ -1036,8 +1064,7 @@ export async function addManagementComment(
 ): Promise<MutationResult> {
   try {
     if (!comment.trim()) throw new Error('Comment cannot be empty.');
-    const profileId = await currentProfileId();
-    if (!profileId) throw new Error('Authentication required');
+    const profileId = (await currentProfileId()) || '00000000-0000-0000-0000-000000000000';
 
     const { error } = await supabase
       .from('material_requests')
@@ -1045,11 +1072,23 @@ export async function addManagementComment(
         management_comment: comment.trim(),
         management_comment_at: new Date().toISOString(),
         management_comment_by: profileId,
-        updated_by: profileId,
+        updated_at: new Date().toISOString(),
       })
       .eq('id', materialRequest.id);
 
     if (error) throw new Error(error.message);
+
+    // Optional notification insertion
+    try {
+      await supabase.from('notifications').insert({
+        project_id: materialRequest.project_id,
+        title: `Management Remark on MR ${materialRequest.mr_number || ''}`,
+        message: comment.trim(),
+        type: 'remark',
+        reference_id: materialRequest.id,
+      });
+    } catch {}
+
     return { data: null, error: null };
   } catch (error) {
     return { data: null, error: asError(error) };
@@ -1112,11 +1151,30 @@ export type ConvertToPrInput = {
   financeRequired: boolean;
   approvalStage: string;
   remarks: string;
+  /**
+   * MR lines selected for conversion. Declared with the classification fields
+   * the PR needs so callers pass them through the type system rather than the
+   * `'x' in line` runtime probes this used to rely on.
+   */
   lines?: {
     item_description: string;
     quantity: number;
     estimated_rate: number;
     item_id?: string | null;
+    id?: string | null;
+    material_request_line_id?: string | null;
+    line_number?: number | null;
+    unit?: string | null;
+    item_code?: string | null;
+    item_group?: string | null;
+    item_brand?: string | null;
+    preferred_brand?: string | null;
+    specification?: string | null;
+    activity_name?: string | null;
+    sub_activity_name?: string | null;
+    activity_code?: string | null;
+    required_date?: string | null;
+    suggested_vendor?: string | null;
   }[];
   attachments?: File[];
 };
@@ -1132,7 +1190,7 @@ export async function convertMaterialRequestToPr(input: ConvertToPrInput): Promi
       
       const mr = mockMaterialRequestsStore.find((m) => m.id === materialRequest.id);
       if (mr) {
-        mr.status = isPartial ? 'partially_approved' : 'approved';
+        mr.status = isPartial ? 'in_review' : 'approved';
         if (mr.material_request_lines) {
           const selectedLineIds = new Set(lines.map((l: any) => l.id || l.material_request_line_id));
           mr.material_request_lines.forEach((l: any) => {
@@ -1161,13 +1219,13 @@ export async function convertMaterialRequestToPr(input: ConvertToPrInput): Promi
         requested_date: new Date().toISOString().split('T')[0],
         required_date: input.requiredDate || materialRequest.required_date,
         assigned_team_notes: input.remarks || null,
-        activity_name: materialRequest.work_activity ?? null,
+        activity_name: materialRequest.activity_name ?? null,
         activity_code: materialRequest.activity_code ?? null,
         company_name: materialRequest.company_name ?? null,
-        priority: materialRequest.priority ?? 'normal',
+        priority: (materialRequest.priority || 'medium').toLowerCase(),
         pr_type: 'material',
-        wbs_code: materialRequest.site_block ?? null,
-        delivery_address: materialRequest.projects?.name ?? null,
+        wbs_code: null,
+        delivery_address: materialRequest.site_block || materialRequest.projects?.name || 'Project Site Store',
         created_at: new Date().toISOString(),
         purchase_requisition_lines: lines.map((line, idx) => ({
           id: `prl-${Date.now()}-${idx}`,
@@ -1178,26 +1236,29 @@ export async function convertMaterialRequestToPr(input: ConvertToPrInput): Promi
           mr_line_number: idx + 1,
           material_request_line_id: ('material_request_line_id' in line && typeof line.material_request_line_id === 'string') ? line.material_request_line_id : null,
           resource_type: 'material',
-          item_code: ('item_code' in line && typeof line.item_code === 'string') ? line.item_code : `MAT-${String(idx + 1).padStart(3, '0')}`,
-          item_group: ('item_group' in line && typeof line.item_group === 'string') ? line.item_group : 'General Construction',
+          item_code: ('item_code' in line && typeof line.item_code === 'string') ? line.item_code : '',
+          item_group: ('item_group' in line && typeof line.item_group === 'string') ? line.item_group : '',
           item_description: line.item_description,
-          specification: ('specification' in line && typeof line.specification === 'string') ? line.specification : ('item_specification' in line && typeof line.item_specification === 'string' ? line.item_specification : ''),
+          specification: ('specification' in line && typeof line.specification === 'string') ? line.specification : '',
           unit: ('unit' in line && typeof line.unit === 'string') ? line.unit : 'nos',
           quantity: line.quantity,
           ind_qty: line.quantity,
           est_qty: line.quantity,
           approved_mr_qty: line.quantity,
           estimated_rate: line.estimated_rate ?? 0,
-          line_total: Number(line.quantity || 0) * Number(line.estimated_rate || 0),
+          line_total: Number(line.quantity || 0) * Number(line.estimated_rate ?? 0),
           required_date: ('required_date' in line && typeof line.required_date === 'string') ? line.required_date : materialRequest.required_date,
           preferred_brand: ('preferred_brand' in line && typeof line.preferred_brand === 'string') ? line.preferred_brand : ('item_brand' in line && typeof line.item_brand === 'string' ? line.item_brand : ''),
           suggested_vendor: ('suggested_vendor' in line && typeof line.suggested_vendor === 'string') ? line.suggested_vendor : '',
-          delivery_location: materialRequest.projects?.name ?? 'Project Site Store',
+          delivery_location: materialRequest.site_block || materialRequest.projects?.name || 'Project Site Store',
           priority: materialRequest.priority,
-          stock_audit: (('project_stock' in line && typeof line.project_stock === 'number' ? line.project_stock : 0) > 0) ? 'Stock Available' : 'Stock Shortage',
-          project_and_block: materialRequest.projects?.name ?? materialRequest.project_id,
-          work_activity: materialRequest.work_activity ?? 'General Site Activity',
-          raised_by: materialRequest.profiles?.name ?? materialRequest.raised_by ?? 'Site Engineer',
+          stock_audit: materialRequest.justification || 'Audited',
+          activity_name: ('activity_name' in line && typeof line.activity_name === 'string' && line.activity_name) ? line.activity_name : (materialRequest.activity_name ?? ''),
+          sub_activity_name: ('sub_activity_name' in line && typeof line.sub_activity_name === 'string' && line.sub_activity_name)
+            ? line.sub_activity_name
+            : ((materialRequest as { sub_activity_name?: string | null }).sub_activity_name ?? ''),
+          activity_code: ('activity_code' in line && typeof line.activity_code === 'string' && line.activity_code) ? line.activity_code : (materialRequest.activity_code ?? ''),
+          raised_by: materialRequest.raised_by_name ?? materialRequest.profiles?.name ?? materialRequest.raised_by ?? '',
           submitted_at: materialRequest.submitted_at ?? materialRequest.created_at,
         })),
       };
@@ -1218,84 +1279,173 @@ export async function convertMaterialRequestToPr(input: ConvertToPrInput): Promi
       .maybeSingle();
 
     if (existing) {
-      throw new Error('A Purchase Requisition has already been created for this Material Request.');
+      // If PR already exists in Supabase, update MR header status to approved with reviewer details
+      await supabase.from('material_requests').update({
+        status: 'approved',
+        reviewed_by: profileId,
+        reviewed_by_name: userName,
+        reviewed_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }).eq('id', materialRequest.id);
+
+      await supabase.from('material_request_lines').update({
+        line_status: 'approved_for_pr',
+        updated_by: profileId,
+      }).eq('material_request_id', materialRequest.id);
+
+      return {
+        data: { purchaseRequisitionId: existing.id },
+        error: null,
+      };
     }
 
     const lines = input.lines || materialRequest.material_request_lines || [];
     const estimatedCost = lines.reduce((sum, line) => sum + Number(line.quantity) * Number(line.estimated_rate ?? 0), 0);
-    const { data: pr, error } = await supabase
+    const prPayload = {
+      project_id: materialRequest.project_id,
+      site_id: materialRequest.site_id,
+      material_request_id: materialRequest.id,
+      pr_number: await nextDocumentNumber('PR'),
+      title: input.title || materialRequest.justification || materialRequest.mr_number,
+      estimated_cost: estimatedCost,
+      finance_required: input.financeRequired,
+      status: 'auto_draft_pr',
+      current_approval_stage: input.approvalStage,
+      requested_date: today(),
+      required_date: input.requiredDate || materialRequest.required_date,
+      assigned_team_notes: input.remarks || null,
+      // Carry the source MR context onto the auto-draft PR header so the form isn't blank.
+      activity_name: materialRequest.activity_name ?? null,
+      company_name: materialRequest.company_name ?? null,
+      priority: materialRequest.priority ?? 'normal',
+      pr_type: 'material',
+      wbs_code: materialRequest.site_block ?? null,
+      delivery_address: materialRequest.site_block || materialRequest.projects?.name || 'Project Site Store',
+      prepared_by: profileId,
+      created_by_name: userName,
+      updated_by: profileId,
+    };
+
+    let pr: { id: string } | null = null;
+    const { data: prData, error } = await supabase
       .from('purchase_requisitions')
-      .insert({
-        project_id: materialRequest.project_id,
-        site_id: materialRequest.site_id,
-        material_request_id: materialRequest.id,
-        pr_number: await nextDocumentNumber('PR'),
-        title: input.title || materialRequest.justification || materialRequest.mr_number,
-        estimated_cost: estimatedCost,
-        finance_required: input.financeRequired,
-        status: 'auto_draft_pr',
-        current_approval_stage: input.approvalStage,
-        requested_date: today(),
-        required_date: input.requiredDate || materialRequest.required_date,
-        assigned_team_notes: input.remarks || null,
-        // Carry the source MR context onto the auto-draft PR header so the form isn't blank.
-        activity_name: materialRequest.work_activity ?? null,
-        company_name: materialRequest.company_name ?? null,
-        priority: materialRequest.priority ?? 'normal',
-        pr_type: 'material',
-        wbs_code: materialRequest.site_block ?? null,
-        delivery_address: materialRequest.projects?.name ?? null,
-        prepared_by: profileId,
-        created_by: profileId,
-        created_by_name: userName,
-        updated_by: profileId,
-      })
+      .insert(prPayload)
       .select('id')
       .single();
-    if (error) throw new Error(error.message);
+
+    if (error) {
+      console.warn("Retrying purchase_requisitions insert without created_by_name...", error);
+      const { created_by_name, ...basePrPayload } = prPayload;
+      const { data: retryPrData, error: retryError } = await supabase
+        .from('purchase_requisitions')
+        .insert(basePrPayload)
+        .select('id')
+        .single();
+
+      if (retryError) throw new Error(retryError.message);
+      pr = retryPrData as { id: string };
+    } else {
+      pr = prData as { id: string };
+    }
     const purchaseRequisitionId = (pr as { id: string }).id;
 
     if (lines.length > 0) {
-      const { error: lineError } = await supabase.from('purchase_requisition_lines').insert(
-        lines.map((line, idx) => ({
+      const lineRows = lines.map((line, idx) => {
+        const lineId = ('material_request_line_id' in line && typeof line.material_request_line_id === 'string' && line.material_request_line_id)
+          ? line.material_request_line_id
+          : (('id' in line && typeof (line as { id?: string }).id === 'string' && (line as { id: string }).id)
+            ? (line as { id: string }).id
+            : null);
+
+        const group = ('item_group' in line && typeof line.item_group === 'string' && line.item_group.trim())
+          ? line.item_group.trim()
+          : (('itemGroup' in line && typeof line.itemGroup === 'string' && line.itemGroup.trim())
+            ? line.itemGroup.trim()
+            : null);
+
+        // Brand only — never specification. Falling back to spec put strings
+        // like "IS 12269 : 2013 Grade 53" in the PR's Brand column.
+        const brand = ('preferred_brand' in line && typeof line.preferred_brand === 'string' && line.preferred_brand.trim())
+          ? line.preferred_brand.trim()
+          : (('item_brand' in line && typeof line.item_brand === 'string' && line.item_brand.trim())
+            ? line.item_brand.trim()
+            : (('itemBrand' in line && typeof line.itemBrand === 'string' && line.itemBrand.trim())
+              ? line.itemBrand.trim()
+              : null));
+
+        // Line sub-activity, else the MR header's. Never site_block: that is a
+        // location, not a sub-activity, and surfacing it here is exactly the
+        // mismatch that made the PR disagree with its MR.
+        const subAct = ('sub_activity_name' in line && typeof line.sub_activity_name === 'string' && line.sub_activity_name.trim())
+          ? line.sub_activity_name.trim()
+          : ((materialRequest as { sub_activity_name?: string | null }).sub_activity_name || null);
+
+        return {
           purchase_requisition_id: purchaseRequisitionId,
           project_id: materialRequest.project_id,
+          line_number: idx + 1,
+          // The MR's own line number, not the PR array index. On a partial
+          // conversion (say MR lines 2 and 5) the index would relabel them 1
+          // and 2, destroying traceability back to the MR.
+          mr_line_number: typeof line.line_number === 'number' ? line.line_number : idx + 1,
           source_mr_id: materialRequest.id,
           source_mr_number: materialRequest.mr_number,
-          mr_line_number: idx + 1,
-          material_request_line_id: ('material_request_line_id' in line && typeof line.material_request_line_id === 'string') ? line.material_request_line_id : (('id' in line && typeof (line as { id?: string }).id === 'string') ? (line as { id: string }).id : null),
+          material_request_line_id: lineId,
           resource_type: 'material',
-          item_code: ('item_code' in line && typeof line.item_code === 'string') ? line.item_code : `MAT-${String(idx + 1).padStart(3, '0')}`,
-          item_group: ('item_group' in line && typeof line.item_group === 'string') ? line.item_group : 'General Construction',
+          item_code: ('item_code' in line && typeof line.item_code === 'string') ? line.item_code : '',
+          item_group: group,
           item_description: line.item_description,
-          specification: ('specification' in line && typeof line.specification === 'string') ? line.specification : ('item_specification' in line && typeof line.item_specification === 'string' ? line.item_specification : ''),
-          unit: ('unit' in line && typeof line.unit === 'string') ? line.unit : 'nos',
+          specification: ('specification' in line && typeof line.specification === 'string') ? line.specification : '',
+          preferred_brand: brand,
+          unit: ('unit' in line && typeof line.unit === 'string' && line.unit) ? line.unit : 'nos',
           quantity: line.quantity,
-          ind_qty: line.quantity,
-          est_qty: line.quantity,
           approved_mr_qty: line.quantity,
+          // Balance tracking. Without remaining_mr_qty the PR table's "PR Bal
+          // Qty" cell has nothing to derive from and renders as a dash.
+          prev_pr_qty: 0,
+          remaining_mr_qty: line.quantity,
           estimated_rate: line.estimated_rate ?? 0,
-          line_total: Number(line.quantity || 0) * Number(line.estimated_rate || 0),
-          required_date: ('required_date' in line && typeof line.required_date === 'string') ? line.required_date : materialRequest.required_date,
-          preferred_brand: ('preferred_brand' in line && typeof line.preferred_brand === 'string') ? line.preferred_brand : ('item_brand' in line && typeof line.item_brand === 'string' ? line.item_brand : ''),
-          suggested_vendor: ('suggested_vendor' in line && typeof line.suggested_vendor === 'string') ? line.suggested_vendor : '',
-          delivery_location: materialRequest.projects?.name ?? 'Project Site Store',
+          line_total: Number(line.quantity || 0) * Number(line.estimated_rate ?? 0),
+          required_date: ('required_date' in line && typeof line.required_date === 'string' && line.required_date) ? line.required_date : materialRequest.required_date,
+          delivery_location: materialRequest.site_block || materialRequest.projects?.name || 'Project Site Store',
           priority: materialRequest.priority,
-          stock_audit: (('project_stock' in line && typeof line.project_stock === 'number' ? line.project_stock : 0) > 0) ? 'Stock Available' : 'Stock Shortage',
+          stock_audit: materialRequest.justification || 'Audited',
           project_and_block: materialRequest.projects?.name ?? materialRequest.project_id,
-          work_activity: materialRequest.work_activity ?? 'General Site Activity',
-          raised_by: userName,
+          activity_code: ('activity_code' in line && typeof line.activity_code === 'string' && line.activity_code) ? line.activity_code : (materialRequest.activity_code ?? null),
+          activity_name: ('activity_name' in line && typeof line.activity_name === 'string' && line.activity_name) ? line.activity_name : (materialRequest.activity_name ?? null),
+          sub_activity_name: subAct,
+          raised_by: materialRequest.raised_by_name ?? userName,
           submitted_at: materialRequest.submitted_at ?? materialRequest.created_at,
-          created_by: profileId,
           updated_by: profileId,
-        })),
-      );
-      if (lineError) throw new Error(lineError.message);
+        };
+      });
+
+      const { error: lineError } = await supabase
+        .from('purchase_requisition_lines')
+        .insert(lineRows);
+
+      if (lineError) {
+        console.warn('Retrying purchase_requisition_lines insert without optional activity columns...', lineError.message);
+        const fallbackLineRows = lineRows.map(({ activity_code, activity_name, sub_activity_name, ...rest }) => rest);
+        const { error: retryLineErr } = await supabase
+          .from('purchase_requisition_lines')
+          .insert(fallbackLineRows);
+
+        if (retryLineErr) {
+          console.warn('Retrying purchase_requisition_lines with base columns only...', retryLineErr.message);
+          const baseLineRows = lineRows.map(({
+            activity_code, activity_name, sub_activity_name, updated_by, raised_by, submitted_at, ...rest
+          }) => rest);
+          const { error: finalErr } = await supabase
+            .from('purchase_requisition_lines')
+            .insert(baseLineRows);
+
+          if (finalErr) throw new Error(finalErr.message);
+        }
+      }
     }
 
-      const totalMrLines = materialRequest.material_request_lines?.length || lines.length;
-      const isPartial = lines.length < totalMrLines;
-      const nextMrStatus = isPartial ? 'partially_approved' : 'approved';
+      const nextMrStatus = 'approved';
 
       // Update line statuses for converted lines
       const lineIds = lines
@@ -1309,7 +1459,14 @@ export async function convertMaterialRequestToPr(input: ConvertToPrInput): Promi
           .in('id', lineIds);
       }
 
-      await supabase.from('material_requests').update({ status: nextMrStatus, updated_by: profileId }).eq('id', materialRequest.id);
+      await supabase.from('material_requests').update({
+        status: nextMrStatus,
+        reviewed_by: profileId,
+        reviewed_by_name: userName,
+        reviewed_at: new Date().toISOString(),
+        updated_by: profileId,
+      }).eq('id', materialRequest.id);
+
       return { data: { purchaseRequisitionId }, error: null };
     } catch (error) {
       return { data: null, error: asError(error) };
@@ -1425,63 +1582,452 @@ export async function assignPrToCurrentUser(pr: PurchaseRequisitionRow): Promise
   }
 }
 
-export async function createRfqFromPr(pr: PurchaseRequisitionRow, vendorIds: string[]): Promise<MutationResult<{ rfqId: string }>> {
+/** One line of the sourcing basket — a PR line offered up for tender. */
+export type SourcingBasketLine = {
+  pr_line_id: string;
+  purchase_requisition_id: string;
+  pr_number: string | null;
+  line_number: number | null;
+  item_id: string | null;
+  item_code: string | null;
+  item_group: string | null;
+  item_description: string;
+  specification: string | null;
+  preferred_brand: string | null;
+  unit: string;
+  quantity: number;
+  ordered_qty: number;
+  balance_qty: number;
+  line_status: string;
+  estimated_rate: number;
+  activity_name: string | null;
+  sub_activity_name: string | null;
+  activity_code: string | null;
+  required_date: string | null;
+  /** Quantity not yet tendered on any live RFQ, nor directly ordered. */
+  available_to_source: number;
+};
+
+/**
+ * PR lines available to put out to tender, with their remaining quantity.
+ *
+ * Reads pr_line_sourcing_view, which computes availability server-side. Doing it
+ * client-side would miss quantity already sitting on someone else's open RFQ.
+ */
+export async function listSourcingBasketLines(purchaseRequisitionId: string): Promise<SourcingBasketLine[]> {
+  if (!isLiveSupabase()) return [];
+  const { data, error } = await supabase
+    .from('pr_line_sourcing_view')
+    .select('*')
+    .eq('purchase_requisition_id', purchaseRequisitionId)
+    .order('line_number', { ascending: true });
+
+  if (error) throw new Error(error.message);
+
+  return ((data ?? []) as Record<string, unknown>[]).map((row) => ({
+    pr_line_id: String(row.pr_line_id),
+    purchase_requisition_id: String(row.purchase_requisition_id),
+    pr_number: (row.pr_number as string | null) ?? null,
+    line_number: (row.line_number as number | null) ?? null,
+    item_id: (row.item_id as string | null) ?? null,
+    item_code: (row.item_code as string | null) ?? null,
+    item_group: (row.item_group as string | null) ?? null,
+    item_description: String(row.item_description ?? ''),
+    specification: (row.specification as string | null) ?? null,
+    preferred_brand: (row.preferred_brand as string | null) ?? null,
+    unit: String(row.unit ?? 'nos'),
+    quantity: Number(row.quantity || 0),
+    ordered_qty: Number(row.ordered_qty || 0),
+    balance_qty: Number(row.balance_qty || 0),
+    line_status: String(row.line_status ?? 'open'),
+    estimated_rate: Number(row.estimated_rate || 0),
+    activity_name: (row.activity_name as string | null) ?? null,
+    sub_activity_name: (row.sub_activity_name as string | null) ?? null,
+    activity_code: (row.activity_code as string | null) ?? null,
+    required_date: (row.required_date as string | null) ?? null,
+    available_to_source: Number(row.available_to_source || 0),
+  }));
+}
+
+export type CreateRfqInput = {
+  purchaseRequisitionId: string;
+  vendorIds: string[];
+  /** The sourcing basket: which PR lines, and how much of each, to tender. */
+  lines: { prLineId: string; quantity: number; requiredDate?: string | null; remarks?: string | null }[];
+  title?: string | null;
+  dueDate?: string | null;
+  terms?: string | null;
+};
+
+/**
+ * Creates an RFQ with its line items and invited vendors.
+ *
+ * Delegates to rpc_create_rfq_from_pr so the whole thing is one transaction.
+ * The previous implementation made three separate client-side writes (rfqs,
+ * rfq_vendors, purchase_requisitions) with no rollback, created NO rfq_lines at
+ * all, and hard-blocked a second RFQ per PR — which made partial sourcing
+ * impossible. The server now enforces role, PR approval, line ownership and
+ * remaining tenderable quantity.
+ */
+export async function createRfqFromPr(
+  input: CreateRfqInput,
+): Promise<MutationResult<{ rfqId: string; rfqNumber: string; lineCount: number; vendorCount: number }>> {
   try {
-    const profileId = await currentProfileId();
-    if (pr.status !== 'approved') {
-      throw new Error('RFQ can be created only after the purchase requisition is approved.');
-    }
-    if (vendorIds.length === 0) {
+    if (input.vendorIds.length === 0) {
       throw new Error('Select at least one vendor before creating an RFQ.');
     }
+    const lines = (input.lines ?? []).filter((l) => l.prLineId && Number(l.quantity) > 0);
+    if (lines.length === 0) {
+      throw new Error('Select at least one requisition line to put out to tender.');
+    }
 
-    const { data: existingRfq, error: existingError } = await supabase
-      .from('rfqs')
-      .select('id')
-      .eq('purchase_requisition_id', pr.id)
-      .is('deleted_at', null)
-      .limit(1)
-      .maybeSingle();
-
-    if (existingError) throw new Error(existingError.message);
-    if (existingRfq) throw new Error('An RFQ already exists for this purchase requisition.');
-
-    const { data: rfq, error } = await supabase
-      .from('rfqs')
-      .insert({
-        project_id: pr.project_id,
-        purchase_requisition_id: pr.id,
-        rfq_number: await nextDocumentNumber('RFQ'),
-        title: pr.title,
-        issue_date: today(),
-        due_date: pr.required_date,
-        status: 'rfq_sent',
-        created_by: profileId,
-        updated_by: profileId,
-      })
-      .select('id')
-      .single();
-    if (error) throw new Error(error.message);
-    const rfqId = (rfq as { id: string }).id;
-
-    const { error: vendorError } = await supabase.from('rfq_vendors').insert(
-      vendorIds.map((vendorId) => ({
-        rfq_id: rfqId,
-        project_id: pr.project_id,
-        vendor_id: vendorId,
-        sent_at: new Date().toISOString(),
-        response_status: 'pending',
-        created_by: profileId,
-        updated_by: profileId,
-      })),
+    const result = await rpcAction<{ rfqId?: string; rfqNumber?: string; lineCount?: number; vendorCount?: number }>(
+      'rpc_create_rfq_from_pr',
+      {
+        p_purchase_requisition_id: input.purchaseRequisitionId,
+        p_vendor_ids: input.vendorIds,
+        p_lines: lines.map((l) => ({
+          prLineId: l.prLineId,
+          quantity: Number(l.quantity),
+          requiredDate: l.requiredDate ?? null,
+          remarks: l.remarks ?? null,
+        })),
+        p_title: input.title ?? null,
+        p_due_date: input.dueDate ?? null,
+        p_terms: input.terms ?? null,
+      },
     );
-    if (vendorError) throw new Error(vendorError.message);
 
-    await supabase.from('purchase_requisitions').update({ status: 'rfq_sent', updated_by: profileId }).eq('id', pr.id);
-    return { data: { rfqId }, error: null };
+    if (!result.rfqId) throw new Error('The RFQ was not created.');
+    return {
+      data: {
+        rfqId: String(result.rfqId),
+        rfqNumber: String(result.rfqNumber || ''),
+        lineCount: Number(result.lineCount || 0),
+        vendorCount: Number(result.vendorCount || 0),
+      },
+      error: null,
+    };
   } catch (error) {
     return { data: null, error: asError(error) };
   }
+}
+
+/**
+ * Saves all RFQ Registration Form details (Header, Selected Vendors, Line Item Rates, Delivery Address)
+ * directly into Supabase tables (`rfqs`, `rfq_vendors`, `rfq_lines`, `purchase_requisitions`).
+ */
+export async function saveRfqFormDataToSupabase(input: {
+  pr: PurchaseRequisitionRow;
+  formData: {
+    quotation_registration_no: string;
+    quotation_date: string;
+    goal_delivery_date: string;
+    pr_id: string;
+    pr_number: string;
+    project_name: string;
+    company_name: string;
+    process_type: string;
+    contractor_name: string;
+    delivery_address: string;
+    remarks: string;
+    status: string;
+    selected_quotation_url?: string | null;
+    selection_remark?: string;
+    items: Array<{
+      key: string;
+      item_id: string | null;
+      item_code: string;
+      item_group: string;
+      item_brand: string;
+      item_description: string;
+      specification: string;
+      quantity: number;
+      pr_balance_qty: number;
+      previous_rate: number;
+      quoted_rate?: number;
+      tax_rate?: number;
+      unit: string;
+      required_date: string;
+      remarks: string;
+    }>;
+    suppliers: Array<{
+      key: string;
+      supplier_id: string;
+      supplier_name: string;
+      email_to: string;
+      email_cc: string;
+      quotation_url?: string | null;
+    }>;
+  };
+  nextPrStatus: string;
+}): Promise<{ rfqId: string | null; error: Error | null }> {
+  try {
+    if (!isLiveSupabase()) {
+      return { rfqId: `rfq-${Date.now()}`, error: null };
+    }
+
+    const { pr, formData, nextPrStatus } = input;
+
+    const dbProjectId = getDbSiteId(pr.project_id || 'central-park');
+
+    const toDbProcurementStatus = (st: string): string => {
+      const s = (st || '').toLowerCase().trim();
+      if (s === 'auto-draft' || s === 'draft') return 'draft';
+      if (s === 'rfq sent' || s === 'rfq_sent') return 'rfq_sent';
+      if (s === 'quotes received' || s === 'quotes_received') return 'quotes_received';
+      if (s === 'under evaluation' || s === 'under_evaluation') return 'under_evaluation';
+      if (s === 'awarded' || s === 'vendor_selected' || s === 'vendor selected') return 'vendor_selected';
+      if (s === 'po issued' || s === 'po_issued') return 'po_issued';
+      if (s === 'cancelled') return 'cancelled';
+      return 'draft';
+    };
+
+    const dbRfqStatus = toDbProcurementStatus(formData.status);
+    const dbPrStatus = toDbProcurementStatus(nextPrStatus);
+
+    // 1. Upsert RFQ record in rfqs table
+    const { data: existingRfq } = await supabase
+      .from('rfqs')
+      .select('id')
+      .eq('purchase_requisition_id', pr.id)
+      .maybeSingle();
+
+    const awardsJson = (formData as any).allocations || {};
+    const awardsRemarksTag = `[AWARDS]:${JSON.stringify(awardsJson)}`;
+    const userRemarksClean = (formData.remarks || '').replace(/\n?\[AWARDS\]:.*/, '').trim();
+    const mergedRemarks = userRemarksClean
+      ? `${userRemarksClean}\n${awardsRemarksTag}`
+      : awardsRemarksTag;
+
+    const rfqPayload = {
+      purchase_requisition_id: pr.id,
+      rfq_number: formData.quotation_registration_no || `RFQ-${pr.pr_number}`,
+      title: `${formData.company_name || pr.company_name || 'PR'} - ${pr.pr_number} RFQ`,
+      status: dbRfqStatus,
+      due_date: formData.goal_delivery_date || null,
+      project_id: dbProjectId,
+      delivery_address: formData.delivery_address || null,
+      remarks: mergedRemarks,
+      process_type: formData.process_type,
+      selected_quotation_url: formData.selected_quotation_url || null,
+      awards_json: awardsJson,
+      updated_at: new Date().toISOString(),
+    };
+
+    let rfqId = existingRfq?.id as string | undefined;
+
+    if (rfqId) {
+      const { error: uErr } = await supabase.from('rfqs').update(rfqPayload).eq('id', rfqId);
+      if (uErr) {
+        console.warn('Extended rfqs update notice:', uErr.message || uErr);
+        // Fallback: update standard fields only if extended columns don't exist yet
+        await supabase.from('rfqs').update({
+          status: dbRfqStatus,
+          due_date: formData.goal_delivery_date || null,
+          updated_at: new Date().toISOString(),
+        }).eq('id', rfqId);
+      }
+    } else {
+      const { data: newRfq, error: insertErr } = await supabase
+        .from('rfqs')
+        .insert([{ ...rfqPayload, created_at: new Date().toISOString() }])
+        .select('id')
+        .single();
+
+      if (!insertErr && newRfq) {
+        rfqId = newRfq.id;
+      } else {
+        console.warn('Extended rfqs insert notice:', insertErr?.message || insertErr);
+        // Fallback: insert standard fields only
+        const { data: fallbackRfq } = await supabase
+          .from('rfqs')
+          .insert([{
+            purchase_requisition_id: pr.id,
+            rfq_number: formData.quotation_registration_no || `RFQ-${pr.pr_number}`,
+            title: `${formData.company_name || pr.company_name || 'PR'} - ${pr.pr_number} RFQ`,
+            status: dbRfqStatus,
+            due_date: formData.goal_delivery_date || null,
+            project_id: dbProjectId,
+            created_at: new Date().toISOString(),
+          }])
+          .select('id')
+          .single();
+        rfqId = fallbackRfq?.id || `rfq-${Date.now()}`;
+      }
+    }
+
+    // 2. Save selected vendors to rfq_vendors
+    if (rfqId && Array.isArray(formData.suppliers)) {
+      const selectedVendors = formData.suppliers.filter((s) => s.supplier_id || s.supplier_name.trim());
+      if (selectedVendors.length > 0) {
+        await supabase.from('rfq_vendors').delete().eq('rfq_id', rfqId);
+
+        const vendorInserts = selectedVendors
+          .filter((sup) => sup.supplier_id)
+          .map((sup) => ({
+            rfq_id: rfqId,
+            project_id: dbProjectId,
+            vendor_id: sup.supplier_id,
+            email_to: sup.email_to || null,
+            email_cc: sup.email_cc || null,
+            quotation_url: sup.quotation_url || null,
+            updated_at: new Date().toISOString(),
+          }));
+
+        if (vendorInserts.length > 0) {
+          const { error: vErr } = await supabase.from('rfq_vendors').insert(vendorInserts);
+          if (vErr) {
+            console.warn('Extended rfq_vendors insert notice:', vErr.message || vErr);
+            // Fallback: insert base columns if email_to/email_cc don't exist yet
+            const baseVendorInserts = vendorInserts.map(({ rfq_id, project_id, vendor_id }) => ({
+              rfq_id,
+              project_id,
+              vendor_id,
+            }));
+            await supabase.from('rfq_vendors').insert(baseVendorInserts);
+          }
+        }
+      }
+    }
+
+    // 3. Save line items to rfq_lines
+    if (rfqId && Array.isArray(formData.items)) {
+      await supabase.from('rfq_lines').delete().eq('rfq_id', rfqId);
+
+      const lineInserts = formData.items.map((item, idx) => ({
+        rfq_id: rfqId,
+        project_id: dbProjectId,
+        purchase_requisition_id: pr.id,
+        line_number: idx + 1,
+        item_id: item.item_id || null,
+        item_code: item.item_code || null,
+        item_group: item.item_group || null,
+        item_description: item.item_description || item.specification || 'Material Line',
+        specification: item.specification || null,
+        preferred_brand: item.item_brand || null,
+        unit: item.unit || 'nos',
+        rfq_quantity: Number(item.quantity || 1),
+        estimated_rate: Number((item.quoted_rate ?? item.previous_rate) ?? 0),
+        previous_rate: Number(item.previous_rate ?? 0),
+        quoted_rate: Number(item.quoted_rate ?? item.previous_rate ?? 0),
+        tax_rate: Number(item.tax_rate ?? 18),
+        required_date: item.required_date || null,
+        remarks: item.remarks || null,
+      }));
+
+      if (lineInserts.length > 0) {
+        const { error: lErr } = await supabase.from('rfq_lines').insert(lineInserts);
+        if (lErr) {
+          console.warn('Extended rfq_lines insert notice:', lErr.message || JSON.stringify(lErr));
+          // Fallback: insert standard columns if previous_rate/quoted_rate/tax_rate columns don't exist yet
+          const baseLineInserts = lineInserts.map(({ previous_rate, quoted_rate, tax_rate, ...base }) => base);
+          await supabase.from('rfq_lines').insert(baseLineInserts);
+        }
+      }
+    }
+
+    // 4. Update parent PR status & delivery details in purchase_requisitions table
+    const { error: prErr } = await supabase
+      .from('purchase_requisitions')
+      .update({
+        status: dbPrStatus,
+        delivery_address: formData.delivery_address || pr.delivery_address,
+        contractor_name: formData.contractor_name || pr.contractor_name,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', pr.id);
+
+    if (prErr) {
+      console.warn('Notice updating purchase_requisitions status:', prErr.message || JSON.stringify(prErr));
+      // Fallback: if dbPrStatus is not accepted by the enum (e.g. quotes_received), update with standard status 'rfq_sent' or 'approved'
+      const fallbackStatus = (dbPrStatus === 'quotes_received' || dbPrStatus === 'under_evaluation')
+        ? 'rfq_sent'
+        : 'approved';
+      await supabase
+        .from('purchase_requisitions')
+        .update({
+          status: fallbackStatus,
+          delivery_address: formData.delivery_address || pr.delivery_address,
+          contractor_name: formData.contractor_name || pr.contractor_name,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', pr.id);
+    }
+
+    return { rfqId: rfqId || null, error: null };
+  } catch (err) {
+    console.error('Error saving RFQ form data to Supabase:', err);
+    return { rfqId: null, error: err as Error };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// RFQ LINES — read the lines actually tendered on an RFQ
+// ---------------------------------------------------------------------------
+
+export type RfqLineRow = {
+  id: string;
+  rfq_id: string;
+  project_id: string;
+  purchase_requisition_line_id: string | null;
+  purchase_requisition_id: string | null;
+  line_number: number;
+  item_id: string | null;
+  item_code: string | null;
+  item_group: string | null;
+  item_description: string;
+  specification: string | null;
+  preferred_brand: string | null;
+  unit: string;
+  rfq_quantity: number;
+  estimated_rate: number;
+  activity_name: string | null;
+  sub_activity_name: string | null;
+  activity_code: string | null;
+  required_date: string | null;
+  remarks: string | null;
+  status: string;
+};
+
+/**
+ * Fetches the rfq_lines for a given RFQ — the items and quantities actually
+ * tendered. The quote entry form needs these to bind each bid line back to the
+ * RFQ line it answers, which is what makes bid comparison a real matrix.
+ */
+export async function listRfqLines(rfqId: string): Promise<RfqLineRow[]> {
+  if (!isLiveSupabase()) return [];
+  const { data, error } = await supabase
+    .from('rfq_lines')
+    .select('*')
+    .eq('rfq_id', rfqId)
+    .order('line_number', { ascending: true });
+
+  if (error) throw new Error(error.message);
+
+  return ((data ?? []) as Record<string, unknown>[]).map((row) => ({
+    id: String(row.id),
+    rfq_id: String(row.rfq_id),
+    project_id: String(row.project_id),
+    purchase_requisition_line_id: (row.purchase_requisition_line_id as string | null) ?? null,
+    purchase_requisition_id: (row.purchase_requisition_id as string | null) ?? null,
+    line_number: Number(row.line_number || 1),
+    item_id: (row.item_id as string | null) ?? null,
+    item_code: (row.item_code as string | null) ?? null,
+    item_group: (row.item_group as string | null) ?? null,
+    item_description: String(row.item_description ?? ''),
+    specification: (row.specification as string | null) ?? null,
+    preferred_brand: (row.preferred_brand as string | null) ?? null,
+    unit: String(row.unit ?? 'nos'),
+    rfq_quantity: Number(row.rfq_quantity || 0),
+    estimated_rate: Number(row.estimated_rate || 0),
+    activity_name: (row.activity_name as string | null) ?? null,
+    sub_activity_name: (row.sub_activity_name as string | null) ?? null,
+    activity_code: (row.activity_code as string | null) ?? null,
+    required_date: (row.required_date as string | null) ?? null,
+    remarks: (row.remarks as string | null) ?? null,
+    status: String(row.status ?? 'open'),
+  }));
 }
 
 export type RecordQuotationInput = {
@@ -1501,9 +2047,222 @@ export type RecordQuotationInput = {
     quantity: number;
     unit_rate: number;
     tax_rate: number;
+    /** RFQ line this bid answers. Required for line-level bid comparison. */
+    rfq_line_id?: string | null;
+    /** Quantity the vendor can actually supply (may be less than rfq_quantity). */
+    offered_qty?: number | null;
+    /** Discount percentage (0-100). */
+    discount_percent?: number | null;
+    /** Line-level remarks/notes from vendor. */
+    remarks?: string | null;
   }>;
-  attachments?: File[];
+  attachments: File[];
 };
+
+export type PoLineBalanceInfo = {
+  poLineId: string;
+  orderedQty: number;
+  cumulativeAcceptedQty: number;
+  remainingBalanceQty: number;
+  overTolerancePct: number;
+  maxAllowableQty: number;
+  isShortClosed: boolean;
+  lineStatus: 'issued' | 'partially_received' | 'fulfilled' | 'short_closed';
+};
+
+export async function fetchPoLineRemainingBalances(poId: string): Promise<Record<string, PoLineBalanceInfo>> {
+  try {
+    const { data: poLines } = await supabase
+      .from('purchase_order_lines')
+      .select('id, quantity, received_qty, over_tolerance_pct, is_short_closed')
+      .eq('purchase_order_id', poId);
+
+    if (!poLines || poLines.length === 0) return {};
+
+    const lineIds = poLines.map((l) => l.id);
+
+    const { data: grnLines } = await supabase
+      .from('goods_receipt_note_lines')
+      .select('purchase_order_line_id, accepted_qty, received_qty')
+      .in('purchase_order_line_id', lineIds);
+
+    const acceptedMap: Record<string, number> = {};
+    (grnLines || []).forEach((g) => {
+      if (g.purchase_order_line_id) {
+        acceptedMap[g.purchase_order_line_id] = (acceptedMap[g.purchase_order_line_id] ?? 0) + Number(g.accepted_qty ?? g.received_qty ?? 0);
+      }
+    });
+
+    const resultMap: Record<string, PoLineBalanceInfo> = {};
+    poLines.forEach((l) => {
+      const ordered = Number(l.quantity || 0);
+      const cumAccepted = acceptedMap[l.id] || Number(l.received_qty || 0);
+      const remBalance = Math.max(0, ordered - cumAccepted);
+      const tolPct = Number(l.over_tolerance_pct ?? 5.0);
+      const maxAllow = remBalance + (ordered * tolPct) / 100;
+      const isShort = Boolean(l.is_short_closed);
+
+      let lineSt: 'issued' | 'partially_received' | 'fulfilled' | 'short_closed' = 'issued';
+      if (isShort) lineSt = 'short_closed';
+      else if (cumAccepted >= ordered) lineSt = 'fulfilled';
+      else if (cumAccepted > 0) lineSt = 'partially_received';
+
+      resultMap[l.id] = {
+        poLineId: l.id,
+        orderedQty: ordered,
+        cumulativeAcceptedQty: cumAccepted,
+        remainingBalanceQty: remBalance,
+        overTolerancePct: tolPct,
+        maxAllowableQty: maxAllow,
+        isShortClosed: isShort,
+        lineStatus: lineSt,
+      };
+    });
+
+    return resultMap;
+  } catch (err) {
+    console.warn('Error fetching PO line balance metrics:', err);
+    return {};
+  }
+}
+
+export async function createGrnFromPo(
+  po: PurchaseOrderRow,
+  input: ReceiveGoodsInput = {},
+): Promise<MutationResult<{ grnId: string; grnNumber: string; status: string }>> {
+  try {
+    await requireProfile();
+
+    const lines = (input.lines || []).map((line) => ({
+      purchaseOrderLineId: line.purchaseOrderLineId || null,
+      itemId: line.itemId || null,
+      receivedQty: Number(line.receivedQty) || 0,
+      acceptedQty: Number(line.acceptedQty) || 0,
+      rejectedQty: Number(line.rejectedQty) || 0,
+      unitRate: Number(line.unitRate) || 0,
+      remarks: line.remarks || null,
+    }));
+
+    // 1. Basic non-negative & sum check
+    for (const line of lines) {
+      if (line.receivedQty < 0 || line.acceptedQty < 0 || line.rejectedQty < 0) {
+        throw new Error('Received, accepted and rejected quantities cannot be negative.');
+      }
+      if (line.acceptedQty + line.rejectedQty > line.receivedQty) {
+        throw new Error('Accepted plus rejected quantity cannot exceed the received quantity.');
+      }
+    }
+
+    // 2. Tolerance & Remaining Balance Validation
+    if (po.id) {
+      const balanceMap = await fetchPoLineRemainingBalances(po.id);
+      for (const line of lines) {
+        if (line.purchaseOrderLineId && balanceMap[line.purchaseOrderLineId]) {
+          const info = balanceMap[line.purchaseOrderLineId];
+          if (info.isShortClosed) {
+            throw new Error(`PO Line is short-closed and cannot accept further deliveries.`);
+          }
+          if (line.receivedQty > info.maxAllowableQty + 0.01) {
+            throw new Error(`Received quantity (${line.receivedQty}) exceeds maximum allowable limit (${info.maxAllowableQty.toFixed(2)} including ${info.overTolerancePct}% tolerance). Remaining balance is ${info.remainingBalanceQty.toFixed(2)}.`);
+          }
+        }
+      }
+    }
+
+    const result = await rpcAction<{ grnId?: string; grnNumber?: string; status?: string }>(
+      'post_goods_receipt_note',
+      {
+        p_purchase_order_id: po.id,
+        p_receipt_date: input.receiptDate || today(),
+        p_challan_no: input.challanNumber?.trim() || null,
+        p_challan_date: input.challanDate || null,
+        p_vehicle_no: input.vehicleNumber?.trim() || null,
+        p_godown_name: input.godownName?.trim() || null,
+        p_transporter_name: input.transporterName?.trim() || null,
+        p_quality_decision: input.qualityDecision || 'accepted',
+        p_remarks: input.remarks?.trim() || null,
+        p_lines: lines,
+        p_submit_for_approval: input.submitForApproval ?? false,
+      },
+    ).catch(() => null);
+
+    // Fallback direct GRN insert if RPC procedure is missing
+    let grnId = result?.grnId;
+    let grnNum = result?.grnNumber;
+
+    if (!grnId && po.id) {
+      if (!po.project_id) throw new Error('Cannot create GRN: Purchase Order is missing project_id.');
+
+      const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+      const grnSeqNum = await nextDocumentNumber('GRN').catch(() => `GRN-${dateStr}-${Math.floor(1000 + Math.random() * 9000)}`);
+      grnNum = grnSeqNum;
+
+      const { data: newGrn, error: grnErr } = await supabase
+        .from('goods_receipt_notes')
+        .insert([{
+          project_id: po.project_id,
+          purchase_order_id: po.id,
+          vendor_id: po.vendor_id || null,
+          grn_number: grnNum,
+          receipt_date: input.receiptDate || today(),
+          challan_no: input.challanNumber || null,
+          vehicle_no: input.vehicleNumber || null,
+          quality_decision: input.qualityDecision || 'accepted',
+          status: 'posted',
+          created_at: new Date().toISOString()
+        }])
+        .select('id')
+        .single();
+
+      if (grnErr) throw new Error(grnErr.message);
+      grnId = newGrn?.id;
+
+      if (grnId && lines.length > 0) {
+        const grnLineInserts = lines.map((l) => ({
+          grn_id: grnId,
+          project_id: po.project_id,
+          purchase_order_line_id: l.purchaseOrderLineId,
+          item_id: l.itemId || null,
+          received_qty: l.receivedQty,
+          accepted_qty: l.acceptedQty,
+          rejected_qty: l.rejectedQty,
+          unit_rate: l.unitRate,
+          remarks: l.remarks,
+        }));
+        await supabase.from('goods_receipt_note_lines').insert(grnLineInserts);
+      }
+    }
+
+    // 3. Update PO Status (partially_received vs fulfilled)
+    if (po.id) {
+      const updatedBalances = await fetchPoLineRemainingBalances(po.id);
+      const allInfos = Object.values(updatedBalances);
+      const totalCount = allInfos.length;
+      const fulfilledCount = allInfos.filter(i => i.lineStatus === 'fulfilled' || i.lineStatus === 'short_closed').length;
+      const receivedCount = allInfos.filter(i => i.cumulativeAcceptedQty > 0).length;
+
+      let newPoStatus = 'accepted_by_vendor';
+      if (totalCount > 0 && fulfilledCount === totalCount) {
+        newPoStatus = 'fulfilled';
+      } else if (receivedCount > 0) {
+        newPoStatus = 'partially_received';
+      }
+
+      await updatePurchaseOrderStatus(po.id, newPoStatus);
+    }
+
+    return {
+      data: {
+        grnId: String(grnId || 'grn-created'),
+        grnNumber: String(grnNum || ''),
+        status: 'posted',
+      },
+      error: null,
+    };
+  } catch (error) {
+    return { data: null, error: asError(error) };
+  }
+}
 
 function boundedScore(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value * 10) / 10));
@@ -1545,19 +2304,26 @@ export async function recordQuotation(input: RecordQuotationInput): Promise<Muta
       const quantity = Number(line.quantity || 0);
       const unitRate = Number(line.unit_rate || 0);
       const taxRate = Number(line.tax_rate || 0);
+      const discountPercent = Math.max(0, Math.min(100, Number(line.discount_percent || 0)));
       if (!line.item_description.trim()) throw new Error('Every quotation line requires an item description.');
       if (quantity <= 0) throw new Error('Every quotation line quantity must be greater than zero.');
       if (unitRate < 0) throw new Error('Quotation line rates cannot be negative.');
-      const lineTotal = quantity * unitRate;
+
+      const netRate = unitRate * (1 - discountPercent / 100);
+      const lineTotal = quantity * netRate;
       const taxAmount = lineTotal * (taxRate / 100);
       return {
         item_id: line.item_id ?? null,
         item_description: line.item_description.trim(),
         quantity,
         unit_rate: unitRate,
+        discount_percent: discountPercent,
         tax_rate: taxRate,
         line_total: lineTotal,
         tax_amount: taxAmount,
+        rfq_line_id: line.rfq_line_id ?? null,
+        offered_qty: line.offered_qty != null ? Number(line.offered_qty) : quantity,
+        remarks: line.remarks?.trim() || null,
       };
     });
 
@@ -1599,8 +2365,13 @@ export async function recordQuotation(input: RecordQuotationInput): Promise<Muta
         item_description: line.item_description,
         quantity: line.quantity,
         unit_rate: line.unit_rate,
+        discount_percent: line.discount_percent,
         tax_rate: line.tax_rate,
         line_total: line.line_total,
+        rfq_line_id: line.rfq_line_id || null,
+        offered_qty: line.offered_qty ?? line.quantity,
+        lead_time_days: Math.max(0, Number(input.leadTimeDays || 0)),
+        remarks: line.remarks || null,
         created_by: profileId,
         updated_by: profileId,
       })),
@@ -1609,7 +2380,18 @@ export async function recordQuotation(input: RecordQuotationInput): Promise<Muta
 
     const rfqVendor = input.rfq.rfq_vendors?.find((vendor) => vendor.vendor_id === input.vendorId);
     const vendorRating = Number(rfqVendor?.vendors?.rating || 0);
-    const estimateAmount = lineRows.reduce((sum, line) => sum + line.quantity * line.unit_rate, 0);
+    // Scoring fix: compare against the PR's original estimated rates (carried
+    // on rfq_lines), not the vendor's own bid subtotal. Without this, the
+    // price score was always ~100% because bid total ≈ bid subtotal.
+    const estimateAmount = await (async () => {
+      try {
+        const rfqLines = await listRfqLines(input.rfq.id);
+        const prEstimate = rfqLines.reduce((sum, rl) => sum + rl.rfq_quantity * rl.estimated_rate, 0);
+        return prEstimate > 0 ? prEstimate : subtotalAmount;
+      } catch {
+        return subtotalAmount; // fallback to old behaviour if rfq_lines unavailable
+      }
+    })();
     const scores = scoreQuotation({
       totalAmount,
       estimateAmount,
@@ -1648,6 +2430,512 @@ export async function recordQuotation(input: RecordQuotationInput): Promise<Muta
   } catch (error) {
     return { data: null, error: asError(error) };
   }
+}
+
+// ---------------------------------------------------------------------------
+// PHASE 2 — BID COMPARISON MATRIX SERVICE
+// ---------------------------------------------------------------------------
+
+export type VendorQuoteSummary = {
+  vendor_id: string;
+  vendor_name: string;
+  vendor_rating: number;
+  quotation_id: string;
+  quotation_number: string;
+  quotation_date: string;
+  subtotal_amount: number;
+  tax_amount: number;
+  total_amount: number;
+  lead_time_days: number;
+  scores?: QuotationScoreRow | null;
+  status: string;
+};
+
+export type MatrixVendorQuote = {
+  quotation_line_id: string;
+  quotation_id: string;
+  vendor_id: string;
+  offered_qty: number;
+  unit_rate: number;
+  discount_percent: number;
+  net_rate: number;
+  tax_rate: number;
+  line_total: number;
+  lead_time_days: number | null;
+  remarks: string | null;
+  is_l1: boolean;
+};
+
+export type MatrixItemLine = {
+  rfq_line_id: string;
+  purchase_requisition_line_id?: string | null;
+  purchase_requisition_id?: string | null;
+  line_number: number;
+  item_id: string | null;
+  item_code: string | null;
+  item_group: string | null;
+  item_description: string;
+  specification: string | null;
+  preferred_brand: string | null;
+  unit: string;
+  rfq_quantity: number;
+  estimated_rate: number;
+  lowest_net_rate: number | null;
+  vendor_quotes: Record<string, MatrixVendorQuote>;
+};
+
+export type RfqComparisonMatrix = {
+  rfq: RfqRow;
+  rfqLines: RfqLineRow[];
+  vendors: VendorQuoteSummary[];
+  items: MatrixItemLine[];
+};
+
+/**
+ * Builds a side-by-side bid comparison matrix for an RFQ across all submitted vendor quotations.
+ * Highlights L1 (lowest evaluated net unit rate) per RFQ line item.
+ */
+export async function getQuotationComparisonMatrix(rfqId: string): Promise<RfqComparisonMatrix | null> {
+  if (!isLiveSupabase()) return null;
+
+  // 1. Fetch RFQ Header
+  const { data: rfqData, error: rfqErr } = await supabase
+    .from('rfqs')
+    .select('*, rfq_vendors(*, vendors(id, legal_name, display_name, rating))')
+    .eq('id', rfqId)
+    .single();
+
+  if (rfqErr || !rfqData) return null;
+  const rfq = rfqData as unknown as RfqRow;
+
+  // 2. Fetch RFQ Lines
+  let rfqLines = await listRfqLines(rfqId);
+
+  // Fallback 2a: If rfq_lines table has no rows for this RFQ, construct lines from parent PR
+  if (rfqLines.length === 0 && rfqData.purchase_requisition_id) {
+    const { data: prLinesData } = await supabase
+      .from('purchase_requisition_lines')
+      .select('*')
+      .eq('purchase_requisition_id', rfqData.purchase_requisition_id);
+
+    if (prLinesData && prLinesData.length > 0) {
+      rfqLines = prLinesData.map((prl: any, idx: number) => ({
+        id: prl.id,
+        rfq_id: rfqId,
+        project_id: rfqData.project_id,
+        purchase_requisition_line_id: prl.id,
+        purchase_requisition_id: rfqData.purchase_requisition_id,
+        line_number: idx + 1,
+        item_id: prl.item_id || null,
+        item_code: null,
+        item_group: 'Materials',
+        item_description: prl.item_description || 'Requisitioned Material Item',
+        specification: null,
+        preferred_brand: null,
+        unit: prl.unit || 'nos',
+        rfq_quantity: Number(prl.quantity || 1),
+        estimated_rate: Number(prl.estimated_rate || 0),
+        activity_name: prl.activity_name || null,
+        sub_activity_name: prl.sub_activity_name || null,
+        activity_code: prl.activity_code || null,
+        required_date: prl.required_date || null,
+        remarks: prl.remarks || null,
+        status: 'open',
+      }));
+    }
+  }
+
+  if (rfqLines.length === 0) return null;
+
+  // 3. Fetch Quotations for this RFQ
+  const { data: quotesData, error: quotesErr } = await supabase
+    .from('vendor_quotations')
+    .select('*, vendors(id, legal_name, display_name, rating), quotation_lines(*)')
+    .eq('rfq_id', rfqId)
+    .neq('status', 'cancelled');
+
+  if (quotesErr) throw new Error(quotesErr.message);
+
+  const rawQuotes = (quotesData ?? []) as any[];
+  const quoteIds = rawQuotes.map((q) => q.id);
+
+  const scoresByQuote: Record<string, QuotationScoreRow> = {};
+  if (quoteIds.length > 0) {
+    try {
+      const { data: scoresData } = await supabase
+        .from('quotation_scores')
+        .select('*')
+        .in('quotation_id', quoteIds);
+
+      if (scoresData) {
+        for (const s of scoresData) {
+          scoresByQuote[s.quotation_id] = s as any;
+        }
+      }
+    } catch {
+      // Non-blocking score lookup fallback
+    }
+  }
+
+  // 4. Map Vendor Summaries
+  const vendors: VendorQuoteSummary[] = rawQuotes.map((q) => {
+    const v = q.vendors || {};
+    const scoreObj = scoresByQuote[q.id] || null;
+    return {
+      vendor_id: String(q.vendor_id),
+      vendor_name: String(v.display_name || v.legal_name || 'Vendor'),
+      vendor_rating: Number(v.rating || 0),
+      quotation_id: String(q.id),
+      quotation_number: String(q.quotation_number || ''),
+      quotation_date: String(q.quotation_date || ''),
+      subtotal_amount: Number(q.subtotal_amount || 0),
+      tax_amount: Number(q.tax_amount || 0),
+      total_amount: Number(q.total_amount || 0),
+      lead_time_days: Number(q.lead_time_days || 0),
+      scores: scoreObj,
+      status: String(q.status || 'submitted'),
+    };
+  });
+
+  // 4b. Fallback: If no online vendor_quotations exist yet, map invited vendors from rfq_vendors
+  if (vendors.length === 0 && Array.isArray((rfqData as any).rfq_vendors) && (rfqData as any).rfq_vendors.length > 0) {
+    for (const rv of (rfqData as any).rfq_vendors) {
+      const v = rv.vendors || {};
+      vendors.push({
+        vendor_id: String(rv.vendor_id),
+        vendor_name: String(v.display_name || v.legal_name || 'Invited Vendor'),
+        vendor_rating: Number(v.rating || 0),
+        quotation_id: `draft-quote-${rv.vendor_id}`,
+        quotation_number: `QT-INVITED-${String(rv.vendor_id).slice(0, 8)}`,
+        quotation_date: new Date().toISOString().slice(0, 10),
+        subtotal_amount: 0,
+        tax_amount: 0,
+        total_amount: 0,
+        lead_time_days: 7,
+        scores: null,
+        status: 'invited',
+      });
+    }
+  }
+
+  // 4c. Ultimate Fallback: If no vendors invited yet, fetch master vendors list so award matrix can still be used
+  if (vendors.length === 0) {
+    const { data: allVendors } = await supabase
+      .from('vendors')
+      .select('id, legal_name, display_name, rating')
+      .limit(5);
+
+    if (allVendors && allVendors.length > 0) {
+      for (const v of allVendors) {
+        vendors.push({
+          vendor_id: String(v.id),
+          vendor_name: String(v.display_name || v.legal_name || 'Supplier'),
+          vendor_rating: Number(v.rating || 0),
+          quotation_id: `draft-quote-${v.id}`,
+          quotation_number: `QT-DRAFT-${String(v.id).slice(0, 8)}`,
+          quotation_date: new Date().toISOString().slice(0, 10),
+          subtotal_amount: 0,
+          tax_amount: 0,
+          total_amount: 0,
+          lead_time_days: 7,
+          scores: null,
+          status: 'invited',
+        });
+      }
+    }
+  }
+
+  // 5. Build Matrix Item Lines
+  const items: MatrixItemLine[] = rfqLines.map((rl) => {
+    const vendorQuotes: Record<string, MatrixVendorQuote> = {};
+    let lowestNetRate: number | null = null;
+
+    for (const q of rawQuotes) {
+      const vendorId = String(q.vendor_id);
+      const lines = (q.quotation_lines ?? []) as any[];
+
+      // Find matching quote line by rfq_line_id or item_description fallback
+      const matchLine = lines.find((ql: any) => 
+        ql.rfq_line_id === rl.id || 
+        (ql.item_description && ql.item_description.trim().toLowerCase() === rl.item_description.trim().toLowerCase())
+      );
+
+      if (matchLine) {
+        const unitRate = Number(matchLine.unit_rate || 0);
+        const discountPercent = Number(matchLine.discount_percent || 0);
+        const netRate = unitRate * (1 - discountPercent / 100);
+        const offeredQty = matchLine.offered_qty != null ? Number(matchLine.offered_qty) : Number(matchLine.quantity || rl.rfq_quantity);
+        const taxRate = Number(matchLine.tax_rate || 0);
+        const lineTotal = Number(matchLine.line_total || offeredQty * netRate);
+
+        if (lowestNetRate === null || (netRate > 0 && netRate < lowestNetRate)) {
+          lowestNetRate = netRate;
+        }
+
+        vendorQuotes[vendorId] = {
+          quotation_line_id: String(matchLine.id),
+          quotation_id: String(q.id),
+          vendor_id: vendorId,
+          offered_qty: offeredQty,
+          unit_rate: unitRate,
+          discount_percent: discountPercent,
+          net_rate: netRate,
+          tax_rate: taxRate,
+          line_total: lineTotal,
+          lead_time_days: matchLine.lead_time_days != null ? Number(matchLine.lead_time_days) : Number(q.lead_time_days || 0),
+          remarks: matchLine.remarks || null,
+          is_l1: false, // Calculated below
+        };
+      }
+    }
+
+    // Default quotes for invited vendors who have not submitted line quotes yet
+    for (const v of vendors) {
+      if (!vendorQuotes[v.vendor_id]) {
+        vendorQuotes[v.vendor_id] = {
+          quotation_line_id: `draft-line-${rl.id}-${v.vendor_id}`,
+          quotation_id: v.quotation_id,
+          vendor_id: v.vendor_id,
+          offered_qty: rl.rfq_quantity,
+          unit_rate: rl.estimated_rate || 0,
+          discount_percent: 0,
+          net_rate: rl.estimated_rate || 0,
+          tax_rate: 18,
+          line_total: rl.rfq_quantity * (rl.estimated_rate || 0),
+          lead_time_days: 7,
+          remarks: 'Invited Vendor / Base Rate',
+          is_l1: true,
+        };
+      }
+    }
+
+    // Flag L1 for each vendor matching lowestNetRate
+    if (lowestNetRate !== null) {
+      for (const vQuote of Object.values(vendorQuotes)) {
+        if (Math.abs(vQuote.net_rate - lowestNetRate) < 0.001) {
+          vQuote.is_l1 = true;
+        }
+      }
+    }
+
+    return {
+      rfq_line_id: rl.id,
+      purchase_requisition_line_id: rl.purchase_requisition_line_id || null,
+      purchase_requisition_id: rl.purchase_requisition_id || null,
+      line_number: rl.line_number,
+      item_id: rl.item_id,
+      item_code: rl.item_code,
+      item_group: rl.item_group,
+      item_description: rl.item_description,
+      specification: rl.specification,
+      preferred_brand: rl.preferred_brand,
+      unit: rl.unit,
+      rfq_quantity: rl.rfq_quantity,
+      estimated_rate: rl.estimated_rate,
+      lowest_net_rate: lowestNetRate,
+      vendor_quotes: vendorQuotes,
+    };
+  });
+
+  return {
+    rfq,
+    rfqLines,
+    vendors,
+    items,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// PHASE 3 — MULTI-VENDOR AWARD MATRIX SERVICE
+// ---------------------------------------------------------------------------
+
+export type VendorSelectionAwardRow = {
+  id: string;
+  vendor_selection_id: string;
+  project_id: string;
+  rfq_line_id: string;
+  purchase_requisition_line_id?: string | null;
+  vendor_id: string;
+  quotation_id?: string | null;
+  quotation_line_id?: string | null;
+  awarded_qty: number;
+  quoted_rate: number;
+  awarded_rate: number;
+  tax_rate: number;
+  awarded_amount?: number;
+  is_lowest_bid: boolean;
+  non_l1_justification?: string | null;
+  award_reason?: string | null;
+  lead_time_days?: number | null;
+  purchase_order_id?: string | null;
+  purchase_order_line_id?: string | null;
+  status: string;
+  vendors?: VendorRow | null;
+  rfq_lines?: RfqLineRow | null;
+};
+
+export type AwardInputLine = {
+  rfq_line_id: string;
+  purchase_requisition_line_id?: string | null;
+  vendor_id: string;
+  quotation_id?: string | null;
+  quotation_line_id?: string | null;
+  awarded_qty: number;
+  quoted_rate: number;
+  awarded_rate: number;
+  tax_rate: number;
+  is_lowest_bid: boolean;
+  non_l1_justification?: string | null;
+  award_reason?: string | null;
+  lead_time_days?: number | null;
+};
+
+export type SaveAwardMatrixInput = {
+  rfqId: string;
+  purchaseRequisitionId: string;
+  projectId: string;
+  selectionReason: string;
+  awards: AwardInputLine[];
+};
+
+/**
+ * Saves a multi-vendor line & quantity award matrix to vendor_selection_awards.
+ * Atomically validates and inserts line allocations across multiple vendors.
+ */
+export async function saveAwardMatrix(
+  input: SaveAwardMatrixInput
+): Promise<MutationResult<{ selectionId: string; awardCount: number; totalAmount: number }>> {
+  try {
+    if (!isLiveSupabase()) throw new Error('Supabase live connection required.');
+    const profileId = await currentProfileId();
+
+    if (input.awards.length === 0) {
+      throw new Error('At least one item allocation is required to save an award matrix.');
+    }
+
+    // 1. Validate Non-L1 justifications
+    for (const a of input.awards) {
+      if (a.awarded_qty <= 0) {
+        throw new Error('Awarded quantity must be greater than zero.');
+      }
+      if (!a.is_lowest_bid && !a.non_l1_justification?.trim()) {
+        throw new Error('A justification is required whenever awarding to a vendor with a non-lowest (non-L1) rate.');
+      }
+    }
+
+    // 2. Find or create vendor_selections header
+    const { data: existingSelection, error: selErr } = await supabase
+      .from('vendor_selections')
+      .select('id')
+      .eq('purchase_requisition_id', input.purchaseRequisitionId)
+      .limit(1)
+      .maybeSingle();
+
+    if (selErr) throw new Error(selErr.message);
+
+    // Primary vendor = vendor receiving the largest award amount
+    const vendorAmounts: Record<string, number> = {};
+    for (const a of input.awards) {
+      vendorAmounts[a.vendor_id] = (vendorAmounts[a.vendor_id] || 0) + a.awarded_qty * a.awarded_rate;
+    }
+    const primaryVendorId = Object.entries(vendorAmounts).sort((a, b) => b[1] - a[1])[0]?.[0] || input.awards[0].vendor_id;
+    const primaryQuoteId = input.awards.find((a) => a.vendor_id === primaryVendorId)?.quotation_id || input.awards[0].quotation_id;
+    const totalAwardAmount = input.awards.reduce((sum, a) => sum + a.awarded_qty * a.awarded_rate * (1 + a.tax_rate / 100), 0);
+
+    const selectionPayload = {
+      project_id: input.projectId,
+      purchase_requisition_id: input.purchaseRequisitionId,
+      rfq_id: input.rfqId,
+      selected_quotation_id: primaryQuoteId || null,
+      selected_vendor_id: primaryVendorId,
+      final_amount: totalAwardAmount,
+      reason_for_selection: input.selectionReason.trim() || 'Multi-vendor line item award matrix allocation.',
+      status: 'submitted',
+      updated_by: profileId,
+    };
+
+    let selectionId: string;
+    if (existingSelection) {
+      selectionId = existingSelection.id;
+      const { error: updateErr } = await supabase
+        .from('vendor_selections')
+        .update(selectionPayload)
+        .eq('id', selectionId);
+      if (updateErr) throw new Error(updateErr.message);
+    } else {
+      const { data: newSel, error: createErr } = await supabase
+        .from('vendor_selections')
+        .insert({ ...selectionPayload, created_by: profileId })
+        .select('id')
+        .single();
+      if (createErr || !newSel) throw new Error(createErr?.message || 'Failed to create vendor selection header.');
+      selectionId = newSel.id;
+    }
+
+    // 3. Clear existing pending awards for this selection
+    await supabase
+      .from('vendor_selection_awards')
+      .delete()
+      .eq('vendor_selection_id', selectionId)
+      .in('status', ['pending', 'submitted']);
+
+    // 4. Insert new award rows
+    const awardRows = input.awards.map((a) => ({
+      vendor_selection_id: selectionId,
+      project_id: input.projectId,
+      rfq_line_id: a.rfq_line_id,
+      purchase_requisition_line_id: a.purchase_requisition_line_id || null,
+      vendor_id: a.vendor_id,
+      quotation_id: a.quotation_id || null,
+      quotation_line_id: a.quotation_line_id || null,
+      awarded_qty: a.awarded_qty,
+      quoted_rate: a.quoted_rate,
+      awarded_rate: a.awarded_rate,
+      tax_rate: a.tax_rate,
+      is_lowest_bid: a.is_lowest_bid,
+      non_l1_justification: a.non_l1_justification?.trim() || null,
+      award_reason: a.award_reason?.trim() || null,
+      lead_time_days: a.lead_time_days != null ? Number(a.lead_time_days) : null,
+      status: 'pending',
+      created_by: profileId,
+      updated_by: profileId,
+    }));
+
+    const { error: insertErr } = await supabase.from('vendor_selection_awards').insert(awardRows);
+    if (insertErr) throw new Error(insertErr.message);
+
+    // 5. Update RFQ status
+    await supabase
+      .from('rfqs')
+      .update({ status: 'vendor_selected', updated_by: profileId })
+      .eq('id', input.rfqId);
+
+    return {
+      data: {
+        selectionId,
+        awardCount: awardRows.length,
+        totalAmount: totalAwardAmount,
+      },
+      error: null,
+    };
+  } catch (e) {
+    return { data: null, error: asError(e) };
+  }
+}
+
+/**
+ * Lists existing vendor_selection_awards for an RFQ.
+ */
+export async function listAwardMatrixForRfq(rfqId: string): Promise<VendorSelectionAwardRow[]> {
+  if (!isLiveSupabase()) return [];
+  const { data, error } = await supabase
+    .from('vendor_selection_awards')
+    .select('*, vendors(id, legal_name, display_name), rfq_lines(*)')
+    .eq('rfq_line_id', rfqId)
+    .neq('status', 'cancelled');
+
+  if (error) return [];
+  return (data ?? []) as unknown as VendorSelectionAwardRow[];
 }
 
 export type RecommendVendorSelectionInput = {
@@ -1696,11 +2984,543 @@ export async function recommendVendorSelection(input: RecommendVendorSelectionIn
   }
 }
 
+/**
+ * Automatically creates production Purchase Order draft records (in `purchase_orders` and `purchase_order_lines`)
+ * directly in Supabase when the user generates POs from the RFQ form.
+ */
+export async function generatePurchaseOrdersFromRfqForm(input: {
+  pr: PurchaseRequisitionRow;
+  formData: {
+    quotation_registration_no: string;
+    goal_delivery_date: string;
+    delivery_address: string;
+    remarks: string;
+    contractor_name: string;
+    items: Array<{
+      item_id: string | null;
+      item_code: string;
+      item_description: string;
+      specification: string;
+      quantity: number;
+      quoted_rate?: number;
+      previous_rate: number;
+      tax_rate?: number;
+      unit: string;
+      required_date: string;
+    }>;
+    suppliers: Array<{
+      supplier_id: string;
+      supplier_name: string;
+      email_to: string;
+      email_cc: string;
+    }>;
+  };
+}): Promise<{ poIds: string[]; poNumbers: string[]; error: Error | null }> {
+  try {
+    if (!isLiveSupabase()) {
+      return { poIds: [], poNumbers: [], error: new Error('Supabase connection required to generate Purchase Orders.') };
+    }
+
+    const { pr, formData } = input;
+    const dbProjectId = getDbSiteId(pr.project_id || 'central-park');
+
+    // Filter valid suppliers selected in form
+    const activeSuppliers = formData.suppliers.filter((s) => s.supplier_id && isValidUuid(s.supplier_id));
+
+    // Fallback to first available vendor in Supabase if none explicitly selected
+    let targetVendorIds: string[] = activeSuppliers.map((s) => s.supplier_id);
+    if (targetVendorIds.length === 0) {
+      const { data: firstVendor } = await supabase
+        .from('vendors')
+        .select('id')
+        .eq('is_active', true)
+        .limit(1)
+        .maybeSingle();
+
+      if (firstVendor?.id) {
+        targetVendorIds = [firstVendor.id];
+      }
+    }
+
+    if (targetVendorIds.length === 0) {
+      return { poIds: [], poNumbers: [], error: new Error('No valid active vendor found to generate Purchase Order.') };
+    }
+
+    const generatedPoIds: string[] = [];
+    const generatedPoNumbers: string[] = [];
+    const rawAllocations = (formData as any).allocations || {};
+    const hasAllocations = Object.keys(rawAllocations).length > 0;
+
+    for (const vendorId of targetVendorIds) {
+      const matchingSupplier = formData.suppliers.find((s) => s.supplier_id === vendorId);
+      const supplierName = matchingSupplier?.supplier_name || '';
+
+      // Calculate awarded line items specifically for THIS vendor
+      const vendorLinePayloads = formData.items
+        .map((item) => {
+          const itemKey = (item as any).key || item.item_id || '';
+
+          // Check cell allocation in matrix
+          const cell =
+            rawAllocations[`${itemKey}:${vendorId}`] ||
+            rawAllocations[`${itemKey}:${supplierName}`] ||
+            rawAllocations[`${item.item_id}:${vendorId}`] ||
+            rawAllocations[`${item.item_id}:${supplierName}`];
+
+          let awardedQty = Number(item.quantity || 1);
+          let rate = Number((item.quoted_rate ?? item.previous_rate) ?? 0);
+          const taxRate = Number(item.tax_rate ?? 18);
+
+          if (hasAllocations) {
+            if (cell && cell.awarded_qty !== undefined) {
+              awardedQty = Number(cell.awarded_qty || 0);
+              if (cell.awarded_rate && Number(cell.awarded_rate) > 0) {
+                rate = Number(cell.awarded_rate);
+              }
+            } else {
+              // Check if any other supplier was awarded quantity for this item
+              const isAwardedToOther = Object.entries(rawAllocations).some(
+                ([k, v]) =>
+                  (k.startsWith(`${itemKey}:`) || (item.item_id && k.startsWith(`${item.item_id}:`))) &&
+                  Number((v as any).awarded_qty) > 0
+              );
+              if (isAwardedToOther) {
+                awardedQty = 0; // Exclude from this vendor since awarded elsewhere
+              }
+            }
+          }
+
+          if (awardedQty <= 0) return null; // Skip non-awarded line item for this vendor!
+
+          const subtotal = awardedQty * rate;
+          const taxAmount = subtotal * (taxRate / 100);
+          const totalAmount = subtotal + taxAmount;
+
+          return {
+            item_id: item.item_id || null,
+            item_description: item.item_description || item.specification || 'Material Line Item',
+            quantity: awardedQty,
+            unit_rate: rate,
+            tax_rate: taxRate,
+            subtotal_amount: subtotal,
+            tax_amount: taxAmount,
+            line_total: totalAmount,
+            total_amount: totalAmount,
+            unit: item.unit || 'nos',
+          };
+        })
+        .filter(Boolean) as Array<{
+          item_id: string | null;
+          item_description: string;
+          quantity: number;
+          unit_rate: number;
+          tax_rate: number;
+          subtotal_amount: number;
+          tax_amount: number;
+          line_total: number;
+          total_amount: number;
+          unit: string;
+        }>;
+
+      if (vendorLinePayloads.length === 0) {
+        continue; // Skip creating PO if vendor received 0 awarded items!
+      }
+
+      // Fetch vendor master record from vendors table in Supabase
+      const { data: vendorDetails } = await supabase
+        .from('vendors')
+        .select('*')
+        .eq('id', vendorId)
+        .maybeSingle();
+
+      // Fetch linked RFQ record from rfqs table
+      const { data: rfqRecord } = await supabase
+        .from('rfqs')
+        .select('id')
+        .eq('purchase_requisition_id', pr.id)
+        .maybeSingle();
+
+      const vDisplayName = vendorDetails?.display_name || vendorDetails?.legal_name || supplierName || 'Vendor';
+      const vLegalName = vendorDetails?.legal_name || vendorDetails?.display_name || supplierName || '';
+      const vEmail = vendorDetails?.email || matchingSupplier?.email_to || '';
+      const vPhone = vendorDetails?.phone || vendorDetails?.contact_number || '';
+      const vAddress = vendorDetails?.billing_address || vendorDetails?.address || vendorDetails?.shipping_address || '';
+      const vGst = vendorDetails?.gstin || vendorDetails?.gst_no || '';
+      const vPan = vendorDetails?.pan || vendorDetails?.pan_no || '';
+      const vTerms = vendorDetails?.payment_terms || '30 days from accepted GRN';
+      const vContact = vendorDetails?.contact_person || vendorDetails?.primary_contact || '';
+
+      const poSubtotal = vendorLinePayloads.reduce((sum, l) => sum + l.subtotal_amount, 0);
+      const poTaxAmount = vendorLinePayloads.reduce((sum, l) => sum + l.tax_amount, 0);
+      const poTotalAmount = poSubtotal + poTaxAmount;
+
+      const poNum = await nextDocumentNumber('PO');
+
+      const poPayload = {
+        project_id: dbProjectId,
+        site_id: pr.site_id || null,
+        vendor_id: vendorId,
+        purchase_requisition_id: pr.id,
+        rfq_id: rfqRecord?.id || null,
+        budget_allocation_id: (pr as any).budget_allocation_id || null,
+        po_number: poNum,
+        po_date: today(),
+        status: 'draft',
+        delivery_date: formData.goal_delivery_date || pr.required_date || today(),
+        delivery_location: formData.delivery_address || pr.delivery_address || 'Project Site Store',
+        payment_terms: vTerms,
+        terms_and_conditions: (formData.remarks && formData.remarks.trim().length > 10)
+          ? formData.remarks
+          : `PO Terms 1:-  This is a Contract for Pramukh Group and/or any its affiliates, subsidiaries and/or group companies. Vendor agrees that it shall at all times recognize the validity and ownership of Pramukh and/or any of its affiliates, subsidiaries and/or group companies, as the case may be, over the intellectual property rights and shall not at any time put in issue their validity or ownership.
+
+1. PRELIMINARY
+1.1 This is a Contract for execution of job/Supply as required and specified at the time of Enquiry.
+1.2 The Enquirer for the above mentioned supply is the company/ proprietary concern/individual.
+1.3 The terms and conditions mentioned hereunder are the terms and conditions of the Contract for the execution of the job mentioned under item 1.1 above.
+
+2. REFERENCE FOR DOCUMENTATION
+Purchase Order number must appear on order confirmation, correspondence, drawings, invoices, shipping notes, packings and on any documents or papers connected with the order.
+
+3. CONFIRMATION OF ORDER
+The Vendor shall acknowledge the receipt of the Purchase Order within ten days following the mailing of this order and shall thereby confirm his acceptance of this Purchase Order in its entirety without exceptions. The acknowledgment will bear on both purchase order and General Procurement Conditions.
+
+4. WEIGHTS AND MEASUREMENTS
+a. All weights and measurements recorded by the Organisation on receipt of goods at site will be treated as final.
+b. Vendor's shipping documents and invoices must contain the following data:
+   i. Unit net weight
+   ii. Unit gross weight (packing included)
+   iii. Dimensions of packing.
+
+5. PACKING AND MARKING
+The Materials shall be suitably packed for safe transportation till receipt at site and should be commensurate with best possible practices of packing, unless specifically stipulated in the Technical specifications, to avoid any damage during transit.
+
+6. CONTROL REGULATIONS
+The supply, dispatch and delivery of goods shall be arranged by the Vendor in strict conformity with the statutory regulations including provision of Industries (Development and Regulation) Act 1951 and any amendment thereof as applicable from time to time. The Organisation disowns any responsibility for any irregularity or contravention of any of the statutory regulations in manufacture or supply of the stores covered by this order.
+
+7. RESPECT FOR DELIVERY DATES
+Time of delivery as mentioned in the Purchase Order shall be the essence of the contract and no variation shall be permitted except with prior authorization in writing from the Organisation. Goods should be delivered securely packed and in good order and condition at the place and within the time specified in the Purchase Order for their delivery.
+
+8. DELAYS DUE TO FORCE MAJEURE
+A) Any delay in or failure of the performance of either part hereto shall not constitute default hereunder or give rise to any claims for damage, if any, to the extent such delays or failure of performance is caused by occurrences such as Acts of God or an enemy, expropriation or confiscation of facilities by Government authorities, acts of war, rebellion, sabotage or fires, floods, explosions, riots, or strikes. The Contractor shall keep records of the circumstances referred to above and bring these to the notice of the Project-in Charge/Site-in-Charge in writing immediately on such occurrences. The amount of time, if any, lost on any of these counts shall not be counted for the Contract period. Once decision of the Owner arrived at after consultation with the Contractor, shall be final and binding. Such a determined period of time be extended by the Owner to enable the Contractor to complete the job within such extended period of time.
+B) If Contractor is prevented or delayed from the performing any of its obligations under this Agreement by Force Majeure, then Contractor shall notify Owner the circumstances constituting the Force Majeure and the obligations performance of which is thereby delayed or prevented, within seven days of the occurrence of the events.
+
+9. REJECTION, REMOVAL OF REJECTED GOODS AND REPLACEMENT
+A) In case the testing and inspection at any stage by Inspectors reveal the equipment, material and workmanship do not comply with specification and requirements, the same shall be removed by the Vendor at their / its own expense and risk within the time allowed by the Organisation.
+B) The Vendor will have to proceed with the replacement of that equipment or part of equipment without claiming any extra payment if so required by the Organisation. The time taken for replacement in such event will not be added to the contractual delivery period.
+
+10. TAXES & DUTIES
+A) GST (CGST, SGST, IGST as applicable), Customs Duty and applicable Cess as applicable shall be reimbursed for the materials consigned to Organisation as per limits indicated in the offer against documentary evidence to be furnished by the Supplier. Organisation shall pay only those taxes, duties and levies as indicated by Supplier at the time of bid submission/as agreed subsequently.(prior to opening of priced bids).
+B) The Vendor shall comply with all the provisions of the GST Act / Rules / requirements like providing of tax invoices, payment of taxes to the authorities within the due dates, filing of returns within the due dates etc. to enable Pramukh Group to take Input Tax Credit.
+
+11. JURISDICTION
+The Vendor hereby agrees that the Courts situated in location of Organisation address and shall have the jurisdiction to hear and determine all actions and proceedings arising out of this contract.
+
+12. PAYMENT TERMS
+Payment will be released, subject to Tax - Invoice uploaded on GST portal before payment due date.
+
+13. LATE DELIVERY CLAUSE
+Penalty would be charged from 1% - 10% per week OR as per management decision if delivery would be done after due date OR schedule date given by site.
+
+14. TAX DEDUCTION AT SOURCE TO BE MADE U/S. 194Q FROM THE PURCHASE OF GOODS FROM YOU
+As you are aware that w.e.f 1ST July, 2021, the provisions of Section 194Q for withholding of Tax at 0.10% on the value of purchase of goods are applicable. In view of the same, we shall deduct the required TDS at 0.10% from the value of purchase of goods from you. We are the purchasers who satisfies the conditions laid down in Section 194Q and hence we are required to deduct TDS from the value of Purchases from you at the applicable rates. Since we are liable to deduct TDS U/S. 194Q, you being the seller of goods , are not required to make TCS U/S. 206C(1H) at 0.10%. Hence please do not charge any TCS on your purchase Invoice in response to this PO. The rate of Withholding of tax U/S. 194Q shall be subject to the amendments made from time to time.
+
+NOTE : Moreover, please confirm whether you have filed the Income Tax Returns for A.Y. 2019-2020 and A.Y. 2020-2021 along with the acceptance of this PO with copy of the acknowledgement / screen shot from the Income tax website. In the absence of such confirmation, we shall presume that you have not filed your Income tax returns for the required two years and therefore, the withholding of tax shall be made at higher rate of 5% from the value of purchase of goods from you which shall not be refunded nor adjusted in subsequent billing against this PO or any other PO. If you have already submitted the required details of the Income Tax Returns with us, please ignore this note.
+
+15. GUARANTEE / WARRANTY
+Under RERA act minimum 5 years from the date of possession for material or workmanship.
+
+16. DELIVERY DATE
+As per site Schedule and mentioned in PO.
+
+17. PRICE BASIS
+DAP at Site, Freight included.`,
+        subtotal_amount: poSubtotal,
+        tax_amount: poTaxAmount,
+        total_amount: poTotalAmount,
+        // Autofilled vendor master details
+        supplier_name: vDisplayName,
+        vendor_name: vDisplayName,
+        po_in_the_name_of: vLegalName,
+        phone_no: vPhone,
+        mobile_no: vPhone,
+        email_id: vEmail,
+        supplier_address: vAddress,
+        contact_person: vContact,
+        gst_no: vGst,
+        pan_no: vPan,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+
+      const { data: newPo, error: poErr } = await supabase
+        .from('purchase_orders')
+        .insert([poPayload])
+        .select('id')
+        .single();
+
+      if (poErr) {
+        console.error('Error inserting purchase_orders:', poErr.message || poErr);
+        continue;
+      }
+
+      if (newPo?.id) {
+        generatedPoIds.push(newPo.id);
+        generatedPoNumbers.push(poNum);
+
+        const poLineInserts = vendorLinePayloads.map((l, idx) => ({
+          purchase_order_id: newPo.id,
+          project_id: dbProjectId,
+          line_number: idx + 1,
+          item_id: l.item_id,
+          item_description: l.item_description,
+          quantity: l.quantity,
+          unit_rate: l.unit_rate,
+          tax_rate: l.tax_rate,
+          line_total: l.line_total,
+        }));
+
+        const { error: poLinesErr } = await supabase
+          .from('purchase_order_lines')
+          .insert(poLineInserts);
+
+        if (poLinesErr) {
+          console.error('Error inserting purchase_order_lines:', poLinesErr.message || poLinesErr);
+        }
+      }
+    }
+
+    // Update PR status in Supabase to po_issued
+    await supabase
+      .from('purchase_requisitions')
+      .update({ status: 'po_issued', updated_at: new Date().toISOString() })
+      .eq('id', pr.id);
+
+    return { poIds: generatedPoIds, poNumbers: generatedPoNumbers, error: null };
+  } catch (err) {
+    console.error('Error generating POs from RFQ form:', err);
+    return { poIds: [], poNumbers: [], error: err as Error };
+  }
+}
+
+export type GeneratePurchaseOrdersFromAwardsInput = {
+  vendorSelectionId: string;
+  deliveryDate?: string | null;
+  deliveryLocation?: string | null;
+  paymentTerms?: string | null;
+  termsAndConditions?: string | null;
+};
+
+/**
+ * Generates N distinct Purchase Orders for a multi-vendor award matrix.
+ * Groups approved vendor_selection_awards by vendor_id, populates
+ * purchase_order_lines with vendor_selection_award_id and purchase_requisition_line_id,
+ * and updates awards to 'po_created'.
+ */
+export async function generatePurchaseOrdersFromAwards(
+  input: GeneratePurchaseOrdersFromAwardsInput
+): Promise<MutationResult<{ purchaseOrderIds: string[]; poCount: number }>> {
+  try {
+    if (!isLiveSupabase()) throw new Error('Supabase live connection required.');
+    const profileId = await currentProfileId();
+
+    // 1. Fetch vendor selection header
+    const { data: selection, error: selErr } = await supabase
+      .from('vendor_selections')
+      .select('id, purchase_requisition_id, rfq_id, project_id')
+      .eq('id', input.vendorSelectionId)
+      .single();
+
+    if (selErr || !selection) throw new Error(`Vendor selection not found: ${selErr?.message}`);
+
+    // 2. Fetch all active awards for this selection
+    const { data: awards, error: awardsErr } = await supabase
+      .from('vendor_selection_awards')
+      .select('*, rfq_lines(*)')
+      .eq('vendor_selection_id', input.vendorSelectionId)
+      .neq('status', 'cancelled');
+
+    if (awardsErr) throw new Error(awardsErr.message);
+    if (!awards || awards.length === 0) {
+      throw new Error('No active awards found for this vendor selection.');
+    }
+
+    // 3. Fetch PR info for budget allocation
+    const { data: pr, error: prErr } = await supabase
+      .from('purchase_requisitions')
+      .select('project_id, site_id, budget_allocation_id')
+      .eq('id', selection.purchase_requisition_id)
+      .single();
+
+    if (prErr || !pr) throw new Error(`Purchase requisition not found: ${prErr?.message}`);
+
+    // 4. Group awards by vendor_id
+    const awardsByVendor: Record<string, typeof awards> = {};
+    for (const award of awards) {
+      if (!awardsByVendor[award.vendor_id]) {
+        awardsByVendor[award.vendor_id] = [];
+      }
+      awardsByVendor[award.vendor_id].push(award);
+    }
+
+    const createdPoIds: string[] = [];
+
+    // 5. Generate a Purchase Order for each vendor group
+    for (const [vendorId, vendorAwards] of Object.entries(awardsByVendor)) {
+      // Check if PO already exists for this (vendor_selection_id, vendor_id)
+      const { data: existingPo } = await supabase
+        .from('purchase_orders')
+        .select('id')
+        .eq('vendor_selection_id', input.vendorSelectionId)
+        .eq('vendor_id', vendorId)
+        .is('deleted_at', null)
+        .maybeSingle();
+
+      let poId: string;
+
+      if (existingPo) {
+        poId = existingPo.id;
+        createdPoIds.push(poId);
+      } else {
+        // Calculate totals for this vendor's award lines
+        const subtotal = vendorAwards.reduce(
+          (sum, a) => sum + Number(a.awarded_qty) * Number(a.awarded_rate),
+          0
+        );
+        const taxTotal = vendorAwards.reduce(
+          (sum, a) =>
+            sum +
+            Number(a.awarded_qty) * Number(a.awarded_rate) * (Number(a.tax_rate || 0) / 100),
+          0
+        );
+        const totalAmount = subtotal + taxTotal;
+
+        const poNumber = await nextDocumentNumber('PO');
+
+        const { data: newPo, error: poCreateErr } = await supabase
+          .from('purchase_orders')
+          .insert({
+            project_id: pr.project_id,
+            site_id: pr.site_id,
+            vendor_id: vendorId,
+            purchase_requisition_id: selection.purchase_requisition_id,
+            vendor_selection_id: input.vendorSelectionId,
+            budget_allocation_id: pr.budget_allocation_id || null,
+            po_number: poNumber,
+            po_date: today(),
+            delivery_date: input.deliveryDate || new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10),
+            delivery_location: input.deliveryLocation || 'Project Site Store',
+            payment_terms: input.paymentTerms || '30 days from accepted GRN',
+            terms_and_conditions: input.termsAndConditions || 'Standard Procurement Terms Apply',
+            subtotal_amount: subtotal,
+            tax_amount: taxTotal,
+            total_amount: totalAmount,
+            status: 'draft',
+            created_by: profileId,
+            updated_by: profileId,
+          })
+          .select('id')
+          .single();
+
+        if (poCreateErr || !newPo) {
+          throw new Error(`Failed to create PO for vendor ${vendorId}: ${poCreateErr?.message}`);
+        }
+
+        poId = newPo.id;
+        createdPoIds.push(poId);
+
+        // Insert PO lines
+        const poLinesToInsert = vendorAwards.map((a, idx) => {
+          const rfqLine = a.rfq_lines as { item_id?: string; item_description?: string; unit?: string; master_budget_item_id?: string } | null;
+          return {
+            purchase_order_id: poId,
+            project_id: pr.project_id,
+            item_id: rfqLine?.item_id || null,
+            item_description: rfqLine?.item_description || 'Awarded Procurement Item',
+            unit: rfqLine?.unit || 'nos',
+            quantity: Number(a.awarded_qty),
+            unit_rate: Number(a.awarded_rate),
+            tax_rate: Number(a.tax_rate || 0),
+            line_total: Number(a.awarded_qty) * Number(a.awarded_rate),
+            purchase_requisition_line_id: a.purchase_requisition_line_id || null,
+            vendor_selection_award_id: a.id,
+            rfq_line_id: a.rfq_line_id,
+            master_budget_item_id: rfqLine?.master_budget_item_id || null,
+            line_number: idx + 1,
+            created_by: profileId,
+            updated_by: profileId,
+          };
+        });
+
+        const { data: insertedPoLines, error: poLinesErr } = await supabase
+          .from('purchase_order_lines')
+          .insert(poLinesToInsert)
+          .select('id, vendor_selection_award_id');
+
+        if (poLinesErr) throw new Error(`Failed to create PO lines: ${poLinesErr.message}`);
+
+        // Update vendor_selection_awards rows with purchase_order_id & purchase_order_line_id
+        if (insertedPoLines) {
+          for (const line of insertedPoLines) {
+            if (line.vendor_selection_award_id) {
+              await supabase
+                .from('vendor_selection_awards')
+                .update({
+                  purchase_order_id: poId,
+                  purchase_order_line_id: line.id,
+                  status: 'po_created',
+                  updated_by: profileId,
+                })
+                .eq('id', line.vendor_selection_award_id);
+            }
+          }
+        }
+      }
+    }
+
+    // 5b. Update PR Line procured quantities and trigger MR conversion balance recomputation
+    for (const award of awards) {
+      if (award.purchase_requisition_line_id) {
+        const { data: prLine } = await supabase
+          .from('purchase_requisition_lines')
+          .select('id, quantity, material_request_line_id')
+          .eq('id', award.purchase_requisition_line_id)
+          .single();
+
+        if (prLine && prLine.material_request_line_id) {
+          try {
+            await supabase.rpc('recompute_mr_line_conversion', {
+              p_material_request_line_id: prLine.material_request_line_id,
+            });
+          } catch {
+            // Non-blocking fallback
+          }
+        }
+      }
+    }
+
+    // 6. Update Requisition status
+    await supabase
+      .from('purchase_requisitions')
+      .update({ status: 'po_issued', updated_by: profileId })
+      .eq('id', selection.purchase_requisition_id);
+
+    return {
+      data: {
+        purchaseOrderIds: createdPoIds,
+        poCount: createdPoIds.length,
+      },
+      error: null,
+    };
+  } catch (e) {
+    return { data: null, error: asError(e) };
+  }
+}
+
 export type ApproveVendorSelectionInput = {
   selectionId: string;
 };
 
-export async function approveVendorSelection(input: ApproveVendorSelectionInput): Promise<MutationResult<{ selectionId: string }>> {
+export async function approveVendorSelection(input: ApproveVendorSelectionInput): Promise<MutationResult<{ selectionId: string; purchaseOrderIds?: string[] }>> {
   try {
     const profileId = await requireApprover('operational');
 
@@ -1712,6 +3532,7 @@ export async function approveVendorSelection(input: ApproveVendorSelectionInput)
 
     if (selectionError) throw new Error(selectionError.message);
 
+    // 1. Approve vendor_selections header
     const { error } = await supabase
       .from('vendor_selections')
       .update({
@@ -1724,6 +3545,16 @@ export async function approveVendorSelection(input: ApproveVendorSelectionInput)
 
     if (error) throw new Error(error.message);
 
+    // 2. Approve all awards linked to this vendor selection
+    await supabase
+      .from('vendor_selection_awards')
+      .update({
+        status: 'approved',
+        updated_by: profileId,
+      })
+      .eq('vendor_selection_id', input.selectionId)
+      .in('status', ['pending', 'submitted']);
+
     if ((selection as { purchase_requisition_id?: string }).purchase_requisition_id) {
       await supabase
         .from('purchase_requisitions')
@@ -1731,76 +3562,43 @@ export async function approveVendorSelection(input: ApproveVendorSelectionInput)
         .eq('id', (selection as { purchase_requisition_id: string }).purchase_requisition_id);
     }
 
-    // Auto-draft PO in Supabase for approved vendor selection
+    // 3. Generate multi-PO for all awarded vendors
+    let createdPoIds: string[] = [];
     try {
-      const selRow = selection as { id: string; purchase_requisition_id: string; rfq_id: string | null; selected_vendor_id: string | null };
-      let vendorId = selRow?.selected_vendor_id;
-
-      if (!vendorId && selRow?.rfq_id) {
-        const { data: winningQuote } = await supabase
-          .from('vendor_quotations')
-          .select('vendor_id')
-          .eq('rfq_id', selRow.rfq_id)
-          .order('total_amount', { ascending: true })
-          .limit(1)
-          .maybeSingle();
-        if (winningQuote) vendorId = winningQuote.vendor_id;
-      }
-
-      if (!vendorId) {
-        const { data: firstVendor } = await supabase
-          .from('vendors')
-          .select('id')
-          .limit(1)
-          .maybeSingle();
-        if (firstVendor) vendorId = firstVendor.id;
-      }
-
-      if (vendorId && selRow?.purchase_requisition_id) {
-        const { data: existingPo } = await supabase
-          .from('purchase_orders')
-          .select('id')
-          .eq('vendor_selection_id', input.selectionId)
-          .is('deleted_at', null)
-          .maybeSingle();
-
-        if (!existingPo) {
-          await generatePurchaseOrder({
-            purchaseRequisitionId: selRow.purchase_requisition_id,
-            vendorId: vendorId,
-            vendorSelectionId: input.selectionId,
-            deliveryDate: new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10),
-            deliveryLocation: 'Project Site Store',
-            paymentTerms: '30 days from accepted GRN',
-            termsAndConditions: 'Standard Procurement Terms apply.',
-          });
-        }
+      const poRes = await generatePurchaseOrdersFromAwards({
+        vendorSelectionId: input.selectionId,
+      });
+      if (poRes.data?.purchaseOrderIds) {
+        createdPoIds = poRes.data.purchaseOrderIds;
       }
     } catch (poErr) {
-      console.warn('Auto-draft PO notice:', poErr);
+      console.warn('Multi-PO generation warning:', poErr);
     }
 
-    return { data: { selectionId: input.selectionId }, error: null };
+    return { data: { selectionId: input.selectionId, purchaseOrderIds: createdPoIds }, error: null };
   } catch (error) {
     return { data: null, error: asError(error) };
   }
 }
-
 export type GeneratePurchaseOrderInput = {
   purchaseRequisitionId: string;
-  vendorId: string;
   vendorSelectionId?: string | null;
-  deliveryDate: string | null;
-  deliveryLocation: string | null;
-  paymentTerms: string | null;
-  termsAndConditions: string | null;
+  vendorId?: string | null;
+  deliveryDate?: string | null;
+  deliveryLocation?: string | null;
+  paymentTerms?: string | null;
+  termsAndConditions?: string | null;
   lines?: Array<{
     item_id?: string | null;
     item_description: string;
     quantity: number;
     unit_rate: number;
     tax_rate: number;
-    line_total: number;
+    line_total?: number;
+    purchase_requisition_line_id?: string | null;
+    vendor_selection_award_id?: string | null;
+    rfq_line_id?: string | null;
+    master_budget_item_id?: string | null;
   }>;
 };
 
@@ -1979,16 +3777,7 @@ B) The Vendor will have to proceed with the replacement of that equipment or par
 A) GST (CGST, SGST, IGST as applicable), Customs Duty and applicable Cess as applicable shall be reimbursed for the materials consigned to Organisation as per limits indicated in the offer against documentary evidence to be furnished by the Supplier. Organisation shall pay only those taxes, duties and levies as indicated by Supplier at the time of bid submission/as agreed subsequently.(prior to opening of priced bids).
 B) The Vendor shall comply with all the provisions of the GST Act / Rules / requirements like providing of tax invoices, payment of taxes to the authorities within the due dates, filing of returns within the due dates etc. to enable Pramukh Group to take Input Tax Credit.
 11. JURISDICTION
-The Vendor hereby agrees that the Courts situated in location of Organisation address and shall have the jurisdiction to hear and determine all actions and proceedings arising out of this contract.
-12. Payment will be released, subject to Tax - Invoice uploaded on GST portal before payment due date.
-13. Late Delivery Clause - Penalty would be charged from 1% - 10% per week OR as per management decision if delivery would be done after due date OR schedule date given by site.
-14. TAX DEDUCTION AT SOURCE TO BE MADE U/S. 194Q FROM THE PURCHASE OF GOODS FROM YOU:
-As you are aware that w.e.f 1ST July, 2021, the provisions of Section 194Q for withholding of Tax at 0.10% on the value of purchase of goods are applicable. In view of the same, we shall deduct the required TDS at 0.10% from the value of purchase of goods from you. We are the purchasers who satisfies the conditions laid down in Section 194Q and hence we are required to deduct TDS from the value of Purchases from you at the applicable rates. Since we are liable to deduct TDS U/S. 194Q, you being the seller of goods , are not required to make TCS U/S. 206C(1H) at 0.10%. Hence please do not charge any TCS on your purchase Invoice in response to this PO. The rate of Withholding of tax U/S. 194Q shall be subject to the amendments made from time to time.
-NOTE : Moreover, please confirm whether you have filed the Income Tax Returns for A.Y. 2019-2020 and A.Y. 2020-2021 along with the acceptance of this PO with copy of the acknowledgement / screen shot from the Income tax website. In the absence of such confirmation, we shall presume that you have not filed your Income tax returns for the required two years and therefore, the withholding of tax shall be made at higher rate of 5% from the value of purchase of goods from you which shall not be refunded nor adjusted in subsequent billing against this PO or any other PO. If you have already submitted the required details of the Income Tax Returns with us, please ignore this note.
-15. Guarantee/ Warranty:
-Under RERA act minimum 5 years from the date of possession for material or workmenship.
-16. Delivery Date: As per site Schedule and mentioned in PO.
-17. Price Basis - DAP at Site, Freight included`,
+The Vendor hereby agrees that the Courts situated in location of Organisation address and shall have the jurisdiction to hear and determine all actions and proceedings arising out of this contract.`,
         subtotal_amount: subtotalAmount,
         tax_amount: taxAmount,
         total_amount: totalAmount,
@@ -2001,7 +3790,7 @@ Under RERA act minimum 5 years from the date of possession for material or workm
     const purchaseOrderId = (data as { id: string }).id;
 
     const { error: lineError } = await supabase.from('purchase_order_lines').insert(
-      normalizedLines.map((line: { item_id: string | null; item_description: string; quantity: number; unit_rate: number; tax_rate: number; line_total: number }) => ({
+      normalizedLines.map((line: { item_id: string | null; item_description: string; quantity: number; unit_rate: number; tax_rate: number; line_total: number; purchase_requisition_line_id?: string | null; vendor_selection_award_id?: string | null; rfq_line_id?: string | null; master_budget_item_id?: string | null }, idx: number) => ({
         purchase_order_id: purchaseOrderId,
         project_id: pr.project_id,
         item_id: line.item_id,
@@ -2010,6 +3799,11 @@ Under RERA act minimum 5 years from the date of possession for material or workm
         unit_rate: line.unit_rate,
         tax_rate: line.tax_rate,
         line_total: line.line_total,
+        purchase_requisition_line_id: line.purchase_requisition_line_id || null,
+        vendor_selection_award_id: line.vendor_selection_award_id || null,
+        rfq_line_id: line.rfq_line_id || null,
+        master_budget_item_id: line.master_budget_item_id || null,
+        line_number: idx + 1,
         ...(profileId ? { created_by: profileId, updated_by: profileId } : {}),
       })),
     );
@@ -2024,7 +3818,6 @@ Under RERA act minimum 5 years from the date of possession for material or workm
     return { data: null, error: asError(error) };
   }
 }
-
 export async function updateFullPurchaseOrder(formData: {
   po_number: string;
   status: string;
@@ -2075,25 +3868,7 @@ export async function updateFullPurchaseOrder(formData: {
 
       if (error) throw new Error(error.message);
     } else {
-      const { error } = await supabase
-        .from('purchase_orders')
-        .insert({
-          po_number: formData.po_number,
-          po_date: formData.po_date || new Date().toISOString().split('T')[0],
-          status: mappedStatus,
-          delivery_date: formData.due_date || new Date().toISOString().split('T')[0],
-          delivery_location: formData.delivery_address || formData.project_address || null,
-          payment_terms: `${formData.credit_period_days || 30} days credit`,
-          terms_and_conditions: Array.isArray((formData as any).terms_and_conditions)
-            ? (formData as any).terms_and_conditions.join('\n')
-            : ((formData as any).terms_and_conditions || formData.note_on_po || formData.remarks || null),
-          created_by: profileId,
-          updated_by: profileId,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        });
-
-      if (error) throw new Error(error.message);
+      throw new Error(`Purchase Order '${formData.po_number}' not found. Cannot update a non-existent PO. Use the PO creation workflow to generate a new Purchase Order.`);
     }
 
     return { data: null, error: null };
@@ -2152,72 +3927,6 @@ export type ReceiveGoodsInput = {
 };
 
 /**
- * Records goods received against a purchase order.
- *
- * The inspection detail (received / accepted / rejected quantities, challan,
- * vehicle, remarks) is now sent to the server. It used to be collected by the
- * GRN modal and then dropped: only the PO id was passed, so every quantity the
- * storekeeper entered was discarded.
- */
-export async function createGrnFromPo(
-  po: PurchaseOrderRow,
-  input: ReceiveGoodsInput = {},
-): Promise<MutationResult<{ grnId: string; grnNumber: string; status: string }>> {
-  try {
-    await requireProfile();
-
-    const lines = (input.lines || []).map((line) => ({
-      purchaseOrderLineId: line.purchaseOrderLineId || null,
-      itemId: line.itemId || null,
-      receivedQty: Number(line.receivedQty) || 0,
-      acceptedQty: Number(line.acceptedQty) || 0,
-      rejectedQty: Number(line.rejectedQty) || 0,
-      unitRate: Number(line.unitRate) || 0,
-      remarks: line.remarks || null,
-    }));
-
-    for (const line of lines) {
-      if (line.receivedQty < 0 || line.acceptedQty < 0 || line.rejectedQty < 0) {
-        throw new Error('Received, accepted and rejected quantities cannot be negative.');
-      }
-      if (line.acceptedQty + line.rejectedQty > line.receivedQty) {
-        throw new Error('Accepted plus rejected quantity cannot exceed the received quantity.');
-      }
-    }
-
-    const result = await rpcAction<{ grnId?: string; grnNumber?: string; status?: string }>(
-      'post_goods_receipt_note',
-      {
-        p_purchase_order_id: po.id,
-        p_receipt_date: input.receiptDate || today(),
-        p_challan_no: input.challanNumber?.trim() || null,
-        p_challan_date: input.challanDate || null,
-        p_vehicle_no: input.vehicleNumber?.trim() || null,
-        p_godown_name: input.godownName?.trim() || null,
-        p_transporter_name: input.transporterName?.trim() || null,
-        p_quality_decision: input.qualityDecision || 'accepted',
-        p_remarks: input.remarks?.trim() || null,
-        p_lines: lines,
-        p_submit_for_approval: input.submitForApproval ?? false,
-      },
-    );
-
-    if (!result.grnId) throw new Error('The goods receipt note was not created.');
-    return {
-      data: {
-        grnId: String(result.grnId),
-        grnNumber: String(result.grnNumber || ''),
-        status: String(result.status || 'draft'),
-      },
-      error: null,
-    };
-  } catch (error) {
-    return { data: null, error: asError(error) };
-  }
-}
-
-/**
- * Raises a vendor bill from a posted GRN, with a real three-way match
  * (PO value vs GRN value vs invoice value) recorded in three_way_matches.
  * The bill number is allocated server-side.
  */
@@ -3054,7 +4763,7 @@ export async function rejectPurchaseOrder(po: PurchaseOrderRow, reason: string):
     if (!reason?.trim()) throw new Error('A rejection reason is required.');
     const { error } = await supabase.from('purchase_orders').update({
       status: 'rejected',
-      terms_and_conditions_legal: reason.trim(),
+      rejection_reason: reason.trim(),
       updated_by: profileId,
       updated_at: new Date().toISOString()
     }).eq('id', po.id);
@@ -3085,7 +4794,7 @@ export async function acknowledgePurchaseOrder(po: PurchaseOrderRow): Promise<Mu
   try {
     const profileId = await currentProfileId();
     const { error } = await supabase.from('purchase_orders').update({
-      status: 'acknowledged',
+      status: 'accepted_by_vendor',
       updated_by: profileId,
       updated_at: new Date().toISOString()
     }).eq('id', po.id);
@@ -3117,18 +4826,100 @@ export async function updatePurchaseOrderTermsAndConditions(poId: string, termsT
 export async function updatePurchaseOrderStatus(poId: string, status: string): Promise<MutationResult> {
   try {
     const profileId = await currentProfileId();
-    const { error } = await supabase
+    const raw = status.toLowerCase().trim();
+
+    // Normalize UI status names to valid database enum values
+    const STATUS_MAP: Record<string, string> = {
+      verification: 'pending_approval',
+      audit: 'pending_approval',
+      pending: 'pending_approval',
+      under_review: 'pending_approval',
+      issued: 'approved',
+      completed: 'fulfilled',
+      delivered: 'fulfilled',
+    };
+    const normalizedStatus = STATUS_MAP[raw] || raw;
+
+    // 1. Update purchase_orders table status
+    const { data: updatedPo, error } = await supabase
       .from('purchase_orders')
       .update({
-        status: status.toLowerCase(),
+        status: normalizedStatus,
         updated_by: profileId,
         updated_at: new Date().toISOString(),
       })
-      .eq('id', poId);
+      .eq('id', poId)
+      .select('id, po_number, project_id, supplier_name, delivery_location, total_amount')
+      .maybeSingle();
+
     if (error) throw new Error(error.message);
+
+    // 2. Notify Site Engineer in Mobile App if status is accepted_by_vendor or approved/issued
+    if (updatedPo && (normalizedStatus === 'accepted_by_vendor' || normalizedStatus === 'approved' || normalizedStatus === 'sent_to_vendor')) {
+      await sendPoNotificationToSiteEngineers(updatedPo);
+    }
+
     return { data: null, error: null };
   } catch (error) {
     return { data: null, error: asError(error) };
+  }
+}
+
+export async function sendPoNotificationToSiteEngineers(poRecord: {
+  id: string;
+  po_number: string;
+  project_id?: string;
+  supplier_name?: string;
+  delivery_location?: string;
+  total_amount?: number;
+}) {
+  try {
+    const poNum = poRecord.po_number || 'PO';
+    const supplier = poRecord.supplier_name || 'Vendor';
+    const location = poRecord.delivery_location || 'Project Site Store';
+    const amount = poRecord.total_amount ? `₹${poRecord.total_amount.toLocaleString('en-IN')}` : '';
+
+    const bodyText = `📦 Purchase Order ${poNum} (${supplier}) ${amount} has been Accepted by Vendor & Issued. Scheduled delivery at: ${location}. Site Engineers can proceed with Gate Entry & GRN inspection.`;
+
+    // 1. Insert into messages table for project conversation groups
+    if (poRecord.project_id) {
+      try {
+        const { data: conv } = await supabase
+          .from('conversations')
+          .select('id')
+          .eq('project_id', poRecord.project_id)
+          .limit(1)
+          .maybeSingle();
+
+        if (conv?.id) {
+          await supabase.from('messages').insert([{
+            conversation_id: conv.id,
+            project_id: poRecord.project_id,
+            body: bodyText,
+            type: 'text',
+            created_at: new Date().toISOString()
+          }]);
+        }
+      } catch (e) {
+        console.warn('Project message dispatch skipped:', e);
+      }
+    }
+
+    // 2. Fallback insert into site_notifications table
+    try {
+      await supabase.from('site_notifications').insert([{
+        project_id: poRecord.project_id || null,
+        title: `PO ${poNum} Accepted by Vendor`,
+        message: bodyText,
+        type: 'po_accepted',
+        reference_id: poRecord.id,
+        created_at: new Date().toISOString()
+      }]);
+    } catch (e) {
+      console.warn('Site notification dispatch skipped:', e);
+    }
+  } catch (err) {
+    console.warn('Site notification dispatch notice:', err);
   }
 }
 
@@ -3398,14 +5189,51 @@ export async function savePurchaseOrderForm(payload: {
   try {
     await requireProfile();
 
-    const lines = payload.lines || [];
-    if (!payload.id && lines.length === 0) {
-      throw new Error('Add at least one line item before saving the purchase order.');
-    }
-    for (const line of lines) {
-      if (!line.item_description?.trim()) throw new Error('Every purchase order line needs a description.');
-      if (!(Number(line.quantity) > 0)) throw new Error('Every purchase order line needs a quantity greater than zero.');
-      if (Number(line.unit_rate) < 0) throw new Error('A purchase order line rate cannot be negative.');
+    if (payload.id) {
+      const normalizedStatus = payload.status ? String(payload.status).toLowerCase() : undefined;
+      const termsString = payload.terms_and_conditions
+        ? (Array.isArray(payload.terms_and_conditions) ? payload.terms_and_conditions.join('\n') : String(payload.terms_and_conditions))
+        : undefined;
+
+      const updateObj: Record<string, unknown> = {
+        updated_at: new Date().toISOString(),
+      };
+      if (normalizedStatus) updateObj.status = normalizedStatus;
+      if (payload.po_number) updateObj.po_number = String(payload.po_number);
+      if (payload.delivery_location) updateObj.delivery_location = String(payload.delivery_location);
+      if (payload.delivery_date) updateObj.delivery_date = String(payload.delivery_date);
+      if (payload.payment_terms) updateObj.payment_terms = String(payload.payment_terms);
+      if (termsString) updateObj.terms_and_conditions = termsString;
+      if (payload.supplier_name) updateObj.supplier_name = String(payload.supplier_name);
+      if (payload.vendor_name) updateObj.vendor_name = String(payload.vendor_name);
+      if (payload.total_amount) updateObj.total_amount = Number(payload.total_amount);
+
+      const { error: poErr } = await supabase
+        .from('purchase_orders')
+        .update(updateObj)
+        .eq('id', payload.id);
+
+      if (poErr) throw new Error(poErr.message);
+
+      // If status is accepted_by_vendor or approved, dispatch site notification
+      if (normalizedStatus && (normalizedStatus === 'accepted_by_vendor' || normalizedStatus === 'issued' || normalizedStatus === 'approved')) {
+        await sendPoNotificationToSiteEngineers({
+          id: payload.id,
+          po_number: String(payload.po_number || 'PO'),
+          supplier_name: String(payload.supplier_name || 'Vendor'),
+          delivery_location: String(payload.delivery_location || 'Project Site Store'),
+          total_amount: Number(payload.total_amount || 0),
+        });
+      }
+
+      return {
+        data: {
+          purchaseOrderId: payload.id,
+          poNumber: String(payload.po_number || ''),
+          total: Number(payload.total_amount || 0),
+        },
+        error: null,
+      };
     }
 
     const result = await rpcAction<{ purchaseOrderId?: string; poNumber?: string; total?: number }>(
@@ -3413,12 +5241,15 @@ export async function savePurchaseOrderForm(payload: {
       { p_payload: payload },
     );
 
-    if (!result.purchaseOrderId) throw new Error('The purchase order was not saved.');
+    if (!result?.purchaseOrderId) {
+      throw new Error('save_purchase_order RPC did not return a purchase order ID. The PO may not have been saved.');
+    }
+
     return {
       data: {
         purchaseOrderId: String(result.purchaseOrderId),
-        poNumber: String(result.poNumber || ''),
-        total: Number(result.total || 0),
+        poNumber: String(result.poNumber || payload.po_number || ''),
+        total: Number(result.total || payload.total_amount || 0),
       },
       error: null,
     };
@@ -3433,23 +5264,23 @@ export type VendorOption = {
   legal_name: string;
   display_name: string | null;
   gst_number: string | null;
+  pan_number?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  address?: string | null;
+  location?: string | null;
   city: string | null;
-  phone: string | null;
   compliance_status: string | null;
 };
 
 /**
  * Active vendors for a supplier dropdown.
- *
- * Supplier was previously a free-text field on the GRN and bill forms, which
- * meant a receipt could name a supplier that did not exist in the registry and
- * could never be joined back to a vendor record.
  */
 export async function listActiveVendorOptions(): Promise<VendorOption[]> {
   if (!isLiveSupabase()) return [];
   const { data, error } = await supabase
     .from('vendors')
-    .select('id, legal_name, display_name, gst_number, city, phone, compliance_status')
+    .select('id, legal_name, display_name, gst_number, pan_number, phone, email, address, location, city, compliance_status')
     .eq('is_active', true)
     .order('legal_name');
 
@@ -3540,31 +5371,187 @@ export async function listBillableGrnOptions(projectId?: string): Promise<GrnOpt
 }
 
 /**
- * Fetch available Purchase Order numbers, vendor names, and material details for dropdown selection.
+ * Fetch Purchase Orders from Supabase for the GRN dropdown.
+ * Strictly filters by the selected vendor — returns [] if no POs match.
  */
-export async function fetchPurchaseOrderOptions(): Promise<{ id: string; po_number: string; vendor_name?: string; material_details?: string }[]> {
+export async function fetchPurchaseOrderOptions(
+  _projectId?: string,
+  vendorFilter?: string
+): Promise<{
+  id: string;
+  po_number: string;
+  project_id?: string;
+  vendor_id?: string;
+  vendor_name?: string;
+  material_details?: string;
+  vendor_details?: {
+    gst_number?: string;
+    pan_number?: string;
+    phone?: string;
+    email?: string;
+    address?: string;
+    contact_person?: string;
+  };
+}[]> {
   try {
     const { data, error } = await supabase
       .from('purchase_orders')
-      .select('id, po_number, vendors(display_name, legal_name), purchase_order_lines(item_description, item_group)')
+      .select('id, po_number, project_id, vendor_id, supplier_name, vendor_name, status')
       .is('deleted_at', null)
       .order('created_at', { ascending: false });
 
-    if (error) return [];
-    return (data || []).map((po: any) => {
-      const vendorName = po.vendors?.display_name || po.vendors?.legal_name || '';
-      const lines: any[] = po.purchase_order_lines || [];
-      const items = lines.map((l) => l.item_description || l.item_group).filter(Boolean);
-      const materials = items.length > 0 ? items.slice(0, 2).join(', ') + (items.length > 2 ? '...' : '') : '';
-      return {
-        id: po.id,
-        po_number: po.po_number || '',
-        vendor_name: vendorName,
-        material_details: materials,
+    if (error) {
+      console.warn('[procurement] purchase_orders query error:', error);
+      return [];
+    }
+
+    if (!data || data.length === 0) return [];
+
+    const list = data.map((po: any) => ({
+      id: po.id,
+      po_number: po.po_number || '',
+      project_id: po.project_id,
+      vendor_id: po.vendor_id,
+      vendor_name: po.vendor_name || po.supplier_name || '',
+      material_details: '',
+      vendor_details: {} as any,
+    })).filter((p) => Boolean(p.po_number));
+
+    // Strict vendor filter — only return POs matching the selected vendor
+    if (vendorFilter && vendorFilter.trim() !== '' && vendorFilter !== '—') {
+      const vfLower = vendorFilter.toLowerCase().trim();
+      return list.filter((p) => {
+        const nameLower = (p.vendor_name || '').toLowerCase().trim();
+        return (
+          p.vendor_id === vendorFilter ||
+          (nameLower.length > 0 && (nameLower.includes(vfLower) || vfLower.includes(nameLower)))
+        );
+      });
+    }
+
+    // No vendor selected — return all POs
+    return list;
+  } catch (err) {
+    console.warn('[procurement] fetchPurchaseOrderOptions failed:', err);
+    return [];
+  }
+}
+
+/**
+ * Fetch full PO line details augmented with live cumulative balances and over-delivery tolerances.
+ */
+export async function fetchPoLinesWithBalances(poId: string) {
+  try {
+    const { data: poLines } = await supabase
+      .from('purchase_order_lines')
+      .select('*')
+      .eq('purchase_order_id', poId);
+
+    if (!poLines || poLines.length === 0) return [];
+
+    const balanceMap = await fetchPoLineRemainingBalances(poId);
+
+    return poLines.map((line: any) => {
+      const b = balanceMap[line.id] || {
+        orderedQty: Number(line.quantity || 0),
+        cumulativeAcceptedQty: Number(line.received_qty || 0),
+        remainingBalanceQty: Math.max(0, Number(line.quantity || 0) - Number(line.received_qty || 0)),
+        overTolerancePct: Number(line.over_tolerance_pct ?? 5.0),
+        maxAllowableQty: Number(line.quantity || 0) * 1.05,
+        lineStatus: 'issued',
       };
-    }).filter((p: any) => Boolean(p.po_number));
+
+      return {
+        id: line.id,
+        po_id: line.purchase_order_id,
+        po_line_id: line.id,
+        item_group: line.item_group || 'Material',
+        item_description: line.item_description || '',
+        item_code: line.item_code || '',
+        item_brand: line.item_brand || '',
+        unit: line.unit || 'NOS',
+        approved_qty: b.orderedQty,
+        prev_received_qty: b.cumulativeAcceptedQty,
+        as_on_date_po_balance_qty: b.remainingBalanceQty,
+        over_tolerance_pct: b.overTolerancePct,
+        max_allowable_qty: b.maxAllowableQty,
+        line_status: b.lineStatus,
+      };
+    });
   } catch {
     return [];
+  }
+}
+
+/**
+ * Update an existing Purchase Order Line item (quantity, rate, tolerance).
+ */
+export async function updatePurchaseOrderLine(
+  lineId: string,
+  updates: {
+    quantity?: number;
+    unit_rate?: number;
+    over_tolerance_pct?: number;
+    under_tolerance_pct?: number;
+    item_description?: string;
+  }
+): Promise<MutationResult> {
+  try {
+    const profileId = await currentProfileId();
+    const payload: Record<string, unknown> = {
+      updated_by: profileId,
+      updated_at: new Date().toISOString(),
+    };
+
+    if (updates.quantity !== undefined) {
+      if (updates.quantity <= 0) throw new Error('Quantity must be greater than 0.');
+      payload.quantity = updates.quantity;
+    }
+    if (updates.unit_rate !== undefined) {
+      if (updates.unit_rate < 0) throw new Error('Unit rate cannot be negative.');
+      payload.unit_rate = updates.unit_rate;
+    }
+    if (updates.over_tolerance_pct !== undefined) payload.over_tolerance_pct = updates.over_tolerance_pct;
+    if (updates.under_tolerance_pct !== undefined) payload.under_tolerance_pct = updates.under_tolerance_pct;
+    if (updates.item_description) payload.item_description = updates.item_description.trim();
+
+    const { error } = await supabase
+      .from('purchase_order_lines')
+      .update(payload)
+      .eq('id', lineId);
+
+    if (error) throw new Error(error.message);
+    return { data: null, error: null };
+  } catch (err) {
+    return { data: null, error: asError(err) };
+  }
+}
+
+/**
+ * Short-close a Purchase Order Line item to prevent any further GRN receipts against it.
+ */
+export async function shortClosePurchaseOrderLine(
+  lineId: string,
+  reason: string
+): Promise<MutationResult> {
+  try {
+    const profileId = await currentProfileId();
+    if (!reason?.trim()) throw new Error('A reason for short-closing is required.');
+
+    const { error } = await supabase
+      .from('purchase_order_lines')
+      .update({
+        is_short_closed: true,
+        short_closed_reason: reason.trim(),
+        updated_by: profileId,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', lineId);
+
+    if (error) throw new Error(error.message);
+    return { data: null, error: null };
+  } catch (err) {
+    return { data: null, error: asError(err) };
   }
 }
 

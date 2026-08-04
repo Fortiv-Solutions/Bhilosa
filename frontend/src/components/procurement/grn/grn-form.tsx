@@ -27,6 +27,9 @@ import type { GrnRow } from './grn-stats-bar';
 import {
   uploadChallanInvoiceDocument,
   fetchPurchaseOrderOptions,
+  fetchPoLinesWithBalances,
+  listProcurementProjects,
+  type ProcurementProjectOption,
   printGrnReport,
   extractInvoiceForGrn,
   findDuplicateInvoice,
@@ -76,10 +79,13 @@ export interface GrnPoRemark {
 }
 
 export interface FullGrnFormState {
-  // Uploaded Invoice Document Details
+  // Uploaded Invoice & Delivery Challan Document Details
   uploaded_invoice_url?: string;
   uploaded_invoice_path?: string;
   uploaded_invoice_name?: string;
+  uploaded_challan_url?: string;
+  uploaded_challan_path?: string;
+  uploaded_challan_name?: string;
 
   // Header Fields (in exact order)
   qc_no: string;
@@ -204,28 +210,15 @@ export function GrnForm({
   /** Per-page OCR telemetry, shown when a read fails so the cause is visible. */
   const [extractDiagnostics, setExtractDiagnostics] = useState<PageDiagnosticSummary[] | null>(null);
 
-  // Supabase fetched Purchase Orders
-  const [poOptions, setPoOptions] = useState<{ id: string; po_number: string; vendor_name?: string; material_details?: string }[]>([]);
-
-  useEffect(() => {
-    let active = true;
-    fetchPurchaseOrderOptions().then((list) => {
-      if (active) {
-        setPoOptions(list);
-      }
-    });
-    return () => {
-      active = false;
-    };
-  }, []);
-
   const [form, setForm] = useState<FullGrnFormState>(() => {
     const isNew = !grn.id;
     return {
-
       uploaded_invoice_url: '',
       uploaded_invoice_path: '',
       uploaded_invoice_name: '',
+      uploaded_challan_url: '',
+      uploaded_challan_path: '',
+      uploaded_challan_name: '',
       qc_no: isNew ? '' : 'QC-2026-0881',
       gr_no: grn.grn_number || '',
       grn_date: grn.received_date || `${todayStr} 10:00`,
@@ -301,6 +294,49 @@ export function GrnForm({
     };
   });
 
+  // Supabase fetched Purchase Orders
+  const [poOptions, setPoOptions] = useState<{
+    id: string;
+    po_number: string;
+    vendor_name?: string;
+    material_details?: string;
+    vendor_details?: {
+      gst_number?: string;
+      pan_number?: string;
+      phone?: string;
+      email?: string;
+      address?: string;
+      contact_person?: string;
+    };
+  }[]>([]);
+
+  useEffect(() => {
+    let active = true;
+    fetchPurchaseOrderOptions(undefined, form?.supplier_name).then((list) => {
+      if (active) {
+        setPoOptions(list);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [form?.supplier_name, form?.po_exist]);
+
+  // Supabase fetched Project Sites
+  const [projectOptions, setProjectOptions] = useState<ProcurementProjectOption[]>([]);
+
+  useEffect(() => {
+    let active = true;
+    listProcurementProjects().then((projs) => {
+      if (active && projs) {
+        setProjectOptions(projs);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
   /**
    * Reads the uploaded invoice with the deterministic OCR pipeline and merges the
    * result into the form.
@@ -310,6 +346,30 @@ export function GrnForm({
    * (approved, balance, current stock) are never touched, and the status is left
    * at Pending QC — an OCR read must not approve a receipt.
    */
+  const [uploadingChallan, setUploadingChallan] = useState(false);
+
+  const handleChallanFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadingChallan(true);
+    try {
+      const res = await uploadChallanInvoiceDocument(file, 'grn-challan');
+      if (res.data) {
+        const docData = res.data;
+        setForm((prev) => ({
+          ...prev,
+          uploaded_challan_url: docData.publicUrl,
+          uploaded_challan_path: docData.storagePath,
+          uploaded_challan_name: file.name,
+        }));
+      }
+    } catch (err) {
+      console.warn('Challan upload failed:', err);
+    } finally {
+      setUploadingChallan(false);
+    }
+  };
+
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -400,7 +460,13 @@ export function GrnForm({
   const handlePurchaseEntryChange = (index: number, field: keyof GrnPurchaseEntry, value: any) => {
     setForm((prev) => {
       const updated = [...prev.purchase_entries];
-      updated[index] = { ...updated[index], [field]: value };
+      const entry = { ...updated[index], [field]: value };
+      if (field === 'received_qty' || field === 'as_on_date_po_balance_qty') {
+        const balance = Number(field === 'as_on_date_po_balance_qty' ? value : entry.as_on_date_po_balance_qty || 0);
+        const received = Number(field === 'received_qty' ? value : entry.received_qty || 0);
+        entry.current_balance_qty = Math.max(0, balance - received);
+      }
+      updated[index] = entry;
       return { ...prev, purchase_entries: updated };
     });
   };
@@ -589,9 +655,9 @@ export function GrnForm({
 
       <form onSubmit={handleSubmit} className="space-y-6 text-xs">
         {/* ========================================================================= */}
-        {/* TOP SECTION: UPLOAD SUPPLIER INVOICE (includes challan details)           */}
+        {/* TOP SECTION: UPLOAD INVOICE & DELIVERY CHALLAN                           */}
         {/* ========================================================================= */}
-        <div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {/* Upload Supplier Invoice (grn-invoice) */}
           <div className="rounded-xl border-2 border-dashed border-emerald-500/40 bg-emerald-500/5 p-4 space-y-3 flex flex-col justify-between">
             <div className="space-y-2">
@@ -606,7 +672,7 @@ export function GrnForm({
                       <span className="rounded-full bg-emerald-500/20 px-1.5 py-0.5 text-[9px] text-emerald-600 dark:text-emerald-400 font-mono uppercase">grn-invoice</span>
                     </h3>
                     <p className="text-[11px] text-muted-foreground">
-                      Upload invoice/challan PDF or image to extract fields, auto-populate GRN details, and connect to Supabase storage.
+                      Upload invoice PDF or image to extract fields, auto-populate details, and save to Supabase storage.
                     </p>
                   </div>
                 </div>
@@ -619,7 +685,7 @@ export function GrnForm({
                       rel="noopener noreferrer"
                       className="inline-flex items-center gap-1 rounded-md border border-emerald-500/50 bg-emerald-500/10 px-2.5 py-1.5 text-[11px] font-bold text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/20 transition-all cursor-pointer shrink-0"
                     >
-                      <FileCheck className="h-3.5 w-3.5" /> View Uploaded PDF
+                      <FileCheck className="h-3.5 w-3.5" /> View Invoice
                     </a>
                   )}
                   {form.uploaded_invoice_name && (
@@ -649,25 +715,92 @@ export function GrnForm({
                   </span>
                 ) : form.uploaded_invoice_name ? (
                   <span className="flex items-center gap-1.5 text-emerald-600 font-medium truncate text-xs">
-                    <FileCheck className="h-3.5 w-3.5 text-emerald-500 shrink-0" /> Attached File: <strong className="truncate">{form.uploaded_invoice_name}</strong> (Click to change file)
+                    <FileCheck className="h-3.5 w-3.5 text-emerald-500 shrink-0" /> Invoice: <strong className="truncate">{form.uploaded_invoice_name}</strong>
                   </span>
                 ) : (
                   <span className="flex items-center gap-1.5 text-muted-foreground text-xs">
-                    <Upload className="h-3.5 w-3.5 text-emerald-600 shrink-0" /> Drag &amp; Drop or Click to Upload Invoice
+                    <Upload className="h-3.5 w-3.5 text-emerald-600 shrink-0" /> Click to Upload Supplier Invoice
                   </span>
                 )}
               </label>
 
-              {/* --- OCR progress ------------------------------------------- */}
               {extracting && (
                 <div className="flex items-center gap-2 rounded-lg border border-blue-500/40 bg-blue-500/10 px-3 py-2 text-[11px] font-semibold text-blue-700 dark:text-blue-300">
                   <Upload className="h-3.5 w-3.5 animate-spin shrink-0" />
-                  <span>
-                    Reading the invoice&hellip; scanned pages take around 30&ndash;60 seconds each. Fields will fill in
-                    automatically when it finishes.
-                  </span>
+                  <span>Reading the invoice&hellip;</span>
                 </div>
               )}
+            </div>
+          </div>
+
+          {/* Upload Delivery Challan (grn-challan) */}
+          <div className="rounded-xl border-2 border-dashed border-blue-500/40 bg-blue-500/5 p-4 space-y-3 flex flex-col justify-between">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2.5">
+                  <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-600 text-white font-bold shadow-xs">
+                    <Truck className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <h3 className="font-heading font-bold text-foreground text-xs flex items-center gap-1.5">
+                      <span>Upload Delivery Challan</span>
+                      <span className="rounded-full bg-blue-500/20 px-1.5 py-0.5 text-[9px] text-blue-600 dark:text-blue-400 font-mono uppercase">grn-challan</span>
+                    </h3>
+                    <p className="text-[11px] text-muted-foreground">
+                      Upload physical delivery receipt / gate pass document signed by site engineer to Supabase storage.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1.5">
+                  {form.uploaded_challan_url && (
+                    <a
+                      href={form.uploaded_challan_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 rounded-md border border-blue-500/50 bg-blue-500/10 px-2.5 py-1.5 text-[11px] font-bold text-blue-700 dark:text-blue-300 hover:bg-blue-500/20 transition-all cursor-pointer shrink-0"
+                    >
+                      <FileCheck className="h-3.5 w-3.5" /> View Challan
+                    </a>
+                  )}
+                  {form.uploaded_challan_name && (
+                    <button
+                      type="button"
+                      onClick={() => setForm((prev) => ({ ...prev, uploaded_challan_name: '', uploaded_challan_url: '', uploaded_challan_path: '' }))}
+                      title="Remove attached Delivery Challan document"
+                      className="rounded-md border border-red-500/40 bg-red-500/10 p-1.5 text-red-600 dark:text-red-400 hover:bg-red-500/20 transition-colors cursor-pointer"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <label className="relative flex items-center justify-center gap-2 rounded-lg border border-blue-500/30 bg-background px-3 py-2.5 text-xs font-bold text-foreground hover:bg-muted/50 cursor-pointer transition-all shadow-xs">
+                <input
+                  type="file"
+                  accept=".pdf,image/*"
+                  onChange={(e) => handleChallanFileSelect(e)}
+                  className="absolute inset-0 opacity-0 cursor-pointer"
+                  disabled={uploadingChallan}
+                />
+                {uploadingChallan ? (
+                  <span className="flex items-center gap-1.5 text-blue-600 animate-pulse font-mono text-xs">
+                    <Upload className="h-3.5 w-3.5 animate-spin" /> Saving Delivery Challan to Supabase...
+                  </span>
+                ) : form.uploaded_challan_name ? (
+                  <span className="flex items-center gap-1.5 text-blue-600 font-medium truncate text-xs">
+                    <FileCheck className="h-3.5 w-3.5 text-blue-500 shrink-0" /> Challan: <strong className="truncate">{form.uploaded_challan_name}</strong>
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-1.5 text-muted-foreground text-xs">
+                    <Truck className="h-3.5 w-3.5 text-blue-600 shrink-0" /> Click to Upload Delivery Challan
+                  </span>
+                )}
+              </label>
+            </div>
+          </div>
+        </div>
 
               {extractError && (
                 <div className="space-y-1.5 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-[11px] font-medium text-red-700 dark:text-red-300">
@@ -782,9 +915,6 @@ export function GrnForm({
                   )}
                 </div>
               )}
-            </div>
-          </div>
-        </div>
 
         {/* ========================================================================= */}
         {/* SECTION 1: HEADER FIELDS (Exact Field Order as Specified)                 */}
@@ -800,10 +930,12 @@ export function GrnForm({
               <label className="block text-[11px] font-bold uppercase text-muted-foreground mb-1">QC No.</label>
               <input
                 type="text"
-                value={form.qc_no}
-                onChange={(e) => updateHeader('qc_no', e.target.value)}
-                className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono font-bold text-foreground"
+                value={form.qc_no || '(Auto Generated)'}
+                readOnly
+                disabled
+                className="w-full rounded-lg border border-border/70 bg-muted/50 px-3 py-2 font-mono font-bold text-muted-foreground cursor-not-allowed text-xs"
               />
+              <span className="text-[9px] font-extrabold text-muted-foreground/80 block mt-0.5">⚡ Auto Generated</span>
             </div>
 
             {/* 2. GR No. */}
@@ -811,10 +943,12 @@ export function GrnForm({
               <label className="block text-[11px] font-bold uppercase text-muted-foreground mb-1">GR No.</label>
               <input
                 type="text"
-                value={form.gr_no}
-                onChange={(e) => updateHeader('gr_no', e.target.value)}
-                className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono font-extrabold text-foreground"
+                value={form.gr_no || '(Auto Generated on Save)'}
+                readOnly
+                disabled
+                className="w-full rounded-lg border border-border/70 bg-muted/50 px-3 py-2 font-mono font-extrabold text-muted-foreground cursor-not-allowed text-xs"
               />
+              <span className="text-[9px] font-extrabold text-muted-foreground/80 block mt-0.5">⚡ Auto Generated on Save</span>
             </div>
 
             {/* 3. GRN Date* */}
@@ -824,7 +958,7 @@ export function GrnForm({
                 type="text"
                 value={form.grn_date}
                 onChange={(e) => updateHeader('grn_date', e.target.value)}
-                className="w-full rounded-lg border-2 border-primary/50 bg-background px-3 py-2 font-semibold text-foreground"
+                className="w-full rounded-lg border-2 border-primary/50 bg-background px-3 py-2 font-semibold text-foreground text-xs"
                 required
               />
             </div>
@@ -832,13 +966,22 @@ export function GrnForm({
             {/* 4. Project Name* */}
             <div>
               <label className="block text-[11px] font-bold uppercase text-primary mb-1">Project Name*</label>
-              <input
-                type="text"
+              <select
                 value={form.project_name}
                 onChange={(e) => updateHeader('project_name', e.target.value)}
-                className="w-full rounded-lg border-2 border-primary/50 bg-background px-3 py-2 font-bold text-foreground"
+                className="w-full rounded-lg border-2 border-primary/50 bg-background px-3 py-2 font-bold text-foreground text-xs cursor-pointer"
                 required
-              />
+              >
+                <option value="">-- Select Project Site --</option>
+                {projectOptions.map((p) => (
+                  <option key={p.id} value={p.name}>
+                    {p.name} {p.code ? `(${p.code})` : ''}
+                  </option>
+                ))}
+                {form.project_name && !projectOptions.some((p) => p.name === form.project_name) && (
+                  <option value={form.project_name}>{form.project_name}</option>
+                )}
+              </select>
             </div>
 
             {/* 5. Name of Company */}
@@ -1227,17 +1370,50 @@ export function GrnForm({
                 <label className="block text-[11px] font-bold uppercase text-primary mb-1">From P.O.s</label>
                 <select
                   value={form.from_pos === 'Not Exist' ? '' : form.from_pos}
-                  onChange={(e) => {
-                    const selectedPo = e.target.value;
-                    updateHeader('from_pos', selectedPo);
+                  onChange={async (e) => {
+                    const selectedPoNumber = e.target.value;
+                    const poObj = poOptions.find((p) => p.po_number === selectedPoNumber);
+                    updateHeader('from_pos', selectedPoNumber);
+
                     setForm((prev) => ({
                       ...prev,
-                      from_pos: selectedPo,
-                      purchase_entries: prev.purchase_entries.map((entry) => ({
-                        ...entry,
-                        po_no: entry.po_no ? entry.po_no : selectedPo,
-                      })),
+                      from_pos: selectedPoNumber,
+                      supplier_name: poObj?.vendor_name || prev.supplier_name,
+                      phone_no: poObj?.vendor_details?.phone || prev.phone_no,
+                      mobile_no: poObj?.vendor_details?.phone || prev.mobile_no,
                     }));
+
+                    if (poObj?.id) {
+                      const fetchedLines = await fetchPoLinesWithBalances(poObj.id);
+                      if (fetchedLines && fetchedLines.length > 0) {
+                        const mappedEntries: GrnPurchaseEntry[] = fetchedLines.map((l: any) => ({
+                          po_no: selectedPoNumber,
+                          item_group: l.item_group || 'Material',
+                          item_description: l.item_description,
+                          item_code: l.item_code || '',
+                          item_brand: l.item_brand || '',
+                          location: 'Main Site Store',
+                          unit: l.unit || 'NOS',
+                          purchase_category: 'Direct Construction Material',
+                          open: true,
+                          approved_qty: l.approved_qty,
+                          as_on_date_po_balance_qty: l.as_on_date_po_balance_qty,
+                          return_qty: 0,
+                          challan_qty: l.as_on_date_po_balance_qty,
+                          received_qty: l.as_on_date_po_balance_qty,
+                          balance_quantity_allowed: true,
+                          pr_no: '',
+                          test_report_no: '',
+                          expiry_date: '',
+                          current_balance_qty: 0,
+                        }));
+
+                        setForm((prev) => ({
+                          ...prev,
+                          purchase_entries: mappedEntries,
+                        }));
+                      }
+                    }
                   }}
                   className="w-full rounded-lg border-2 border-primary/50 bg-background px-3 py-2 font-mono font-extrabold text-primary text-xs cursor-pointer"
                 >
@@ -1286,6 +1462,30 @@ export function GrnForm({
             >
               <Plus className="h-3.5 w-3.5" /> Add Purchase Entry
             </button>
+          </div>
+
+          {/* PO Live Balance & Over/Under Delivery Tolerance Guidance Banner */}
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-blue-500/30 bg-blue-500/5 p-3 text-xs shadow-2xs">
+            <div className="flex items-center gap-2.5">
+              <Scale className="h-4 w-4 text-blue-600 shrink-0" />
+              <div>
+                <span className="font-bold text-foreground font-heading">Live PO Balance &amp; Item Over-Delivery Tolerance Engine</span>
+                <p className="text-[11px] text-muted-foreground">
+                  Current receipts are dynamically validated against remaining PO balances and configured <strong>+5% over-delivery tolerance limits</strong>.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[10px] font-extrabold text-emerald-700 dark:text-emerald-300">
+                ✓ Standard Receipt (&le; Balance)
+              </span>
+              <span className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] font-extrabold text-amber-700 dark:text-amber-300">
+                ⚠️ Within +5% Tolerance
+              </span>
+              <span className="rounded-md border border-red-500/40 bg-red-500/10 px-2 py-1 text-[10px] font-extrabold text-red-700 dark:text-red-300">
+                ❌ Exceeds Tolerance Limit
+              </span>
+            </div>
           </div>
 
           <div className="overflow-x-auto rounded-xl border border-border shadow-2xs">
@@ -1443,12 +1643,28 @@ export function GrnForm({
                       </td>
                       {/* 14. Received Qty. */}
                       <td className="px-3 py-2 text-right">
-                        <input
-                          type="number"
-                          value={item.received_qty}
-                          onChange={(e) => handlePurchaseEntryChange(idx, 'received_qty', Number(e.target.value))}
-                          className="w-20 rounded border border-border bg-background px-1.5 py-1 text-right text-xs font-extrabold text-foreground"
-                        />
+                        <div className="flex flex-col items-end gap-0.5">
+                          <input
+                            type="number"
+                            value={item.received_qty}
+                            onChange={(e) => handlePurchaseEntryChange(idx, 'received_qty', Number(e.target.value))}
+                            className={`w-24 rounded border px-1.5 py-1 text-right text-xs font-extrabold transition-colors ${
+                              (item.received_qty || 0) > (item.as_on_date_po_balance_qty || 0) * 1.05 + 0.01
+                                ? 'border-red-500 bg-red-500/10 text-red-700 dark:text-red-300 ring-1 ring-red-500'
+                                : (item.received_qty || 0) > (item.as_on_date_po_balance_qty || 0)
+                                ? 'border-amber-500 bg-amber-500/10 text-amber-800 dark:text-amber-300 ring-1 ring-amber-500'
+                                : 'border-border bg-background text-foreground'
+                            }`}
+                            title={`Live PO Balance: ${item.as_on_date_po_balance_qty || 0}. Max Allowable (+5% Tol): ${((item.as_on_date_po_balance_qty || 0) * 1.05).toFixed(2)}`}
+                          />
+                          {(item.received_qty || 0) > (item.as_on_date_po_balance_qty || 0) * 1.05 + 0.01 ? (
+                            <span className="text-[9px] font-extrabold text-red-600 dark:text-red-400">❌ Exceeds 5% Tol</span>
+                          ) : (item.received_qty || 0) > (item.as_on_date_po_balance_qty || 0) ? (
+                            <span className="text-[9px] font-extrabold text-amber-600 dark:text-amber-400">⚠️ +5% Tol</span>
+                          ) : (
+                            <span className="text-[9px] font-semibold text-emerald-600 dark:text-emerald-400">✓ In Balance</span>
+                          )}
+                        </div>
                       </td>
                       {/* 15. Balance Quantity Allowed */}
                       <td className="px-3 py-2 text-center">
@@ -1659,6 +1875,56 @@ export function GrnForm({
           <h3 className="font-bold uppercase tracking-wider text-muted-foreground border-b border-border pb-2">
             4. Post-Receipt Accounting &amp; PO Remarks Summary (Total {form.po_remarks_list.length})
           </h3>
+
+          {/* Production-Grade Receipt Summary Card */}
+          {(() => {
+            const totalItems = form.purchase_entries.length;
+            const totalReceived = form.purchase_entries.reduce((sum, item) => sum + (item.received_qty || 0), 0);
+            const totalBalance = form.purchase_entries.reduce((sum, item) => sum + (item.as_on_date_po_balance_qty || 0), 0);
+            const toleranceExceedCount = form.purchase_entries.filter((item) => (item.received_qty || 0) > (item.as_on_date_po_balance_qty || 0) * 1.05 + 0.01).length;
+            const toleranceWithinCount = form.purchase_entries.filter((item) => (item.received_qty || 0) > (item.as_on_date_po_balance_qty || 0) && (item.received_qty || 0) <= (item.as_on_date_po_balance_qty || 0) * 1.05 + 0.01).length;
+
+            return (
+              <div className="rounded-xl border border-primary/30 bg-primary/5 p-4 space-y-3 shadow-2xs">
+                <div className="flex items-center justify-between border-b border-primary/20 pb-2">
+                  <h4 className="font-heading text-xs font-bold uppercase tracking-wider text-primary flex items-center gap-2">
+                    <CheckCircle2 className="h-4 w-4" />
+                    Receipt Summary &amp; AP Accrual Telemetry
+                  </h4>
+                  <span className="text-[10px] font-mono font-bold text-muted-foreground uppercase">
+                    PO: {form.from_pos || 'N/A'}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  <div className="rounded-lg border border-border bg-background p-2.5 space-y-0.5">
+                    <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">Total Line Items</span>
+                    <p className="font-mono text-sm font-extrabold text-foreground">{totalItems} Items</p>
+                  </div>
+                  <div className="rounded-lg border border-border bg-background p-2.5 space-y-0.5">
+                    <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">Current Receipt Qty</span>
+                    <p className="font-mono text-sm font-extrabold text-primary">{totalReceived.toLocaleString('en-IN')}</p>
+                  </div>
+                  <div className="rounded-lg border border-border bg-background p-2.5 space-y-0.5">
+                    <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">Prior PO Balance</span>
+                    <p className="font-mono text-sm font-extrabold text-muted-foreground">{totalBalance.toLocaleString('en-IN')}</p>
+                  </div>
+                  <div className="rounded-lg border border-border bg-background p-2.5 space-y-0.5">
+                    <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">Tolerance Audit</span>
+                    <p className="font-mono text-xs font-bold text-foreground">
+                      {toleranceExceedCount > 0 ? (
+                        <span className="text-red-600 dark:text-red-400 font-extrabold">❌ {toleranceExceedCount} Exceeded</span>
+                      ) : toleranceWithinCount > 0 ? (
+                        <span className="text-amber-600 dark:text-amber-400 font-extrabold">⚠️ {toleranceWithinCount} +5% Tol</span>
+                      ) : (
+                        <span className="text-emerald-600 dark:text-emerald-400 font-extrabold">✓ 100% In Balance</span>
+                      )}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
 
           <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2 lg:grid-cols-4">
             {/* Total Extra Items Received */}

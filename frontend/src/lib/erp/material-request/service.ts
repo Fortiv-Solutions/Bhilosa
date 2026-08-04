@@ -68,7 +68,49 @@ export async function listMaterialRequestsPaged(params: MrPagedParams): Promise<
 
     if (!error && data) {
       const payload = data as { total: number; rows: MaterialRequestRow[] };
-      return { rows: payload.rows ?? [], total: Number(payload.total ?? 0) };
+      let rows = payload.rows ?? [];
+
+      // Hydrate line items for all MRs (RPC doesn't return joined relations)
+      const allMrIds = rows.map((r) => r.id);
+      if (allMrIds.length > 0) {
+        const { data: linesData } = await supabase
+          .from('material_request_lines')
+          .select('*')
+          .in('material_request_id', allMrIds)
+          .order('line_number', { ascending: true });
+
+        const linesByMrId: Record<string, any[]> = {};
+        (linesData ?? []).forEach((line) => {
+          if (!linesByMrId[line.material_request_id]) linesByMrId[line.material_request_id] = [];
+          linesByMrId[line.material_request_id].push(line);
+        });
+
+        // Hydrate profiles for raised_by user IDs
+        const userIds = rows.map((r) => r.raised_by).filter(Boolean) as string[];
+        const profilesByUserId: Record<string, any> = {};
+        if (userIds.length > 0) {
+          const { data: profilesData } = await supabase
+            .from('profiles')
+            .select('id, name, full_name, email')
+            .in('id', userIds);
+          (profilesData ?? []).forEach((p: any) => {
+            profilesByUserId[p.id] = p;
+          });
+        }
+
+        rows = rows.map((mr) => {
+          const lines = linesByMrId[mr.id] ?? [];
+          const firstLine = lines[0];
+          return {
+            ...mr,
+            material_request_lines: lines,
+            profiles: profilesByUserId[mr.raised_by ?? ''] ?? mr.profiles ?? null,
+            activity_name: mr.activity_name ?? firstLine?.activity_name ?? null,
+            activity_code: mr.activity_code ?? firstLine?.activity_code ?? null,
+          };
+        });
+      }
+      return { rows, total: Number(payload.total ?? 0) };
     }
   } catch {
     /* fallback to direct table select */
@@ -76,7 +118,7 @@ export async function listMaterialRequestsPaged(params: MrPagedParams): Promise<
 
   let query = supabase
     .from('material_requests')
-    .select('*, material_request_lines(*), profiles!material_requests_raised_by_fkey(name, email), projects(name), project_sites(name)', { count: 'exact' })
+    .select('*, material_request_lines(*), profiles!material_requests_raised_by_fkey(id, name, full_name, email), projects(name), project_sites(name)', { count: 'exact' })
     .is('deleted_at', null)
     .order('created_at', { ascending: false });
 
@@ -92,7 +134,17 @@ export async function listMaterialRequestsPaged(params: MrPagedParams): Promise<
 
   const { data, count, error } = await query.range((params.page - 1) * params.pageSize, params.page * params.pageSize - 1);
   if (error) return { rows: [], total: 0 };
-  return { rows: (data ?? []) as MaterialRequestRow[], total: count ?? (data?.length || 0) };
+  const rawRows = (data ?? []) as MaterialRequestRow[];
+  const rows = rawRows.map((mr) => {
+    const lines = mr.material_request_lines ?? [];
+    const firstLine = lines[0];
+    return {
+      ...mr,
+      activity_name: mr.activity_name ?? firstLine?.activity_name ?? null,
+      activity_code: mr.activity_code ?? firstLine?.activity_code ?? null,
+    };
+  });
+  return { rows, total: count ?? (rows.length || 0) };
 }
 
 export async function getMaterialRequestStats(projectId?: string | null): Promise<MrStats> {

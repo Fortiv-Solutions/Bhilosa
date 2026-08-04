@@ -7,7 +7,7 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import {
   FileText, Wallet, Truck, Building2, X,
-  AlertTriangle, Layers, Trash2, Search, CheckCircle2,
+  AlertTriangle, Layers, Trash2, Search, CheckCircle2, SendHorizonal,
   Sparkles, ShieldCheck, Clock, Bot,
 } from 'lucide-react';
 import { formatCurrency } from '@/components/procurement/shared';
@@ -16,6 +16,10 @@ import {
   PR_TYPE_OPTIONS, PR_PRIORITY_OPTIONS, prTypeNeedsContractor,
   type PrFormState, type PrFormLine, type ProcurementProjectOption, type ApprovedMrRow,
 } from '@/lib/erp/purchase-requisition/types';
+import type { MasterBudgetCategory } from '@/lib/budget';
+import { analyzePrActivityBudgets } from '@/lib/erp/purchase-requisition/budget-analysis';
+import type { ActivityResolutionMap } from '@/lib/erp/purchase-requisition/activity-category-resolver';
+import { PrActivityBudgetCard } from './pr-activity-budget-card';
 import { PrStatusBadge, BudgetStatusBadge } from './pr-badges';
 import { PrItemTable } from './pr-item-table';
 
@@ -42,6 +46,12 @@ interface PrFormProps {
   onOpenAddMr: () => void;
   onRemoveMr: (mrId: string) => void;
   budgetSnapshot: BudgetSnapshot | null;
+  masterBudgetCategories?: MasterBudgetCategory[];
+  /** Activity -> Master Budget category resolution, owned by the workspace. */
+  activityResolution?: ActivityResolutionMap;
+  activityResolving?: boolean;
+  activityModelError?: string | null;
+  activityUsedModel?: boolean;
   budgetHeads: { id: string; code: string; name: string }[];
   costCodes: { id: string; code: string; name: string }[];
   projectOptions: ProcurementProjectOption[];
@@ -179,11 +189,16 @@ export function PrForm(props: PrFormProps) {
   const [isVarianceDrawerOpen, setIsVarianceDrawerOpen] = useState(false);
 
   const summary = useMemo(() => computeCostSummary(form), [form]);
-  const budget = useMemo(
-    () => computeBudgetStatus(form.budget_applicable ? budgetSnapshot : null, summary.totalEstimatedCost),
-    [budgetSnapshot, summary.totalEstimatedCost, form.budget_applicable],
+  const budgetAnalysis = useMemo(
+    () =>
+      analyzePrActivityBudgets(
+        form.lines,
+        props.masterBudgetCategories || [],
+        props.activityResolution ?? new Map(),
+      ),
+    [form.lines, props.masterBudgetCategories, props.activityResolution],
   );
-  const isOverBudget = budget.status === 'over_budget';
+  const isOverBudget = budgetAnalysis.overallStatus === 'over_budget';
 
   const validation = useMemo(() => validatePrForm(form, isOverBudget), [form, isOverBudget]);
   const readOnly = Boolean(props.readOnly);
@@ -224,43 +239,21 @@ export function PrForm(props: PrFormProps) {
             </div>
 
             <div className="flex items-center gap-3">
-              <BudgetStatusBadge status={budget.status} />
+              <BudgetStatusBadge status={budgetAnalysis.overallStatus} />
               <PrStatusBadge status={form.status} />
             </div>
           </div>
 
-          {/* Real-time Budget Status Banner */}
+          {/* Activity-Wise AI Budget Analysis Card */}
           {form.budget_applicable && (
-            <div className={`rounded-xl border p-3.5 text-xs font-semibold flex flex-wrap items-center justify-between gap-3 ${
-              isOverBudget
-                ? 'border-red-300 bg-red-50 text-red-800 dark:border-red-900/40 dark:bg-red-950/30 dark:text-red-400'
-                : budget.status === 'near_limit'
-                ? 'border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-400'
-                : 'border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-900/40 dark:bg-emerald-950/30 dark:text-emerald-400'
-            }`}>
-              <div className="flex items-center gap-2">
-                <Wallet className="h-4 w-4 flex-shrink-0" />
-                <div>
-                  <span className="font-bold">Budget Availability Status: </span>
-                  <span>
-                    {isOverBudget
-                      ? `Requested PR amount (${formatCurrency(summary.totalEstimatedCost)}) exceeds remaining budget by ${formatCurrency(Math.abs(budget.remaining))}`
-                      : `Available Budget: ${formatCurrency(budgetSnapshot?.available ?? 0)} (Remaining after PR: ${formatCurrency(budget.remaining)})`}
-                  </span>
-                </div>
-              </div>
-
-              {isOverBudget && (
-                <button
-                  type="button"
-                  onClick={() => setIsVarianceDrawerOpen(true)}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-3 py-1.5 text-xs font-bold text-white shadow-xs hover:bg-red-700 transition-colors"
-                >
-                  <AlertTriangle className="h-3.5 w-3.5" />
-                  Resolve Budget Variance (3 Options)
-                </button>
-              )}
-            </div>
+            <PrActivityBudgetCard
+              analysis={budgetAnalysis}
+              resolving={props.activityResolving}
+              modelError={props.activityModelError}
+              usedModel={props.activityUsedModel}
+              onResolveVariance={() => setIsVarianceDrawerOpen(true)}
+              readOnly={readOnly}
+            />
           )}
 
           {/* Validation Summary Banner */}
@@ -281,11 +274,13 @@ export function PrForm(props: PrFormProps) {
               <span className="text-xs font-bold text-foreground font-heading flex items-center gap-1.5">
                 <Layers className="h-3.5 w-3.5 text-primary" /> Source Material Requisition
               </span>
-              <SearchableApprovedMrDropdown
-                approvedMrs={approvedMrs}
-                onSelectMr={onSelectMrFromDropdown}
-                onOpenAddMr={onOpenAddMr}
-              />
+              {sourceChips.length === 0 && (
+                <SearchableApprovedMrDropdown
+                  approvedMrs={approvedMrs}
+                  onSelectMr={onSelectMrFromDropdown}
+                  onOpenAddMr={onOpenAddMr}
+                />
+              )}
             </div>
 
             {sourceChips.length === 0 ? (
@@ -325,23 +320,15 @@ export function PrForm(props: PrFormProps) {
                   {projectOptions.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
               </Field>
-              <Field label="Sub Project / Site">
-                <select value={form.site_id ?? ''} onChange={(e) => update({ site_id: e.target.value || null })} className={FIELD}>
-                  <option value="">—</option>
-                  {(projectOptions.find((p) => p.id === form.project_id)?.project_sites ?? []).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-                </select>
+              <Field label="Site" required>
+                <input
+                  value={form.delivery_address}
+                  onChange={(e) => update({ delivery_address: e.target.value })}
+                  placeholder="Auto-filled from MR Site Info"
+                  className={FIELD}
+                />
               </Field>
 
-              <Field label="Budget Applicable">
-                <select
-                  value={form.budget_applicable ? 'yes' : 'no'}
-                  onChange={(e) => update({ budget_applicable: e.target.value === 'yes' })}
-                  className={FIELD}
-                >
-                  <option value="yes">Yes</option>
-                  <option value="no">No</option>
-                </select>
-              </Field>
               <Field label="Contractor / Service Provider Name">
                 <input
                   value={form.contractor_name}
@@ -358,10 +345,7 @@ export function PrForm(props: PrFormProps) {
                   className={FIELD}
                 />
               </Field>
-              <Field label="Activity Name" required><input value={form.activity_name} onChange={(e) => update({ activity_name: e.target.value })} placeholder="From MR" className={FIELD} /></Field>
 
-              <Field label="Activity Codes*"><input value={form.activity_code} onChange={(e) => update({ activity_code: e.target.value })} className={FIELD} /></Field>
-              <Field label="WBS Code"><input value={form.wbs_code} onChange={(e) => update({ wbs_code: e.target.value })} className={FIELD} /></Field>
               <Field label="PR Type">
                 <select value={form.pr_type} onChange={(e) => update({ pr_type: e.target.value as PrFormState['pr_type'] })} className={FIELD}>
                   {PR_TYPE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
@@ -445,7 +429,7 @@ export function PrForm(props: PrFormProps) {
                 />
               </Field>
 
-              <Field label="Prepared By">
+              <Field label="Prepared By (PR Creator)">
                 <input
                   type="text"
                   value={
@@ -454,7 +438,17 @@ export function PrForm(props: PrFormProps) {
                     'Rohan Mehta (Site Eng)'
                   }
                   onChange={(e) => update({ prepared_by: e.target.value, department: e.target.value })}
-                  placeholder="Prepared by name"
+                  placeholder="PR Creator Name"
+                  className={FIELD}
+                />
+              </Field>
+
+              <Field label="MR Raised By">
+                <input
+                  type="text"
+                  value={form.mr_raised_by || form.lines[0]?.raised_by || 'Rohan Mehta (Site Eng)'}
+                  onChange={(e) => update({ mr_raised_by: e.target.value })}
+                  placeholder="Material Request Requester"
                   className={FIELD}
                 />
               </Field>
@@ -475,9 +469,17 @@ export function PrForm(props: PrFormProps) {
                   onChange={(e) => update({ status: e.target.value as any })}
                   className={FIELD}
                 >
-                  <option value="auto_draft_pr">auto draft from PR</option>
+                  <option value="draft">Draft</option>
                   <option value="under_verification">Pending For verification</option>
+                  <option value="awaiting_assignment">Awaiting Assignment</option>
+                  <option value="pending_approval">Pending Approval</option>
                   <option value="approved">Approved</option>
+                  <option value="returned_to_draft">Returned to Draft</option>
+                  <option value="revision_required">Revision Required</option>
+                  <option value="rejected">Rejected</option>
+                  <option value="on_hold">On Hold</option>
+                  <option value="closed">Closed</option>
+                  <option value="auto_draft_pr">Auto-Draft</option>
                 </select>
               </Field>
             </div>
@@ -496,20 +498,21 @@ export function PrForm(props: PrFormProps) {
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {props.actions}
-            {props.onSendForVerification && (
+            {!readOnly && props.onSendForVerification && (
               <button
                 type="button"
                 onClick={() => {
                   if (validation.length > 0) {
                     setShowValidation(true);
                     window.scrollTo({ top: 0, behavior: 'smooth' });
+                    alert(`Cannot send PR for verification:\n• ${validation.join('\n• ')}`);
                   } else {
                     props.onSendForVerification?.();
                   }
                 }}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-600 bg-emerald-50 px-3.5 py-2 text-xs font-bold text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-950/40 dark:text-emerald-300 transition-colors"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-xs font-bold text-primary-foreground hover:bg-primary/90 shadow-sm transition-colors cursor-pointer font-heading"
               >
-                <CheckCircle2 className="h-4 w-4" /> Create PR / Send for Quotation
+                <SendHorizonal className="h-4 w-4" /> Send for Verification
               </button>
             )}
           </div>

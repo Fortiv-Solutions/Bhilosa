@@ -886,43 +886,290 @@ export function BillsForm({ bill, onSubmit, onPrint, onCancel }: BillsFormProps)
               <tbody className="divide-y divide-border/60">
                 {form.purchase_bill_entries.map((item, idx) => (
                   <tr key={idx} className="hover:bg-muted/30 transition-colors align-middle font-mono">
-                    <td className="px-3 py-2 text-center font-bold text-muted-foreground">{item.sr_no}</td>
-                    <td className="px-3 py-2 font-sans font-bold text-primary">{item.gr_no}</td>
-                    <td className="px-3 py-2 font-sans font-semibold text-foreground">{item.po_no}</td>
-                    <td className="px-3 py-2 font-sans text-muted-foreground">{item.challan_no}</td>
-                    <td className="px-3 py-2 font-sans text-muted-foreground">{item.item_group}</td>
-                    <td className="px-3 py-2 font-sans font-bold text-foreground">{item.item_desc}</td>
-                    <td className="px-3 py-2 font-sans font-bold text-foreground">{item.item_brand}</td>
-                    <td className="px-3 py-2 text-center font-sans font-bold text-muted-foreground">{item.unit}</td>
-                    <td className="px-3 py-2 text-right font-extrabold text-foreground">{item.received_qty}</td>
-                    <td className="px-3 py-2 font-sans text-muted-foreground">{item.purchase_category}</td>
-                    <td className="px-3 py-2 text-right font-semibold">₹{item.po_basic_rate.toFixed(2)}</td>
-                    <td className="px-3 py-2 text-right">{item.po_discount_perc}%</td>
-                    <td className="px-3 py-2 text-right">₹{item.po_discount_amt}</td>
-                    <td className="px-3 py-2 text-right font-bold">₹{item.po_rate.toFixed(2)}</td>
-                    <td className="px-3 py-2 text-right">
+                    {/* 1. Sr No */}
+                    <td className="px-2 py-2 text-center font-bold text-muted-foreground">{item.sr_no || idx + 1}</td>
+
+                    {/* 2. G.R. No */}
+                    <td className="px-2 py-2">
+                      <input
+                        type="text"
+                        value={item.gr_no}
+                        onChange={(e) => handleBillEntryChange(idx, 'gr_no', e.target.value)}
+                        className="w-32 rounded border border-border bg-background px-1.5 py-1 font-sans font-bold text-primary focus:outline-none focus:border-primary"
+                      />
+                    </td>
+
+                    {/* 3. P.O. No */}
+                    <td className="px-2 py-2">
+                      <input
+                        type="text"
+                        value={item.po_no}
+                        onChange={(e) => handleBillEntryChange(idx, 'po_no', e.target.value)}
+                        className="w-32 rounded border border-border bg-background px-1.5 py-1 font-sans font-semibold text-foreground focus:outline-none focus:border-primary"
+                      />
+                    </td>
+
+                    {/* 4. Challan No */}
+                    <td className="px-2 py-2">
+                      <input
+                        type="text"
+                        value={item.challan_no}
+                        onChange={(e) => handleBillEntryChange(idx, 'challan_no', e.target.value)}
+                        className="w-24 rounded border border-border bg-background px-1.5 py-1 font-sans text-muted-foreground focus:outline-none focus:border-primary"
+                      />
+                    </td>
+
+                    {/* 5. Item Group */}
+                    <td className="px-2 py-2">
+                      <input
+                        type="text"
+                        value={item.item_group}
+                        onChange={(e) => handleBillEntryChange(idx, 'item_group', e.target.value)}
+                        className="w-32 rounded border border-border bg-background px-1.5 py-1 font-sans text-muted-foreground focus:outline-none focus:border-primary"
+                      />
+                    </td>
+
+                    {/* 6. Item Desc */}
+                    <td className="px-2 py-2">
+                      <input
+                        type="text"
+                        value={item.item_desc}
+                        onChange={(e) => handleBillEntryChange(idx, 'item_desc', e.target.value)}
+                        className="w-48 rounded border border-border bg-background px-1.5 py-1 font-sans font-bold text-foreground focus:outline-none focus:border-primary"
+                      />
+                    </td>
+
+                    {/* 7. Item Brand */}
+                    <td className="px-2 py-2">
+                      <input
+                        type="text"
+                        value={item.item_brand}
+                        onChange={(e) => handleBillEntryChange(idx, 'item_brand', e.target.value)}
+                        className="w-28 rounded border border-border bg-background px-1.5 py-1 font-sans font-bold text-foreground focus:outline-none focus:border-primary"
+                      />
+                    </td>
+
+                    {/* 8. Unit */}
+                    <td className="px-2 py-2 text-center">
+                      <input
+                        type="text"
+                        value={item.unit}
+                        onChange={(e) => handleBillEntryChange(idx, 'unit', e.target.value.toUpperCase())}
+                        className="w-16 rounded border border-border bg-background px-1.5 py-1 text-center font-sans font-bold text-muted-foreground uppercase focus:outline-none focus:border-primary"
+                      />
+                    </td>
+
+                    {/* 9. Received Qty */}
+                    <td className="px-2 py-2 text-right">
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={item.received_qty}
+                        onChange={(e) => handleBillEntryChange(idx, 'received_qty', Number(e.target.value))}
+                        className="w-20 rounded border border-border bg-background px-1.5 py-1 text-right font-extrabold text-foreground focus:outline-none focus:border-primary"
+                      />
+                    </td>
+
+                    {/* 10. Purchase Category */}
+                    <td className="px-2 py-2">
+                      <input
+                        type="text"
+                        value={item.purchase_category}
+                        onChange={(e) => handleBillEntryChange(idx, 'purchase_category', e.target.value)}
+                        className="w-32 rounded border border-border bg-background px-1.5 py-1 font-sans text-muted-foreground focus:outline-none focus:border-primary"
+                      />
+                    </td>
+
+                    {/* 11. PO- Basic Rate */}
+                    <td className="px-2 py-2 text-right">
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={item.po_basic_rate}
+                        onChange={(e) => handleBillEntryChange(idx, 'po_basic_rate', Number(e.target.value))}
+                        className="w-24 rounded border border-border bg-background px-1.5 py-1 text-right font-semibold focus:outline-none focus:border-primary"
+                      />
+                    </td>
+
+                    {/* 12. PO- Discount Perc. */}
+                    <td className="px-2 py-2 text-right">
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={item.po_discount_perc}
+                        onChange={(e) => handleBillEntryChange(idx, 'po_discount_perc', Number(e.target.value))}
+                        className="w-16 rounded border border-border bg-background px-1.5 py-1 text-right focus:outline-none focus:border-primary"
+                      />
+                    </td>
+
+                    {/* 13. PO- Discount Amt */}
+                    <td className="px-2 py-2 text-right">
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={item.po_discount_amt}
+                        onChange={(e) => handleBillEntryChange(idx, 'po_discount_amt', Number(e.target.value))}
+                        className="w-20 rounded border border-border bg-background px-1.5 py-1 text-right focus:outline-none focus:border-primary"
+                      />
+                    </td>
+
+                    {/* 14. PO- Rate */}
+                    <td className="px-2 py-2 text-right">
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={item.po_rate}
+                        onChange={(e) => handleBillEntryChange(idx, 'po_rate', Number(e.target.value))}
+                        className="w-24 rounded border border-border bg-background px-1.5 py-1 text-right font-bold focus:outline-none focus:border-primary"
+                      />
+                    </td>
+
+                    {/* 15. Bill Rate* */}
+                    <td className="px-2 py-2 text-right bg-primary/5">
                       <input
                         type="number"
                         step="0.01"
                         value={item.bill_rate}
                         onChange={(e) => handleBillEntryChange(idx, 'bill_rate', Number(e.target.value))}
-                        className="w-24 rounded border border-border bg-background px-1.5 py-1 text-right font-extrabold text-primary"
+                        className="w-24 rounded border-2 border-primary/60 bg-background px-1.5 py-1 text-right font-extrabold text-primary focus:outline-none focus:border-primary"
                       />
                     </td>
-                    <td className="px-3 py-2 text-right">{item.bill_discount_perc}%</td>
-                    <td className="px-3 py-2 text-right">₹{item.bill_discount_amt}</td>
-                    <td className="px-3 py-2 text-right font-bold text-foreground">₹{item.gross_amount.toLocaleString()}</td>
-                    <td className="px-3 py-2 text-right">{item.po_excise_duty_rate}%</td>
-                    <td className="px-3 py-2 text-right">₹{item.loading_unloading_chgs}</td>
-                    <td className="px-3 py-2 text-right">₹{item.freight_chgs}</td>
-                    <td className="px-3 py-2 text-right">₹{item.others_chgs}</td>
-                    <td className="px-3 py-2 font-sans">{item.vat_type}</td>
-                    <td className="px-3 py-2 text-center">{item.vat_on_all ? 'Yes' : 'No'}</td>
-                    <td className="px-3 py-2 text-right">{item.po_vat_rate}%</td>
-                    <td className="px-3 py-2 text-right">₹{item.vat_amt.toLocaleString()}</td>
-                    <td className="px-3 py-2 text-right">{item.po_lbt_rate}%</td>
-                    <td className="px-3 py-2 text-right font-extrabold text-foreground">₹{item.net_amount.toLocaleString()}</td>
-                    <td className="px-3 py-2 text-right font-bold text-primary">₹{item.purchase_ledger_add_bill_item_amt.toLocaleString()}</td>
+
+                    {/* 16. Bill Discount Perc. */}
+                    <td className="px-2 py-2 text-right">
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={item.bill_discount_perc}
+                        onChange={(e) => handleBillEntryChange(idx, 'bill_discount_perc', Number(e.target.value))}
+                        className="w-16 rounded border border-border bg-background px-1.5 py-1 text-right focus:outline-none focus:border-primary"
+                      />
+                    </td>
+
+                    {/* 17. Bill Discount Amt */}
+                    <td className="px-2 py-2 text-right">
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={item.bill_discount_amt}
+                        onChange={(e) => handleBillEntryChange(idx, 'bill_discount_amt', Number(e.target.value))}
+                        className="w-20 rounded border border-border bg-background px-1.5 py-1 text-right focus:outline-none focus:border-primary"
+                      />
+                    </td>
+
+                    {/* 18. Gross Amount */}
+                    <td className="px-2 py-2 text-right font-bold text-foreground">
+                      ₹{item.gross_amount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                    </td>
+
+                    {/* 19. PO- Excise Duty Rate */}
+                    <td className="px-2 py-2 text-right">
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={item.po_excise_duty_rate}
+                        onChange={(e) => handleBillEntryChange(idx, 'po_excise_duty_rate', Number(e.target.value))}
+                        className="w-16 rounded border border-border bg-background px-1.5 py-1 text-right focus:outline-none focus:border-primary"
+                      />
+                    </td>
+
+                    {/* 20. Loading / Unloading Chgs */}
+                    <td className="px-2 py-2 text-right">
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={item.loading_unloading_chgs}
+                        onChange={(e) => handleBillEntryChange(idx, 'loading_unloading_chgs', Number(e.target.value))}
+                        className="w-20 rounded border border-border bg-background px-1.5 py-1 text-right focus:outline-none focus:border-primary"
+                      />
+                    </td>
+
+                    {/* 21. Freight Chgs */}
+                    <td className="px-2 py-2 text-right">
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={item.freight_chgs}
+                        onChange={(e) => handleBillEntryChange(idx, 'freight_chgs', Number(e.target.value))}
+                        className="w-20 rounded border border-border bg-background px-1.5 py-1 text-right focus:outline-none focus:border-primary"
+                      />
+                    </td>
+
+                    {/* 22. Others Chgs */}
+                    <td className="px-2 py-2 text-right">
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={item.others_chgs}
+                        onChange={(e) => handleBillEntryChange(idx, 'others_chgs', Number(e.target.value))}
+                        className="w-20 rounded border border-border bg-background px-1.5 py-1 text-right focus:outline-none focus:border-primary"
+                      />
+                    </td>
+
+                    {/* 23. VAT Type */}
+                    <td className="px-2 py-2 font-sans">
+                      <input
+                        type="text"
+                        value={item.vat_type}
+                        onChange={(e) => handleBillEntryChange(idx, 'vat_type', e.target.value)}
+                        className="w-20 rounded border border-border bg-background px-1.5 py-1 font-sans focus:outline-none focus:border-primary"
+                      />
+                    </td>
+
+                    {/* 24. Vat OnAll */}
+                    <td className="px-2 py-2 text-center">
+                      <select
+                        value={item.vat_on_all ? 'Yes' : 'No'}
+                        onChange={(e) => handleBillEntryChange(idx, 'vat_on_all', e.target.value === 'Yes')}
+                        className="w-16 rounded border border-border bg-background px-1 py-1 text-center font-bold focus:outline-none focus:border-primary"
+                      >
+                        <option value="Yes">Yes</option>
+                        <option value="No">No</option>
+                      </select>
+                    </td>
+
+                    {/* 25. PO- Vat Rate */}
+                    <td className="px-2 py-2 text-right">
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={item.po_vat_rate}
+                        onChange={(e) => handleBillEntryChange(idx, 'po_vat_rate', Number(e.target.value))}
+                        className="w-16 rounded border border-border bg-background px-1.5 py-1 text-right focus:outline-none focus:border-primary"
+                      />
+                    </td>
+
+                    {/* 26. Vat Amt */}
+                    <td className="px-2 py-2 text-right">
+                      ₹{item.vat_amt.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                    </td>
+
+                    {/* 27. PO- LBT Rate */}
+                    <td className="px-2 py-2 text-right">
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={item.po_lbt_rate}
+                        onChange={(e) => handleBillEntryChange(idx, 'po_lbt_rate', Number(e.target.value))}
+                        className="w-16 rounded border border-border bg-background px-1.5 py-1 text-right focus:outline-none focus:border-primary"
+                      />
+                    </td>
+
+                    {/* 28. Net Amount */}
+                    <td className="px-2 py-2 text-right font-extrabold text-foreground bg-emerald-500/5">
+                      ₹{item.net_amount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                    </td>
+
+                    {/* 29. Purchase Ledger Add Bill Item Amt */}
+                    <td className="px-2 py-2 text-right bg-primary/5">
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={item.purchase_ledger_add_bill_item_amt}
+                        onChange={(e) => handleBillEntryChange(idx, 'purchase_ledger_add_bill_item_amt', Number(e.target.value))}
+                        className="w-28 rounded border border-primary/50 bg-background px-1.5 py-1 text-right font-bold text-primary focus:outline-none focus:border-primary"
+                      />
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -1456,8 +1703,8 @@ export function BillsForm({ bill, onSubmit, onPrint, onCancel }: BillsFormProps)
                 ) : (
                   form.payment_vouchers.map((v, vIdx) => (
                     <tr key={v.sr || vIdx} className="hover:bg-muted/30 transition-colors align-middle">
-                      <td className="px-3 py-2 text-center font-bold text-muted-foreground">{vIdx + 1}</td>
-                      <td className="px-3 py-2 font-bold font-sans text-primary">
+                      <td className="px-2 py-2 text-center font-bold text-muted-foreground">{vIdx + 1}</td>
+                      <td className="px-2 py-2">
                         <input
                           type="text"
                           value={v.voucher_no}
@@ -1469,18 +1716,146 @@ export function BillsForm({ bill, onSubmit, onPrint, onCancel }: BillsFormProps)
                               return { ...prev, payment_vouchers: updated };
                             });
                           }}
-                          className="w-28 rounded border border-border bg-background px-1.5 py-1 text-xs font-mono font-bold text-primary"
+                          className="w-28 rounded border border-border bg-background px-1.5 py-1 text-xs font-mono font-bold text-primary focus:outline-none focus:border-primary"
                         />
                       </td>
-                      <td className="px-3 py-2 text-muted-foreground">{v.voucher_date}</td>
-                      <td className="px-3 py-2 font-bold font-sans text-foreground">{v.ledger_name}</td>
-                      <td className="px-3 py-2 font-sans text-muted-foreground">{v.bank_cash_account}</td>
-                      <td className="px-3 py-2 font-sans font-bold">{v.payment_mode}</td>
-                      <td className="px-3 py-2 font-sans">{v.cheque_instrument_no}</td>
-                      <td className="px-3 py-2 text-muted-foreground">{v.cheque_instrument_date}</td>
-                      <td className="px-3 py-2 font-sans font-bold text-emerald-600">{v.status} / {v.bill_no}</td>
-                      <td className="px-3 py-2 font-sans font-bold text-foreground">{v.our_bill_no}</td>
-                      <td className="px-3 py-2 text-right font-extrabold text-foreground">
+                      <td className="px-2 py-2">
+                        <input
+                          type="date"
+                          value={v.voucher_date}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setForm((prev) => {
+                              const updated = [...prev.payment_vouchers];
+                              updated[vIdx].voucher_date = val;
+                              return { ...prev, payment_vouchers: updated };
+                            });
+                          }}
+                          className="w-32 rounded border border-border bg-background px-1.5 py-1 text-xs font-mono focus:outline-none focus:border-primary"
+                        />
+                      </td>
+                      <td className="px-2 py-2">
+                        <input
+                          type="text"
+                          value={v.ledger_name}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setForm((prev) => {
+                              const updated = [...prev.payment_vouchers];
+                              updated[vIdx].ledger_name = val;
+                              return { ...prev, payment_vouchers: updated };
+                            });
+                          }}
+                          className="w-44 rounded border border-border bg-background px-1.5 py-1 text-xs font-sans font-bold text-foreground focus:outline-none focus:border-primary"
+                        />
+                      </td>
+                      <td className="px-2 py-2">
+                        <input
+                          type="text"
+                          value={v.bank_cash_account}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setForm((prev) => {
+                              const updated = [...prev.payment_vouchers];
+                              updated[vIdx].bank_cash_account = val;
+                              return { ...prev, payment_vouchers: updated };
+                            });
+                          }}
+                          className="w-40 rounded border border-border bg-background px-1.5 py-1 text-xs font-sans text-muted-foreground focus:outline-none focus:border-primary"
+                        />
+                      </td>
+                      <td className="px-2 py-2">
+                        <input
+                          type="text"
+                          value={v.payment_mode}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setForm((prev) => {
+                              const updated = [...prev.payment_vouchers];
+                              updated[vIdx].payment_mode = val;
+                              return { ...prev, payment_vouchers: updated };
+                            });
+                          }}
+                          className="w-36 rounded border border-border bg-background px-1.5 py-1 text-xs font-sans font-bold focus:outline-none focus:border-primary"
+                        />
+                      </td>
+                      <td className="px-2 py-2">
+                        <input
+                          type="text"
+                          value={v.cheque_instrument_no}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setForm((prev) => {
+                              const updated = [...prev.payment_vouchers];
+                              updated[vIdx].cheque_instrument_no = val;
+                              return { ...prev, payment_vouchers: updated };
+                            });
+                          }}
+                          className="w-32 rounded border border-border bg-background px-1.5 py-1 text-xs font-sans focus:outline-none focus:border-primary"
+                        />
+                      </td>
+                      <td className="px-2 py-2">
+                        <input
+                          type="date"
+                          value={v.cheque_instrument_date}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setForm((prev) => {
+                              const updated = [...prev.payment_vouchers];
+                              updated[vIdx].cheque_instrument_date = val;
+                              return { ...prev, payment_vouchers: updated };
+                            });
+                          }}
+                          className="w-32 rounded border border-border bg-background px-1.5 py-1 text-xs font-mono focus:outline-none focus:border-primary"
+                        />
+                      </td>
+                      <td className="px-2 py-2">
+                        <div className="flex items-center gap-1">
+                          <input
+                            type="text"
+                            value={v.status}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setForm((prev) => {
+                                const updated = [...prev.payment_vouchers];
+                                updated[vIdx].status = val;
+                                return { ...prev, payment_vouchers: updated };
+                              });
+                            }}
+                            className="w-20 rounded border border-border bg-background px-1.5 py-1 text-xs font-sans font-bold text-emerald-600 focus:outline-none focus:border-primary"
+                          />
+                          <span className="text-muted-foreground">/</span>
+                          <input
+                            type="text"
+                            value={v.bill_no}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setForm((prev) => {
+                                const updated = [...prev.payment_vouchers];
+                                updated[vIdx].bill_no = val;
+                                return { ...prev, payment_vouchers: updated };
+                              });
+                            }}
+                            className="w-20 rounded border border-border bg-background px-1.5 py-1 text-xs font-sans font-bold text-foreground focus:outline-none focus:border-primary"
+                          />
+                        </div>
+                      </td>
+                      <td className="px-2 py-2">
+                        <input
+                          type="text"
+                          value={v.our_bill_no}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setForm((prev) => {
+                              const updated = [...prev.payment_vouchers];
+                              updated[vIdx].our_bill_no = val;
+                              return { ...prev, payment_vouchers: updated };
+                            });
+                          }}
+                          className="w-32 rounded border border-border bg-background px-1.5 py-1 text-xs font-sans font-bold text-foreground focus:outline-none focus:border-primary"
+                        />
+                      </td>
+                      <td className="px-2 py-2 text-right">
                         <input
                           type="number"
                           step="0.01"
@@ -1493,10 +1868,10 @@ export function BillsForm({ bill, onSubmit, onPrint, onCancel }: BillsFormProps)
                               return { ...prev, payment_vouchers: updated };
                             });
                           }}
-                          className="w-24 rounded border border-border bg-background px-1.5 py-1 text-right font-mono font-extrabold text-emerald-600"
+                          className="w-24 rounded border border-border bg-background px-1.5 py-1 text-right font-mono font-extrabold text-emerald-600 focus:outline-none focus:border-primary"
                         />
                       </td>
-                      <td className="px-3 py-2 text-right">
+                      <td className="px-2 py-2 text-right">
                         <button
                           type="button"
                           onClick={() => {
@@ -1505,7 +1880,7 @@ export function BillsForm({ bill, onSubmit, onPrint, onCancel }: BillsFormProps)
                               payment_vouchers: prev.payment_vouchers.filter((_, i) => i !== vIdx),
                             }));
                           }}
-                          className="rounded p-1 text-red-600 hover:bg-red-50 transition-colors"
+                          className="rounded p-1 text-red-600 hover:bg-red-50 transition-colors cursor-pointer"
                           title="Remove voucher row"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
@@ -1591,9 +1966,9 @@ export function BillsForm({ bill, onSubmit, onPrint, onCancel }: BillsFormProps)
                   </tr>
                 ) : (
                   form.po_details_all.map((poDet, pIdx) => (
-                    <tr key={poDet.sr || pIdx} className="hover:bg-muted/30 transition-colors align-middle">
-                      <td className="px-3 py-2 text-center font-bold text-muted-foreground">{pIdx + 1}</td>
-                      <td className="px-3 py-2">
+                    <tr key={poDet.sr || pIdx} className="hover:bg-muted/30 transition-colors align-middle font-mono">
+                      <td className="px-2 py-2 text-center font-bold text-muted-foreground">{pIdx + 1}</td>
+                      <td className="px-2 py-2">
                         <input
                           type="text"
                           value={poDet.po_no}
@@ -1605,14 +1980,71 @@ export function BillsForm({ bill, onSubmit, onPrint, onCancel }: BillsFormProps)
                               return { ...prev, po_details_all: updated };
                             });
                           }}
-                          className="w-28 rounded border border-border bg-background px-1.5 py-1 text-xs font-mono font-bold text-primary"
+                          className="w-28 rounded border border-border bg-background px-1.5 py-1 text-xs font-mono font-bold text-primary focus:outline-none focus:border-primary"
                         />
                       </td>
-                      <td className="px-3 py-2 text-muted-foreground">{poDet.po_date}</td>
-                      <td className="px-3 py-2 font-bold font-sans text-foreground">{poDet.po_in_the_name_of}</td>
-                      <td className="px-3 py-2 text-right font-bold">₹{poDet.net_bill_amt.toLocaleString()}</td>
-                      <td className="px-3 py-2 font-sans font-semibold text-muted-foreground">{poDet.sr_item_group}</td>
-                      <td className="px-3 py-2">
+                      <td className="px-2 py-2">
+                        <input
+                          type="date"
+                          value={poDet.po_date}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setForm((prev) => {
+                              const updated = [...prev.po_details_all];
+                              updated[pIdx].po_date = val;
+                              return { ...prev, po_details_all: updated };
+                            });
+                          }}
+                          className="w-32 rounded border border-border bg-background px-1.5 py-1 text-xs font-mono focus:outline-none focus:border-primary"
+                        />
+                      </td>
+                      <td className="px-2 py-2">
+                        <input
+                          type="text"
+                          value={poDet.po_in_the_name_of}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setForm((prev) => {
+                              const updated = [...prev.po_details_all];
+                              updated[pIdx].po_in_the_name_of = val;
+                              return { ...prev, po_details_all: updated };
+                            });
+                          }}
+                          className="w-48 rounded border border-border bg-background px-1.5 py-1 text-xs font-sans font-bold text-foreground focus:outline-none focus:border-primary"
+                        />
+                      </td>
+                      <td className="px-2 py-2 text-right">
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={poDet.net_bill_amt}
+                          onChange={(e) => {
+                            const val = Number(e.target.value);
+                            setForm((prev) => {
+                              const updated = [...prev.po_details_all];
+                              updated[pIdx].net_bill_amt = val;
+                              return { ...prev, po_details_all: updated };
+                            });
+                          }}
+                          className="w-24 rounded border border-border bg-background px-1.5 py-1 text-right font-bold focus:outline-none focus:border-primary"
+                        />
+                      </td>
+                      <td className="px-2 py-2">
+                        <input
+                          type="text"
+                          value={poDet.sr_item_group}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setForm((prev) => {
+                              const updated = [...prev.po_details_all];
+                              updated[pIdx].sr_item_group = val;
+                              return { ...prev, po_details_all: updated };
+                            });
+                          }}
+                          className="w-32 rounded border border-border bg-background px-1.5 py-1 text-xs font-sans font-semibold text-muted-foreground focus:outline-none focus:border-primary"
+                        />
+                      </td>
+                      <td className="px-2 py-2">
                         <input
                           type="text"
                           value={poDet.item_desc}
@@ -1624,15 +2056,78 @@ export function BillsForm({ bill, onSubmit, onPrint, onCancel }: BillsFormProps)
                               return { ...prev, po_details_all: updated };
                             });
                           }}
-                          className="w-full rounded border border-border bg-background px-1.5 py-1 text-xs font-sans font-bold text-foreground"
+                          className="w-48 rounded border border-border bg-background px-1.5 py-1 text-xs font-sans font-bold text-foreground focus:outline-none focus:border-primary"
                         />
                       </td>
-                      <td className="px-3 py-2 font-sans font-bold text-foreground">{poDet.item_brand}</td>
-                      <td className="px-3 py-2 text-right font-extrabold text-foreground">{poDet.approved_qty}</td>
-                      <td className="px-3 py-2 text-right font-bold">₹{poDet.unit_rate.toFixed(2)}</td>
-                      <td className="px-3 py-2 text-right font-extrabold text-foreground">₹{poDet.net_amt.toLocaleString()}</td>
-                      <td className="px-3 py-2 text-right font-bold text-muted-foreground">{poDet.grn_balance_qty}</td>
-                      <td className="px-3 py-2 text-right">
+                      <td className="px-2 py-2">
+                        <input
+                          type="text"
+                          value={poDet.item_brand}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setForm((prev) => {
+                              const updated = [...prev.po_details_all];
+                              updated[pIdx].item_brand = val;
+                              return { ...prev, po_details_all: updated };
+                            });
+                          }}
+                          className="w-28 rounded border border-border bg-background px-1.5 py-1 text-xs font-sans font-bold text-foreground focus:outline-none focus:border-primary"
+                        />
+                      </td>
+                      <td className="px-2 py-2 text-right">
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={poDet.approved_qty}
+                          onChange={(e) => {
+                            const val = Number(e.target.value);
+                            setForm((prev) => {
+                              const updated = [...prev.po_details_all];
+                              updated[pIdx].approved_qty = val;
+                              updated[pIdx].net_amt = val * (updated[pIdx].unit_rate || 0);
+                              return { ...prev, po_details_all: updated };
+                            });
+                          }}
+                          className="w-20 rounded border border-border bg-background px-1.5 py-1 text-right font-extrabold text-foreground focus:outline-none focus:border-primary"
+                        />
+                      </td>
+                      <td className="px-2 py-2 text-right">
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={poDet.unit_rate}
+                          onChange={(e) => {
+                            const val = Number(e.target.value);
+                            setForm((prev) => {
+                              const updated = [...prev.po_details_all];
+                              updated[pIdx].unit_rate = val;
+                              updated[pIdx].net_amt = (updated[pIdx].approved_qty || 0) * val;
+                              return { ...prev, po_details_all: updated };
+                            });
+                          }}
+                          className="w-24 rounded border border-border bg-background px-1.5 py-1 text-right font-bold focus:outline-none focus:border-primary"
+                        />
+                      </td>
+                      <td className="px-2 py-2 text-right font-extrabold text-foreground bg-emerald-500/5">
+                        ₹{(poDet.net_amt || (poDet.approved_qty * poDet.unit_rate)).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                      </td>
+                      <td className="px-2 py-2 text-right">
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={poDet.grn_balance_qty}
+                          onChange={(e) => {
+                            const val = Number(e.target.value);
+                            setForm((prev) => {
+                              const updated = [...prev.po_details_all];
+                              updated[pIdx].grn_balance_qty = val;
+                              return { ...prev, po_details_all: updated };
+                            });
+                          }}
+                          className="w-20 rounded border border-border bg-background px-1.5 py-1 text-right font-bold text-muted-foreground focus:outline-none focus:border-primary"
+                        />
+                      </td>
+                      <td className="px-2 py-2 text-right">
                         <button
                           type="button"
                           onClick={() => {
@@ -1641,7 +2136,7 @@ export function BillsForm({ bill, onSubmit, onPrint, onCancel }: BillsFormProps)
                               po_details_all: prev.po_details_all.filter((_, i) => i !== pIdx),
                             }));
                           }}
-                          className="rounded p-1 text-red-600 hover:bg-red-50 transition-colors"
+                          className="rounded p-1 text-red-600 hover:bg-red-50 transition-colors cursor-pointer"
                           title="Remove row"
                         >
                           <Trash2 className="h-3.5 w-3.5" />

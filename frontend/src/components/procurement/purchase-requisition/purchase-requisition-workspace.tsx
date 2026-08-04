@@ -8,18 +8,26 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   Plus, Layers, ListChecks, Save, SendHorizonal, Trash2, UserCheck, Undo2, CheckCircle2,
-  XCircle, Users, Lock, RotateCcw, PauseCircle, PlayCircle, FileDown, Eye, History,
+  XCircle, Users, Lock, RotateCcw, PauseCircle, PlayCircle, FileDown, Eye, History, Printer, Sparkles,
 } from 'lucide-react';
 import type {
   PurchaseRequisitionRow, EntityAttachmentRow, MaterialRequestRow, RfqRow, QuotationRow, VendorSelectionRow,
 } from '@/lib/procurement';
 import type { ProcurementProjectOption, Role, PrFormState, PrFormLine, ApprovedMrRow } from '@/lib/erp/purchase-requisition/types';
+import { isLiveSupabase } from '@/lib/erp/supabase-modules';
 import {
   listApprovedMaterialRequestsForPr, getBudgetSnapshotForPr, listBudgetHeads, listCostCodes,
-  savePurchaseRequisition, getPurchaseRequisitionForm, transitionPurchaseRequisition, deletePrDraft,
+  savePurchaseRequisition, getPurchaseRequisitionForm, transitionPurchaseRequisition, deletePrDraft, resetPrToDraft,
   listEligibleApprovers, validatePrForm, computeCostSummary, computeBudgetStatus, isPrEditable, approvalCommentRequired,
   type BudgetSnapshot, type ApproverOption,
 } from '@/lib/erp/purchase-requisition/service';
+import {
+  resolveActivityCategories,
+  type ActivityResolutionMap,
+} from '@/lib/erp/purchase-requisition/activity-category-resolver';
+import type { MasterBudgetCategory } from '@/lib/budget';
+import { fetchMasterBudgetCategories, subscribeToBudgetChanges } from '@/lib/supabase-budget';
+import { supabase } from '@/utils/supabase-client';
 import { PurchaseRequisitionWorkbench } from '../purchase-requisition-workbench';
 import { AddFromApprovedMrDrawer } from './add-from-approved-mr-drawer';
 import { PrForm, type SourceMrChip } from './pr-form';
@@ -48,6 +56,7 @@ interface PurchaseRequisitionWorkspaceProps {
   onAssign: (row: PurchaseRequisitionRow) => void;
   onApprove: (row: PurchaseRequisitionRow) => void;
   onRfq: (row: PurchaseRequisitionRow) => void;
+  onNavigateToRfq?: (rfqId: string, prId?: string) => void;
   onPdf: (row: PurchaseRequisitionRow) => void;
   onOpenPdf: (row: PurchaseRequisitionRow) => void;
   onGeneratePo: (row: PurchaseRequisitionRow) => void;
@@ -80,6 +89,22 @@ function blankForm(projectId: string): PrFormState {
   };
 }
 
+/**
+ * Maps every pending line of a Material Request onto PR form lines, 1:1.
+ *
+ * Mapping contract — each PR line mirrors its MR line exactly:
+ *   item_description  <- MR line item_description
+ *   activity_name     <- MR line activity_name    (else MR header activity)
+ *   sub_activity_name <- MR line sub_activity_name (else MR header sub-activity)
+ *   item_group        <- MR line item_group
+ *   preferred_brand   <- MR line item_brand        (NOT specification)
+ *   unit / quantity   <- MR line unit / pending qty
+ *
+ * Values are passed through verbatim. Nothing is substituted from unrelated
+ * free-text fields, and nothing is invented: a field the MR left blank stays
+ * blank so the gap is visible and can be corrected at source rather than being
+ * papered over with a plausible-looking wrong value.
+ */
 function mrRowToLines(row: ApprovedMrRow): PrFormLine[] {
   return row.lines
     .filter((l) => l.pending_qty > 0.0001)
@@ -91,19 +116,21 @@ function mrRowToLines(row: ApprovedMrRow): PrFormLine[] {
       material_request_line_id: l.id,
       resource_type: 'material',
       item_id: l.item_id,
-      item_code: l.item_code || 'MAT-CEM-001',
-      item_group: l.item_group || 'Cement & Concrete',
+      item_code: l.item_code || '',
+      item_group: l.item_group || '',
       item_description: l.item_description,
-      specification: l.specification || 'IS 12269 : 2013 Grade 53',
+      specification: l.specification || '',
       approved_mr_qty: l.approved_qty,
       prev_pr_qty: l.converted_qty,
       remaining_mr_qty: l.pending_qty,
       pr_quantity: l.pending_qty,
-      unit: l.unit || 'Bags',
+      unit: l.unit || 'nos',
       estimated_rate: l.estimated_rate,
       tax_rate: 18,
-      required_date: row.required_date ? row.required_date.slice(0, 10) : '2026-07-28',
-      preferred_brand: 'UltraTech',
+      required_date: row.required_date ? row.required_date.slice(0, 10) : new Date().toISOString().slice(0, 10),
+      // Brand only. Falling back to specification put spec strings such as
+      // "IS 12269 : 2013 Grade 53" in the Brand column.
+      preferred_brand: l.item_brand || '',
       suggested_vendor: null,
       delivery_location: null,
       remarks: null,
@@ -111,27 +138,22 @@ function mrRowToLines(row: ApprovedMrRow): PrFormLine[] {
       non_mr_justification: null,
       is_modified: false,
 
-      // Rich ERP 30-column fields
+      // Rich ERP fields
       status: 'Approved PR',
-      priority: row.priority || 'High',
-      stock_audit: 'Shortage',
-      project_and_block: `${row.project_name || 'Central Park'} (${row.site_name || 'Block A'})`,
-      work_activity: row.work_activity || 'Slab casting',
-      raised_by: row.requested_by || 'Rohan Mehta (Site Eng)',
-      submitted_at: row.mr_date ? new Date(row.mr_date).toISOString().slice(0, 10) : '21-07-2026',
-      activity_name: row.work_activity || 'Slab Casting',
-      activity_code: row.activity_code || 'ACT-STR-01',
-      est_qty: 2500,
-      ind_qty: 1200,
-      iss_qty: 1000,
-      extra_rec_qty: 0,
-      extra_adj_qty: 0,
-      pr_bal_qty: 300,
+      priority: row.priority || 'high',
+      stock_audit: 'Audited',
+      project_and_block: row.project_name ? `${row.project_name}${row.site_name ? ` (${row.site_name})` : ''}` : '',
+      work_activity: l.activity_name || row.work_activity || '',
+      raised_by: row.requested_by || '',
+      submitted_at: row.mr_date ? new Date(row.mr_date).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10),
+      activity_name: l.activity_name || row.work_activity || '',
+      sub_activity_name: l.sub_activity_name || row.sub_activity_name || '',
+      activity_code: l.activity_code || row.activity_code || '',
+      // pr_bal_qty is derived from the live edited quantity in pr-item-table,
+      // never stored at import time (it would go stale the moment the user
+      // changes the PR quantity).
       lead_period_days: 3,
-      lead_period_date: '2026-07-25',
-      project_stock: 120,
-      other_project_stock: 450,
-      relation_count: 2,
+      lead_period_date: '',
     }));
 }
 
@@ -209,6 +231,13 @@ function prRowToFormState(row: PurchaseRequisitionRow): PrFormState {
       is_non_mr_item: Boolean(l.is_non_mr_item),
       non_mr_justification: l.non_mr_justification || null,
       is_modified: Boolean(l.is_modified),
+      activity_name: l.activity_name || row.activity_name || null,
+      sub_activity_name: l.sub_activity_name || row.sub_activity_name || null,
+      activity_code: l.activity_code || row.activity_code || null,
+      work_activity: l.activity_name || row.activity_name || null,
+      lead_period_days: l.lead_period_days ?? 3,
+      lead_period_date: l.lead_period_date || null,
+      pr_bal_qty: l.pr_bal_qty ?? l.remaining_mr_qty ?? null,
     })),
   };
 }
@@ -224,6 +253,12 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
   const [approvedMrs, setApprovedMrs] = useState<ApprovedMrRow[]>([]);
   const [loadingApproved, setLoadingApproved] = useState(false);
   const [budgetSnapshot, setBudgetSnapshot] = useState<BudgetSnapshot | null>(null);
+  // Activity -> Master Budget category resolution (exact match, cache, then AI).
+  const [activityResolution, setActivityResolution] = useState<ActivityResolutionMap>(new Map());
+  const [activityResolving, setActivityResolving] = useState(false);
+  const [activityModelError, setActivityModelError] = useState<string | null>(null);
+  const [activityUsedModel, setActivityUsedModel] = useState(false);
+  const [masterBudgetCategories, setMasterBudgetCategories] = useState<MasterBudgetCategory[]>([]);
   const [budgetHeads, setBudgetHeads] = useState<{ id: string; code: string; name: string }[]>([]);
   const [costCodes, setCostCodes] = useState<{ id: string; code: string; name: string }[]>([]);
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
@@ -234,6 +269,34 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
   const [assignOpen, setAssignOpen] = useState(false);
   const [workflowBusy, setWorkflowBusy] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [linkedRfq, setLinkedRfq] = useState<RfqRow | null>(null);
+
+  useEffect(() => {
+    if (!form?.id) {
+      setLinkedRfq(null);
+      return;
+    }
+    if (!isLiveSupabase()) {
+      const local = props.rfqs.find((r) => r.purchase_requisition_id === form.id);
+      setLinkedRfq(local || null);
+      return;
+    }
+    let active = true;
+    supabase
+      .from('rfqs')
+      .select('*, rfq_vendors(*, vendors(id, legal_name, display_name))')
+      .eq('purchase_requisition_id', form.id)
+      .is('deleted_at', null)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (!active) return;
+        setLinkedRfq((data as RfqRow | null) || null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [form?.id, props.rfqs]);
+
   // List view filters & pagination
   const [prFilters, setPrFilters] = useState<PrFiltersState>(DEFAULT_PR_FILTERS);
   const [page, setPage] = useState(1);
@@ -323,15 +386,172 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
     void loadApprovedMrs();
   }, [loadApprovedMrs]);
 
-  // Recompute the budget snapshot when project / head / applicability changes.
+  // Real-time subscription for MR and PR updates.
+  //
+  // Debounced: saving a 10-line MR emits one event per line, and the previous
+  // undebounced handler fired a full listApprovedMaterialRequestsForPr() for
+  // every one of them. The channel name is per-mount so two open workspaces do
+  // not collide on a single shared topic.
   useEffect(() => {
-    if (!form || !form.budget_applicable || !form.project_id) { setBudgetSnapshot(null); return; }
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const schedule = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        void loadApprovedMrs();
+      }, 400);
+    };
+
+    const channel = supabase.channel(`realtime-pr-workspace-${Math.random().toString(36).slice(2)}`);
+    for (const table of [
+      'material_requests',
+      'material_request_lines',
+      'purchase_requisitions',
+      'purchase_requisition_lines',
+    ]) {
+      channel.on('postgres_changes', { event: '*', schema: 'public', table }, schedule);
+    }
+    channel.subscribe();
+
+    return () => {
+      if (timer) clearTimeout(timer);
+      supabase.removeChannel(channel);
+    };
+  }, [loadApprovedMrs]);
+
+  // ---------------------------------------------------------------------------
+  // Budget figures (Master Budget allocations + Variance actuals).
+  //
+  // Held in a callback so both the initial load and the realtime handler use the
+  // same path. Only display data is replaced here — never form state — so a
+  // refresh landing mid-edit cannot clobber what the user is typing.
+  // ---------------------------------------------------------------------------
+  const budgetProjectId = form?.project_id ?? null;
+  const budgetHeadId = form?.budget_head_id ?? null;
+
+  // Every state write happens after an await, so nothing is set synchronously
+  // during the effect (which would cascade renders). A null project resolves to
+  // empty figures through the same path rather than an early synchronous reset.
+  const loadBudgetFigures = useCallback(
+    async (projectId: string | null, headId: string | null, isStale?: () => boolean) => {
+      const [snap, cats] = await Promise.allSettled([
+        projectId ? getBudgetSnapshotForPr(projectId, headId) : Promise.resolve(null),
+        projectId
+          ? fetchMasterBudgetCategories(projectId)
+          : Promise.resolve([] as MasterBudgetCategory[]),
+      ]);
+      if (isStale?.()) return;
+      setBudgetSnapshot(snap.status === 'fulfilled' ? snap.value : null);
+      setMasterBudgetCategories(cats.status === 'fulfilled' ? cats.value : []);
+    },
+    [],
+  );
+
+  useEffect(() => {
     let cancelled = false;
-    getBudgetSnapshotForPr(form.project_id, form.budget_head_id)
-      .then((snap) => { if (!cancelled) setBudgetSnapshot(snap); })
-      .catch(() => { if (!cancelled) setBudgetSnapshot(null); });
-    return () => { cancelled = true; };
-  }, [form?.project_id, form?.budget_head_id, form?.budget_applicable]); // eslint-disable-line react-hooks/exhaustive-deps
+    // Deferred a tick so no state is written during the effect itself.
+    const timer = setTimeout(() => {
+      void loadBudgetFigures(budgetProjectId, budgetHeadId, () => cancelled);
+    }, 0);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [budgetProjectId, budgetHeadId, loadBudgetFigures]);
+
+  // Live budget updates. Subscribes to the same tables as the Budget module, so
+  // approving a PO or verifying a bill in another tab moves this PR's figures
+  // immediately instead of leaving them stale until the form is reopened.
+  // Only while a form is open — the list view shows no budget figures.
+  useEffect(() => {
+    if (mode !== 'form' || !budgetProjectId) return;
+    return subscribeToBudgetChanges(
+      budgetProjectId,
+      () => { void loadBudgetFigures(budgetProjectId, budgetHeadId); },
+      400,
+      'pr-form',
+    );
+  }, [mode, budgetProjectId, budgetHeadId, loadBudgetFigures]);
+
+  // ---------------------------------------------------------------------------
+  // Activity -> Master Budget category resolution.
+  //
+  // Keyed on the DISTINCT SORTED activity names, not on `form.lines`, so editing
+  // a quantity or rate does not re-resolve. Debounced so typing an activity name
+  // character by character cannot fire a model call per keystroke — only the
+  // settled value is ever sent, and only if it is not already exact-matched or
+  // cached.
+  // ---------------------------------------------------------------------------
+  // JSON rather than a delimiter join: an activity name could contain any
+  // separator character, and a collision would silently merge two activities.
+  const activitySignature = useMemo(() => {
+    if (!form) return '[]';
+    const names = new Set<string>();
+    for (const line of form.lines) {
+      const name = (line.activity_name || line.work_activity || '').trim();
+      if (name) names.add(name);
+    }
+    return JSON.stringify(Array.from(names).sort());
+  }, [form?.lines]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Which categories exist — NOT their amounts. A live budget refresh hands back
+  // a fresh array every time; without this, every PO approval elsewhere would
+  // re-run resolution (and re-query the mapping cache) even though the set of
+  // categories is unchanged.
+  const categorySignature = useMemo(
+    () => masterBudgetCategories.map((c) => c.id).sort().join(','),
+    [masterBudgetCategories],
+  );
+
+  useEffect(() => {
+    const projectId = form?.project_id;
+    const activityNames = JSON.parse(activitySignature) as string[];
+    const nothingToResolve =
+      !projectId || activityNames.length === 0 || masterBudgetCategories.length === 0;
+
+    let cancelled = false;
+
+    // All state writes live inside the timer, so none happen synchronously
+    // during the effect. Clearing is immediate (0ms) while a real resolution is
+    // debounced, so typing an activity name cannot fire a call per keystroke.
+    const timer = setTimeout(
+      () => {
+        if (cancelled) return;
+
+        if (nothingToResolve) {
+          setActivityResolution(new Map());
+          setActivityResolving(false);
+          setActivityModelError(null);
+          return;
+        }
+
+        setActivityResolving(true);
+        resolveActivityCategories(projectId, activityNames, masterBudgetCategories)
+          .then((result) => {
+            if (cancelled) return;
+            setActivityResolution(result.map);
+            setActivityModelError(result.modelError);
+            if (result.usedModel) setActivityUsedModel(true);
+          })
+          .catch((e) => {
+            if (cancelled) return;
+            setActivityResolution(new Map());
+            setActivityModelError(e instanceof Error ? e.message : String(e));
+          })
+          .finally(() => {
+            if (!cancelled) setActivityResolving(false);
+          });
+      },
+      nothingToResolve ? 0 : 600,
+    );
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+    // masterBudgetCategories is intentionally read through categorySignature:
+    // resolution depends on which categories exist, not on their amounts.
+  }, [form?.project_id, activitySignature, categorySignature]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const startNewPr = useCallback(() => {
     setForm(blankForm(projectOptions[0]?.id ?? ''));
@@ -341,8 +561,28 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
     void loadApprovedMrs();
   }, [projectOptions, loadApprovedMrs]);
 
-  const editPr = useCallback(async (prId: string) => {
-    // 1. Check local loaded rows / mock store first
+  const editPr = useCallback(async (prId: string, forceDbFetch: boolean = false) => {
+    // 1. Prioritize live DB fetch if running live Supabase or if explicitly requested
+    if (isLiveSupabase() || forceDbFetch) {
+      try {
+        const res = await getPurchaseRequisitionForm(prId);
+        if (res.data) {
+          setForm(res.data);
+          setPendingFiles([]);
+          setLastSavedAt(null);
+          setMode('form');
+          void loadApprovedMrs();
+          return;
+        }
+        if (res.error) {
+          onError(res.error.message);
+        }
+      } catch (e) {
+        console.warn('Unable to load PR from DB, falling back to local cache:', e);
+      }
+    }
+
+    // 2. Fallback to local rows / mock store
     const localRow = props.rows.find((r) => r.id === prId);
     if (localRow) {
       setForm(prRowToFormState(localRow));
@@ -351,24 +591,6 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
       setMode('form');
       void loadApprovedMrs();
       return;
-    }
-
-    // 2. Fallback to API/DB fetch if not found locally
-    try {
-      const res = await getPurchaseRequisitionForm(prId);
-      if (res.data) {
-        setForm(res.data);
-        setPendingFiles([]);
-        setLastSavedAt(null);
-        setMode('form');
-        void loadApprovedMrs();
-        return;
-      }
-      if (res.error) {
-        onError(res.error.message);
-      }
-    } catch (e) {
-      onError(e instanceof Error ? e.message : 'Unable to load PR.');
     }
   }, [props.rows, onError, loadApprovedMrs]);
 
@@ -422,6 +644,9 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
         site_id: f.lines.length === 0 && firstMr?.site_id ? firstMr.site_id : f.site_id,
         activity_name: f.activity_name || firstMr?.work_activity || '',
         activity_code: f.activity_code || firstMr?.activity_code || '',
+        priority: firstMr?.priority ? (firstMr.priority.toLowerCase() as any) : f.priority,
+        delivery_address: f.delivery_address || (firstMr as any)?.site_block || (firstMr as any)?.delivery_address || firstMr?.site_name || '',
+        mr_raised_by: f.mr_raised_by || (firstMr as any)?.requested_by_name || (firstMr as any)?.requested_by || (firstMr as any)?.raised_by || 'Rohan Mehta (Site Eng)',
         lines: [...f.lines, ...newLines],
       };
     });
@@ -500,13 +725,16 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
           });
           if (res.error) { onError(res.error.message); return; }
           onMessage(message);
+          if (newStatus) {
+            setForm((f) => (f && f.id === prId ? { ...f, status: newStatus as any } : f));
+          }
           await onRefresh();
           setConfirm(null);
           if (opts?.exit) {
             setMode('list');
             setForm(null);
           } else {
-            void editPr(prId);
+            void editPr(prId, true);
           }
         } finally {
           setWorkflowBusy(false);
@@ -537,8 +765,11 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
       if (res.error) { onError(res.error.message); return; }
       onMessage('PR assigned successfully!');
       setAssignOpen(false);
+      if (targetStatus) {
+        setForm((f) => (f && f.id === form.id ? { ...f, status: targetStatus as any } : f));
+      }
       await onRefresh();
-      void editPr(form.id);
+      void editPr(form.id, true);
     } finally {
       setWorkflowBusy(false);
     }
@@ -560,6 +791,22 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
     }
   }, [form, onError, onMessage, onRefresh]);
 
+  const handleResetToDraft = useCallback(async () => {
+    if (!form?.id) return;
+    if (!window.confirm('Reset this Purchase Requisition to Draft? This will permanently delete all downstream RFQs and quotation details for this PR.')) return;
+    setSaving(true);
+    try {
+      const res = await resetPrToDraft(form.id);
+      if (res.error) { onError(res.error.message); return; }
+      onMessage('PR reset to draft. Associated RFQs/Quotations cleaned up.');
+      setForm((f) => (f ? { ...f, status: 'draft' } : f));
+      await onRefresh();
+      void editPr(form.id, true);
+    } finally {
+      setSaving(false);
+    }
+  }, [form, editPr, onError, onMessage, onRefresh]);
+
   // Roles like ADMIN / PROJECT_DIRECTOR are normalised to UPPER_MANAGEMENT upstream (see lib/roles.ts).
   const canManage = props.activeRole === 'UPPER_MANAGEMENT' || props.activeRole === 'PROJECT_MANAGER' || props.activeRole === 'PR_TEAM';
   const canApprove = props.activeRole === 'UPPER_MANAGEMENT' || props.activeRole === 'PROJECT_MANAGER';
@@ -577,6 +824,27 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
   const SUCCESS = 'inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700 shadow-sm transition-colors';
   const DANGER = 'inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-3 py-2 text-xs font-bold text-white hover:bg-red-700 shadow-sm transition-colors';
 
+  const activeRow = useMemo(() => {
+    if (!form) return null;
+    const dbRow = props.rows.find((r) => r.id === form.id);
+    const computedEstCost = computeCostSummary(form).totalEstimatedCost;
+    return {
+      ...dbRow,
+      id: form.id || dbRow?.id || 'draft-preview',
+      project_id: form.project_id || dbRow?.project_id || 'central-park',
+      site_id: form.site_id || dbRow?.site_id || null,
+      material_request_id: dbRow?.material_request_id || null,
+      pr_number: form.pr_number || dbRow?.pr_number || 'PR-Draft',
+      title: form.general_remarks || form.over_budget_justification || dbRow?.title || 'Purchase Requisition',
+      estimated_cost: computedEstCost || dbRow?.estimated_cost || 0,
+      status: form.status as any,
+      requested_date: form.pr_date || dbRow?.requested_date || new Date().toISOString().split('T')[0],
+      required_date: form.required_date || dbRow?.required_date || null,
+      finance_required: false,
+      current_approval_stage: null,
+    } as PurchaseRequisitionRow;
+  }, [form, props.rows]);
+
   function renderReviewActions(status: string): ReactNode {
     switch (status) {
       case 'under_verification':
@@ -591,14 +859,24 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
           {canApprove && <button className={DANGER} onClick={() => openConfirm({ title: 'Reject PR', action: 'reject this PR', fromStatus: status, toStatus: 'rejected', danger: true, reasonLabel: 'Rejection reason', reasonRequired: true, confirmLabel: 'Reject' }, 'Rejected', 'rejected')}><XCircle className="h-4 w-4" /> Reject</button>}
           {canApprove && <button className={SUCCESS} onClick={() => openConfirm({ title: 'Approve PR', action: 'approve this PR and move it to Pending Procurement', fromStatus: status, toStatus: 'approved', reasonLabel: 'Approval comment', reasonRequired: reviewComputed.requireComment, confirmLabel: 'Approve' }, 'Approved', 'approved')}><CheckCircle2 className="h-4 w-4" /> Approve &amp; Move to Pending Procurement</button>}
         </>);
-      case 'approved':
+      case 'approved': {
         return (<>
-          {canManage && <button className={OUTLINE} onClick={() => openConfirm({ title: 'Put On Hold', action: 'put this PR on hold', fromStatus: status, toStatus: 'on_hold', reasonLabel: 'Reason', reasonRequired: true, confirmLabel: 'Put On Hold' }, 'Put on hold', 'on_hold')}><PauseCircle className="h-4 w-4" /> Hold</button>}
-          {canManage && <button className={OUTLINE} onClick={() => openConfirm({ title: 'Return for Revision', action: 'return this approved PR to draft for revision (a revision will be required and reapproval reset)', fromStatus: status, toStatus: 'revision_required', reasonLabel: 'Revision reason', reasonRequired: true, confirmLabel: 'Return for Revision' }, 'Returned for revision', 'revision_required', { patch: (reason) => ({ revision_reason: reason }) })}><RotateCcw className="h-4 w-4" /> Return for Revision</button>}
-          {canApprove && <button className={OUTLINE} onClick={() => openConfirm({ title: 'Reapprove PR', action: 'reapprove this PR', fromStatus: status, toStatus: 'approved', reasonLabel: 'Comment', confirmLabel: 'Reapprove' }, 'Reapproved', 'approved')}><CheckCircle2 className="h-4 w-4" /> Reapprove</button>}
-          {canManage && <button className={DANGER} onClick={() => openConfirm({ title: 'Cancel PR', action: 'cancel this PR', fromStatus: status, toStatus: 'cancelled', danger: true, reasonLabel: 'Cancellation reason', reasonRequired: true, confirmLabel: 'Cancel PR' }, 'Cancelled', 'cancelled', { patch: (reason) => ({ cancellation_reason: reason }) })}><XCircle className="h-4 w-4" /> Cancel PR</button>}
-          <button className={PRIMARY} onClick={() => openConfirm({ title: 'Close PR', action: 'close this PR', fromStatus: status, toStatus: 'closed', reasonLabel: 'Closing note', confirmLabel: 'Close PR' }, 'Closed', 'closed', { exit: true })}><Lock className="h-4 w-4" /> Close PR</button>
+          {linkedRfq ? (
+            <button className={PRIMARY} onClick={() => props.onNavigateToRfq?.(linkedRfq.id, form?.id || linkedRfq.purchase_requisition_id || '')}>
+              <Eye className="h-4 w-4" /> Open RFQ Form
+            </button>
+          ) : (
+            activeRow && (
+              <button className={PRIMARY} onClick={() => props.onRfq(activeRow)}>
+                <Plus className="h-4 w-4" /> Create Auto-Draft RFQ
+              </button>
+            )
+          )}
+          <button className={OUTLINE} onClick={() => openConfirm({ title: 'Close PR', action: 'close this PR', fromStatus: status, toStatus: 'closed', reasonLabel: 'Closing note', confirmLabel: 'Close PR' }, 'Closed', 'closed', { exit: true })}>
+            <Lock className="h-4 w-4" /> Close PR
+          </button>
         </>);
+      }
       case 'on_hold':
         return (<>
           {canManage && <button className={PRIMARY} onClick={() => openConfirm({ title: 'Resume PR', action: 'resume this PR', fromStatus: status, toStatus: 'pending_approval', confirmLabel: 'Resume' }, 'Resumed', 'pending_approval')}><PlayCircle className="h-4 w-4" /> Resume</button>}
@@ -614,22 +892,41 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
   function renderSecondaryActions(): ReactNode {
     if (!form) return null;
     const computedEstCost = computeCostSummary(form).totalEstimatedCost;
-    const row = props.rows.find((r) => r.id === form.id) || {
-      id: form.id || 'draft-preview',
-      project_id: form.project_id || 'central-park',
-      site_id: form.site_id || null,
-      material_request_id: null,
-      pr_number: form.pr_number || 'PR-Draft',
-      title: form.general_remarks || 'Purchase Requisition',
-      estimated_cost: computedEstCost || 0,
+    const dbRow = props.rows.find((r) => r.id === form.id);
+
+    const siteObj = props.projectOptions.flatMap((p) => p.project_sites ?? []).find((s) => s.id === form.site_id);
+    const resolvedSiteName = siteObj?.name || (form.site_id && !form.site_id.includes('-') && form.site_id.length > 20 ? null : form.site_id) || (dbRow as any)?.site_name || (dbRow as any)?.sub_project || (dbRow as any)?.project_sites?.name || '';
+
+    const liveRow = {
+      ...dbRow,
+      id: form.id || dbRow?.id || 'draft-preview',
+      project_id: form.project_id || dbRow?.project_id || 'central-park',
+      site_id: form.site_id || dbRow?.site_id || null,
+      site_name: resolvedSiteName,
+      sub_project: resolvedSiteName,
+      material_request_id: dbRow?.material_request_id || null,
+      pr_number: form.pr_number || dbRow?.pr_number || 'PR-Draft',
+      title: form.general_remarks || form.over_budget_justification || dbRow?.title || 'Purchase Requisition',
+      estimated_cost: computedEstCost || dbRow?.estimated_cost || 0,
+      subtotal_amount: computedEstCost || dbRow?.subtotal_amount || 0,
+      total_amount: computedEstCost || dbRow?.total_amount || 0,
       finance_required: false,
       status: form.status as any,
       current_approval_stage: null,
-      requested_date: form.pr_date || new Date().toISOString().split('T')[0],
-      required_date: form.required_date || null,
-      company_name: form.company_name || 'Pramukh Group Infrastructure Ltd.',
-      department: form.department || 'Site Store',
-      prepared_by: form.prepared_by || null,
+      pr_date: form.pr_date || dbRow?.created_at || new Date().toISOString().split('T')[0],
+      requested_date: form.pr_date || dbRow?.requested_date || new Date().toISOString().split('T')[0],
+      required_date: form.required_date || dbRow?.required_date || null,
+      pr_release_date: form.pr_release_date || dbRow?.pr_release_date || null,
+      company_name: form.company_name || dbRow?.company_name || 'Pramukh Group Infrastructure Ltd.',
+      department: form.department || dbRow?.department || 'Site Store',
+      prepared_by: form.prepared_by || dbRow?.prepared_by || null,
+      general_remarks: form.general_remarks || dbRow?.general_remarks || '',
+      unlocked_project: form.unlocked_project ?? (dbRow as any)?.unlocked_project ?? 1.00,
+      activity_name: form.activity_name || dbRow?.activity_name || 'Masonry / Brickwork',
+      work_activity: form.activity_name || dbRow?.activity_name || 'Masonry / Brickwork',
+      cost_centre: form.cost_centre || dbRow?.cost_centre || '',
+      contractor_name: form.contractor_name || dbRow?.contractor_name || '',
+      delivery_address: form.delivery_address || dbRow?.delivery_address || 'Central Park Residential Project',
       purchase_requisition_lines: form.lines.map((l, i) => ({
         id: l.key || `line-${i}`,
         item_description: l.item_description,
@@ -640,18 +937,27 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
         work_activity: l.work_activity || null,
         item_group: l.item_group || null,
         specification: l.specification || null,
+        est_qty: l.est_qty ?? 0,
+        iss_qty: l.iss_qty ?? 0,
+        bal_qty: l.pr_bal_qty ?? l.pr_quantity ?? 0,
+        pending_pr: l.remaining_mr_qty ?? 0,
+        lead_period: l.lead_period_days ?? null,
+        lead_period_date: l.lead_period_date ?? null,
+        required_date: l.required_date ?? form.required_date,
+        item_brand: l.preferred_brand || l.specification || '-',
       })),
+      history: (dbRow as any)?.history || [],
     };
 
     return (
       <>
         <button
           type="button"
-          onClick={() => setPreviewPr(row as any)}
-          title="Preview and Print Purchase Requisition PDF"
-          className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-2 text-xs font-bold text-foreground hover:bg-muted transition-colors cursor-pointer"
+          onClick={() => setPreviewPr(liveRow as any)}
+          title="Print official Purchase Requisition PDF"
+          className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3.5 py-2 text-xs font-bold text-white hover:bg-emerald-700 transition-all shadow-xs cursor-pointer"
         >
-          <FileDown className="h-3.5 w-3.5 text-primary" /> Print / PDF Report
+          <Printer className="h-3.5 w-3.5" /> Print PDF
         </button>
         {form.id && (
           <button
@@ -675,7 +981,7 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
         {form.id && ['draft', 'returned_to_draft'].includes(form.status) && (
           <button onClick={handleDeleteDraft} className={DANGER}><Trash2 className="h-4 w-4" /> Delete Draft</button>
         )}
-        <button onClick={() => void persist(false)} disabled={saving} className={PRIMARY}>
+        <button onClick={() => void persist(false)} disabled={saving} className={OUTLINE}>
           <Save className="h-4 w-4" /> {saving ? 'Saving…' : 'Save as Draft'}
         </button>
       </>
@@ -719,6 +1025,11 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
           onOpenAddMr={() => { setDrawerOpen(true); if (approvedMrs.length === 0) void loadApprovedMrs(); }}
           onRemoveMr={removeMr}
           budgetSnapshot={budgetSnapshot}
+          activityResolution={activityResolution}
+          activityResolving={activityResolving}
+          activityModelError={activityModelError}
+          activityUsedModel={activityUsedModel}
+          masterBudgetCategories={masterBudgetCategories}
           budgetHeads={budgetHeads}
           costCodes={costCodes}
           projectOptions={projectOptions}
@@ -758,6 +1069,12 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
           onConfirm={(reason, notify) => { void confirm?.run(reason, notify); }}
         />
         <PrHistoryDrawer open={historyOpen} prId={form.id} prNumber={form.pr_number} onClose={() => setHistoryOpen(false)} />
+        {previewPr && (
+          <PRPdfPreviewModal
+            pr={previewPr}
+            onClose={() => setPreviewPr(null)}
+          />
+        )}
       </>
     );
   }

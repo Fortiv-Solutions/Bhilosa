@@ -1036,6 +1036,12 @@ export function subscribeToBudgetChanges(
   projectId: string | null | undefined,
   onChange: () => void,
   debounceMs = 400,
+  /**
+   * Namespaces the realtime topic. Supabase keys channels by topic on a single
+   * client, so two independent subscribers (the Budget module and the PR form's
+   * activity budget card) must not share one name or they clash.
+   */
+  channelKey = 'module',
 ): () => void {
   if (!isSupabaseConfigured) return () => {};
 
@@ -1051,7 +1057,7 @@ export function subscribeToBudgetChanges(
     }, debounceMs);
   };
 
-  let channel = supabase.channel(`budget-module-${dbId ?? 'all'}`);
+  let channel = supabase.channel(`budget-${channelKey}-${dbId ?? 'all'}`);
   for (const table of REALTIME_TABLES) {
     channel = channel.on(
       'postgres_changes',

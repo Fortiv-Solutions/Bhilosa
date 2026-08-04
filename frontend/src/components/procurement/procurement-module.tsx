@@ -22,6 +22,9 @@ import {
   createGrnFromPo,
   createProcurementDocumentUrl,
   createRfqFromPr,
+  listSourcingBasketLines,
+  type SourcingBasketLine,
+  listRfqLines,
   createVendorBillFromGrn,
   generatePurchaseOrderPdf,
   generatePurchaseOrder,
@@ -58,6 +61,14 @@ import {
 import { formatCurrency } from '@/components/procurement/shared';
 import { PurchaseRequisitionWorkspace } from '@/components/procurement/purchase-requisition/purchase-requisition-workspace';
 import { RFQWorkspace } from '@/components/procurement/rfq/rfq-workspace';
+import { RfqBidComparisonMatrix } from '@/components/procurement/rfq/rfq-bid-comparison-matrix';
+import { RfqAwardMatrixModal } from '@/components/procurement/rfq/rfq-award-matrix-modal';
+import {
+  RfqSourcingBasket,
+  isSourceable,
+  validateBasket,
+  type BasketSelection,
+} from '@/components/procurement/rfq/rfq-sourcing-basket';
 import MaterialRequestWorkQueue from '@/components/procurement/material-request-work-queue';
 import { POWorkspace } from '@/components/procurement/po/po-workspace';
 import type { FullPoFormState } from '@/components/procurement/po/po-form';
@@ -118,11 +129,17 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
   // RFQ Creation Modal State
   const [rfqModalOpen, setRfqModalOpen] = useState(false);
   const [selectedPrForRfq, setSelectedPrForRfq] = useState<PurchaseRequisitionRow | null>(null);
+  // Sourcing basket: which PR lines, and how much of each, this RFQ tenders.
+  const [basketLines, setBasketLines] = useState<SourcingBasketLine[]>([]);
+  const [basketSelection, setBasketSelection] = useState<BasketSelection>({});
+  const [basketLoading, setBasketLoading] = useState(false);
   const [selectedVendorsForRfq, setSelectedVendorsForRfq] = useState<string[]>([]);
 
   // Selected PR state for workbench
   const [selectedPrId, setSelectedPrId] = useState<string | null>(null);
   const [selectedRfqId, setSelectedRfqId] = useState<string | null>(null);
+  const [openPrIdForRfq, setOpenPrIdForRfq] = useState<string | null>(null);
+  const [awardMatrixRfqId, setAwardMatrixRfqId] = useState<string | null>(null);
 
   // Quotation and vendor finalization state
   type QuoteLineInput = {
@@ -131,6 +148,14 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
     quantity: number;
     unit_rate: number;
     tax_rate: number;
+    /** RFQ line this bid answers — required for line-level bid comparison. */
+    rfq_line_id?: string | null;
+    /** Offered quantity capacity (defaults to rfq_quantity). */
+    offered_qty?: number;
+    /** Discount percentage (0-100). */
+    discount_percent?: number;
+    /** Remarks/notes from vendor on this item. */
+    remarks?: string;
   };
   const [quoteModalOpen, setQuoteModalOpen] = useState(false);
   const [selectedRfqForQuote, setSelectedRfqForQuote] = useState<RfqRow | null>(null);
@@ -414,7 +439,7 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
       try {
         const result = await action();
         if (result.error) {
-          setError(`${label} failed: ${result.error.message}`);
+          setError(result.error.message);
           return null;
         }
         setMessage(`${label} completed.`);
@@ -422,7 +447,7 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
         return result.data;
       } catch (unexpected) {
         setError(
-          `${label} failed: ${unexpected instanceof Error ? unexpected.message : 'Unexpected error.'}`,
+          unexpected instanceof Error ? unexpected.message : 'Unexpected error.',
         );
         return null;
       }
@@ -452,11 +477,32 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
     const titleText = mr.title || mr.justification || `PR for ${mr.mr_number}`;
     const requiredDateText = mr.required_date || new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0];
 
+    // Pass the WHOLE MR line through. Projecting it down to
+    // (description, qty, rate, item_id) -- as this did -- dropped the line id,
+    // so purchase_requisition_lines.material_request_line_id came out NULL and
+    // the PR had no link back to the MR line. Everything downstream then fell
+    // back to MR *header* values: both PR rows showed the same activity, and
+    // group / brand / unit rendered as blank.
     const prLinesToSave = lines.map((l) => ({
+      // Identity — this is what makes the PR line traceable to its MR line.
+      id: l.id ?? null,
+      material_request_line_id: l.id ?? null,
+      line_number: (l as { line_number?: number | null }).line_number ?? null,
+
       item_description: l.item_description,
       quantity: Number(l.quantity) || 0,
       estimated_rate: Number(l.estimated_rate) || 0,
       item_id: l.item_id || undefined,
+
+      // Classification — copied 1:1 so the PR shows exactly what the MR defines.
+      unit: (l as { unit?: string | null }).unit ?? null,
+      item_code: (l as { item_code?: string | null }).item_code ?? null,
+      item_group: (l as { item_group?: string | null }).item_group ?? null,
+      item_brand: (l as { item_brand?: string | null }).item_brand ?? null,
+      specification: (l as { specification?: string | null }).specification ?? null,
+      activity_name: (l as { activity_name?: string | null }).activity_name ?? null,
+      sub_activity_name: (l as { sub_activity_name?: string | null }).sub_activity_name ?? null,
+      activity_code: (l as { activity_code?: string | null }).activity_code ?? null,
     }));
 
     await runAction(`Auto-draft PR for MR ${mr.mr_number}`, () =>
@@ -476,7 +522,28 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
   async function handleOpenRfqModal(pr: PurchaseRequisitionRow) {
     setSelectedPrForRfq(pr);
     setSelectedVendorsForRfq([]);
+    setBasketSelection({});
+    setBasketLines([]);
     setRfqModalOpen(true);
+
+    // Availability is computed server-side, so the basket must be fetched each
+    // time the modal opens — another buyer may have tendered these lines since.
+    setBasketLoading(true);
+    try {
+      const lines = await listSourcingBasketLines(pr.id);
+      setBasketLines(lines);
+      // Pre-select everything still tenderable: the common case is putting the
+      // whole remaining requisition out to quotation.
+      const preset: BasketSelection = {};
+      for (const line of lines) {
+        if (isSourceable(line)) preset[line.pr_line_id] = line.available_to_source;
+      }
+      setBasketSelection(preset);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Unable to load requisition lines.');
+    } finally {
+      setBasketLoading(false);
+    }
   }
 
   async function handleSaveRfq(event: FormEvent) {
@@ -487,27 +554,36 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
       return;
     }
 
+    // Client-side validation for fast feedback. The RPC re-validates everything
+    // server-side, so this is a convenience, never the control.
+    const basketErrors = validateBasket(basketLines, basketSelection);
+    if (basketErrors.length > 0) {
+      setError(basketErrors[0]);
+      return;
+    }
+
     const published = await runAction('RFQ publication', () =>
-      createRfqFromPr(selectedPrForRfq, selectedVendorsForRfq),
+      createRfqFromPr({
+        purchaseRequisitionId: selectedPrForRfq.id,
+        vendorIds: selectedVendorsForRfq,
+        lines: Object.entries(basketSelection).map(([prLineId, quantity]) => ({
+          prLineId,
+          quantity,
+        })),
+        title: selectedPrForRfq.title ?? null,
+        dueDate: selectedPrForRfq.required_date ?? null,
+      }),
     );
 
     if (published !== null) {
       setRfqModalOpen(false);
       setSelectedPrForRfq(null);
+      setBasketSelection({});
+      setBasketLines([]);
     }
   }
 
-  function handleOpenQuoteModal(rfq: RfqRow) {
-    const linkedPr = data.purchaseRequisitions.find((pr) => pr.id === rfq.purchase_requisition_id);
-    const prLinesForQuote = linkedPr?.purchase_requisition_lines ?? [];
-
-    if (prLinesForQuote.length === 0) {
-      setError(
-        `RFQ ${rfq.rfq_number} has no requisition lines to quote against. Check that its purchase requisition still has line items.`,
-      );
-      return;
-    }
-
+  async function handleOpenQuoteModal(rfq: RfqRow) {
     setSelectedRfqForQuote(rfq);
     setSelectedVendorForQuote(rfq.rfq_vendors?.[0]?.vendor_id || '');
     setQuoteNumber('');
@@ -519,19 +595,61 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
     setQuoteStoragePath('');
     setQuoteAttachments([]);
 
-    // Rates start at the requisition's own estimate (or zero), so the user
-    // enters what the vendor actually quoted. Placeholder rates of 100/50 and
-    // a fabricated 100-unit line used to be seeded here and were saved as if
-    // they were real commercial figures.
-    setQuoteLines(
-      prLinesForQuote.map((l) => ({
-        item_id: l.item_id,
-        item_description: l.item_description,
-        quantity: Number(l.quantity) || 0,
-        unit_rate: Number(l.estimated_rate) || 0,
-        tax_rate: 18,
-      })),
-    );
+    // Phase 1 fix: populate quote lines from rfq_lines (the items actually
+    // tendered), NOT from the PR lines. This ensures:
+    //   1. Only tendered items show up in the quote form.
+    //   2. Each quote line carries rfq_line_id for downstream binding.
+    //   3. Quantities reflect the tendered amount, not the full PR quantity.
+    try {
+      const rfqLines = await listRfqLines(rfq.id);
+      if (rfqLines.length > 0) {
+        setQuoteLines(
+          rfqLines.map((rl) => ({
+            item_id: rl.item_id,
+            item_description: rl.item_description,
+            quantity: rl.rfq_quantity,
+            offered_qty: rl.rfq_quantity,
+            unit_rate: rl.estimated_rate || 0,
+            discount_percent: 0,
+            tax_rate: 18,
+            rfq_line_id: rl.id,
+            remarks: '',
+          })),
+        );
+      } else {
+        // Fallback for legacy RFQs that might not have rfq_lines yet
+        const linkedPr = data.purchaseRequisitions.find((pr) => pr.id === rfq.purchase_requisition_id);
+        const prLinesForQuote = linkedPr?.purchase_requisition_lines ?? [];
+        setQuoteLines(
+          prLinesForQuote.map((l) => ({
+            item_id: l.item_id,
+            item_description: l.item_description,
+            quantity: Number(l.quantity) || 0,
+            offered_qty: Number(l.quantity) || 0,
+            unit_rate: Number(l.estimated_rate) || 0,
+            discount_percent: 0,
+            tax_rate: 18,
+            remarks: '',
+          })),
+        );
+      }
+    } catch {
+      // If rfq_lines fetch fails, fall back to PR lines
+      const linkedPr = data.purchaseRequisitions.find((pr) => pr.id === rfq.purchase_requisition_id);
+      const prLinesForQuote = linkedPr?.purchase_requisition_lines ?? [];
+      setQuoteLines(
+        prLinesForQuote.map((l) => ({
+          item_id: l.item_id,
+          item_description: l.item_description,
+          quantity: Number(l.quantity) || 0,
+          offered_qty: Number(l.quantity) || 0,
+          unit_rate: Number(l.estimated_rate) || 0,
+          discount_percent: 0,
+          tax_rate: 18,
+          remarks: '',
+        })),
+      );
+    }
 
     setQuoteModalOpen(true);
   }
@@ -568,8 +686,12 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
           item_description: l.item_description,
           quantity: l.quantity,
           unit_rate: l.unit_rate,
+          discount_percent: l.discount_percent ?? 0,
           tax_rate: l.tax_rate,
           item_id: l.item_id || undefined,
+          rfq_line_id: l.rfq_line_id || undefined,
+          offered_qty: l.offered_qty ?? l.quantity,
+          remarks: l.remarks?.trim() || undefined,
         })),
         attachments: quoteAttachments,
       }),
@@ -726,7 +848,7 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
 
   /** Saves the full PO form. Previously the form had no persistence path at all. */
   async function handleSavePoForm(formData: FullPoFormState) {
-    const activeId = (formData as unknown as { id?: string }).id;
+    const activeId = formData.id || (formData as any).po?.id || (formData as any).po_id;
     await runAction('Purchase order save', () =>
       savePurchaseOrderForm({
         id: activeId,
@@ -1183,6 +1305,10 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
           onAssign={(row) => assignPrToCurrentUser(row).then(() => refresh())}
           onApprove={(row) => approvePurchaseRequisition(row).then(() => refresh())}
           onRfq={handleOpenRfqModal}
+          onNavigateToRfq={(rfqId, prId) => {
+            setActiveTab('rfq');
+            if (prId) setOpenPrIdForRfq(prId);
+          }}
           onPdf={(row) => generatePurchaseRequisitionPdf(row).then(() => refresh())}
           onOpenPdf={(row) => printPurchaseRequisitionReport(row)}
           onGeneratePo={(row) => handleOpenPoModal(row)}
@@ -1203,7 +1329,10 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
           projectOptions={projectOptions as any}
           activeRole={activeRole as any}
           selectedRfqId={selectedRfqId}
+          openPrId={openPrIdForRfq}
+          onClearOpenPrId={() => setOpenPrIdForRfq(null)}
           onSelectRfq={setSelectedRfqId}
+          onOpenAwardMatrix={(rfqId) => setAwardMatrixRfqId(rfqId)}
           onCreateRfq={(pr) => handleOpenRfqModal(pr)}
           onRecordQuote={(rfq) => handleOpenQuoteModal(rfq)}
           onRecommend={(quote) => handleOpenRecommendModal(quote)}
@@ -1213,6 +1342,8 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
             const rfq = data.rfqs.find((r) => r.id === rfqId);
             if (rfq) printRfqReport(rfq);
           }}
+          onRefresh={refresh}
+          onNavigateToPo={() => setActiveTab('orders')}
         />
       )}
 
@@ -1269,15 +1400,63 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
 
       {/* MODALS */}
 
+      {/* 1. RFQ Bid Comparison Matrix Modal (Phase 2) */}
+      {selectedRfqId && (
+        <RfqBidComparisonMatrix
+          rfqId={selectedRfqId}
+          onClose={() => setSelectedRfqId(null)}
+          onOpenAwardMatrix={() => setAwardMatrixRfqId(selectedRfqId)}
+          onRecommendVendor={(vendorId, quotationId) => {
+            const quote = data.quotations.find((q) => q.id === quotationId);
+            if (quote) {
+              setSelectedRfqId(null);
+              handleOpenRecommendModal(quote);
+            }
+          }}
+        />
+      )}
+
+      {/* 1b. Multi-Vendor Sourcing Award Matrix Modal (Phase 3) */}
+      {awardMatrixRfqId && (
+        <RfqAwardMatrixModal
+          rfqId={awardMatrixRfqId}
+          onClose={() => setAwardMatrixRfqId(null)}
+          onAwardSaved={() => {
+            setAwardMatrixRfqId(null);
+            refresh();
+          }}
+        />
+      )}
+
       {/* 2. Publish RFQ Modal */}
       {rfqModalOpen && selectedPrForRfq && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-lg rounded-xl border border-border bg-card p-6 shadow-xl">
+          <div className="flex max-h-[90vh] w-full max-w-3xl flex-col rounded-xl border border-border bg-card p-6 shadow-xl">
             <div className="flex items-center justify-between border-b border-border pb-3">
-              <h3 className="text-lg font-bold text-foreground">Publish RFQ ({selectedPrForRfq.pr_number})</h3>
+              <div>
+                <h3 className="text-lg font-bold text-foreground">Publish RFQ ({selectedPrForRfq.pr_number})</h3>
+                <p className="text-[11px] text-muted-foreground">
+                  Choose the items and quantities to tender, then the vendors to invite.
+                </p>
+              </div>
               <button type="button" onClick={() => setRfqModalOpen(false)} className="rounded-md p-1 hover:bg-muted"><X className="h-5 w-5" /></button>
             </div>
-            <form onSubmit={handleSaveRfq} className="mt-4 space-y-4">
+            <form onSubmit={handleSaveRfq} className="mt-4 flex min-h-0 flex-1 flex-col space-y-4 overflow-y-auto pr-1">
+              {/* Sourcing basket — which lines, and how much of each */}
+              <div>
+                <label className="text-xs font-bold text-foreground">
+                  Items to Tender <span className="font-normal text-muted-foreground">(quantities are editable — tender part of a line now and the rest later)</span>
+                </label>
+                <div className="mt-2">
+                  <RfqSourcingBasket
+                    lines={basketLines}
+                    loading={basketLoading}
+                    selection={basketSelection}
+                    onChange={setBasketSelection}
+                  />
+                </div>
+              </div>
+
               <div>
                 <label className="text-xs font-bold text-foreground">Select Registered Vendors to Send RFQ</label>
                 <div className="mt-2 max-h-48 space-y-2 overflow-y-auto rounded-md border border-border p-3">
@@ -1347,23 +1526,120 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
                 </div>
               </div>
               <div>
-                <label className="text-xs font-bold text-foreground">Commercial Quote Line Rates</label>
-                <div className="mt-2 space-y-2">
-                  {quoteLines.map((line, idx) => (
-                    <div key={idx} className="grid grid-cols-4 gap-2 items-center rounded-md border border-border p-2 text-xs">
-                      <span className="col-span-2 font-bold">{line.item_description} ({line.quantity} qty)</span>
-                      <input type="number" placeholder="Unit Rate (₹)" value={line.unit_rate} onChange={(e) => {
-                        const copy = [...quoteLines];
-                        copy[idx].unit_rate = Number(e.target.value);
-                        setQuoteLines(copy);
-                      }} className="rounded border border-border p-1 text-right font-bold" />
-                      <input type="number" placeholder="Tax %" value={line.tax_rate} onChange={(e) => {
-                        const copy = [...quoteLines];
-                        copy[idx].tax_rate = Number(e.target.value);
-                        setQuoteLines(copy);
-                      }} className="rounded border border-border p-1 text-right" />
-                    </div>
-                  ))}
+                <label className="text-xs font-bold text-foreground">Commercial Quote Line Rates & Capacity</label>
+                <p className="text-[11px] text-muted-foreground mb-2">
+                  Enter rates, discount %, and offered supply capacity per tendered item.
+                </p>
+                <div className="mt-2 space-y-3">
+                  {quoteLines.map((line, idx) => {
+                    const discount = line.discount_percent || 0;
+                    const netRate = (line.unit_rate || 0) * (1 - discount / 100);
+                    const offered = line.offered_qty ?? line.quantity;
+                    const lineTotal = offered * netRate * (1 + (line.tax_rate || 0) / 100);
+
+                    return (
+                      <div key={idx} className="rounded-xl border border-border bg-background p-3 text-xs space-y-2 shadow-2xs">
+                        <div className="flex items-center justify-between border-b border-border/40 pb-1.5">
+                          <span className="font-bold text-foreground">{line.item_description}</span>
+                          <span className="text-[11px] font-semibold text-muted-foreground">
+                            Tender Qty: <strong className="text-foreground">{line.quantity}</strong>
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 items-center">
+                          <div>
+                            <label className="text-[10px] font-bold text-muted-foreground block">Offered Qty (Capacity)</label>
+                            <input
+                              type="number"
+                              step="any"
+                              min="0.001"
+                              max={line.quantity}
+                              placeholder="Offered Qty"
+                              value={line.offered_qty ?? line.quantity}
+                              onChange={(e) => {
+                                const copy = [...quoteLines];
+                                copy[idx].offered_qty = Number(e.target.value);
+                                setQuoteLines(copy);
+                              }}
+                              className="w-full rounded border border-border bg-card p-1.5 text-right font-bold text-foreground outline-none focus:ring-1 focus:ring-primary"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="text-[10px] font-bold text-muted-foreground block">Unit Rate (₹)</label>
+                            <input
+                              type="number"
+                              step="any"
+                              min="0"
+                              placeholder="Unit Rate (₹)"
+                              value={line.unit_rate}
+                              onChange={(e) => {
+                                const copy = [...quoteLines];
+                                copy[idx].unit_rate = Number(e.target.value);
+                                setQuoteLines(copy);
+                              }}
+                              className="w-full rounded border border-border bg-card p-1.5 text-right font-bold text-primary outline-none focus:ring-1 focus:ring-primary"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="text-[10px] font-bold text-muted-foreground block">Disc %</label>
+                            <input
+                              type="number"
+                              step="any"
+                              min="0"
+                              max="100"
+                              placeholder="Disc %"
+                              value={line.discount_percent ?? 0}
+                              onChange={(e) => {
+                                const copy = [...quoteLines];
+                                copy[idx].discount_percent = Number(e.target.value);
+                                setQuoteLines(copy);
+                              }}
+                              className="w-full rounded border border-border bg-card p-1.5 text-right outline-none focus:ring-1 focus:ring-primary"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="text-[10px] font-bold text-muted-foreground block">Tax %</label>
+                            <input
+                              type="number"
+                              step="any"
+                              min="0"
+                              placeholder="Tax %"
+                              value={line.tax_rate}
+                              onChange={(e) => {
+                                const copy = [...quoteLines];
+                                copy[idx].tax_rate = Number(e.target.value);
+                                setQuoteLines(copy);
+                              }}
+                              className="w-full rounded border border-border bg-card p-1.5 text-right outline-none focus:ring-1 focus:ring-primary"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="text-[10px] font-bold text-muted-foreground block">Net Line Total</label>
+                            <div className="p-1.5 text-right font-extrabold text-foreground tabular-nums bg-muted/40 rounded border border-border/60">
+                              {formatCurrency(lineTotal)}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div>
+                          <input
+                            type="text"
+                            placeholder="Item remarks / brand / delivery notes (optional)"
+                            value={line.remarks ?? ''}
+                            onChange={(e) => {
+                              const copy = [...quoteLines];
+                              copy[idx].remarks = e.target.value;
+                              setQuoteLines(copy);
+                            }}
+                            className="w-full rounded border border-border/80 bg-card px-2 py-1 text-[11px] text-foreground outline-none focus:ring-1 focus:ring-primary"
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
               <div className="flex justify-between items-center border-t border-border pt-4">
@@ -1399,133 +1675,7 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
                 <button type="submit" className="rounded-md bg-primary px-4 py-2 text-sm font-bold text-primary-foreground hover:bg-primary/90">Submit Recommendation</button>
               </div>
             </form>
-          </div>
-        </div>
-      )}
-
-      {/* 5. PO Generation Modal */}
-      {poModalOpen && selectedPrForPo && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-2xl rounded-xl border border-border bg-card p-6 shadow-xl">
-            <div className="flex items-center justify-between border-b border-border pb-3">
-              <h3 className="text-lg font-bold text-foreground">Generate Purchase Order (PO)</h3>
-              <button type="button" onClick={() => setPoModalOpen(false)} className="rounded-md p-1 hover:bg-muted"><X className="h-5 w-5" /></button>
-            </div>
-            <form onSubmit={handleSavePo} className="mt-4 space-y-4 max-h-[75vh] overflow-y-auto pr-1">
-              {/* Vendor. Fixed by the accepted quotation when there is one, and
-                  otherwise chosen explicitly from the registry — never inferred. */}
-              <div>
-                <label className="text-xs font-bold text-foreground">Vendor / Supplier</label>
-                {selectedQuotationForPo ? (
-                  <div className="mt-1 rounded-md border border-border bg-muted/40 p-2 text-sm font-semibold text-foreground">
-                    {selectedQuotationForPo.vendors?.display_name
-                      || selectedQuotationForPo.vendors?.legal_name
-                      || selectedQuotationForPo.vendor_name
-                      || 'Vendor from accepted quotation'}
-                    <span className="ml-2 text-xs font-normal text-muted-foreground">
-                      (from accepted quotation {selectedQuotationForPo.quotation_number || ''})
-                    </span>
                   </div>
-                ) : (
-                  <select
-                    required
-                    value={selectedVendorForPo}
-                    onChange={(e) => setSelectedVendorForPo(e.target.value)}
-                    className="mt-1 w-full rounded-md border border-border bg-card p-2 text-sm text-foreground outline-none"
-                  >
-                    <option value="">Select a vendor…</option>
-                    {vendorChoices.map((vendor) => (
-                      <option key={vendor.id} value={vendor.id}>{vendor.label}</option>
-                    ))}
-                  </select>
-                )}
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="text-xs font-bold text-foreground">Delivery Site Store Location</label>
-                  <input type="text" required value={poDeliveryLocation} onChange={(e) => setPoDeliveryLocation(e.target.value)} className="mt-1 w-full rounded-md border border-border bg-card p-2 text-sm text-foreground outline-none" />
-                </div>
-                <div>
-                  <label className="text-xs font-bold text-foreground">Target Delivery Date</label>
-                  <input type="date" required value={poDeliveryDate} onChange={(e) => setPoDeliveryDate(e.target.value)} className="mt-1 w-full rounded-md border border-border bg-card p-2 text-sm text-foreground outline-none" />
-                </div>
-              </div>
-              <div>
-                <label className="text-xs font-bold text-foreground">Payment Terms</label>
-                <input type="text" required value={poPaymentTerms} onChange={(e) => setPoPaymentTerms(e.target.value)} className="mt-1 w-full rounded-md border border-border bg-card p-2 text-sm text-foreground outline-none" />
-              </div>
-
-              {/* Line items are editable here, since they set the order value. */}
-              <div>
-                <label className="text-xs font-bold text-foreground">Order Line Items</label>
-                <div className="mt-2 space-y-2">
-                  {poLines.map((line, idx) => (
-                    <div key={idx} className="grid grid-cols-12 items-end gap-2 rounded-md border border-border p-2 text-xs">
-                      <span className="col-span-4 font-bold text-foreground">{line.item_description}</span>
-                      <div className="col-span-2">
-                        <label className="text-[10px] text-muted-foreground">Qty</label>
-                        <input
-                          type="number" min={0} step="any" required value={line.quantity}
-                          onChange={(e) => {
-                            const quantity = Number(e.target.value);
-                            setPoLines((prev) => prev.map((l, i) => i === idx
-                              ? { ...l, quantity, line_total: quantity * l.unit_rate * (1 + l.tax_rate / 100) }
-                              : l));
-                          }}
-                          className="w-full rounded border border-border p-1 text-right font-bold"
-                        />
-                      </div>
-                      <div className="col-span-2">
-                        <label className="text-[10px] text-muted-foreground">Unit Rate (₹)</label>
-                        <input
-                          type="number" min={0} step="any" required value={line.unit_rate}
-                          onChange={(e) => {
-                            const unit_rate = Number(e.target.value);
-                            setPoLines((prev) => prev.map((l, i) => i === idx
-                              ? { ...l, unit_rate, line_total: l.quantity * unit_rate * (1 + l.tax_rate / 100) }
-                              : l));
-                          }}
-                          className="w-full rounded border border-border p-1 text-right font-bold"
-                        />
-                      </div>
-                      <div className="col-span-2">
-                        <label className="text-[10px] text-muted-foreground">Tax %</label>
-                        <input
-                          type="number" min={0} step="any" value={line.tax_rate}
-                          onChange={(e) => {
-                            const tax_rate = Number(e.target.value);
-                            setPoLines((prev) => prev.map((l, i) => i === idx
-                              ? { ...l, tax_rate, line_total: l.quantity * l.unit_rate * (1 + tax_rate / 100) }
-                              : l));
-                          }}
-                          className="w-full rounded border border-border p-1 text-right"
-                        />
-                      </div>
-                      <span className="col-span-2 text-right font-bold text-foreground">
-                        {formatCurrency(line.line_total)}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-                <div className="mt-2 flex justify-end gap-4 border-t border-border pt-2 text-sm">
-                  <span className="font-bold text-muted-foreground">Order Total</span>
-                  <span className="font-bold text-foreground">
-                    {formatCurrency(poLines.reduce((sum, l) => sum + (Number(l.line_total) || 0), 0))}
-                  </span>
-                </div>
-              </div>
-
-              <div>
-                <label className="text-xs font-bold text-foreground">Terms and Conditions</label>
-                <textarea rows={3} required value={poTermsAndConditions} onChange={(e) => setPoTermsAndConditions(e.target.value)} className="mt-1 w-full rounded-md border border-border bg-card p-2 text-sm text-foreground outline-none" />
-              </div>
-              <div className="flex justify-end gap-2 border-t border-border pt-4">
-                <button type="button" onClick={() => setPoModalOpen(false)} className="rounded-md border border-border px-4 py-2 text-sm font-bold hover:bg-muted">Cancel</button>
-                <button type="submit" className="rounded-md bg-primary px-4 py-2 text-sm font-bold text-primary-foreground hover:bg-primary/90">Create Purchase Order</button>
-              </div>
-            </form>
-          </div>
         </div>
       )}
 

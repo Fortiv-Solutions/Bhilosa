@@ -39,19 +39,18 @@ export type PrWorkflowStatus =
   | 'auto_draft_pr';
 
 export type PrType = 'material' | 'service' | 'labour_contract' | 'equipment_hire' | 'mixed';
-export type PrPriority = 'normal' | 'urgent' | 'critical';
+export type PrPriority = 'low' | 'medium' | 'normal' | 'high' | 'urgent' | 'critical';
 export type BudgetStatus = 'within_budget' | 'near_limit' | 'over_budget' | 'not_applicable';
 
 export const PR_TYPE_OPTIONS: { value: PrType; label: string }[] = [
   { value: 'material', label: 'Material' },
-  { value: 'service', label: 'Service' },
-  { value: 'labour_contract', label: 'Labour Contract' },
-  { value: 'equipment_hire', label: 'Equipment Hire' },
-  { value: 'mixed', label: 'Mixed' },
 ];
 
 export const PR_PRIORITY_OPTIONS: { value: PrPriority; label: string }[] = [
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
   { value: 'normal', label: 'Normal' },
+  { value: 'high', label: 'High' },
   { value: 'urgent', label: 'Urgent' },
   { value: 'critical', label: 'Critical' },
 ];
@@ -77,6 +76,10 @@ export interface ApprovedMrLine {
   converted_qty: number;
   pending_qty: number;
   estimated_rate: number;
+  activity_name?: string | null;
+  sub_activity_name?: string | null;
+  activity_code?: string | null;
+  item_brand?: string | null;
 }
 
 export interface ApprovedMrRow {
@@ -89,6 +92,7 @@ export interface ApprovedMrRow {
   site_id: string | null;
   site_name: string | null;
   work_activity: string | null;
+  sub_activity_name?: string | null;
   activity_code: string | null;
   requested_by: string | null;
   required_date: string;
@@ -149,26 +153,24 @@ export interface PrFormLine {
   is_modified: boolean;
 
   // Rich ERP 30-column fields
-  status?: string;
-  priority?: string;
-  stock_audit?: string;
-  project_and_block?: string;
-  work_activity?: string;
-  raised_by?: string;
-  submitted_at?: string;
-  activity_name?: string;
-  activity_code?: string;
-  est_qty?: number;
-  ind_qty?: number;
-  iss_qty?: number;
-  extra_rec_qty?: number;
-  extra_adj_qty?: number;
-  pr_bal_qty?: number;
-  lead_period_days?: number;
-  lead_period_date?: string;
-  project_stock?: number;
-  other_project_stock?: number;
-  relation_count?: number;
+  status?: string | null;
+  priority?: string | null;
+  stock_audit?: string | null;
+  project_and_block?: string | null;
+  work_activity?: string | null;
+  raised_by?: string | null;
+  submitted_at?: string | null;
+  activity_name?: string | null;
+  sub_activity_name?: string | null;
+  activity_code?: string | null;
+  est_qty?: number | null;
+  ind_qty?: number | null;
+  iss_qty?: number | null;
+  extra_rec_qty?: number | null;
+  extra_adj_qty?: number | null;
+  pr_bal_qty?: number | null;
+  lead_period_days?: number | null;
+  lead_period_date?: string | null;
 }
 
 export interface PrFormState {
@@ -213,6 +215,7 @@ export interface PrFormState {
   // end of form fields
   unlocked_project?: number;
   prepared_by?: string;
+  mr_raised_by?: string;
   // Cost summary adjustments
   discount_amount: number;
   freight_amount: number;
