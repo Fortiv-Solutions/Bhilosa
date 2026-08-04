@@ -157,8 +157,8 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
     clearNotifications,
     currentUser,
     activeRole,
-    theme,
-    toggleTheme,
+    theme = 'light',
+    toggleTheme = () => {},
     initSupabase
   } = useAppStore();
 
