@@ -42,6 +42,7 @@ export type AIConversation = {
 import { supabase, getDbSiteId, getFrontendProjectId, getDbUserId, getSupabaseJsonHeaders } from '@/utils/supabase-client';
 import { bootstrapInboxData, getSessionProfile, signOut as signOutSupabase } from '@/lib/inbox';
 import { normalizeDatabaseRole } from '@/lib/rbac';
+import { markNotificationRead as markNotificationReadInDb } from '@/lib/notifications';
 import {
   addProjectMemberByName,
   createBoqRecord,
@@ -60,6 +61,9 @@ type AppNotification = {
   message: string;
   time: string;
   read: boolean;
+  /** Set when this notification is backed by a DB `notifications` row (e.g. service_bill_raised), so read-state can round-trip. */
+  dbId?: string;
+  actionUrl?: string;
 };
 
 const DEFAULT_USER: User = {
@@ -87,6 +91,16 @@ interface AppState {
   vendorQuotations: VendorQuotation[];
   vendorPayments: VendorPayment[];
   vendorPerformances: VendorPerformance[];
+
+  // Budget module properties & actions
+  selectedProjectId: string;
+  setSelectedProjectId: (id: string) => void;
+  liveMode: boolean;
+  dashboard: any;
+  mockDashboard: any;
+  refreshDashboard: () => void;
+  userRole: string;
+  runAction: (name: string, payload?: any) => Promise<any>;
   
   // Actions
   checkLogin: () => Promise<void>;
@@ -119,6 +133,7 @@ interface AppState {
   addBOQItem: (projectId: string, item: Omit<BOQItem, 'id' | 'approved' | 'consumedQty'>) => void;
   markNotificationRead: (id: string) => void;
   clearNotifications: () => void;
+  addNotification: (n: Omit<AppNotification, 'id' | 'time' | 'read'> & { id?: string }) => void;
   addQCItem: (projectId: string, title: string) => void;
   addInvoice: (projectId: string, amount: number, desc: string) => void;
   addTeamMember: (projectId: string, name: string, role: string) => void;
@@ -131,6 +146,7 @@ interface AppState {
     taskId: string,
     updates: Partial<GanttTask>
   ) => void;
+  deleteTask: (projectId: string, taskId: string) => void;
   
   addVendor: (vendor: Omit<Vendor, 'id' | 'rating'>) => { error?: string; success: boolean };
   addQuotation: (quote: Omit<VendorQuotation, 'id' | 'submittedAt'>) => void;
@@ -171,12 +187,16 @@ export const useAppStore = create<AppState>((set) => ({
   vendorPayments: [],
   vendorPerformances: [],
 
+  selectedProjectId: 'f6704467-df8c-4f51-a49b-ddfdc40c39af',
+  setSelectedProjectId: (id: string) => set({ selectedProjectId: id }),
+  liveMode: false,
+  dashboard: null,
+  mockDashboard: null,
+  refreshDashboard: () => {},
+  userRole: 'PROJECT_MANAGER',
+  runAction: async () => ({ success: true }),
+
   // Resolves the signed-in identity from the live Supabase session.
-  //
-  // No session => isLoggedIn: false. Previously both the "no profile" branch and the
-  // catch block set `isLoggedIn: true, activeRole: 'UPPER_MANAGEMENT'`, so any visitor
-  // was silently granted full upper-management access to every module without signing
-  // in. That also made a login page unreachable by design.
   checkLogin: async () => {
     try {
       const profile = await getSessionProfile();
@@ -548,7 +568,7 @@ export const useAppStore = create<AppState>((set) => ({
     try {
       const { data, error } = await supabase
         .from('projects')
-        .select('id, code, name, status')
+        .select('id, code, name, client_name, location, description, project_value, budget_amount, actual_spend_amount, start_date, target_end_date, current_phase, status')
         .order('name');
 
       if (error) throw error;
@@ -557,7 +577,9 @@ export const useAppStore = create<AppState>((set) => ({
         const dbProjects = data.map((project: any, index: number): ProjectSite => {
           const frontendId = getFrontendProjectId(project.id);
           const status = String(project.status || 'active').toLowerCase();
-          const progress = Number(project.progress_percentage ?? project.progress ?? 0);
+          // No progress column exists on `projects` — real progress is derived
+          // from average task completion in fetchDbTasks() once tasks load.
+          const progress = 0;
           return {
             id: frontendId,
             name: project.name || project.code || `Project ${index + 1}`,
@@ -691,8 +713,14 @@ export const useAppStore = create<AppState>((set) => ({
 
       set((state) => {
         const updatedProjects = state.projects.map((proj) => {
+          const isCentralPark = proj.id === 'central-park' || proj.id === 'f6704467-df8c-4f51-a49b-ddfdc40c39af' || proj.id === '00000000-0000-0000-0000-000000000001';
           const dbTasks = (data ?? [])
-            .filter((t: any) => getFrontendProjectId(t.project_id) === proj.id)
+            .filter((t: any) => {
+              if (isCentralPark) {
+                return t.project_id === '00000000-0000-0000-0000-000000000001' || t.project_id === 'f6704467-df8c-4f51-a49b-ddfdc40c39af' || getFrontendProjectId(t.project_id) === proj.id;
+              }
+              return getFrontendProjectId(t.project_id) === proj.id;
+            })
             .map((t: any) => ({
               id: t.id,
               projectId: proj.id,
@@ -711,7 +739,10 @@ export const useAppStore = create<AppState>((set) => ({
               priority: t.priority || 'MEDIUM',
               status: t.status || 'TODO',
             }));
-          return { ...proj, tasks: dbTasks };
+          const progress = dbTasks.length
+            ? Math.round(dbTasks.reduce((sum, t) => sum + t.progress, 0) / dbTasks.length)
+            : proj.progress;
+          return { ...proj, tasks: dbTasks, progress };
         });
         return { projects: updatedProjects };
       });
@@ -1546,11 +1577,31 @@ A draft purchase request has been prepared in the Procurement Module.
     };
   }),
 
-  markNotificationRead: (id) => set((state) => ({
-    notifications: state.notifications.map(n => n.id === id ? { ...n, read: true } : n)
-  })),
+  markNotificationRead: (id) => {
+    set((state) => {
+      const target = state.notifications.find((n) => n.id === id);
+      if (target?.dbId) {
+        void markNotificationReadInDb(target.dbId);
+      }
+      return {
+        notifications: state.notifications.map(n => n.id === id ? { ...n, read: true } : n)
+      };
+    });
+  },
 
   clearNotifications: () => set({ notifications: [] }),
+
+  addNotification: (n) => set((state) => {
+    if (n.dbId && state.notifications.some((existing) => existing.dbId === n.dbId)) {
+      return {};
+    }
+    return {
+      notifications: [
+        { id: n.id || `n_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, time: 'Just now', read: false, ...n },
+        ...state.notifications,
+      ],
+    };
+  }),
 
   addQCItem: (projectId, title) => {
     if (isLiveSupabase()) {
@@ -1636,7 +1687,8 @@ A draft purchase request has been prepared in the Procurement Module.
           assigneeId = profileData?.id || null;
         }
 
-        const { error } = await supabase.from('tasks').insert({
+        const { data: inserted, error } = await supabase.from('tasks').insert({
+          id: uuidRegex.test((task as any).id || '') ? (task as any).id : undefined,
           project_id: dbSiteId,
           name: task.name,
           title: task.name,
@@ -1656,7 +1708,8 @@ A draft purchase request has been prepared in the Procurement Module.
           approval_status: 'NOT_SUBMITTED',
           done: task.status === 'COMPLETED',
           progress: task.status === 'COMPLETED' ? 100 : 0,
-        });
+        }).select().single();
+
         if (error) throw error;
         
         // Refresh local tasks
@@ -1745,6 +1798,34 @@ A draft purchase request has been prepared in the Procurement Module.
         }));
       } catch (err) {
         console.error('Failed to update task in Supabase:', err);
+      }
+    })();
+  },
+
+  deleteTask: (projectId, taskId) => {
+    set((state) => ({
+      projects: state.projects.map((p) => {
+        const isCentralPark = p.id === 'central-park' || p.id === 'f6704467-df8c-4f51-a49b-ddfdc40c39af' || p.id === '00000000-0000-0000-0000-000000000001';
+        const targetIds = isCentralPark ? ['central-park', 'f6704467-df8c-4f51-a49b-ddfdc40c39af', '00000000-0000-0000-0000-000000000001', projectId] : [projectId];
+        if (!targetIds.includes(p.id)) return p;
+        return {
+          ...p,
+          tasks: p.tasks.filter((t) => t.id !== taskId)
+        };
+      })
+    }));
+
+    if (!isLiveSupabase()) return;
+
+    (async () => {
+      try {
+        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        if (uuidRegex.test(taskId)) {
+          const { error } = await supabase.from('tasks').delete().eq('id', taskId);
+          if (error) throw error;
+        }
+      } catch (err) {
+        console.error('Failed to delete task from Supabase:', err);
       }
     })();
   },

@@ -163,12 +163,28 @@ export async function createDailyProgressReport(
     await supabase.from('dpr_activity_lines').insert({
       dpr_id: dprId,
       project_id: dbProjectId,
+      activity_id: activity.activityId ?? undefined,
       completed_work: activity.workCompleted,
-      delay_reason: activity.issues ?? activity.risks,
+      delay_reason: activity.isDelayed ? activity.delayReason : (activity.issues ?? activity.risks),
       remarks: activity.risks,
       created_by: profileId,
       updated_by: profileId,
     });
+
+    if (activity.isDelayed && activity.activityId) {
+      await supabase.from('delay_events').insert({
+        project_id: dbProjectId,
+        activity_id: activity.activityId,
+        dpr_id: dprId,
+        planned_date: activity.activityPlannedEndDate,
+        actual_date: reportDate,
+        delay_days: activity.delayDays ?? 0,
+        reason_code: 'Schedule Delay',
+        reason_details: activity.delayReason,
+        created_by: profileId,
+        updated_by: profileId,
+      });
+    }
 
     await createModuleNotification({
       projectId,
@@ -180,6 +196,52 @@ export async function createDailyProgressReport(
     });
 
     return { data: { dprId }, error: null };
+  } catch (error) {
+    return { data: null, error: error as Error };
+  }
+}
+
+export async function createSiteActivity(
+  projectId: string,
+  input: { title: string; plannedStartDate: string; plannedEndDate: string }
+): Promise<MutationResult<{ id: string }>> {
+  if (!isLiveSupabase()) return { data: null, error: null };
+
+  try {
+    const profileId = await currentProfileId();
+    const dbProjectId = getDbSiteId(projectId);
+
+    const { data, error } = await supabase
+      .from('construction_activities')
+      .insert({
+        project_id: dbProjectId,
+        title: input.title,
+        planned_start_date: input.plannedStartDate,
+        planned_end_date: input.plannedEndDate,
+        created_by: profileId,
+        updated_by: profileId,
+      })
+      .select('id')
+      .single();
+
+    if (error) throw new Error(error.message);
+    return { data: { id: (data as { id: string }).id }, error: null };
+  } catch (error) {
+    return { data: null, error: error as Error };
+  }
+}
+
+export async function completeSiteActivity(activityId: string): Promise<MutationResult<null>> {
+  if (!isLiveSupabase()) return { data: null, error: null };
+
+  try {
+    const { error } = await supabase
+      .from('construction_activities')
+      .update({ actual_end_date: today() })
+      .eq('id', activityId);
+
+    if (error) throw new Error(error.message);
+    return { data: null, error: null };
   } catch (error) {
     return { data: null, error: error as Error };
   }

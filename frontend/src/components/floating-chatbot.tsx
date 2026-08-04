@@ -20,6 +20,13 @@ import {
 } from 'lucide-react';
 import { useAppStore } from '@/store/use-app-store';
 import { listProjects as getInboxProjects, listConversations as getConversations, listMessages as getMessages } from '@/lib/inbox';
+import {
+  createChatSession,
+  loadChatMessages,
+  saveChatMessage,
+  clearChatMessages,
+  updateSessionTitle,
+} from '@/lib/ai-chat';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -170,60 +177,75 @@ const renderMessageContent = (content: string) => {
   return <div className="space-y-1">{elements}</div>;
 };
 
+const WELCOME_MSG = 'Hello! I am your Pragati AI Assistant. Ask me anything about project schedules, delays, budget burn, or inventory stock levels.';
+
 export default function FloatingChatbot() {
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([
-    {
-      role: 'assistant',
-      content: 'Hello! I am your Pramukh Group Project Intelligence Assistant. Ask me anything about project schedules, delays, budget burn, or inventory stock levels.',
-      timestamp: new Date(),
-    }
+    { role: 'assistant', content: WELCOME_MSG, timestamp: new Date() }
   ]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [sessionReady, setSessionReady] = useState(false);
 
   const { projects, vendors, vendorBills, currentUser } = useAppStore();
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const [isInitialized, setIsInitialized] = useState(false);
 
-  // Load chat history from localStorage on mount
+  // ── Bootstrap: create/load Supabase session on mount ──────────────────────
   useEffect(() => {
+    // Clear old localStorage cache from previous version
     if (typeof window !== 'undefined') {
-      const stored = localStorage.getItem('pramukh_chat_history');
-      if (stored) {
-        try {
-          const parsed = JSON.parse(stored);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            setMessages(parsed.map((m: any) => ({
-              ...m,
-              timestamp: new Date(m.timestamp)
-            })));
-          }
-        } catch (e) {
-          console.error("Failed to load chat history from localStorage", e);
-        }
+      localStorage.removeItem('pramukh_chat_history');
+    }
+
+    async function initSession() {
+      if (!currentUser?.id) {
+        setSessionReady(true);
+        return;
       }
-      setIsInitialized(true);
-    }
-  }, []);
 
-  // Save chat history to localStorage when messages change
-  useEffect(() => {
-    if (isInitialized && typeof window !== 'undefined') {
-      localStorage.setItem('pramukh_chat_history', JSON.stringify(messages));
-    }
-  }, [messages, isInitialized]);
+      try {
+        // Create a new session for this chat window
+        const session = await createChatSession(currentUser.id);
+        if (!session) {
+          setSessionReady(true);
+          return;
+        }
 
-  const clearChatHistory = () => {
+        setSessionId(session.id);
+
+        // Load existing messages for this session
+        const dbMessages = await loadChatMessages(session.id);
+        if (dbMessages.length > 0) {
+          setMessages(dbMessages.map(m => ({
+            role: m.role,
+            content: m.content,
+            timestamp: new Date(m.created_at),
+          })));
+        }
+      } catch (e) {
+        console.error('[chatbot] session init error:', e);
+      } finally {
+        setSessionReady(true);
+      }
+    }
+
+    initSession();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id]);
+
+  // ── Clear chat: wipe DB messages and reset UI ─────────────────────────────
+  const clearChatHistory = async () => {
     const defaultMsg: Message = {
       role: 'assistant',
-      content: 'Hello! I am your Pramukh Group Project Intelligence Assistant. Ask me anything about project schedules, delays, budget burn, or inventory stock levels.',
+      content: WELCOME_MSG,
       timestamp: new Date(),
     };
     setMessages([defaultMsg]);
-    if (typeof window !== 'undefined') {
-      localStorage.removeItem('pramukh_chat_history');
+    if (sessionId) {
+      await clearChatMessages(sessionId);
     }
   };
 
@@ -248,11 +270,32 @@ export default function FloatingChatbot() {
 
     if (!textToSend) setInputValue('');
 
-    const newMessages = [...messages, { role: 'user', content: messageText, timestamp: new Date() }];
-    setMessages(newMessages as any);
+    const userMsg: Message = { role: 'user', content: messageText, timestamp: new Date() };
+    setMessages(prev => [...prev, userMsg]);
     setIsLoading(true);
 
-    // Fetch inbox context asynchronously
+    // ── Persist user message to Supabase ──────────────────────────────────
+    let activeSessionId = sessionId;
+    if (!activeSessionId && currentUser?.id) {
+      const session = await createChatSession(currentUser.id);
+      if (session) {
+        activeSessionId = session.id;
+        setSessionId(session.id);
+      }
+    }
+
+    if (activeSessionId) {
+      await saveChatMessage(activeSessionId, 'user', messageText);
+
+      // Auto-title the session from the first user message (truncated to 60 chars)
+      const existingUserMsgs = messages.filter(m => m.role === 'user');
+      if (existingUserMsgs.length === 0) {
+        const title = messageText.length > 60 ? messageText.slice(0, 57) + '...' : messageText;
+        await updateSessionTitle(activeSessionId, title);
+      }
+    }
+
+    // ── Fetch inbox context ───────────────────────────────────────────────
     let inboxContext: any[] = [];
     try {
       const inboxProjects = await getInboxProjects();
@@ -273,16 +316,13 @@ export default function FloatingChatbot() {
             }))
           });
         }
-        inboxContext.push({
-          project: p.name,
-          conversations: convData
-        });
+        inboxContext.push({ project: p.name, conversations: convData });
       }
     } catch (e) {
-      console.warn("Failed to fetch inbox context for chatbot:", e);
+      console.warn('[chatbot] Failed to fetch inbox context:', e);
     }
 
-    // Build context summary from Zustand store
+    // ── Build ERP context from Zustand store ──────────────────────────────
     const erpContext = {
       projects: projects.map(p => ({
         id: p.id,
@@ -317,19 +357,14 @@ export default function FloatingChatbot() {
         status: b.status,
         vendorId: b.vendorId
       })),
-      currentUser: {
-        name: currentUser?.name,
-        role: currentUser?.role
-      },
+      currentUser: { name: currentUser?.name, role: currentUser?.role },
       inbox: inboxContext
     };
 
     try {
       const response = await fetch('/api/ai/chat', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: messageText,
           history: messages.map(m => ({ role: m.role, content: m.content })),
@@ -337,23 +372,32 @@ export default function FloatingChatbot() {
         }),
       });
 
-      if (!response.ok) {
-        throw new Error('API request failed');
-      }
+      if (!response.ok) throw new Error('API request failed');
 
       const data = await response.json();
+      const assistantContent = data.response || 'I encountered an error processing your query.';
+
       setMessages(prev => [...prev, {
         role: 'assistant',
-        content: data.response || 'I encountered an error processing your query.',
+        content: assistantContent,
         timestamp: new Date()
       }]);
+
+      // ── Persist assistant reply to Supabase ───────────────────────────
+      if (activeSessionId) {
+        await saveChatMessage(activeSessionId, 'assistant', assistantContent, data.tokens_used);
+      }
     } catch (error) {
-      console.error('Chat error:', error);
+      console.error('[chatbot] Chat error:', error);
+      const errContent = '⚠️ Failed to connect to the AI Assistant service. Please verify that the backend FastAPI server is running.';
       setMessages(prev => [...prev, {
         role: 'assistant',
-        content: '⚠️ Failed to connect to the AI Assistant service. Please verify that the backend FastAPI server is running.',
+        content: errContent,
         timestamp: new Date()
       }]);
+      if (activeSessionId) {
+        await saveChatMessage(activeSessionId, 'assistant', errContent);
+      }
     } finally {
       setIsLoading(false);
     }
@@ -383,7 +427,7 @@ export default function FloatingChatbot() {
                   <Sparkles className="h-4.5 w-4.5 animate-pulse" />
                 </div>
                 <div>
-                  <h3 className="text-sm font-bold tracking-wide">Pramukh AI Assistant</h3>
+                  <h3 className="text-sm font-bold tracking-wide">Pragati AI Assistant</h3>
                   <span className="block text-[10px] text-white/80">ERP Intelligence Engine</span>
                 </div>
               </div>
@@ -518,7 +562,7 @@ export default function FloatingChatbot() {
                   type="text"
                   value={inputValue}
                   onChange={(e) => setInputValue(e.target.value)}
-                  placeholder="Ask Pramukh AI..."
+                  placeholder="Ask Pragati AI..."
                   className="flex-1 bg-transparent text-xs text-gray-800 placeholder-gray-400 focus:outline-none dark:text-gray-100"
                 />
                 <button

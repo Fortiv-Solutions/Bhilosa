@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useAppStore } from '@/store/use-app-store';
@@ -51,7 +51,8 @@ import {
   ChevronUp,
   Video,
   Smartphone,
-  FolderClosed
+  FolderClosed,
+  AlertTriangle
 } from 'lucide-react';
 import { use } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -62,11 +63,18 @@ import { TaskModule } from '@/components/projects/task-module';
 import { ProcurementModule } from '@/components/procurement/procurement-module';
 import { supabase, getDbSiteId, isSupabaseConfigured } from '@/utils/supabase-client';
 import { attachmentUrl } from '@/lib/inbox';
-import { isLiveSupabase } from '@/lib/erp/supabase-modules';
+import { isLiveSupabase, createSiteActivity, completeSiteActivity } from '@/lib/erp/supabase-modules';
 import { getDPRs, approveDPR, rejectDPR } from '@/lib/dpr';
+import { getSiteActivities } from '@/lib/site-activities';
+import type { SiteActivity } from '@/utils/mock-data';
 import { isUpperManagement } from '@/lib/rbac';
 import { getPendingApprovals } from '@/lib/approvals';
 import { getQCInspections, getSafetyIncidents } from '@/lib/safety-qc';
+import { listProcurementDashboard, type ProcurementDashboardData } from '@/lib/procurement';
+import { listBudgetDashboard, type BudgetDashboardData } from '@/lib/budget';
+import { formatIndianCurrency } from '@/utils/format-currency';
+import { SectionCard } from '@/components/ui/section-card';
+import { StatCard } from '@/components/ui/stat-card';
 import {
   ResponsiveContainer,
   LineChart,
@@ -97,7 +105,6 @@ type ProjectTab =
   | 'site-operations'
   | 'budget'
   | 'work-order'
-  | 'billing'
   | 'analytics'
   | 'tasks'
   | 'equipment-tracking'
@@ -203,8 +210,16 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   const [dprLogs, setDprLogs] = useState<any[]>([]);
   const [dprLoading, setDprLoading] = useState(true);
 
+  // Site Ops: predefined activities + timeline
+  const [siteActivities, setSiteActivities] = useState<SiteActivity[]>([]);
+  const [siteActivitiesLoading, setSiteActivitiesLoading] = useState(true);
+  const [timelineFilter, setTimelineFilter] = useState<'ALL' | 'RCC' | 'MASONRY' | 'PLASTER'>('ALL');
+  const [timelineBuilding, setTimelineBuilding] = useState<'ALL' | 'BC' | 'AD'>('ALL');
+  const [timelineSearch, setTimelineSearch] = useState<string>('');
+  const [isAddActivityModalOpen, setIsAddActivityModalOpen] = useState(false);
+
   // New Client-Facing DPR Redesign States
-  const [operationsSubTab, setOperationsSubTab] = useState<'feed' | 'agencies' | 'issues' | 'photos' | 'client-report' | 'history'>('feed');
+  const [operationsSubTab, setOperationsSubTab] = useState<'timeline' | 'feed' | 'agencies' | 'issues' | 'photos' | 'client-report' | 'history'>('feed');
   const [selectedDPRDate, setSelectedDPRDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const [clientDPRReport, setClientDPRReport] = useState<any>(null);
   const [delayEvents, setDelayEvents] = useState<any[]>([]);
@@ -587,6 +602,28 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
 
     fetchDPRs();
 
+    const fetchSiteActivities = async () => {
+      setSiteActivitiesLoading(true);
+      try {
+        const rows = await getSiteActivities(dbSiteId);
+        const mapped: SiteActivity[] = (rows || []).map((row: any) => ({
+          id: row.id,
+          projectId: project.id,
+          title: row.title,
+          plannedStartDate: row.planned_start_date || '',
+          plannedEndDate: row.planned_end_date || '',
+          actualEndDate: row.actual_end_date || null,
+          createdAt: row.created_at,
+        }));
+        if (isMounted) setSiteActivities(mapped);
+      } catch (err) {
+        console.error('Error fetching site activities:', err);
+      } finally {
+        if (isMounted) setSiteActivitiesLoading(false);
+      }
+    };
+    fetchSiteActivities();
+
     // Fetch site issues / delay events from mobile app
     const fetchDelayEvents = async () => {
       try {
@@ -608,6 +645,37 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
       isMounted = false;
     };
   }, [project, id]);
+
+  // Project-scoped procurement, budget, QC and safety data for the Overview tab.
+  // Each source is caught independently so one table's permission/RLS error
+  // doesn't blank out the others (matches the company dashboard's fetch pattern).
+  const [liveProcurement, setLiveProcurement] = useState<ProcurementDashboardData | null>(null);
+  const [liveBudget, setLiveBudget] = useState<BudgetDashboardData | null>(null);
+  const [qcInspections, setQcInspections] = useState<any[]>([]);
+  const [liveSafetyIncidents, setLiveSafetyIncidents] = useState<any[]>([]);
+
+  useEffect(() => {
+    if (!project) return;
+    const dbSiteId = getDbSiteId(project.id);
+    let active = true;
+
+    Promise.all([
+      listProcurementDashboard(dbSiteId).catch(err => { console.error('Procurement fetch failed:', err); return null; }),
+      listBudgetDashboard(dbSiteId).catch(err => { console.error('Budget fetch failed:', err); return null; }),
+      getQCInspections(dbSiteId).catch(err => { console.error('QC fetch failed:', err); return null; }),
+      getSafetyIncidents(dbSiteId).catch(err => { console.error('Safety fetch failed:', err); return null; }),
+    ]).then(([procData, budgetData, qcData, safetyData]) => {
+      if (!active) return;
+      setLiveProcurement(procData);
+      setLiveBudget(budgetData);
+      setQcInspections(qcData || []);
+      setLiveSafetyIncidents(safetyData || []);
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [project?.id]);
 
   const handleApproveWorkflow = async (id: string, type: string) => {
     try {
@@ -633,6 +701,107 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
       console.error('Failed to reject:', err);
     }
   };
+
+  // ────────────────────────────────────────────────────────────────────────
+  // Overview tab — derived real-data stats (no fabricated values)
+  // ────────────────────────────────────────────────────────────────────────
+  const overviewTaskStats = useMemo(() => {
+    const tasks = project?.tasks || [];
+    const today = new Date();
+    const isOpen = (t: any) => t.status !== 'COMPLETED' && t.status !== 'CANCELLED';
+    const overdueTasks = tasks.filter((t: any) => isOpen(t) && t.endDate && new Date(t.endDate) < today);
+    const criticalTasks = tasks.filter((t: any) => t.isCriticalPath);
+    const criticalOrOverdue = [...new Map([...criticalTasks, ...overdueTasks].map((t: any) => [t.id, t])).values()]
+      .map((t: any) => {
+        const delayDays = isOpen(t) && t.endDate && new Date(t.endDate) < today
+          ? Math.floor((today.getTime() - new Date(t.endDate).getTime()) / 86400000)
+          : 0;
+        return { ...t, delayDays };
+      });
+    return {
+      total: tasks.length,
+      completed: tasks.filter((t: any) => t.status === 'COMPLETED').length,
+      inProgress: tasks.filter((t: any) => t.status === 'IN_PROGRESS').length,
+      overdue: overdueTasks,
+      critical: criticalTasks,
+      criticalOrOverdue,
+    };
+  }, [project]);
+
+  const overviewLowStockMaterials = useMemo(
+    () => (project?.materials || []).filter((m: any) => m.quantity <= m.reorderLevel),
+    [project]
+  );
+
+  const overviewBudgetTotals = useMemo(() => {
+    if (!liveBudget?.summaries?.length) return null;
+    return liveBudget.summaries.reduce((acc, r) => ({
+      allocated: acc.allocated + Number(r.allocated_amount || 0),
+      committed: acc.committed + Number(r.committed_amount || 0),
+      spent: acc.spent + Number(r.spent_amount || 0),
+    }), { allocated: 0, committed: 0, spent: 0 });
+  }, [liveBudget]);
+
+  const overviewPendingBillsCount = useMemo(() => {
+    if (!liveProcurement?.vendorBills) return null;
+    return liveProcurement.vendorBills.filter((b: any) => !['approved', 'paid', 'rejected'].includes(b?.status)).length;
+  }, [liveProcurement]);
+
+  const overviewPendingPRsCount = useMemo(() => {
+    if (!liveProcurement?.purchaseRequisitions) return null;
+    return liveProcurement.purchaseRequisitions.filter((pr: any) => pr.status === 'pending_approval').length;
+  }, [liveProcurement]);
+
+  const overviewDaysSinceIncident = useMemo(() => {
+    const dates = liveSafetyIncidents.map((s: any) => s?.incident_date).filter(Boolean).sort();
+    const referenceDate = dates.length ? dates[dates.length - 1] : project?.startDate;
+    if (!referenceDate) return null;
+    const diff = Math.floor((Date.now() - new Date(referenceDate).getTime()) / 86400000);
+    return diff >= 0 ? diff : null;
+  }, [liveSafetyIncidents, project]);
+
+  const overviewQcStats = useMemo(() => ({
+    passed: qcInspections.filter((q: any) => q?.result === 'pass' || q?.status === 'passed').length,
+    failed: qcInspections.filter((q: any) => q?.result === 'fail' || q?.status === 'failed').length,
+  }), [qcInspections]);
+
+  const overviewRoleBreakdown = useMemo(() => {
+    return (project?.teamMembers || []).reduce((acc: Record<string, number>, m: any) => {
+      const role = m.role || 'Unspecified';
+      acc[role] = (acc[role] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>);
+  }, [project]);
+
+  const overviewRecentActivity = useMemo(() => {
+    const dprItems = dprLogs.map((d: any) => ({
+      id: `dpr-${d.id}`,
+      date: d?.report_date || d?.created_at,
+      text: `Daily Progress Report submitted${d?.status ? ` — ${d.status}` : ''}`,
+    }));
+    const delayItems = delayEvents.map((d: any) => ({
+      id: `delay-${d.id}`,
+      date: d?.created_at,
+      text: d?.reason_details || d?.description || 'Delay event logged',
+    }));
+    return [...dprItems, ...delayItems]
+      .filter(i => i.date)
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+      .slice(0, 6);
+  }, [dprLogs, delayEvents]);
+
+  function overviewTaskBarPosition(tsk: any) {
+    const projectStart = project?.startDate ? new Date(project.startDate).getTime() : NaN;
+    const projectEnd = project?.endDate ? new Date(project.endDate).getTime() : NaN;
+    const projectSpan = projectEnd - projectStart;
+    if (!projectSpan || projectSpan <= 0 || !tsk.startDate || !tsk.endDate) return { left: 0, width: 25 };
+    const tStart = new Date(tsk.startDate).getTime();
+    const tEnd = new Date(tsk.endDate).getTime();
+    if (isNaN(tStart) || isNaN(tEnd)) return { left: 0, width: 25 };
+    const left = Math.max(0, Math.min(95, ((tStart - projectStart) / projectSpan) * 100));
+    const width = Math.max(4, Math.min(100 - left, ((tEnd - tStart) / projectSpan) * 100));
+    return { left, width };
+  }
 
   // Supabase sync helpers for Quality Control module
   const syncQcRequestToSupabase = async (req: any) => {
@@ -1288,180 +1457,6 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   };
   const projectWeather = project ? getWeatherForProject(project.id) : { temp: '32°C', desc: 'Partly Cloudy, 12 km/h Wind' };
 
-  // Detailed overview command center data
-  const getProjectOverviewData = (id: string) => {
-    switch(id) {
-      case 'central-park':
-        return {
-          physicalProgress: 28,
-          plannedProgress: 34,
-          variance: -6,
-          budgetUsed: '₹24.2 Cr',
-          workforce: 186,
-          pendingApprovals: 7,
-          materialRisk: 1,
-          openIssues: 3,
-          
-          developer: 'Pramukh Group',
-          pmc: 'Fortiv Solutions PMC',
-          architect: 'Space Design Associates',
-          consultant: 'V. R. Patel & Associates',
-          towers: 4,
-          units: 180,
-          builtUpArea: '2,45,000 Sq.Ft.',
-          startDate: '2025-05-01',
-          targetCompletion: '30 Jul 2027',
-          reraNumber: 'PR/GJ/SURAT/SURAT CITY/S120',
-          propertyType: 'Residential Apartment',
-          
-          forecastCompletion: '15 Sep 2027',
-          forecastDelay: 47,
-          milestonesCompleted: 12,
-          totalMilestones: 18,
-          cpi: 0.92,
-          
-          approvedBudget: '₹90 Cr',
-          committedCost: '₹58 Cr',
-          actualSpent: '₹24 Cr',
-          pendingBills: '₹4 Cr',
-          forecastCost: '₹95 Cr',
-          potentialOverrun: '₹5 Cr',
-          
-          prRaised: 152,
-          prPending: 8,
-          poIssued: 121,
-          pendingDeliveries: 12,
-          delayedDeliveries: 3,
-          criticalMaterials: 2,
-          
-          cementStock: { days: 18, status: 'Healthy' as const },
-          steelStock: { days: 24, status: 'Healthy' as const },
-          aacStock: { days: 7, status: 'Low' as const },
-          tilesStock: { days: 3, status: 'Low' as const },
-          reorderAlerts: 3,
-          
-          requiredWorkforce: 220,
-          shortfall: 34,
-          productivity: 84,
-          activeContractors: 8,
-          subcontractors: 14,
-          
-          qaInspections: 245,
-          passed: 231,
-          failed: 14,
-          openSnags: 36,
-          closedSnags: 192,
-          
-          safeDays: 148,
-          safetyAudits: 22,
-          openNcr: 3,
-          safetyViolations: 5,
-          
-          criticalActivities: [
-            { name: 'Tower A Slab L7', delay: '5 Days' },
-            { name: 'Waterproofing', delay: '8 Days' },
-            { name: 'MEP Shaft Closure', delay: '3 Days' }
-          ],
-          
-          aiInsights: [
-            'Tower B delayed by 6 days due to slab cycle lag.',
-            'Budget burn exceeds progress by 8%.',
-            'Cement stock below safety threshold.',
-            '2 approvals blocking structural execution.'
-          ],
-          aiActions: [
-            'Approve PR-145 (Cement reinforcement)',
-            'Increase workforce by 18 labour on Tower A',
-            'Expedite waterproofing vendor appointment'
-          ]
-        };
-      case 'orbit-4':
-      default:
-        return {
-          physicalProgress: 46,
-          plannedProgress: 50,
-          variance: -4,
-          budgetUsed: '₹24.0 Cr',
-          workforce: 194,
-          pendingApprovals: 2,
-          materialRisk: 1,
-          openIssues: 2,
-          
-          developer: 'Pramukh Group',
-          pmc: 'Fortiv Solutions PMC',
-          architect: 'Sanjay Puri Architects',
-          consultant: 'Delcons Consultants',
-          towers: 2,
-          units: 96,
-          builtUpArea: '1,85,000 Sq.Ft.',
-          startDate: '2025-10-01',
-          targetCompletion: '30 Dec 2027',
-          reraNumber: 'PR/GJ/SURAT/SURAT CITY/S044',
-          propertyType: 'Commercial Corporate Complex',
-          
-          forecastCompletion: '20 Jan 2028',
-          forecastDelay: 21,
-          milestonesCompleted: 15,
-          totalMilestones: 20,
-          cpi: 0.96,
-          
-          approvedBudget: '₹54 Cr',
-          committedCost: '₹38 Cr',
-          actualSpent: '₹24 Cr',
-          pendingBills: '₹2 Cr',
-          forecastCost: '₹56 Cr',
-          potentialOverrun: '₹2 Cr',
-          
-          prRaised: 94,
-          prPending: 2,
-          poIssued: 78,
-          pendingDeliveries: 5,
-          delayedDeliveries: 1,
-          criticalMaterials: 1,
-          
-          cementStock: { days: 12, status: 'Low' as const },
-          steelStock: { days: 18, status: 'Healthy' as const },
-          aacStock: { days: 9, status: 'Healthy' as const },
-          tilesStock: { days: 15, status: 'Healthy' as const },
-          reorderAlerts: 1,
-          
-          requiredWorkforce: 210,
-          shortfall: 16,
-          productivity: 90,
-          activeContractors: 5,
-          subcontractors: 10,
-          
-          qaInspections: 180,
-          passed: 172,
-          failed: 8,
-          openSnags: 14,
-          closedSnags: 158,
-          
-          safeDays: 210,
-          safetyAudits: 18,
-          openNcr: 1,
-          safetyViolations: 2,
-          
-          criticalActivities: [
-            { name: 'Level 8 Deck Casting', delay: '4 Days' },
-            { name: 'GRC Facade Brackets', delay: '6 Days' },
-            { name: 'Fire Piping Support', delay: '2 Days' }
-          ],
-          
-          aiInsights: [
-            'East facade anchor plates survey variance requires structural alignment.',
-            'High-speed lift shop-drawing approval lagging by 14 days.',
-            'Steel stock is healthy, but reorder level is approaching.'
-          ],
-          aiActions: [
-            'Approve structural alignment protocol',
-            'Expedite high-speed lift drawing signature',
-            'Review steel vendor PO next week'
-          ]
-        };
-    }
-  };
-  const overviewData = project ? getProjectOverviewData(project.id) : getProjectOverviewData('central-park');
   const [imageMode, setImageMode] = useState<'render' | 'photo' | 'drone' | 'camera'>('render');
 
   // Daily Activity Form states
@@ -1471,6 +1466,14 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   const [issues, setIssues] = useState('');
   const [risks, setRisks] = useState('');
   const [progressDelta, setProgressDelta] = useState(0.2);
+  const [selectedActivityId, setSelectedActivityId] = useState('');
+  const [delayReason, setDelayReason] = useState('');
+
+  // Site Activity Timeline form states (Site Ops > Activity Timeline)
+  const [activityTitle, setActivityTitle] = useState('');
+  const [activityPlannedStart, setActivityPlannedStart] = useState('');
+  const [activityPlannedEnd, setActivityPlannedEnd] = useState('');
+  const [isAddingActivity, setIsAddingActivity] = useState(false);
 
   // Material Transaction Form states
   const [selectedMatId, setSelectedMatId] = useState('');
@@ -2185,11 +2188,23 @@ Rules:
     }
   };
 
+  // Delay detection for the currently-selected activity on the DPR log form
+  const todayStr = new Date().toISOString().split('T')[0];
+  const selectedActivity = siteActivities.find(a => a.id === selectedActivityId);
+  const isActivityDelayed = !!selectedActivity && !selectedActivity.actualEndDate && !!selectedActivity.plannedEndDate && selectedActivity.plannedEndDate < todayStr;
+  const activityDelayDays = isActivityDelayed
+    ? Math.max(1, Math.round((new Date(todayStr).getTime() - new Date(selectedActivity!.plannedEndDate).getTime()) / 86400000))
+    : 0;
+
   // Submit Daily Activity
   const handleDailyActivitySubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!engineerName || !workCompleted) return;
-    
+    if (isActivityDelayed && !delayReason.trim()) {
+      showQcAlert('Please provide a reason for the delay before submitting.', 'error');
+      return;
+    }
+
     addDailyActivity(project!.id, {
       projectId: project!.id,
       engineerName,
@@ -2197,13 +2212,68 @@ Rules:
       workCompleted,
       issues: issues || null,
       risks: risks || null,
-      progressDelta: parseFloat(progressDelta.toString())
+      progressDelta: parseFloat(progressDelta.toString()),
+      activityId: selectedActivityId || null,
+      activityName: selectedActivity?.title ?? null,
+      activityPlannedEndDate: selectedActivity?.plannedEndDate ?? null,
+      isDelayed: isActivityDelayed,
+      delayDays: activityDelayDays,
+      delayReason: isActivityDelayed ? delayReason.trim() : null,
     });
 
     // Reset Form
     setWorkCompleted('');
     setIssues('');
     setRisks('');
+    setSelectedActivityId('');
+    setDelayReason('');
+  };
+
+  // Add a predefined site activity (Site Ops > Activity Timeline)
+  const handleAddSiteActivity = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activityTitle.trim() || !activityPlannedStart || !activityPlannedEnd) return;
+
+    setIsAddingActivity(true);
+    try {
+      const result = await createSiteActivity(project!.id, {
+        title: activityTitle.trim(),
+        plannedStartDate: activityPlannedStart,
+        plannedEndDate: activityPlannedEnd,
+      });
+
+      setSiteActivities(prev => [
+        ...prev,
+        {
+          id: result.data?.id || `local-${Date.now()}`,
+          projectId: project!.id,
+          title: activityTitle.trim(),
+          plannedStartDate: activityPlannedStart,
+          plannedEndDate: activityPlannedEnd,
+          actualEndDate: null,
+        },
+      ]);
+
+      setActivityTitle('');
+      setActivityPlannedStart('');
+      setActivityPlannedEnd('');
+      setIsAddActivityModalOpen(false);
+    } catch (err) {
+      console.error('Error creating site activity:', err);
+      showQcAlert('Could not save the activity. Please try again.', 'error');
+    } finally {
+      setIsAddingActivity(false);
+    }
+  };
+
+  const handleCompleteSiteActivity = async (activityId: string) => {
+    const completedDate = new Date().toISOString().split('T')[0];
+    setSiteActivities(prev => prev.map(a => a.id === activityId ? { ...a, actualEndDate: completedDate } : a));
+    try {
+      await completeSiteActivity(activityId);
+    } catch (err) {
+      console.error('Error completing site activity:', err);
+    }
   };
 
   // Submit Material Transaction
@@ -3689,7 +3759,6 @@ Rules:
     { id: 'quality-control', label: 'Quality Control', icon: ShieldCheck },
     { id: 'site-operations', label: 'Site Operations', icon: Wrench },
     { id: 'budget', label: 'Budget', icon: Coins },
-    {id: 'billing', label: 'Billing', icon: FileSpreadsheet },
     { id: 'tasks', label: 'Tasks', icon: ListTodo },
     { id: 'inbox', label: 'Inbox', icon: MessageSquare },
     { id: 'vendor-management', label: 'Vendor Scorecard', icon: Award },
@@ -3723,7 +3792,7 @@ Rules:
         </div>
 
         {/* Nav Items */}
-        <nav className="flex flex-col items-center flex-1 py-3 gap-1">
+        <nav className="flex flex-col items-center flex-1 pt-0 pb-3 gap-1">
           {[
             { id: 'project-management', label: 'Overview',       Icon: Building2       },
             { id: 'inbox',              label: 'Inbox',           Icon: MessageSquare   },
@@ -3736,7 +3805,6 @@ Rules:
             { id: 'vendor-management',  label: 'Vendors',         Icon: Award           },
             { id: 'document-control',   label: 'Documents',       Icon: FileText        },
             { id: 'budget',             label: 'Budget',          Icon: Coins           },
-            { id: 'billing',            label: 'Billing',         Icon: FileSpreadsheet },
           ].map(({ id, label, Icon }) => {
             const isActive = activeTab === id;
             return (
@@ -4296,79 +4364,53 @@ Rules:
             {activeTab === 'project-management' && (
               <div className="space-y-4">
 
-                {/* ─── KPI Grid ─── */}
-                <div className="grid grid-cols-1 gap-4 items-stretch">
-
-                  {/* KPI Grid Panel - full width */}
-                  <div className="bg-card rounded-[24px] border border-border/40 p-5 shadow-sm flex flex-col">
-                    <h3 className="text-[11px] font-heading font-black uppercase tracking-widest text-foreground mb-4 flex items-center gap-2">
-                      <span className="w-2 h-4 bg-[#FF7D29] rounded-full"></span> Key Metrics
-                    </h3>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 flex-1 h-full">
-                      {[
-                        { label: 'Physical Progress', value: `${overviewData.physicalProgress}%`, sub: `Planned ${overviewData.plannedProgress}%`, color: '#FF7D29', bg: 'bg-[#FF7D29]/10', icon: Gauge, spark: [18,22,25,28] },
-                        { label: 'Schedule Variance', value: `${overviewData.variance}%`, sub: 'Behind Plan', color: '#ef4444', bg: 'bg-red-500/10', icon: Clock, spark: [-2,-4,-5,-6] },
-                        { label: 'Budget Used', value: overviewData.budgetUsed, sub: `of ${overviewData.approvedBudget}`, color: '#3b82f6', bg: 'bg-blue-500/10', icon: Coins, spark: [12,16,20,24] },
-                        { label: 'Workforce', value: `${overviewData.workforce}`, sub: `Need ${overviewData.requiredWorkforce}`, color: '#8b5cf6', bg: 'bg-violet-500/10', icon: Users, spark: [200,195,190,186] },
-                        { label: 'Pending Approvals', value: `${overviewData.pendingApprovals}`, sub: 'Items awaiting', color: '#f59e0b', bg: 'bg-amber-500/10', icon: ClipboardList, spark: [3,5,6,7] },
-                        { label: 'Material Risk', value: `${overviewData.materialRisk}`, sub: 'Critical items', color: '#ef4444', bg: 'bg-red-500/10', icon: PackageOpen, spark: [0,1,1,1] },
-                        { label: 'Open Issues', value: `${overviewData.openIssues}`, sub: 'High priority', color: '#f97316', bg: 'bg-orange-500/10', icon: ListTodo, spark: [2,4,3,3] },
-                        { label: 'Safe Days', value: `${overviewData.safeDays}`, sub: 'Without incident', color: '#10b981', bg: 'bg-emerald-500/10', icon: ShieldCheck, spark: [140,145,147,148] },
-                      ].map((kpi) => {
-                        const Icon = kpi.icon;
-                        return (
-                          <div key={kpi.label} className="group relative bg-muted/30 border border-transparent hover:border-border/60 hover:bg-muted/50 rounded-2xl p-3 flex items-center justify-between transition-all duration-300">
-                            <div className="flex items-center gap-3">
-                              <div className={`w-8 h-8 rounded-xl flex items-center justify-center ${kpi.bg}`}>
-                                <Icon className="w-4 h-4" style={{ color: kpi.color }} />
-                              </div>
-                              <div>
-                                <span className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground block leading-tight">{kpi.label}</span>
-                                <span className="text-sm font-black text-foreground block leading-none mt-0.5">{kpi.value}</span>
-                              </div>
-                            </div>
-                            <div className="flex flex-col items-end justify-center w-[40px]">
-                              <svg width="32" height="12" viewBox="0 0 32 16" className="opacity-60 group-hover:opacity-100 transition-opacity">
-                                {kpi.spark.map((v, i, arr) => {
-                                  const min = Math.min(...arr), max = Math.max(...arr), range = max - min || 1;
-                                  const x = (i / (arr.length - 1)) * 30 + 1;
-                                  const y = 15 - ((v - min) / range) * 13;
-                                  return i === 0 ? null : (
-                                    <line key={i} x1={(((i-1) / (arr.length - 1)) * 30 + 1)} y1={15 - (((arr[i-1] - min) / range) * 13)} x2={x} y2={y} stroke={kpi.color} strokeWidth="2" strokeLinecap="round" />
-                                  );
-                                })}
-                              </svg>
-                              <span className="text-[7px] text-muted-foreground font-bold mt-1 text-right leading-tight whitespace-nowrap">{kpi.sub}</span>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
+                {/* Key Metrics */}
+                <SectionCard title="Key Metrics" subtitle="Real-time project health at a glance.">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                    <StatCard icon={Gauge} label="Physical Progress" value={`${project!.progress}%`} />
+                    <StatCard
+                      icon={Coins}
+                      label="Budget Spent"
+                      value={overviewBudgetTotals ? formatIndianCurrency(overviewBudgetTotals.spent) : formatIndianCurrency(project!.actualSpend)}
+                    />
+                    <StatCard icon={Users} label="Team Members" value={project!.teamMembers.length} />
+                    <StatCard
+                      icon={ClipboardList}
+                      label="Pending Approvals"
+                      value={pendingWorkflows.length}
+                      accent="ring-amber-200 dark:ring-amber-800"
+                    />
+                    <StatCard
+                      icon={PackageOpen}
+                      label="Material Risk"
+                      value={overviewLowStockMaterials.length}
+                      accent="ring-rose-200 dark:ring-rose-800"
+                    />
+                    <StatCard
+                      icon={AlertTriangle}
+                      label="Open Delays"
+                      value={delayEvents.length}
+                      accent="ring-rose-200 dark:ring-rose-800"
+                    />
+                    <StatCard icon={FileText} label="Open DPRs" value={dprLogs.filter((d: any) => d?.status === 'draft').length} />
+                    <StatCard icon={ShieldCheck} label="Days Since Last Incident" value={overviewDaysSinceIncident ?? '—'} />
                   </div>
-                </div>
+                </SectionCard>
 
-                {/* ─── MIDDLE ROW: 3-Col Analytics ─── */}
+                {/* Project Info / Progress & Budget / Team & Tasks */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                  
-                  {/* Col 1: Project Info */}
-                  <div className="bg-card rounded-[24px] border border-border/40 shadow-sm p-4 flex flex-col hover:shadow-md transition-all duration-300">
-                    <div className="flex items-center justify-between mb-4">
-                      <div className="flex items-center gap-2">
-                        <span className="w-2 h-4 bg-[#FF7D29] rounded-full"></span>
-                        <h3 className="font-heading font-black text-[11px] uppercase tracking-widest text-foreground">Project Info</h3>
-                      </div>
-                      <span className="text-[8px] font-bold text-emerald-600 bg-emerald-500/10 px-2.5 py-1 rounded-full uppercase tracking-wider">Active Portfolio</span>
-                    </div>
-                    <div className="grid grid-cols-2 gap-x-4 gap-y-4 flex-1">
+                  <SectionCard title="Project Info">
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-4">
                       {[
                         { l: 'Project', v: project!.name },
-                        { l: 'Type', v: overviewData.propertyType },
-                        { l: 'Developer', v: overviewData.developer },
-                        { l: 'PMC', v: overviewData.pmc },
-                        { l: 'Architect', v: overviewData.architect },
-                        { l: 'Towers/Units', v: `${overviewData.towers} / ${overviewData.units}` },
-                        { l: 'BUA', v: overviewData.builtUpArea },
-                        { l: 'RERA', v: overviewData.reraNumber },
+                        { l: 'Location', v: project!.location || 'Not set' },
+                        { l: 'Client', v: project!.clientName },
+                        { l: 'Phase', v: project!.currentPhase },
+                        { l: 'Status', v: project!.status },
+                        { l: 'Start Date', v: project!.startDate || 'Not set' },
+                        { l: 'Target End', v: project!.endDate || 'Not set' },
+                        ...(project!.reraNo ? [{ l: 'RERA No', v: project!.reraNo }] : []),
+                        ...(project!.propertyType ? [{ l: 'Type', v: project!.propertyType }] : []),
                       ].map(f => (
                         <div key={f.l} className="min-w-0">
                           <span className="text-[8px] text-muted-foreground uppercase font-bold tracking-wider block leading-none mb-1">{f.l}</span>
@@ -4376,440 +4418,154 @@ Rules:
                         </div>
                       ))}
                     </div>
-                  </div>
+                  </SectionCard>
 
-                  {/* Col 2: Progress & Burn */}
-                  <div className="bg-card rounded-[24px] border border-border/40 shadow-sm p-4 flex flex-col hover:shadow-md transition-all duration-300">
-                    <div className="flex items-center justify-between mb-4">
-                      <div className="flex items-center gap-2">
-                        <span className="w-2 h-4 bg-[#FF7D29] rounded-full"></span>
-                        <h3 className="font-heading font-black text-[11px] uppercase tracking-widest text-foreground">Progress & Burn</h3>
-                      </div>
-                      <span className={`text-[8px] font-bold px-2.5 py-1 rounded-full border uppercase tracking-wider ${overviewData.variance < 0 ? 'text-red-500 bg-red-500/10 border-red-500/20' : 'text-emerald-500 bg-emerald-500/10 border-emerald-500/20'}`}>
-                        {overviewData.variance < 0 ? `▼ Delay ${overviewData.variance}%` : `▲ Ahead +${overviewData.variance}%`}
-                      </span>
-                    </div>
-                    
-                    <div className="flex flex-col gap-4 flex-1 justify-between">
-                      {/* Dual ring */}
-                      <div className="flex items-center gap-5 bg-slate-50/50 dark:bg-slate-900/50 p-3 rounded-2xl border border-border/40">
+                  <SectionCard title="Progress & Budget">
+                    <div className="flex flex-col gap-4">
+                      <div className="flex items-center gap-5 bg-muted/20 p-3 rounded-2xl border border-border/40">
                         <div className="relative w-[75px] h-[75px] flex-shrink-0">
                           <svg className="w-full h-full -rotate-90" viewBox="0 0 80 80">
                             <circle cx="40" cy="40" r="32" fill="none" stroke="rgba(0,0,0,0.05)" strokeWidth="6" className="dark:stroke-white/5" />
-                            <circle cx="40" cy="40" r="32" fill="none" stroke="#94a3b8" strokeWidth="6" strokeDasharray={201.1} strokeDashoffset={201.1 - (201.1 * overviewData.plannedProgress) / 100} strokeLinecap="round" opacity="0.4" />
-                            <circle cx="40" cy="40" r="24" fill="none" stroke="rgba(0,0,0,0.04)" strokeWidth="6" className="dark:stroke-white/10" />
-                            <circle cx="40" cy="40" r="24" fill="none" stroke="#FF7D29" strokeWidth="6" strokeDasharray={150.8} strokeDashoffset={150.8 - (150.8 * overviewData.physicalProgress) / 100} strokeLinecap="round" />
+                            <circle cx="40" cy="40" r="32" fill="none" stroke="var(--primary)" strokeWidth="6" strokeDasharray={201.1} strokeDashoffset={201.1 - (201.1 * project!.progress) / 100} strokeLinecap="round" />
                           </svg>
                           <div className="absolute inset-0 flex flex-col items-center justify-center">
-                            <span className="text-[13px] font-black text-foreground leading-none">{overviewData.physicalProgress}%</span>
+                            <span className="text-[13px] font-black text-foreground leading-none">{project!.progress}%</span>
                           </div>
                         </div>
-                        <div className="flex flex-col justify-center space-y-2">
-                          <div>
-                            <div className="flex items-center gap-1.5">
-                              <span className="w-2 h-2 rounded-full bg-[#FF7D29] flex-shrink-0 shadow-[0_0_8px_rgba(255,125,41,0.5)]"></span>
-                              <span className="text-[10px] font-bold text-foreground">Actual: {overviewData.physicalProgress}%</span>
-                            </div>
-                            <div className="flex items-center gap-1.5 mt-0.5">
-                              <span className="w-2 h-2 rounded-full bg-slate-400 flex-shrink-0 opacity-60"></span>
-                              <span className="text-[9px] font-bold text-muted-foreground">Planned: {overviewData.plannedProgress}%</span>
-                            </div>
-                          </div>
-                          <div className="pt-1.5 border-t border-border/40">
-                            <div className="text-[8px] text-muted-foreground font-bold uppercase tracking-wider">Target ETA</div>
-                            <div className="text-[10px] font-black text-foreground mt-0.5">{overviewData.targetCompletion}</div>
-                          </div>
+                        <div className="flex flex-col justify-center space-y-1.5">
+                          <div className="text-[8px] text-muted-foreground font-bold uppercase tracking-wider">Target Completion</div>
+                          <div className="text-[11px] font-black text-foreground">{project!.endDate || 'Not set'}</div>
                         </div>
                       </div>
-                      
-                      {/* Budget Burn Area Chart */}
-                      <div className="flex-1 flex flex-col">
-                        <div className="flex items-center justify-between mb-1.5 px-1">
-                          <span className="text-[8px] font-bold text-muted-foreground uppercase tracking-wider">Budget Burn</span>
-                          <span className="text-[9px] font-black text-[#FF7D29]">{overviewData.actualSpent}</span>
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <div className="bg-muted/30 rounded-2xl p-3">
+                          <span className="text-[8px] text-muted-foreground font-bold uppercase tracking-wider block mb-1">Allocated</span>
+                          <span className="font-black text-foreground">{overviewBudgetTotals ? formatIndianCurrency(overviewBudgetTotals.allocated) : formatIndianCurrency(project!.budget)}</span>
                         </div>
-                        <div className="flex-1 w-full" style={{minHeight:'65px'}}>
-                          <ResponsiveContainer width="100%" height="100%">
-                            <AreaChart data={[{m:'Jan',budget:10,actual:8},{m:'Feb',budget:20,actual:16},{m:'Mar',budget:33,actual:29},{m:'Apr',budget:46,actual:40},{m:'May',budget:60,actual:52},{m:'Jun',budget:75,actual:65}]} margin={{top:2,right:0,left:-32,bottom:0}}>
-                              <defs>
-                                <linearGradient id="budgetGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#94a3b8" stopOpacity={0.25}/><stop offset="95%" stopColor="#94a3b8" stopOpacity={0}/></linearGradient>
-                                <linearGradient id="actualGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#FF7D29" stopOpacity={0.4}/><stop offset="95%" stopColor="#FF7D29" stopOpacity={0}/></linearGradient>
-                              </defs>
-                              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(0,0,0,0.04)" className="dark:stroke-white/5" />
-                              <XAxis dataKey="m" tick={{fontSize:8, fill:'#94a3b8'}} axisLine={false} tickLine={false} />
-                              <YAxis tick={{fontSize:8, fill:'#94a3b8'}} axisLine={false} tickLine={false} />
-                              <Tooltip contentStyle={{fontSize:'10px',borderRadius:'12px',padding:'6px 12px',border:'1px solid rgba(0,0,0,0.08)'}} />
-                              <Area type="monotone" dataKey="budget" stroke="#94a3b8" strokeWidth={1.5} fill="url(#budgetGrad)" strokeDasharray="3 1" name="Budget" />
-                              <Area type="monotone" dataKey="actual" stroke="#FF7D29" strokeWidth={2.5} fill="url(#actualGrad)" name="Actual" />
-                            </AreaChart>
-                          </ResponsiveContainer>
+                        <div className="bg-muted/30 rounded-2xl p-3">
+                          <span className="text-[8px] text-muted-foreground font-bold uppercase tracking-wider block mb-1">Committed</span>
+                          <span className="font-black text-foreground">{overviewBudgetTotals ? formatIndianCurrency(overviewBudgetTotals.committed) : '—'}</span>
                         </div>
                       </div>
                     </div>
-                  </div>
+                  </SectionCard>
 
-                  {/* Col 3: Project Health */}
-                  <div className="bg-card rounded-[24px] border border-border/40 shadow-sm p-4 flex flex-col hover:shadow-md transition-all duration-300">
-                    <div className="flex items-center justify-between mb-4">
-                      <div className="flex items-center gap-2">
-                        <span className="w-2 h-4 bg-[#FF7D29] rounded-full"></span>
-                        <h3 className="font-heading font-black text-[11px] uppercase tracking-widest text-foreground">Project Health</h3>
-                      </div>
-                      <span className="text-[8px] font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-full uppercase tracking-wider">Score: 82/100</span>
+                  <SectionCard title="Team & Tasks">
+                    <div className="grid grid-cols-1 gap-3">
+                      <StatCard icon={Users} label="Team Members" value={project!.teamMembers.length} />
+                      <StatCard icon={ListTodo} label="Active Tasks" value={overviewTaskStats.inProgress} />
                     </div>
-                    
-                    <div className="flex flex-col gap-4 flex-1 justify-between">
-                      {/* Radial health bars */}
-                      <div className="bg-slate-50/50 dark:bg-slate-900/50 rounded-2xl border border-border/40 p-2 flex items-center justify-center" style={{height:'104px'}}>
-                        <ResponsiveContainer width="100%" height="100%">
-                          <RadialBarChart cx="50%" cy="50%" innerRadius="20%" outerRadius="95%" data={[{name:'Safety',value:98,fill:'#10b981'},{name:'Quality',value:90,fill:'#3b82f6'},{name:'Inventory',value:82,fill:'#f59e0b'},{name:'Schedule',value:72,fill:'#ef4444'},{name:'Budget',value:88,fill:'#FF7D29'}]} startAngle={90} endAngle={-270}>
-                            <RadialBar dataKey="value" background={{ fill: 'rgba(0,0,0,0.03)' }} cornerRadius={4} />
-                            <Tooltip contentStyle={{fontSize:'10px',borderRadius:'12px',padding:'6px 12px',border:'1px solid rgba(0,0,0,0.08)',boxShadow:'0 4px 6px rgba(0,0,0,0.05)'}} formatter={(v: any) => [`${v}%`]} />
-                            <Legend iconSize={6} wrapperStyle={{fontSize:'8px',paddingTop:'4px'}} />
-                          </RadialBarChart>
-                        </ResponsiveContainer>
-                      </div>
-                      
-                      {/* Weekly Workforce Bar */}
-                      <div className="flex-1 flex flex-col">
-                        <div className="flex items-center justify-between mb-1.5 px-1">
-                          <span className="text-[8px] font-bold text-muted-foreground uppercase tracking-wider">Weekly Workforce</span>
-                          <span className="text-[9px] font-black text-[#FF7D29]">{overviewData.workforce} Today</span>
-                        </div>
-                        <div className="flex-1 w-full" style={{minHeight:'55px'}}>
-                          <ResponsiveContainer width="100%" height="100%">
-                            <BarChart data={[{d:'Mon',w:172},{d:'Tue',w:180},{d:'Wed',w:176},{d:'Thu',w:184},{d:'Fri',w:186},{d:'Sat',w:160}]} margin={{top:0,right:0,left:-32,bottom:0}}>
-                              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(0,0,0,0.04)" className="dark:stroke-white/5" />
-                              <XAxis dataKey="d" tick={{fontSize:8, fill:'#94a3b8'}} axisLine={false} tickLine={false} />
-                              <YAxis tick={{fontSize:8, fill:'#94a3b8'}} axisLine={false} tickLine={false} domain={[150,200]} />
-                              <Tooltip cursor={{fill: 'rgba(0,0,0,0.02)'}} contentStyle={{fontSize:'10px',borderRadius:'12px',padding:'6px 12px',border:'1px solid rgba(0,0,0,0.08)'}} />
-                              <Bar dataKey="w" radius={[4,4,0,0]} name="Workers">
-                                {[172,180,176,184,186,160].map((v, i) => (
-                                  <Cell key={i} fill={v === 186 ? '#FF7D29' : 'rgba(255,125,41,0.15)'} />
-                                ))}
-                              </Bar>
-                            </BarChart>
-                          </ResponsiveContainer>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
+                  </SectionCard>
                 </div>
 
-                {/* ── ROW: Schedule + Budget ── */}
-                <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
-                  {/* Schedule Control */}
-                  <div className="bg-card p-5 rounded-[24px] border border-border/40 shadow-sm flex flex-col gap-4 hover:shadow-md transition-all duration-300">
-                    <div className="flex justify-between items-center mb-1">
-                      <div className="flex items-center gap-2">
-                        <span className="w-2 h-4 bg-[#FF7D29] rounded-full"></span>
-                        <h3 className="font-heading font-black text-foreground text-[11px] uppercase tracking-widest">Schedule Control</h3>
-                      </div>
-                      <span className="text-[9px] text-muted-foreground font-bold bg-muted/40 px-2 py-1 rounded-md">Completion: {overviewData.forecastCompletion}</span>
-                    </div>
-                    <div className="grid grid-cols-4 gap-2">
-                      {[{l:'Planned',v:`${overviewData.plannedProgress}%`,c:'text-foreground'},{l:'Actual',v:`${overviewData.physicalProgress}%`,c:'text-foreground'},{l:'Variance',v:`${overviewData.variance}%`,c:'text-red-500'},{l:'Milestones',v:`${overviewData.milestonesCompleted}/${overviewData.totalMilestones}`,c:'text-foreground'}].map(s=>(
-                        <div key={s.l} className="bg-muted/30 rounded-2xl p-3 text-center transition-all hover:bg-muted/50 border border-transparent hover:border-border/60">
-                          <span className="text-[8px] text-muted-foreground font-bold uppercase tracking-wider block mb-1">{s.l}</span>
-                          <span className={`text-xs font-black ${s.c}`}>{s.v}</span>
-                        </div>
-                      ))}
-                    </div>
-                    <div className="flex items-center justify-between bg-red-500/5 border border-red-500/10 rounded-2xl px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse flex-shrink-0 shadow-[0_0_8px_rgba(239,68,68,0.5)]"></span>
-                        <span className="text-[10px] text-red-500 font-bold uppercase tracking-wider">Forecast Delay</span>
-                      </div>
-                      <span className="text-red-500 text-[13px] font-black">{overviewData.forecastDelay} Days</span>
-                    </div>
-                    <div className="h-[90px] w-full mt-1">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <LineChart data={[
-                          { name: 'M1', planned: 5, actual: 4 },
-                          { name: 'M2', planned: 12, actual: 10 },
-                          { name: 'M3', planned: 22, actual: 18 },
-                          { name: 'M4', planned: 34, actual: 28 },
-                          { name: 'M5', planned: 50, actual: null },
-                          { name: 'M6', planned: 70, actual: null },
-                          { name: 'M7', planned: 88, actual: null },
-                          { name: 'M8', planned: 100, actual: null },
-                        ]} margin={{ top: 2, right: 4, left: -28, bottom: 0 }}>
-                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(0,0,0,0.06)" className="dark:stroke-white/5" />
-                          <XAxis dataKey="name" tick={{ fontSize: 8, fill:'#94a3b8' }} axisLine={false} tickLine={false} />
-                          <YAxis tick={{ fontSize: 8, fill:'#94a3b8' }} axisLine={false} tickLine={false} />
-                          <Tooltip contentStyle={{ borderRadius: '12px', fontSize: '10px', padding: '6px 12px', border:'1px solid rgba(0,0,0,0.08)' }} />
-                          <Line type="monotone" dataKey="planned" stroke="#94a3b8" strokeWidth={1.5} strokeDasharray="4 3" name="Planned" dot={{ r: 1.5 }} />
-                          <Line type="monotone" dataKey="actual" stroke="#FF7D29" strokeWidth={2.5} name="Actual" dot={{ r: 3, fill:'#FF7D29' }} connectNulls />
-                        </LineChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </div>
-
-                  {/* Budget & Cost Control */}
-                  <div className="bg-card p-5 rounded-[24px] border border-border/40 shadow-sm flex flex-col gap-4 hover:shadow-md transition-all duration-300">
-                    <div className="flex justify-between items-center mb-1">
-                      <div className="flex items-center gap-2">
-                        <span className="w-2 h-4 bg-[#FF7D29] rounded-full"></span>
-                        <h3 className="font-heading font-black text-foreground text-[11px] uppercase tracking-widest">Budget & Cost Control</h3>
-                      </div>
-                      <span className={`text-[9px] font-extrabold px-3 py-1 rounded-full border ${
-                        overviewData.cpi >= 1
-                          ? 'text-emerald-600 bg-emerald-500/10 border-emerald-500/25'
-                          : 'text-red-500 bg-red-500/10 border-red-500/25'
-                      }`}>CPI: {overviewData.cpi}</span>
-                    </div>
-                    <div className="grid grid-cols-3 gap-2">
-                      {[
-                        {l:'Approved Budget',v:overviewData.approvedBudget,c:'text-foreground'},
-                        {l:'Committed Cost',v:overviewData.committedCost,c:'text-foreground'},
-                        {l:'Actual Spent',v:overviewData.actualSpent,c:'text-[#FF7D29] font-black'},
-                        {l:'Pending Bills',v:overviewData.pendingBills,c:'text-foreground'},
-                        {l:'Forecast Cost',v:overviewData.forecastCost,c:'text-amber-500'},
-                        {l:'Potential Overrun',v:overviewData.potentialOverrun,c:'text-red-500'},
-                      ].map(s=>(
-                        <div key={s.l} className="bg-muted/30 rounded-2xl p-3 transition-all hover:bg-muted/50 border border-transparent hover:border-border/60">
-                          <span className="text-[8px] text-muted-foreground font-bold uppercase tracking-wider block mb-1">{s.l}</span>
-                          <span className={`text-xs font-black ${s.c}`}>{s.v}</span>
-                        </div>
-                      ))}
-                    </div>
-                    <div className="flex items-center justify-between text-[9px] font-bold text-muted-foreground bg-muted/40 rounded-2xl px-4 py-3 border border-border/40 mt-auto">
-                      <span>Risk: <strong className="text-amber-500 uppercase tracking-wide">Low Exposure Watch</strong></span>
-                      <span className="flex items-center gap-1.5">Audit: <strong className="text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-md border border-emerald-500/20 uppercase tracking-wide flex items-center gap-1"><ShieldCheck className="w-3 h-3" /> Reconciled</strong></span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* ── ROW 2: Procurement + Inventory + Workforce + Quality (4-up compact) ── */}
-                <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
-
-                  {/* Procurement */}
-                  <div className="bg-card p-5 rounded-[24px] border border-border/40 shadow-sm flex flex-col gap-4 hover:shadow-md transition-all duration-300">
-                    <h3 className="font-heading font-black text-foreground text-[11px] uppercase tracking-widest flex items-center gap-2 mb-1">
-                      <span className="w-2 h-4 bg-[#FF7D29] rounded-full"></span>Procurement
-                    </h3>
-                    <div className="grid grid-cols-2 gap-2 flex-1">
-                      {[
-                        {l:'PR Raised',v:overviewData.prRaised,c:'text-foreground'},
-                        {l:'PR Pending',v:overviewData.prPending,c:'text-amber-500'},
-                        {l:'PO Issued',v:overviewData.poIssued,c:'text-foreground'},
-                        {l:'Pend. Deliveries',v:overviewData.pendingDeliveries,c:'text-foreground'},
-                        {l:'Delayed',v:overviewData.delayedDeliveries,c:'text-red-500'},
-                        {l:'Critical Mat.',v:`${overviewData.criticalMaterials}`,c:'text-red-500'},
-                      ].map(s=>(
-                        <div key={s.l} className="bg-muted/30 rounded-2xl px-3 py-2 hover:bg-muted/50 transition-colors border border-transparent hover:border-border/60">
-                          <span className="text-[8px] text-muted-foreground font-bold uppercase tracking-wider block leading-none mb-1">{s.l}</span>
-                          <span className={`text-xs font-black leading-tight flex items-center gap-1 ${s.c}`}>
-                            {s.v} {s.l === 'Critical Mat.' && <span className="text-[9px]">⚠</span>}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Inventory */}
-                  <div className="bg-card p-5 rounded-[24px] border border-border/40 shadow-sm flex flex-col gap-4 hover:shadow-md transition-all duration-300">
-                    <h3 className="font-heading font-black text-foreground text-[11px] uppercase tracking-widest flex items-center gap-2 mb-1">
-                      <span className="w-2 h-4 bg-[#FF7D29] rounded-full"></span>Inventory
-                    </h3>
+                {/* Budget */}
+                <div className="grid grid-cols-1 gap-3">
+                  <SectionCard title="Budget & Cost Control">
                     <div className="grid grid-cols-2 gap-2">
                       {[
-                        {l:'Cement',v:`${overviewData.cementStock.days}d`,status:'ok'},
-                        {l:'Steel',v:`${overviewData.steelStock.days}d`,status:'ok'},
-                        {l:'AAC Blocks',v:`${overviewData.aacStock.days}d`,status:'warn'},
-                        {l:'Tiles',v:'Low',status:'warn'},
-                      ].map(s=>(
-                        <div key={s.l} className={`rounded-2xl px-3 py-2 transition-colors border border-transparent ${s.status==='ok'?'bg-emerald-500/5 hover:bg-emerald-500/10 hover:border-emerald-500/20':'bg-amber-500/5 hover:bg-amber-500/10 hover:border-amber-500/20'}`}>
-                          <span className="text-[8px] text-muted-foreground font-bold uppercase tracking-wider block leading-none mb-1">{s.l}</span>
-                          <span className={`text-xs font-black leading-tight ${s.status==='ok'?'text-emerald-600 dark:text-emerald-400':'text-amber-600 dark:text-amber-400'}`}>{s.v}</span>
-                        </div>
-                      ))}
-                      <div className="col-span-2 bg-red-500/5 border border-red-500/10 rounded-2xl px-4 py-3 flex justify-between items-center transition-colors hover:bg-red-500/10">
-                        <span className="text-[9px] text-red-500 font-bold uppercase tracking-wider flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span> Reorder Alerts</span>
-                        <span className="text-red-500 text-xs font-black">{overviewData.reorderAlerts}</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Workforce */}
-                  <div className="bg-card p-5 rounded-[24px] border border-border/40 shadow-sm flex flex-col gap-4 hover:shadow-md transition-all duration-300">
-                    <h3 className="font-heading font-black text-foreground text-[11px] uppercase tracking-widest flex items-center gap-2 mb-1">
-                      <span className="w-2 h-4 bg-[#FF7D29] rounded-full"></span>Workforce
-                    </h3>
-                    <div className="grid grid-cols-2 gap-2 flex-1">
-                      {[
-                        {l:'Required',v:overviewData.requiredWorkforce,c:'text-foreground'},
-                        {l:'Present',v:overviewData.workforce,c:'text-foreground'},
-                        {l:'Shortfall',v:`-${overviewData.shortfall}`,c:'text-red-500'},
-                        {l:'Productivity',v:`${overviewData.productivity}%`,c:'text-emerald-500'},
-                        {l:'Contractors',v:overviewData.activeContractors,c:'text-foreground'},
-                        {l:'Subcontractors',v:overviewData.subcontractors,c:'text-foreground'},
-                      ].map(s=>(
-                        <div key={s.l} className="bg-muted/30 rounded-2xl px-3 py-2 hover:bg-muted/50 transition-colors border border-transparent hover:border-border/60">
-                          <span className="text-[8px] text-muted-foreground font-bold uppercase tracking-wider block leading-none mb-1">{s.l}</span>
-                          <span className={`text-xs font-black leading-tight ${s.c}`}>{s.v}</span>
+                        { l: 'Allocated', v: overviewBudgetTotals ? formatIndianCurrency(overviewBudgetTotals.allocated) : formatIndianCurrency(project!.budget) },
+                        { l: 'Committed', v: overviewBudgetTotals ? formatIndianCurrency(overviewBudgetTotals.committed) : '—' },
+                        { l: 'Spent', v: overviewBudgetTotals ? formatIndianCurrency(overviewBudgetTotals.spent) : formatIndianCurrency(project!.actualSpend) },
+                        { l: 'Pending Bills', v: overviewPendingBillsCount ?? '—' },
+                      ].map(s => (
+                        <div key={s.l} className="bg-muted/30 rounded-2xl p-3">
+                          <span className="text-[8px] text-muted-foreground font-bold uppercase tracking-wider block mb-1">{s.l}</span>
+                          <span className="text-sm font-black text-foreground">{s.v}</span>
                         </div>
                       ))}
                     </div>
-                  </div>
-
-                  {/* Quality */}
-                  <div className="bg-card p-5 rounded-[24px] border border-border/40 shadow-sm flex flex-col gap-4 hover:shadow-md transition-all duration-300">
-                    <h3 className="font-heading font-black text-foreground text-[11px] uppercase tracking-widest flex items-center gap-2 mb-1">
-                      <span className="w-2 h-4 bg-[#FF7D29] rounded-full"></span>Quality
-                    </h3>
-                    <div className="grid grid-cols-2 gap-2 flex-1">
-                      {[
-                        {l:'QA Inspections',v:overviewData.qaInspections,c:'text-foreground'},
-                        {l:'Passed',v:overviewData.passed,c:'text-emerald-500'},
-                        {l:'Failed',v:overviewData.failed,c:'text-red-500'},
-                        {l:'Open Snags',v:overviewData.openSnags,c:'text-amber-500'},
-                        {l:'Closed Snags',v:overviewData.closedSnags,c:'text-foreground'},
-                      ].map(s=>(
-                        <div key={s.l} className="bg-muted/30 rounded-2xl px-3 py-2 hover:bg-muted/50 transition-colors border border-transparent hover:border-border/60">
-                          <span className="text-[8px] text-muted-foreground font-bold uppercase tracking-wider block leading-none mb-1">{s.l}</span>
-                          <span className={`text-xs font-black leading-tight ${s.c}`}>{s.v}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
+                  </SectionCard>
                 </div>
 
-                {/* ── ROW 3: Safety + Critical Activities ── */}
-                <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
-                  {/* Safety */}
-                  <div className="bg-card p-5 rounded-[24px] border border-border/40 shadow-sm flex flex-col gap-4 hover:shadow-md transition-all duration-300">
-                    <h3 className="font-heading font-black text-foreground text-[11px] uppercase tracking-widest flex items-center gap-2 mb-1">
-                      <span className="w-2 h-4 bg-[#FF7D29] rounded-full animate-pulse shadow-[0_0_8px_rgba(255,125,41,0.5)]"></span>Safety Dashboard
-                    </h3>
-                    <div className="grid grid-cols-4 gap-2 h-full">
-                      <div className="col-span-2 bg-emerald-500/5 border border-emerald-500/10 rounded-2xl p-4 flex flex-col justify-center items-center gap-3 text-center">
-                        <div className="w-12 h-12 rounded-full bg-emerald-500/10 flex items-center justify-center text-emerald-600 dark:text-emerald-400">
-                          <ShieldCheck className="w-6 h-6 animate-pulse" />
+                {/* Procurement / Inventory / Quality */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <SectionCard title="Procurement">
+                    <div className="grid grid-cols-2 gap-2">
+                      {[
+                        { l: 'Material Requests', v: liveProcurement?.materialRequests.length ?? '—' },
+                        { l: 'PRs Raised', v: liveProcurement?.purchaseRequisitions.length ?? '—' },
+                        { l: 'PRs Pending', v: overviewPendingPRsCount ?? '—', c: 'text-amber-500' },
+                        { l: 'POs Issued', v: liveProcurement?.purchaseOrders.length ?? '—' },
+                        { l: 'GRNs Received', v: liveProcurement?.grns.length ?? '—' },
+                      ].map(s => (
+                        <div key={s.l} className="bg-muted/30 rounded-2xl px-3 py-2">
+                          <span className="text-[8px] text-muted-foreground font-bold uppercase tracking-wider block leading-none mb-1">{s.l}</span>
+                          <span className={`text-xs font-black ${s.c || 'text-foreground'}`}>{s.v}</span>
                         </div>
-                        <div>
-                          <span className="text-[9px] text-muted-foreground font-bold uppercase tracking-wider block mb-1">Days No Incident</span>
-                          <span className="text-emerald-600 dark:text-emerald-400 text-xl font-black">{overviewData.safeDays} Days</span>
-                        </div>
-                      </div>
-                      <div className="col-span-2 grid grid-cols-2 gap-2">
-                        {[
-                          {l:'Safety Audits',v:`${overviewData.safetyAudits} done`,c:'text-foreground'},
-                          {l:'Open NCRs',v:`${overviewData.openNcr} active`,c:'text-amber-500'},
-                          {l:'Violations',v:`${overviewData.safetyViolations} logged`,c:'text-red-500'},
-                          {l:'PPE Compliance',v:'97%',c:'text-emerald-500'},
-                        ].map(s=>(
-                          <div key={s.l} className="bg-muted/30 rounded-2xl p-3 flex flex-col justify-center text-center transition-all hover:bg-muted/50 border border-transparent hover:border-border/60">
-                            <span className="text-[8px] text-muted-foreground font-bold uppercase tracking-wider block mb-1">{s.l}</span>
-                            <span className={`text-xs font-black ${s.c}`}>{s.v}</span>
+                      ))}
+                    </div>
+                  </SectionCard>
+
+                  <SectionCard title="Inventory">
+                    {overviewLowStockMaterials.length === 0 ? (
+                      <div className="text-xs text-muted-foreground text-center py-4">No materials below reorder level.</div>
+                    ) : (
+                      <div className="space-y-2">
+                        {overviewLowStockMaterials.slice(0, 4).map((m: any) => (
+                          <div key={m.id} className="flex items-center justify-between bg-rose-500/5 border border-rose-500/10 rounded-2xl px-3 py-2 text-xs">
+                            <span className="font-bold text-foreground truncate">{m.itemName}</span>
+                            <span className="font-black text-rose-500 flex-shrink-0 ml-2">{m.quantity} {m.unit}</span>
                           </div>
                         ))}
                       </div>
-                    </div>
-                  </div>
+                    )}
+                  </SectionCard>
 
-                  {/* Critical Activities */}
-                  <div className="bg-card p-5 rounded-[24px] border border-border/40 shadow-sm flex flex-col gap-4 hover:shadow-md transition-all duration-300">
-                    <h3 className="font-heading font-black text-foreground text-[11px] uppercase tracking-widest flex items-center gap-2 mb-1">
-                      <span className="w-2 h-4 bg-[#FF7D29] rounded-full animate-pulse shadow-[0_0_8px_rgba(255,125,41,0.5)]"></span>Critical Activities — PMC Target
-                    </h3>
-                    <div className="space-y-2">
-                      {overviewData.criticalActivities.map(act => (
-                        <div key={act.name} className="flex justify-between items-center bg-rose-500/5 border border-rose-500/10 px-4 py-3 rounded-2xl transition-all hover:bg-rose-500/10">
-                          <span className="text-xs font-extrabold text-foreground">{act.name}</span>
-                          <span className="text-[9px] font-black text-rose-500 bg-rose-500/10 px-3 py-1 rounded-full uppercase tracking-widest">+{act.delay} delay</span>
+                  <SectionCard title="Quality">
+                    <div className="grid grid-cols-2 gap-2">
+                      {[
+                        { l: 'Inspections', v: qcInspections.length },
+                        { l: 'Passed', v: overviewQcStats.passed, c: 'text-emerald-500' },
+                        { l: 'Failed', v: overviewQcStats.failed, c: 'text-rose-500' },
+                      ].map(s => (
+                        <div key={s.l} className="bg-muted/30 rounded-2xl px-3 py-2">
+                          <span className="text-[8px] text-muted-foreground font-bold uppercase tracking-wider block leading-none mb-1">{s.l}</span>
+                          <span className={`text-xs font-black ${s.c || 'text-foreground'}`}>{s.v}</span>
                         </div>
                       ))}
                     </div>
-                  </div>
+                  </SectionCard>
                 </div>
 
-                {/* 13. AI Project Intelligence Panel */}
-                <div className="bg-card p-5 rounded-[24px] border border-border/40 shadow-sm flex flex-col gap-4 hover:shadow-md transition-all duration-300 mt-1">
-                  <div className="flex items-center gap-2 border-b border-border/40 pb-3">
-                    <span className="w-2 h-4 rounded-full bg-[#FF7D29] animate-pulse shadow-[0_0_8px_rgba(255,125,41,0.5)]"></span>
-                    <h3 className="font-heading font-black text-foreground text-[11px] uppercase tracking-widest">AI Project Intelligence</h3>
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-5 text-muted-foreground select-none">
-                    <div className="space-y-2">
-                      <span className="text-[9px] font-bold uppercase tracking-widest text-slate-400 block mb-3">AI Anomalies Detected</span>
-                      {overviewData.aiInsights.map((insight, idx) => (
-                        <div key={idx} className="flex items-center gap-3 text-rose-500 dark:text-rose-400 bg-rose-500/5 dark:bg-rose-500/10 border border-rose-500/10 px-4 py-3 rounded-2xl font-bold leading-tight">
-                          <span className="text-sm">⚠</span>
-                          <p className="flex-1 text-[11px]">{insight}</p>
-                        </div>
-                      ))}
-                    </div>
-                    <div className="space-y-2">
-                      <span className="text-[9px] font-bold uppercase tracking-widest text-slate-400 block mb-3">AI Recommended Actions (One-Click Execute)</span>
-                      {overviewData.aiActions.map((action, idx) => (
-                        <button key={idx} type="button" className="w-full text-left flex items-center gap-3 text-[#FF7D29] bg-[#FF7D29]/5 border border-[#FF7D29]/15 px-4 py-3 rounded-2xl font-bold hover:bg-[#FF7D29]/10 transition-colors shadow-xs group">
-                          <span className="text-sm">⚙</span>
-                          <span className="flex-1 text-[11px] font-extrabold text-foreground group-hover:text-[#FF7D29] transition-colors">{action}</span>
-                          <span className="text-[9px] font-black uppercase bg-[#FF7D29]/10 text-[#FF7D29] px-3 py-1 rounded-full border border-[#FF7D29]/20 shadow-xs">Apply</span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-
-                {/* 14. Interactive Gantt Chart */}
-                <div className="bg-card p-5 rounded-[24px] border border-border/40 shadow-sm space-y-4 hover:shadow-md transition-all duration-300">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-border/40 pb-3 mb-2">
-                    <div className="flex items-center gap-2">
-                      <span className="w-2 h-4 bg-[#FF7D29] rounded-full"></span>
-                      <div>
-                        <h3 className="font-heading font-black text-foreground text-[11px] uppercase tracking-widest leading-none">Interactive Gantt Schedule</h3>
-                        <p className="text-[9px] text-muted-foreground mt-1 font-bold uppercase tracking-widest">PMC Realtime Critical Path Tracking</p>
-                      </div>
-                    </div>
-                    {/* Gantt Filters Checkboxes */}
+                {/* Interactive Gantt Schedule */}
+                <SectionCard title="Interactive Gantt Schedule" subtitle="Realtime critical path tracking from actual task dates.">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-border/40 pb-3 mb-4">
                     <div className="flex flex-wrap items-center gap-4 text-[9px] font-bold text-muted-foreground bg-muted/30 px-4 py-2 rounded-2xl border border-transparent hover:border-border/60 transition-colors select-none">
                       <label className="flex items-center gap-1.5 cursor-pointer hover:text-foreground group">
-                        <input 
-                          type="checkbox" 
+                        <input
+                          type="checkbox"
                           checked={ganttShowCritical}
                           onChange={(e) => setGanttShowCritical(e.target.checked)}
-                          className="rounded-md border-border/60 text-[#FF7D29] focus:ring-1 focus:ring-[#FF7D29] focus:ring-offset-0 w-3 h-3 group-hover:border-[#FF7D29]" 
+                          className="rounded-md border-border/60 text-primary focus:ring-1 focus:ring-primary focus:ring-offset-0 w-3 h-3 group-hover:border-primary"
                         />
                         <span className="uppercase tracking-widest">Critical Path</span>
                       </label>
                       <label className="flex items-center gap-1.5 cursor-pointer hover:text-foreground group">
-                        <input 
-                          type="checkbox" 
+                        <input
+                          type="checkbox"
                           checked={ganttShowDelayed}
                           onChange={(e) => setGanttShowDelayed(e.target.checked)}
-                          className="rounded-md border-border/60 text-[#FF7D29] focus:ring-1 focus:ring-[#FF7D29] focus:ring-offset-0 w-3 h-3 group-hover:border-[#FF7D29]" 
+                          className="rounded-md border-border/60 text-primary focus:ring-1 focus:ring-primary focus:ring-offset-0 w-3 h-3 group-hover:border-primary"
                         />
                         <span className="uppercase tracking-widest">Delayed</span>
                       </label>
                       <label className="flex items-center gap-1.5 cursor-pointer hover:text-foreground group">
-                        <input 
-                          type="checkbox" 
-                          checked={ganttShowDependencies}
-                          onChange={(e) => setGanttShowDependencies(e.target.checked)}
-                          className="rounded-md border-border/60 text-[#FF7D29] focus:ring-1 focus:ring-[#FF7D29] focus:ring-offset-0 w-3 h-3 group-hover:border-[#FF7D29]" 
-                        />
-                        <span className="uppercase tracking-widest">Dependencies</span>
-                      </label>
-                      <label className="flex items-center gap-1.5 cursor-pointer hover:text-foreground group">
-                        <input 
-                          type="checkbox" 
+                        <input
+                          type="checkbox"
                           checked={ganttShowResources}
                           onChange={(e) => setGanttShowResources(e.target.checked)}
-                          className="rounded-md border-border/60 text-[#FF7D29] focus:ring-1 focus:ring-[#FF7D29] focus:ring-offset-0 w-3 h-3 group-hover:border-[#FF7D29]" 
+                          className="rounded-md border-border/60 text-primary focus:ring-1 focus:ring-primary focus:ring-offset-0 w-3 h-3 group-hover:border-primary"
                         />
                         <span className="uppercase tracking-widest">Resource View</span>
                       </label>
                     </div>
 
-                    {/* Zoom controls */}
                     <div className="flex bg-muted/30 p-1 rounded-2xl border border-border/40 text-[9px] font-bold select-none uppercase tracking-widest">
                       {(['week', 'month', 'quarter'] as const).map(z => (
                         <button
                           key={z}
                           onClick={() => setGanttZoom(z)}
-                          className={`px-4 py-1.5 rounded-xl transition-all duration-200 ${ganttZoom === z ? 'bg-[#FF7D29] text-white shadow-md shadow-[#FF7D29]/20' : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'}`}
+                          className={`px-4 py-1.5 rounded-xl transition-all duration-200 ${ganttZoom === z ? 'bg-primary text-primary-foreground shadow-md' : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'}`}
                         >
                           {z}
                         </button>
@@ -4817,96 +4573,57 @@ Rules:
                     </div>
                   </div>
 
-                  {/* SVG Gantt Chart */}
                   <div className="overflow-x-auto pb-2">
-                    <div className="min-w-[1100px] border border-border/40 rounded-3xl p-4 bg-muted/10 relative shadow-sm">
-                      {/* Columns Header based on Zoom */}
+                    <div className="min-w-[900px] border border-border/40 rounded-3xl p-4 bg-muted/10 relative shadow-sm">
                       <div className="flex items-center text-[9px] font-black uppercase tracking-widest text-muted-foreground border-b border-border/40 pb-3 mb-4 select-none">
-                        <div className="w-[580px] flex-shrink-0 grid grid-cols-7 pr-3">
-                          <div className="col-span-2">Task Name</div>
-                          <div>Contractor</div>
+                        <div className="w-[480px] flex-shrink-0 grid grid-cols-6 pr-3">
+                          <div className="col-span-3">Task Name</div>
                           <div>Resp. Engineer</div>
                           <div>Planned End</div>
-                          <div>Actual End</div>
                           <div className="text-right">Delay (Days)</div>
                         </div>
                         <div className="flex-1 grid grid-cols-4 text-center border-l border-border/40">
-                          {ganttZoom === 'week' ? (
-                            <>
-                              <div>Days 1 - 7</div>
-                              <div>Days 8 - 14</div>
-                              <div>Days 15 - 21</div>
-                              <div>Days 22 - 28</div>
-                            </>
-                          ) : ganttZoom === 'month' ? (
-                            <>
-                              <div>Week 1</div>
-                              <div>Week 2</div>
-                              <div>Week 3</div>
-                              <div>Week 4</div>
-                            </>
-                          ) : (
-                            <>
-                              <div>Month 1 (Phase A)</div>
-                              <div>Month 2 (Phase B)</div>
-                              <div>Month 3 (Phase C)</div>
-                              <div>Month 4 (Phase D)</div>
-                            </>
-                          )}
+                          <div>Q1</div>
+                          <div>Q2</div>
+                          <div>Q3</div>
+                          <div>Q4</div>
                         </div>
                       </div>
 
-                      {/* Gantt Rows */}
                       <div className="space-y-4">
                         {project!.tasks
-                          .filter(tsk => {
+                          .filter((tsk: any) => {
                             if (ganttShowCritical && !tsk.isCriticalPath) return false;
                             if (ganttShowDelayed) {
-                              const isOverdue = tsk.progress < 90 && tsk.priority === 'HIGH';
+                              const isOverdue = tsk.status !== 'COMPLETED' && tsk.status !== 'CANCELLED' && tsk.endDate && new Date(tsk.endDate) < new Date();
                               if (!isOverdue) return false;
                             }
                             return true;
                           })
-                          .map((tsk, idx) => {
-                            const baseMargin = (idx * 12) % 45; // simulated offset for UI representation
-                            const baseWidth = 25 + ((idx * 8) % 35); // simulated duration width
-                            const hasWarning = tsk.progress < 90 && tsk.priority === 'HIGH';
-                            
-                            // Mocking dependency connector lines
-                            const hasDependency = tsk.dependencies && ganttShowDependencies;
-
-                            // Mocking a vendor mapping
-                            const mockVendor = idx % 2 === 0 ? 'ABC Infra' : 'Tata Tiscon';
-
-                            // Simulated Planned / Actual Dates and Delay Days
-                            const plannedEnd = tsk.endDate;
-                            const actualEnd = idx % 3 === 0 ? '2026-07-15' : plannedEnd;
-                            const delayDays = idx % 3 === 0 ? 5 : 0;
+                          .map((tsk: any) => {
+                            const { left, width } = overviewTaskBarPosition(tsk);
+                            const isOverdue = tsk.status !== 'COMPLETED' && tsk.status !== 'CANCELLED' && tsk.endDate && new Date(tsk.endDate) < new Date();
+                            const delayDays = isOverdue ? Math.floor((Date.now() - new Date(tsk.endDate).getTime()) / 86400000) : 0;
 
                             return (
                               <div key={tsk.id} className="flex items-center text-[10px] py-1.5 border-b border-border/20 last:border-b-0 pb-3 last:pb-0">
-                                {/* Task Details and resource (580px width) */}
-                                <div className="w-[580px] flex-shrink-0 pr-3 min-w-0 grid grid-cols-7 items-center">
-                                  <div className="col-span-2 flex items-center gap-2 min-w-0 pr-2">
+                                <div className="w-[480px] flex-shrink-0 pr-3 min-w-0 grid grid-cols-6 items-center">
+                                  <div className="col-span-3 flex items-center gap-2 min-w-0 pr-2">
                                     <span className="font-extrabold text-foreground truncate block leading-tight">{tsk.name}</span>
                                     {tsk.isCriticalPath && (
                                       <span className="rounded-full bg-rose-500/10 px-2 py-0.5 text-[7.5px] font-black text-rose-600 dark:text-rose-400 uppercase tracking-widest border border-rose-500/20 flex-shrink-0">Critical</span>
                                     )}
                                   </div>
-                                  <span className="font-bold text-muted-foreground truncate block">{mockVendor}</span>
                                   <span className="font-bold text-muted-foreground truncate block">
-                                    {ganttShowResources ? `👤 ${tsk.assigneeName || 'Rajesh'}` : '-'}
+                                    {ganttShowResources ? (tsk.assigneeName || 'Unassigned') : '-'}
                                   </span>
-                                  <span className="font-bold text-muted-foreground block">{plannedEnd}</span>
-                                  <span className="font-bold text-muted-foreground block">{actualEnd}</span>
+                                  <span className="font-bold text-muted-foreground block">{tsk.endDate || '—'}</span>
                                   <span className={`font-black block text-right text-[11px] ${delayDays > 0 ? 'text-red-500' : 'text-emerald-500'}`}>
                                     {delayDays > 0 ? `+${delayDays}d` : '0d'}
                                   </span>
                                 </div>
-                                
-                                {/* Gantt Timeline Bar */}
+
                                 <div className="flex-1 relative h-7 bg-muted/20 rounded-xl border border-border/30 overflow-visible flex items-center shadow-inner">
-                                  {/* Dotted grids background */}
                                   <div className="absolute inset-0 grid grid-cols-4 pointer-events-none opacity-40">
                                     <div className="border-r border-dashed border-border/70"></div>
                                     <div className="border-r border-dashed border-border/70"></div>
@@ -4914,50 +4631,17 @@ Rules:
                                     <div></div>
                                   </div>
 
-                                  {/* Visual Schedule Bar */}
-                                  <div 
-                                    className={`absolute h-5 rounded-lg flex items-center justify-between px-3 text-[9px] font-black text-white transition-all shadow-md group/bar
-                                      ${tsk.isCriticalPath 
-                                        ? 'bg-gradient-to-r from-rose-500 to-rose-400 hover:from-rose-600 hover:to-rose-500' 
-                                        : 'bg-gradient-to-r from-[#FF7D29] to-[#FF9D5C] hover:from-[#E66B1A] hover:to-[#FF8842]'}`}
-                                    style={{ 
-                                      left: `${baseMargin}%`, 
-                                      width: `${baseWidth}%` 
-                                    }}
+                                  <div
+                                    className={`absolute h-5 rounded-lg flex items-center justify-between px-3 text-[9px] font-black text-white transition-all shadow-md
+                                      ${tsk.isCriticalPath
+                                        ? 'bg-gradient-to-r from-rose-500 to-rose-400'
+                                        : 'bg-gradient-to-r from-primary to-primary/70'}`}
+                                    style={{ left: `${left}%`, width: `${width}%` }}
+                                    title={`Planned End: ${tsk.endDate || '—'}${delayDays > 0 ? ` (Delay: ${delayDays} days)` : ''}`}
                                   >
                                     <span className="truncate pr-2 uppercase tracking-wider text-[8px]">Progress</span>
                                     <span>{tsk.progress}%</span>
-                                    
-                                    {/* Hover tooltip */}
-                                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 bg-popover border border-border text-foreground px-3 py-2 rounded-xl shadow-xl text-[10px] font-bold whitespace-nowrap opacity-0 group-hover/bar:opacity-100 transition-opacity duration-200 pointer-events-none z-30">
-                                      Planned End: {plannedEnd} | Actual: {actualEnd} {delayDays > 0 && `(Delay: ${delayDays} days)`}
-                                    </div>
                                   </div>
-
-                                  {/* Overdue Blinking warning dot */}
-                                  {hasWarning && (
-                                    <div 
-                                      className="absolute -right-2 top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 animate-pulse border-2 border-white dark:border-gray-900 shadow-[0_0_8px_rgba(239,68,68,0.6)]"
-                                      title="Overdue Schedule Alert"
-                                    >
-                                      <span className="absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75 animate-ping"></span>
-                                      <span className="text-[8px] text-white">⚠️</span>
-                                    </div>
-                                  )}
-
-                                  {/* Dependency connection helper */}
-                                  {hasDependency && (
-                                    <div 
-                                      className="absolute left-0 right-0 top-1/2 h-[1px] border-t-2 border-dashed border-[#FF7D29]/40 -z-10"
-                                      style={{
-                                        left: `calc(${baseMargin}% - 24px)`,
-                                        width: '24px'
-                                      }}
-                                      title={`Linked to parent task: ${tsk.dependencies}`}
-                                    >
-                                      <span className="absolute -left-1.5 -top-1.5 font-black text-[#FF7D29] text-[10px]">←</span>
-                                    </div>
-                                  )}
                                 </div>
                               </div>
                             );
@@ -4971,61 +4655,31 @@ Rules:
                       </div>
                     </div>
                   </div>
-                </div>
+                </SectionCard>
 
-                {/* 15. Recent Site Updates */}
-                <div className="bg-card p-5 rounded-[24px] border border-border/40 shadow-sm mt-4 hover:shadow-md transition-all duration-300">
-                  <div className="flex items-center gap-2 border-b border-border/40 pb-3 mb-4">
-                    <span className="w-2 h-4 bg-[#FF7D29] rounded-full"></span>
-                    <h3 className="font-heading font-black text-foreground text-[11px] uppercase tracking-widest leading-none">Recent Site Updates</h3>
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
-                    <div className="bg-muted/30 border border-transparent hover:border-border/60 transition-colors p-4 rounded-2xl flex items-start gap-3 text-[10px] font-semibold">
-                      <div className="w-6 h-6 rounded-full bg-emerald-500/10 flex items-center justify-center flex-shrink-0 text-emerald-500">
-                        <span className="font-bold">✔</span>
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground block font-black text-[9px] uppercase tracking-widest mb-1">Today</span>
-                        <p className="text-foreground leading-tight">Slab Casting Completed for Tower A Level 7 column starter</p>
-                      </div>
+                {/* Recent Activity */}
+                <SectionCard title="Recent Activity" subtitle="Latest daily progress reports and delay events for this project.">
+                  {overviewRecentActivity.length === 0 ? (
+                    <div className="text-xs text-muted-foreground text-center py-4">No recent activity logged yet.</div>
+                  ) : (
+                    <div className="space-y-2">
+                      {overviewRecentActivity.map((item) => (
+                        <div key={item.id} className="bg-muted/30 border border-transparent hover:border-border/60 transition-colors p-4 rounded-2xl flex items-start gap-3 text-[10px] font-semibold">
+                          <div>
+                            <span className="text-muted-foreground block font-black text-[9px] uppercase tracking-widest mb-1">
+                              {new Date(item.date).toLocaleDateString()}
+                            </span>
+                            <p className="text-foreground leading-tight">{item.text}</p>
+                          </div>
+                        </div>
+                      ))}
                     </div>
-                    <div className="bg-muted/30 border border-transparent hover:border-border/60 transition-colors p-4 rounded-2xl flex items-start gap-3 text-[10px] font-semibold">
-                      <div className="w-6 h-6 rounded-full bg-emerald-500/10 flex items-center justify-center flex-shrink-0 text-emerald-500">
-                        <span className="font-bold">✔</span>
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground block font-black text-[9px] uppercase tracking-widest mb-1">Today</span>
-                        <p className="text-foreground leading-tight">PR-145 Submitted for reinforcement structural steel PO</p>
-                      </div>
-                    </div>
-                    <div className="bg-rose-500/5 dark:bg-rose-500/10 border border-rose-500/15 p-4 rounded-2xl flex items-start gap-3 text-[10px] font-semibold transition-colors hover:bg-rose-500/10">
-                      <div className="w-6 h-6 rounded-full bg-rose-500/10 flex items-center justify-center flex-shrink-0 text-rose-500">
-                        <span className="font-bold">⚠</span>
-                      </div>
-                      <div>
-                        <span className="text-rose-500 block font-black text-[9px] uppercase tracking-widest mb-1">Yesterday</span>
-                        <p className="text-foreground leading-tight">Cement Stock Low warning flag raised by store manager</p>
-                      </div>
-                    </div>
-                    <div className="bg-muted/30 border border-transparent hover:border-border/60 transition-colors p-4 rounded-2xl flex items-start gap-3 text-[10px] font-semibold">
-                      <div className="w-6 h-6 rounded-full bg-emerald-500/10 flex items-center justify-center flex-shrink-0 text-emerald-500">
-                        <span className="font-bold">✔</span>
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground block font-black text-[9px] uppercase tracking-widest mb-1">Yesterday</span>
-                        <p className="text-foreground leading-tight">MEP work completed on Block C level 3 apartment units</p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
+                  )}
+                </SectionCard>
 
-                {/* 16. Pending Workflows & Approvals */}
+                {/* Pending Workflow Approvals */}
                 {isUpperManagement(currentUser.role) && (
-                  <div className="bg-card p-5 rounded-[24px] border border-border/40 shadow-sm mt-4 hover:shadow-md transition-all duration-300">
-                    <div className="flex items-center gap-2 border-b border-border/40 pb-3 mb-4">
-                      <span className="w-2 h-4 bg-amber-500 rounded-full animate-pulse"></span>
-                      <h3 className="font-heading font-black text-foreground text-[11px] uppercase tracking-widest leading-none">Pending Workflow Approvals</h3>
-                    </div>
+                  <SectionCard title="Pending Workflow Approvals">
                     <div className="space-y-3">
                       {workflowsLoading ? (
                         <div className="text-center text-xs text-muted-foreground py-4">Loading workflows...</div>
@@ -5042,13 +4696,13 @@ Rules:
                               <span className="bg-amber-500/10 text-amber-600 px-2 py-0.5 rounded uppercase font-bold text-[9px]">{workflow.status}</span>
                             </div>
                             <div className="flex items-center gap-2 mt-2">
-                              <button 
+                              <button
                                 onClick={() => handleApproveWorkflow(workflow.id, workflow.type)}
                                 className="bg-emerald-500 hover:bg-emerald-600 text-white font-bold px-4 py-1.5 rounded-lg shadow-sm transition-all flex-1"
                               >
                                 Approve
                               </button>
-                              <button 
+                              <button
                                 onClick={() => handleRejectWorkflow(workflow.id, workflow.type)}
                                 className="bg-red-500 hover:bg-red-600 text-white font-bold px-4 py-1.5 rounded-lg shadow-sm transition-all flex-1"
                               >
@@ -5059,17 +4713,27 @@ Rules:
                         ))
                       )}
                     </div>
-                  </div>
+                  </SectionCard>
                 )}
               </div>
             )}
-
 
             {/* 2. DAILY PROGRESS REPORTS AND FLEET MANAGEMENT */}
             {activeTab === 'site-operations' && (
               <div className="space-y-4">
                 {/* Operations Sub-Tab Navigation bar */}
                 <div className="flex border-b border-border/60 pb-2 mb-4 gap-2.5 sm:gap-4 overflow-x-auto print:hidden">
+                  <button
+                    type="button"
+                    onClick={() => setOperationsSubTab('timeline')}
+                    className={`pb-1 text-xs font-bold transition-all relative border-b-2 whitespace-nowrap ${
+                      operationsSubTab === 'timeline'
+                        ? 'border-primary text-primary'
+                        : 'border-transparent text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    🗓️ Activity Timeline
+                  </button>
                   <button
                     type="button"
                     onClick={() => setOperationsSubTab('feed')}
@@ -5138,251 +4802,451 @@ Rules:
                   </button>
                 </div>
 
-                {operationsSubTab === 'feed' ? (
-                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-                    {/* 1. Submit DPR Form (Pushed to top on mobile via source-order, right-hand column on desktop) */}
-                    <div className="lg:col-span-1 lg:order-2 bg-white dark:bg-gray-900 p-4 rounded-3xl border border-border/60 shadow-sm space-y-4 h-fit">
-                      <h3 className="font-heading font-extrabold text-foreground text-xs uppercase tracking-wider border-l-2 border-primary pl-2">
-                        Submit Daily Site Report
-                      </h3>
-                      
-                      <form onSubmit={handleDailyActivitySubmit} className="space-y-4">
+                {operationsSubTab === 'timeline' ? (
+                  <div className="space-y-4">
+                    {/* Timeline Controls Header */}
+                    <div className="bg-white dark:bg-gray-900 p-4 rounded-3xl border border-border/60 shadow-sm space-y-3">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                         <div>
-                          <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Engineer Name</label>
-                          <input
-                            type="text"
-                            required
-                            value={engineerName}
-                            onChange={(e) => setEngineerName(e.target.value)}
-                            placeholder="e.g. Priya Nair"
-                            className="w-full text-xs mt-1.5 p-2.5 rounded-xl border border-border bg-gray-50 dark:bg-gray-950 text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-                          />
+                          <h3 className="font-heading font-extrabold text-foreground text-xs uppercase tracking-wider">
+                            🗓️ Master Construction Activity Timeline
+                          </h3>
+                          <p className="text-[10px] text-muted-foreground mt-0.5">
+                            Chronologically arranged work schedule derived from project master plan.
+                          </p>
                         </div>
+                        
+                        <div className="flex items-center gap-2">
+                          {/* Search Input */}
+                          <div className="relative">
+                            <input
+                              type="text"
+                              placeholder="Search schedule (e.g. 5th Floor, Masonry)..."
+                              value={timelineSearch}
+                              onChange={(e) => setTimelineSearch(e.target.value)}
+                              className="text-xs px-3 py-2 pl-8 rounded-xl border border-border bg-gray-50 dark:bg-gray-950 text-foreground w-full sm:w-56 focus:outline-none focus:ring-1 focus:ring-primary"
+                            />
+                            <Search className="w-3.5 h-3.5 text-muted-foreground absolute left-2.5 top-2.5" />
+                          </div>
 
-                        <div>
-                          <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Weather Condition</label>
-                          <select
-                            value={weather}
-                            onChange={(e) => setWeather(e.target.value as typeof weather)}
-                            className="w-full text-xs mt-1.5 p-2.5 rounded-xl border border-border bg-gray-50 dark:bg-gray-950 text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                          {/* Single Pop-up Trigger Button */}
+                          <button
+                            type="button"
+                            onClick={() => setIsAddActivityModalOpen(true)}
+                            className="inline-flex items-center gap-1.5 px-4 py-2 bg-primary hover:bg-orange-850 text-white text-xs font-bold rounded-xl shadow-xs transition-colors whitespace-nowrap cursor-pointer"
                           >
-                            <option value="Sunny">Sunny</option>
-                            <option value="Cloudy">Cloudy</option>
-                            <option value="Rainy">Rainy</option>
-                            <option value="Windy">Windy</option>
-                          </select>
+                            <span>+ Add Planned Activity</span>
+                          </button>
                         </div>
+                      </div>
 
-                        <div>
-                          <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Work Completed Details</label>
-                          <textarea
-                            required
-                            value={workCompleted}
-                            onChange={(e) => setWorkCompleted(e.target.value)}
-                            rows={3}
-                            placeholder="Specify excavation status, concrete casting, shuttering, bricks, etc..."
-                            className="w-full text-xs mt-1.5 p-2.5 rounded-xl border border-border bg-gray-50 dark:bg-gray-950 text-foreground focus:outline-none focus:ring-1 focus:ring-primary resize-none"
-                          />
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-2.5">
-                          <div>
-                            <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Issues (Optional)</label>
-                            <input
-                              type="text"
-                              value={issues}
-                              onChange={(e) => setIssues(e.target.value)}
-                              placeholder="e.g. Transit delays"
-                              className="w-full text-xs mt-1.5 p-2.5 rounded-xl border border-border bg-gray-50 dark:bg-gray-950 text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-                            />
+                        {/* Trade Category Tabs & Building Selector */}
+                        <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-border/40">
+                          <div className="flex items-center gap-1 overflow-x-auto pb-1 text-[11px] font-bold">
+                            <button
+                              type="button"
+                              onClick={() => setTimelineFilter('ALL')}
+                              className={`px-3 py-1 rounded-xl transition-colors cursor-pointer whitespace-nowrap ${
+                                timelineFilter === 'ALL'
+                                  ? 'bg-primary text-white font-extrabold shadow-xs'
+                                  : 'bg-muted/40 text-muted-foreground hover:text-foreground'
+                              }`}
+                            >
+                              All Trades
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setTimelineFilter('RCC')}
+                              className={`px-3 py-1 rounded-xl transition-colors cursor-pointer whitespace-nowrap ${
+                                timelineFilter === 'RCC'
+                                  ? 'bg-primary text-white font-extrabold shadow-xs'
+                                  : 'bg-muted/40 text-muted-foreground hover:text-foreground'
+                              }`}
+                            >
+                              🏗️ RCC & Structure
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setTimelineFilter('MASONRY')}
+                              className={`px-3 py-1 rounded-xl transition-colors cursor-pointer whitespace-nowrap ${
+                                timelineFilter === 'MASONRY'
+                                  ? 'bg-primary text-white font-extrabold shadow-xs'
+                                  : 'bg-muted/40 text-muted-foreground hover:text-foreground'
+                              }`}
+                            >
+                              🧱 Masonry Work
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setTimelineFilter('PLASTER')}
+                              className={`px-3 py-1 rounded-xl transition-colors cursor-pointer whitespace-nowrap ${
+                                timelineFilter === 'PLASTER'
+                                  ? 'bg-primary text-white font-extrabold shadow-xs'
+                                  : 'bg-muted/40 text-muted-foreground hover:text-foreground'
+                              }`}
+                            >
+                              🪵 Plaster Work
+                            </button>
                           </div>
-                          <div>
-                            <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Risks (Optional)</label>
-                            <input
-                              type="text"
-                              value={risks}
-                              onChange={(e) => setRisks(e.target.value)}
-                              placeholder="e.g. Mud slides"
-                              className="w-full text-xs mt-1.5 p-2.5 rounded-xl border border-border bg-gray-50 dark:bg-gray-950 text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-                            />
+
+                          {/* Tower / Building Toggle */}
+                          <div className="flex items-center gap-1 bg-muted/30 p-1 rounded-xl text-[10px] font-bold">
+                            <button
+                              type="button"
+                              onClick={() => setTimelineBuilding('ALL')}
+                              className={`px-2.5 py-0.5 rounded-lg transition-colors cursor-pointer ${
+                                timelineBuilding === 'ALL' ? 'bg-background text-foreground shadow-xs' : 'text-muted-foreground'
+                              }`}
+                            >
+                              All Towers
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setTimelineBuilding('BC')}
+                              className={`px-2.5 py-0.5 rounded-lg transition-colors cursor-pointer ${
+                                timelineBuilding === 'BC' ? 'bg-background text-foreground shadow-xs' : 'text-muted-foreground'
+                              }`}
+                            >
+                              Tower B & C
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setTimelineBuilding('AD')}
+                              className={`px-2.5 py-0.5 rounded-lg transition-colors cursor-pointer ${
+                                timelineBuilding === 'AD' ? 'bg-background text-foreground shadow-xs' : 'text-muted-foreground'
+                              }`}
+                            >
+                              Tower A & D
+                            </button>
                           </div>
                         </div>
+                      </div>
 
-                        <div>
-                          <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Progress Contribution (%)</label>
-                          <input
-                            type="number"
-                            step="0.05"
-                            required
-                            value={progressDelta}
-                            onChange={(e) => setProgressDelta(parseFloat(e.target.value))}
-                            className="w-full text-xs mt-1.5 p-2.5 rounded-xl border border-border bg-gray-50 dark:bg-gray-950 text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-                          />
+                      {/* Phase-Grouped Accordions View */}
+                      {siteActivitiesLoading ? (
+                        <div className="py-12 text-center text-muted-foreground text-xs font-semibold">Loading master schedule...</div>
+                      ) : (() => {
+                        // 1. Filter activities
+                        const filtered = siteActivities.filter((a) => {
+                          const titleLower = a.title.toLowerCase();
+                          if (timelineFilter === 'RCC' && !titleLower.includes('rcc') && !titleLower.includes('excavation') && !titleLower.includes('footing') && !titleLower.includes('anchor') && !titleLower.includes('backfilling')) return false;
+                          if (timelineFilter === 'MASONRY' && !titleLower.includes('masonry') && !titleLower.includes('brick')) return false;
+                          if (timelineFilter === 'PLASTER' && !titleLower.includes('plaster')) return false;
+                          if (timelineBuilding === 'BC' && titleLower.includes('(a & d)')) return false;
+                          if (timelineBuilding === 'AD' && titleLower.includes('(b & c)')) return false;
+                          if (timelineSearch.trim() && !titleLower.includes(timelineSearch.toLowerCase().trim())) return false;
+                          return true;
+                        });
+
+                        // 2. Define construction phases
+                        const phases = [
+                          {
+                            id: 'substructure',
+                            title: 'Phase 1: Substructure & Foundation',
+                            icon: '🏗️',
+                            filterFn: (title: string) => {
+                              const t = title.toLowerCase();
+                              return t.includes('excavation') || t.includes('anchor') || t.includes('footing') || t.includes('backfilling');
+                            }
+                          },
+                          {
+                            id: 'basement',
+                            title: 'Phase 2: Basements & Ground Floor',
+                            icon: '🏬',
+                            filterFn: (title: string) => {
+                              const t = title.toLowerCase();
+                              return t.includes('lower basement') || t.includes('upper basement') || t.includes('ground floor');
+                            }
+                          },
+                          {
+                            id: 'superstructure',
+                            title: 'Phase 3: Superstructure Slabs (Floors 1st - 15th)',
+                            icon: '🏢',
+                            filterFn: (title: string) => {
+                              const t = title.toLowerCase();
+                              return t.includes('floor top slab') || t.includes('st floor') || t.includes('nd floor') || t.includes('rd floor') || t.includes('th floor');
+                            }
+                          },
+                          {
+                            id: 'finishing',
+                            title: 'Phase 4: Finishing, Masonry & Services',
+                            icon: '🎨',
+                            filterFn: (title: string) => {
+                              const t = title.toLowerCase();
+                              return !t.includes('excavation') && !t.includes('anchor') && !t.includes('footing') && !t.includes('backfilling') &&
+                                     !t.includes('lower basement') && !t.includes('upper basement') && !t.includes('ground floor') &&
+                                     !t.includes('floor top slab') && !t.includes('st floor') && !t.includes('nd floor') && !t.includes('rd floor') && !t.includes('th floor');
+                            }
+                          }
+                        ];
+
+                        // Calculate overall metrics
+                        const totalCount = filtered.length;
+                        const completedCount = filtered.filter(a => !!a.actualEndDate).length;
+                        const overdueCount = filtered.filter(a => !a.actualEndDate && !!a.plannedEndDate && a.plannedEndDate < todayStr).length;
+                        const inProgressCount = filtered.filter(a => !a.actualEndDate && !!a.plannedStartDate && a.plannedStartDate <= todayStr && (!a.plannedEndDate || a.plannedEndDate >= todayStr)).length;
+
+                        return (
+                          <div className="space-y-4">
+                            {/* Executive KPI Header Bar */}
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                              <div className="p-3 rounded-2xl bg-white dark:bg-gray-900 border border-border/70 shadow-2xs">
+                                <div className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Total Scheduled</div>
+                                <div className="text-lg font-black text-foreground mt-0.5">{totalCount} <span className="text-xs font-semibold text-muted-foreground">Activities</span></div>
+                              </div>
+                              <div className="p-3 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-700 dark:text-amber-400 shadow-2xs">
+                                <div className="text-[10px] font-bold uppercase tracking-wider">⚡ In Progress</div>
+                                <div className="text-lg font-black mt-0.5">{inProgressCount}</div>
+                              </div>
+                              <div className="p-3 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-600 dark:text-rose-400 shadow-2xs">
+                                <div className="text-[10px] font-bold uppercase tracking-wider">⚠️ Overdue</div>
+                                <div className="text-lg font-black mt-0.5">{overdueCount}</div>
+                              </div>
+                              <div className="p-3 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 shadow-2xs">
+                                <div className="text-[10px] font-bold uppercase tracking-wider">✓ Completed</div>
+                                <div className="text-lg font-black mt-0.5">{completedCount}</div>
+                              </div>
+                            </div>
+
+                            {/* Phase Accordions */}
+                            <div className="space-y-3 max-h-[640px] overflow-y-auto pr-1">
+                              {phases.map((phase) => {
+                                const phaseItems = filtered.filter(a => phase.filterFn(a.title));
+                                if (phaseItems.length === 0) return null;
+
+                                const phaseCompleted = phaseItems.filter(a => !!a.actualEndDate).length;
+                                const phaseInProgress = phaseItems.filter(a => !a.actualEndDate && !!a.plannedStartDate && a.plannedStartDate <= todayStr && (!a.plannedEndDate || a.plannedEndDate >= todayStr)).length;
+                                const phaseOverdue = phaseItems.filter(a => !a.actualEndDate && !!a.plannedEndDate && a.plannedEndDate < todayStr).length;
+                                const pct = Math.round((phaseCompleted / phaseItems.length) * 100) || 0;
+
+                                return (
+                                  <details key={phase.id} open className="group border border-border/80 rounded-2xl bg-white dark:bg-gray-900 shadow-2xs overflow-hidden transition-all">
+                                    <summary className="p-3.5 flex items-center justify-between gap-3 cursor-pointer select-none bg-muted/20 hover:bg-muted/40 transition-colors">
+                                      <div className="flex items-center gap-3 min-w-0">
+                                        <span className="text-base">{phase.icon}</span>
+                                        <div className="min-w-0">
+                                          <div className="text-xs font-black text-foreground">{phase.title}</div>
+                                          <div className="flex items-center gap-2 text-[10px] text-muted-foreground mt-0.5">
+                                            <span>{phaseItems.length} Activities</span>
+                                            <span>•</span>
+                                            <span className="text-emerald-600 font-bold">{phaseCompleted} Done</span>
+                                            {phaseInProgress > 0 && <span className="text-amber-600 font-bold">• {phaseInProgress} Active</span>}
+                                            {phaseOverdue > 0 && <span className="text-rose-600 font-bold">• {phaseOverdue} Delayed</span>}
+                                          </div>
+                                        </div>
+                                      </div>
+
+                                      <div className="flex items-center gap-3 shrink-0">
+                                        <div className="w-24 hidden sm:block">
+                                          <div className="flex justify-between text-[9px] font-bold text-muted-foreground mb-1">
+                                            <span>Progress</span>
+                                            <span>{pct}%</span>
+                                          </div>
+                                          <div className="w-full bg-muted rounded-full h-1.5 overflow-hidden">
+                                            <div className="bg-primary h-1.5 rounded-full transition-all duration-300" style={{ width: `${pct}%` }}></div>
+                                          </div>
+                                        </div>
+                                        <span className="text-xs font-bold text-muted-foreground group-open:rotate-180 transition-transform duration-200">▼</span>
+                                      </div>
+                                    </summary>
+
+                                    <div className="p-3 border-t border-border/60 divide-y divide-border/40 space-y-1 bg-white dark:bg-gray-900">
+                                      {phaseItems.map((a, idx) => {
+                                        const overdue = !a.actualEndDate && !!a.plannedEndDate && a.plannedEndDate < todayStr;
+                                        const completed = !!a.actualEndDate;
+                                        const inProgress = !completed && !!a.plannedStartDate && a.plannedStartDate <= todayStr && (!a.plannedEndDate || a.plannedEndDate >= todayStr);
+
+                                        // Extract tower badge if present
+                                        let towerBadge = '';
+                                        if (a.title.toLowerCase().includes('(b & c)')) towerBadge = 'B & C';
+                                        else if (a.title.toLowerCase().includes('(a & d)')) towerBadge = 'A & D';
+
+                                        const cleanTitle = a.title.replace(/\s*\([^)]+\)/g, '').trim();
+
+                                        return (
+                                          <div key={a.id || idx} className="py-2.5 flex items-center justify-between gap-3 text-left hover:bg-muted/10 px-2 rounded-xl transition-colors">
+                                            <div className="min-w-0 flex-1">
+                                              <div className="flex items-center gap-2 flex-wrap">
+                                                <span className="text-xs font-bold text-foreground">{cleanTitle}</span>
+                                                {towerBadge && (
+                                                  <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-md bg-muted text-muted-foreground border border-border/50">
+                                                    🏢 Tower {towerBadge}
+                                                  </span>
+                                                )}
+                                              </div>
+                                              <div className="text-[10px] text-muted-foreground mt-0.5 font-medium">
+                                                📅 <span className="font-bold">{a.plannedStartDate || 'TBD'} → {a.plannedEndDate || 'TBD'}</span>
+                                              </div>
+                                            </div>
+
+                                            <div className="flex items-center gap-2 shrink-0">
+                                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                                                completed
+                                                  ? 'bg-emerald-50 border-emerald-200 text-emerald-600 dark:bg-emerald-950/30'
+                                                  : inProgress
+                                                    ? 'bg-amber-50 border-amber-300 text-amber-700 dark:bg-amber-950/30 font-extrabold animate-pulse'
+                                                    : overdue
+                                                      ? 'bg-rose-50 border-rose-200 text-rose-600 dark:bg-rose-950/30'
+                                                      : 'bg-blue-50 border-blue-200 text-blue-600 dark:bg-blue-950/30'
+                                              }`}>
+                                                {completed ? '✓ Completed' : inProgress ? '⚡ Active' : overdue ? '⚠️ Delayed' : '⏳ Scheduled'}
+                                              </span>
+
+                                              {!completed && (
+                                                <button
+                                                  type="button"
+                                                  onClick={() => handleCompleteSiteActivity(a.id)}
+                                                  className="text-[10px] font-bold text-primary hover:underline bg-primary/5 hover:bg-primary/10 px-2.5 py-1 rounded-xl transition-colors cursor-pointer border border-primary/20"
+                                                >
+                                                  Mark Done
+                                                </button>
+                                              )}
+                                            </div>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  </details>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })()}
+
+                    {/* Add Planned Activity Popup Modal */}
+                    {isAddActivityModalOpen && (
+                      <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-in fade-in duration-200">
+                        <div className="bg-white dark:bg-gray-900 border border-border rounded-3xl p-6 shadow-2xl max-w-md w-full space-y-5 animate-in zoom-in-95 duration-200">
+                          <div className="flex items-center justify-between border-b border-border/60 pb-3">
+                            <h3 className="font-heading font-extrabold text-foreground text-sm uppercase tracking-wider border-l-3 border-primary pl-2.5">
+                              Add Planned Activity
+                            </h3>
+                            <button
+                              type="button"
+                              onClick={() => setIsAddActivityModalOpen(false)}
+                              className="text-muted-foreground hover:text-foreground text-xs font-bold w-7 h-7 rounded-full bg-muted/40 flex items-center justify-center cursor-pointer"
+                            >
+                              ✕
+                            </button>
+                          </div>
+
+                          <form onSubmit={handleAddSiteActivity} className="space-y-4 text-left">
+                            <div>
+                              <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Activity Name *</label>
+                              <input
+                                type="text"
+                                required
+                                value={activityTitle}
+                                onChange={(e) => setActivityTitle(e.target.value)}
+                                placeholder="e.g. RCC Slab Casting - Tower A"
+                                className="w-full text-xs mt-1.5 p-3 rounded-xl border border-border bg-gray-50 dark:bg-gray-950 text-foreground focus:outline-none focus:ring-1 focus:ring-primary font-semibold"
+                              />
+                            </div>
+                            <div className="grid grid-cols-2 gap-3">
+                              <div>
+                                <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Planned Start *</label>
+                                <input
+                                  type="date"
+                                  required
+                                  value={activityPlannedStart}
+                                  onChange={(e) => setActivityPlannedStart(e.target.value)}
+                                  className="w-full text-xs mt-1.5 p-3 rounded-xl border border-border bg-gray-50 dark:bg-gray-950 text-foreground focus:outline-none focus:ring-1 focus:ring-primary font-semibold"
+                                />
+                              </div>
+                              <div>
+                                <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Planned Finish *</label>
+                                <input
+                                  type="date"
+                                  required
+                                  value={activityPlannedEnd}
+                                  onChange={(e) => setActivityPlannedEnd(e.target.value)}
+                                  className="w-full text-xs mt-1.5 p-3 rounded-xl border border-border bg-gray-50 dark:bg-gray-950 text-foreground focus:outline-none focus:ring-1 focus:ring-primary font-semibold"
+                                />
+                              </div>
+                            </div>
+
+                            <div className="flex items-center justify-end gap-2 pt-3 border-t border-border/40">
+                              <button
+                                type="button"
+                                onClick={() => setIsAddActivityModalOpen(false)}
+                                className="px-4 py-2.5 rounded-xl border border-border text-muted-foreground hover:text-foreground text-xs font-bold transition-colors cursor-pointer"
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                type="submit"
+                                disabled={isAddingActivity || currentUser.role === 'PR_TEAM'}
+                                className="px-5 py-2.5 text-xs font-bold bg-primary hover:bg-orange-850 text-white rounded-xl shadow-xs transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                              >
+                                {isAddingActivity ? 'Adding…' : 'Add Activity'}
+                              </button>
+                            </div>
+                          </form>
                         </div>
-
-                        <button
-                          type="submit"
-                          disabled={currentUser.role === 'PR_TEAM'}
-                          className="w-full text-xs font-bold bg-primary hover:bg-orange-850 text-white py-3 rounded-xl shadow-xs transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-                        >
-                          Log Site Activity
-                        </button>
-                      </form>
-                    </div>
-
-                    {/* 2. Site Diary & Timeline Feed (column 1 on desktop, stacked below form on mobile) */}
-                    <div className="lg:col-span-2 lg:order-1 space-y-4">
-                      {/* Header bar with Offline status */}
-                      <div className="bg-white dark:bg-gray-900 p-4 rounded-2xl border border-border/60 shadow-sm flex items-center justify-between">
+                      </div>
+                    )}
+                  </div>
+                ) : operationsSubTab === 'feed' ? (
+                  <div className="space-y-4">
+                    {/* Activity Logs Timeline / Feed */}
+                    <div className="bg-white dark:bg-gray-900 p-6 rounded-3xl border border-border/60 shadow-sm space-y-4">
+                      <div className="flex items-center justify-between border-b border-border/40 pb-3">
                         <div>
-                          <h3 className="font-heading font-bold text-foreground text-xs uppercase tracking-wider">Site Diary & DPR Logs</h3>
-                          <p className="text-xs text-muted-foreground mt-0.5">Live site logs, voice notes, photos, and offline data cache status.</p>
+                          <h4 className="font-heading font-extrabold text-foreground text-xs uppercase tracking-wider">
+                            📋 Activity Logs Timeline
+                          </h4>
+                          <p className="text-[10px] text-muted-foreground mt-0.5">
+                            Chronological timeline of all daily progress reports, field logs, and site activity submissions.
+                          </p>
                         </div>
                         <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-2.5 py-1 text-[10px] font-bold text-emerald-600 dark:text-emerald-500 border border-emerald-500/25">
                           <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                          Offline Sync Enabled (Cache Clean)
+                          Live Activity Feed Active
                         </span>
                       </div>
-
-                      {/* Voice Notes Recorder Simulator */}
-                      <div className="bg-white dark:bg-gray-900 p-4 rounded-2xl border border-border/60 shadow-sm space-y-3.5">
-                        <h4 className="font-heading font-bold text-foreground text-xs uppercase tracking-wider flex items-center gap-2">
-                          🎙️ Voice Notes Site Diary
-                        </h4>
-                        
-                        <div className="flex items-center justify-between gap-4 border border-border/50 p-3 rounded-xl bg-muted/5">
-                          {isRecording ? (
-                            <div className="flex items-center gap-3">
-                              <span className="relative flex h-2 w-2">
-                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
-                                <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span>
-                              </span>
-                              <span className="text-xs font-bold text-red-500 animate-pulse">Recording Site Update... (0:08)</span>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setIsRecording(false);
-                                  setVoiceNotes([...voiceNotes, `VoiceNote_${Date.now()}.mp3`]);
-                                }}
-                                className="text-[10px] bg-red-500 text-white font-bold px-2 py-1 rounded hover:bg-red-600 transition-colors cursor-pointer"
-                              >
-                                Stop & Save
-                              </button>
-                            </div>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => setIsRecording(true)}
-                              className="bg-primary hover:bg-orange-850 text-white text-xs font-bold px-3 py-2 rounded-lg transition-colors cursor-pointer"
+                      
+                      <div className="relative pl-6 border-l-2 border-primary/20 space-y-6 ml-2 mt-4 text-foreground">
+                        {dprLoading ? (
+                          <div className="py-12 text-center text-muted-foreground text-xs">Loading DPRs...</div>
+                        ) : dprLogs.map((dpr) => (
+                          <div key={dpr.id} className="relative space-y-2">
+                            {/* Timeline dot connector */}
+                            <div className="absolute -left-[31px] top-1.5 w-3 h-3 rounded-full bg-primary border-2 border-white dark:border-gray-900 shadow-sm" />
+                            
+                            <div 
+                              onClick={() => {
+                                setSelectedTimelineDPR(dpr);
+                              }}
+                              className="p-4 bg-white dark:bg-gray-900 border border-border/60 hover:border-primary/50 rounded-2xl shadow-xs hover:shadow-md transition-all space-y-2.5 cursor-pointer group relative"
                             >
-                              Record Voice Memo
-                            </button>
-                          )}
-                          <p className="text-[10px] text-muted-foreground font-semibold flex-1">Record audio notes directly from site walk-throughs. Syncs offline automatically.</p>
-                        </div>
-
-                        {/* Voice Notes List */}
-                        {voiceNotes.length > 0 && (
-                          <div className="space-y-1.5">
-                            <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Unprocessed Voice Updates ({voiceNotes.length})</p>
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                              {voiceNotes.map((note, index) => (
-                                <div key={index} className="flex items-center justify-between p-2 bg-muted/15 border border-border/40 rounded-lg text-xs font-semibold">
-                                  <span className="truncate">🎵 {note}</span>
-                                  <button
-                                    type="button"
-                                    onClick={() => setVoiceNotes(voiceNotes.filter(vn => vn !== note))}
-                                    className="text-rose-500 hover:text-rose-700 font-bold ml-2 cursor-pointer"
-                                  >
-                                    Delete
-                                  </button>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Daily Activity Timeline / Feed */}
-                      <div className="bg-white dark:bg-gray-900 p-6 rounded-3xl border border-border/60 shadow-sm space-y-4">
-                        <h4 className="font-heading font-bold text-foreground text-xs uppercase tracking-wider">
-                          Activity Logs Timeline
-                        </h4>
-                        
-                        <div className="relative pl-6 border-l-2 border-primary/20 space-y-6 ml-2 mt-4 text-foreground">
-                          {dprLoading ? (
-                            <div className="py-12 text-center text-muted-foreground text-xs">Loading DPRs...</div>
-                          ) : dprLogs.map((dpr) => (
-                            <div key={dpr.id} className="relative space-y-2">
-                              {/* Timeline dot connector */}
-                              <div className="absolute -left-[31px] top-1.5 w-3 h-3 rounded-full bg-primary border-2 border-white dark:border-gray-900 shadow-sm" />
-                              
-                              <div 
-                                onClick={() => {
-                                  setSelectedTimelineDPR(dpr);
-                                }}
-                                className="p-4 bg-white dark:bg-gray-900 border border-border/60 hover:border-primary/50 rounded-2xl shadow-xs hover:shadow-md transition-all space-y-2.5 cursor-pointer group relative"
-                              >
-                                <div className="flex items-center justify-between text-xs flex-wrap gap-2">
-                                  <span className="font-bold text-foreground">Engr. {dpr.created_by_name || dpr.submitted_by || 'Site Engineer'}</span>
-                                  <div className="flex items-center gap-3 text-muted-foreground">
-                                    <span className="bg-primary/5 text-primary px-2 py-0.5 rounded text-[10px] font-bold border border-primary/10">{dpr.weather_condition || dpr.weather_conditions || 'Clear'}</span>
-                                    <span className="font-semibold">{dpr.report_date || dpr.date || 'Today'}</span>
-                                  </div>
-                                </div>
-                                <p className="text-xs text-muted-foreground leading-relaxed font-semibold">
-                                  {dpr.activities?.map((a: any) => a.activity_name).filter(Boolean).join(', ') || dpr.summary || dpr.trade_name || 'Site activity logged'}
-                                </p>
-                                
-                                 {(() => {
-                                   const dprDate = dpr.report_date || dpr.date;
-                                   const explicitIssues = Array.isArray(dpr.issues) ? dpr.issues : [];
-                                   const textDelays = typeof dpr.delays === 'string' && dpr.delays.trim() ? [{ issue_description: dpr.delays }] : (Array.isArray(dpr.delays) ? dpr.delays : []);
-                                   const matchingDbDelays = delayEvents.filter(d => {
-                                     const cDate = (d.created_at || d.planned_date || '').split('T')[0];
-                                     return dprDate ? cDate === dprDate : false;
-                                   }).map(d => {
-                                     let cleanDesc = d.reason_code || 'Site Issue';
-                                     if (typeof d.reason_details === 'string') {
-                                       const descMatch = d.reason_details.match(/Description:\s*([\s\S]*)/);
-                                       if (descMatch && descMatch[1].trim()) cleanDesc = `${d.reason_code}: ${descMatch[1].trim()}`;
-                                       else cleanDesc = `${d.reason_code}: ${d.reason_details.replace(/Location:.*$/gm, '').replace(/Agency:.*$/gm, '').replace(/Severity:.*$/gm, '').trim()}`;
-                                     }
-                                     return { issue_description: cleanDesc };
-                                   });
-
-                                   const combined = [...explicitIssues, ...textDelays, ...matchingDbDelays];
-                                   const uniqueCombined = Array.from(new Map(combined.map(i => [(i.issue_description || i.reason || '').trim(), i])).values());
-                                   if (uniqueCombined.length === 0) return null;
-
-                                   return (
-                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-2 pt-2 border-t border-border/50 text-[10px] font-bold">
-                                       {uniqueCombined.map((issue: any, idx: number) => (
-                                         <p key={idx} className="text-rose-500 font-bold flex items-center gap-1">
-                                           <span>⚠️ Historical Delay ({dprDate || 'Logged'}):</span> {issue.issue_description || issue.reason}
-                                         </p>
-                                       ))}
-                                     </div>
-                                   );
-                                 })()}
-
-                                <div className="flex items-center justify-between pt-2 border-t border-border/40 text-[10px] text-muted-foreground font-medium">
-                                  <span>Tap card to view compiled DPR & breakdown</span>
-                                  <span className="text-primary font-bold group-hover:underline flex items-center gap-1">
-                                    View Detailed DPR →
-                                  </span>
+                              <div className="flex items-center justify-between text-xs flex-wrap gap-2">
+                                <span className="font-bold text-foreground">Engr. {dpr.created_by_name || dpr.submitted_by || 'Site Engineer'}</span>
+                                <div className="flex items-center gap-3 text-muted-foreground">
+                                  <span className="bg-primary/5 text-primary px-2 py-0.5 rounded text-[10px] font-bold border border-primary/10">{dpr.weather_condition || dpr.weather_conditions || 'Clear'}</span>
+                                  <span className="font-semibold">{dpr.report_date || dpr.date || 'Today'}</span>
                                 </div>
                               </div>
+                              <p className="text-xs text-muted-foreground leading-relaxed font-semibold">
+                                {dpr.activities?.map((a: any) => a.activity_name).filter(Boolean).join(', ') || dpr.summary || dpr.trade_name || 'Site activity logged'}
+                              </p>
+
+                              <div className="flex items-center justify-between pt-2 border-t border-border/40 text-[10px] text-muted-foreground font-medium">
+                                <span>Tap card to view compiled DPR & breakdown</span>
+                                <span className="text-primary font-bold group-hover:underline flex items-center gap-1">
+                                  View Detailed DPR →
+                                </span>
+                              </div>
                             </div>
-                          ))}
-                          
-                          {!dprLoading && dprLogs.length === 0 && (
-                            <div className="py-12 text-center text-gray-400">
-                              <ClipboardList className="w-10 h-10 mx-auto text-gray-300 mb-2" />
-                              <p className="text-xs">No daily activities logged for this project yet.</p>
-                            </div>
-                          )}
-                        </div>
+                          </div>
+                        ))}
+                        
+                        {!dprLoading && dprLogs.length === 0 && (
+                          <div className="py-12 text-center text-gray-400">
+                            <ClipboardList className="w-10 h-10 mx-auto text-gray-300 mb-2" />
+                            <p className="text-xs">No daily activities logged for this project yet.</p>
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -9272,336 +9136,7 @@ Rules:
               </div>
             )}
 
-            {activeTab === 'billing' && (
-              <div className="space-y-4">
-                {/* Billing KPI Metrics */}
-                <div className="bg-white dark:bg-gray-900 p-4 rounded-2xl border border-border/60 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
-                  <div>
-                    <h3 className="font-heading font-black text-foreground text-xs uppercase tracking-wider flex items-center gap-1.5">
-                      <Coins className="w-5 h-5 text-[#b68d40] drop-shadow-[0_2px_8px_rgba(182,141,64,0.3)]" />
-                      Contractor Billing & RA Invoices Ledger
-                    </h3>
-                    <p className="text-xs text-muted-foreground mt-0.5">Review project values, verify automated quality clearances, and log contractor RA invoices.</p>
-                  </div>
-                  <div className="flex gap-3 text-xs">
-                    <div className="bg-muted/30 border border-border/60 px-4 py-2 rounded-xl text-center shrink-0">
-                      <span className="block text-[9px] font-bold text-muted-foreground uppercase">Project Value</span>
-                      <span className="font-extrabold text-foreground">{formatCurrency(project!.projectValue)}</span>
-                    </div>
-                    <div className="bg-muted/30 border border-border/60 px-4 py-2 rounded-xl text-center shrink-0">
-                      <span className="block text-[9px] font-bold text-muted-foreground uppercase">Billed Spend</span>
-                      <span className="font-extrabold text-[#b68d40]">{formatCurrency(project!.actualSpend)}</span>
-                    </div>
-                  </div>
-                </div>
 
-                {/* QC Clearance & Measurement Verification Workspace */}
-                <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-                  {/* Left Column: QC Billing Clearance Registry */}
-                  <div className="lg:col-span-7 bg-white dark:bg-gray-900 p-4.5 rounded-2xl border border-border/60 shadow-sm space-y-4">
-                    <div>
-                      <h4 className="font-heading font-bold text-foreground text-xs uppercase tracking-wider flex items-center gap-1.5">
-                        🛡️ QC Billing Clearance Registry
-                      </h4>
-                      <p className="text-[11px] text-muted-foreground mt-0.5">
-                        Billing is connected with QC status. Invoices are blocked if QC is pending, failed, or rework is open.
-                      </p>
-                    </div>
-
-                    <div className="space-y-3">
-                      {workCompletions.length === 0 ? (
-                        <p className="text-xs text-muted-foreground italic text-center py-6 border border-dashed border-border rounded-xl">
-                          No work completion records logged.
-                        </p>
-                      ) : (
-                        workCompletions.map(wc => {
-                          const req = qcRequests.find(r => r.completionId === wc.id);
-                          const mv = measurementVerifications.find(m => m.activityName === wc.activityName);
-                          const rwCount = reworkItems.filter(r => r.qcRef === req?.id && r.status !== 'Closed').length;
-
-                          // QC Billing validation flags
-                          const isCompleted = wc.completedQty > 0;
-                          const isQcApproved = wc.status === 'Approved';
-                          const noRework = rwCount === 0;
-                          const photoProof = wc.photos && wc.photos.length > 0;
-                          const measurementApproved = mv ? mv.status === 'Approved' : true;
-                          
-                          // Check if invoice was already created for this activity
-                          const invoiceCreated = project!.invoices.some(inv => inv.desc.includes(wc.activityName));
-
-                          const billingAllowed = isCompleted && isQcApproved && noRework && photoProof && measurementApproved && !invoiceCreated;
-
-                          const blockReasons: string[] = [];
-                          if (!isCompleted) blockReasons.push("Work not completed (completed quantity must be > 0)");
-                          if (!isQcApproved) blockReasons.push(`QC Inspection is not Approved (Current status: ${req?.status || 'Pending'})`);
-                          if (!noRework) blockReasons.push(`Rework required (${rwCount} open case(s))`);
-                          if (!photoProof) blockReasons.push("Missing photo proof of site work completion");
-                          if (!measurementApproved) blockReasons.push("Measurement sheet verification is pending or not approved");
-
-                          return (
-                            <div key={wc.id} className="p-3.5 bg-muted/15 border border-border/60 rounded-xl text-xs space-y-3 hover:bg-muted/5 transition-colors text-left">
-                              <div className="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-2">
-                                <div>
-                                  <h5 className="font-extrabold text-foreground">{wc.activityName}</h5>
-                                  <p className="text-[10px] text-muted-foreground">{wc.block} - {wc.floor} | Contractor: {wc.contractorName} | Qty: {wc.completedQty} {wc.unit}</p>
-                                  {req?.approvedBy && (
-                                    <p className="text-[9px] text-emerald-600 dark:text-emerald-400 font-bold mt-1">
-                                      Approved by: {req.approvedBy} on {req.approvedAt}
-                                    </p>
-                                  )}
-                                </div>
-                                <div className="flex items-center gap-2">
-                                  <span className={`px-2.5 py-0.5 rounded-full text-[9px] font-extrabold border ${
-                                    invoiceCreated
-                                      ? 'bg-blue-500/10 text-blue-600 border-blue-500/20'
-                                      : billingAllowed
-                                        ? 'bg-green-500/10 text-green-600 border-green-500/25'
-                                        : 'bg-red-500/10 text-red-600 border-red-500/25'
-                                  }`}>
-                                    {invoiceCreated ? 'BILLED' : billingAllowed ? 'BILLING CLEAR' : 'BILLING BLOCKED'}
-                                  </span>
-                                </div>
-                              </div>
-
-                              {/* Checks checklist */}
-                              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-[10px] font-bold text-center">
-                                <span className={`p-2 rounded-lg border ${isCompleted ? 'bg-green-500/5 text-emerald-600 border-emerald-500/10' : 'bg-red-500/5 text-red-600 border-red-500/10'}`}>
-                                  Completion: {isCompleted ? '✓ Done' : '✗ Pending'}
-                                </span>
-                                <span className={`p-2 rounded-lg border ${isQcApproved ? 'bg-green-500/5 text-emerald-600 border-emerald-500/10' : 'bg-red-500/5 text-red-600 border-red-500/10'}`}>
-                                  QC Approved: {isQcApproved ? '✓ Yes' : req?.status === 'Failed' ? '✗ Failed' : '✗ Pending'}
-                                </span>
-                                <span className={`p-2 rounded-lg border ${noRework ? 'bg-green-500/5 text-emerald-600 border-emerald-500/10' : 'bg-red-500/5 text-red-600 border-red-500/10'}`}>
-                                  No Open Rework: {noRework ? '✓ Passed' : '✗ Required'}
-                                </span>
-                                <span className={`p-2 rounded-lg border ${photoProof ? 'bg-green-500/5 text-emerald-600 border-emerald-500/10' : 'bg-red-500/5 text-red-600 border-red-500/10'}`}>
-                                  Photo Proof: {photoProof ? '✓ Uploaded' : '✗ Missing'}
-                                </span>
-                                <span className={`p-2 rounded-lg border ${measurementApproved ? 'bg-green-500/5 text-emerald-600 border-emerald-500/10' : 'bg-amber-500/5 text-amber-600 border-amber-500/10'}`}>
-                                  Measurement: {mv ? (measurementApproved ? '✓ Verified' : '✗ Pending') : 'N/A'}
-                                </span>
-                              </div>
-
-                              {/* Action controls */}
-                              {invoiceCreated ? (
-                                <div className="p-2.5 bg-blue-500/5 border border-blue-500/10 text-blue-600 font-bold text-[10px] text-center rounded-lg">
-                                  Invoice already generated and logged in ledger.
-                                </div>
-                              ) : billingAllowed ? (
-                                <div className="space-y-1.5 w-full">
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      const amount = (mv?.verifiedQty || wc.completedQty) * 1250;
-                                      const desc = `RA Bill: ${wc.activityName} (${wc.block} - ${wc.floor})`;
-                                      addInvoice(project!.id, amount, desc);
-                                      showQcAlert(
-                                        isLiveSupabase()
-                                          ? `Invoice draft logged locally for ${wc.activityName}.`
-                                          : `Invoice successfully added to the ledger for ${wc.activityName}.`
-                                      );
-                                    }}
-                                    className="w-full py-2.5 bg-[#b68d40] hover:bg-[#967332] text-white font-extrabold uppercase text-[10px] tracking-wider rounded-xl cursor-pointer transition-all shadow-sm"
-                                  >
-                                    {isLiveSupabase() ? 'Draft Local RA Invoice' : 'Generate & Log RA Invoice'} ({formatCurrency((mv?.verifiedQty || wc.completedQty) * 1250)})
-                                  </button>
-                                  {isLiveSupabase() && (
-                                    <div className="text-[8px] leading-tight text-amber-600 dark:text-amber-400 font-bold bg-amber-500/5 border border-amber-500/10 p-1.5 rounded-md text-center">
-                                      ⚠️ Live Mode: Drafts are local only. For database syncing, record vendor bills in the unified Finance Cockpit.
-                                    </div>
-                                  )}
-                                </div>
-                              ) : (
-                                <div className="p-2.5 bg-red-500/5 border border-red-500/10 text-red-600 dark:text-red-400 font-bold text-[10px] rounded-lg">
-                                  <div className="text-center font-extrabold mb-1">⚠️ Billing Blocked:</div>
-                                  <ul className="list-disc pl-4 space-y-0.5 text-[9px] text-left font-semibold">
-                                    {blockReasons.map((reason, idx) => (
-                                      <li key={idx}>{reason}</li>
-                                    ))}
-                                  </ul>
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Right Column: Measurement Sheet Verification */}
-                  <div className="lg:col-span-5 bg-white dark:bg-gray-900 p-4.5 rounded-2xl border border-border/60 shadow-sm space-y-4">
-                    <div className="border-b border-border/60 pb-2">
-                      <h4 className="font-heading font-black text-foreground text-xs uppercase tracking-wider flex items-center gap-1.5">
-                        📐 Measurement Sheet Verification
-                      </h4>
-                      <p className="text-[11px] text-muted-foreground mt-0.5">Required for quantity-based contractor bill claims only.</p>
-                    </div>
-
-                    <div className="space-y-3 max-h-[450px] overflow-y-auto pr-1">
-                      {measurementVerifications.length === 0 ? (
-                        <p className="text-xs text-muted-foreground italic text-center py-6 border border-dashed border-border rounded-xl">No measurements registered.</p>
-                      ) : (
-                        measurementVerifications.map(mv => {
-                          const completion = workCompletions.find(w => w.activityName === mv.activityName);
-                          return (
-                            <div key={mv.id} className="p-3 bg-muted/20 border border-border/60 rounded-xl text-xs space-y-3 text-left">
-                              <div className="flex justify-between items-center font-bold">
-                                <span className="text-[#b68d40]">{mv.id}</span>
-                                <span className={`px-2 py-0.5 rounded text-[9px] border ${mv.status === 'Approved' ? 'bg-green-500/10 text-green-600 border-green-500/20' : mv.status === 'Rejected' ? 'bg-red-500/10 text-red-600 border-red-500/20' : 'bg-amber-500/10 text-amber-600 border-amber-500/20'}`}>{mv.status}</span>
-                              </div>
-                              <div className="space-y-1">
-                                <p className="font-extrabold text-foreground">{mv.activityName}</p>
-                                <p className="text-[10px] text-muted-foreground">BOQ Item: {mv.boqItem}</p>
-                                <p className="text-[10px] text-muted-foreground font-semibold">Completed: {mv.completedQty} {completion?.unit || 'Sqft'} | Planned: {mv.plannedQty}</p>
-                              </div>
-
-                              {mv.status === 'Approved' ? (
-                                <div className="p-2.5 bg-emerald-500/5 border border-emerald-500/15 rounded-lg space-y-1 text-[10px]">
-                                  <p className="font-bold text-emerald-600">✓ Quantity Certified: {mv.verifiedQty} {completion?.unit || 'Sqft'}</p>
-                                  <p className="text-muted-foreground">Sheet: {mv.measurementSheet} | Date: {mv.measurementDate}</p>
-                                </div>
-                              ) : (
-                                <div className="pt-2 border-t border-border/40 space-y-2">
-                                  <div className="grid grid-cols-2 gap-2 text-left">
-                                    <label className="block space-y-1">
-                                      <span className="text-[9px] font-bold text-muted-foreground uppercase">Verified Quantity</span>
-                                      <input
-                                        type="number"
-                                        value={measVerifiedQty[mv.id] || ''}
-                                        onChange={e => setMeasVerifiedQty({ ...measVerifiedQty, [mv.id]: parseFloat(e.target.value) || 0 })}
-                                        placeholder="e.g. 5000"
-                                        className="w-full text-[10px] p-2 rounded border border-border bg-background outline-none focus:border-[#b68d40] text-foreground font-semibold"
-                                      />
-                                    </label>
-                                    <label className="block space-y-1">
-                                      <span className="text-[9px] font-bold text-muted-foreground uppercase">Measurement Sheet File</span>
-                                      <input
-                                        type="text"
-                                        value={measSheetName[mv.id] || ''}
-                                        placeholder="e.g. Plaster_M_Sheet.xlsx"
-                                        onChange={e => setMeasSheetName({ ...measSheetName, [mv.id]: e.target.value })}
-                                        className="w-full text-[10px] p-2 rounded border border-border bg-background outline-none focus:border-[#b68d40] text-foreground font-semibold"
-                                      />
-                                    </label>
-                                  </div>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleApproveMeasurement(mv.id)}
-                                    className="w-full py-2 bg-[#b68d40] hover:bg-[#967332] text-white transition-all text-[10px] font-extrabold uppercase tracking-wide rounded-lg cursor-pointer shadow-2xs border border-[#b68d40]/20"
-                                  >
-                                    Certify & Approve Quantity
-                                  </button>
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Ledger & Manual override */}
-                <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-                  {/* Left Column: Logged Invoices List */}
-                  <div className="lg:col-span-8 bg-white dark:bg-gray-900 p-4.5 rounded-2xl border border-border/60 shadow-sm space-y-4">
-                    <h4 className="font-heading font-bold text-foreground text-xs uppercase tracking-wider flex items-center gap-1">
-                      📋 Registered Invoices Log
-                    </h4>
-                    <div className="space-y-2 max-h-[300px] overflow-y-auto pr-1">
-                      {project!.invoices.length === 0 ? (
-                        <p className="text-xs text-muted-foreground italic text-center py-6">No invoices logged yet.</p>
-                      ) : (
-                        project!.invoices.map(inv => (
-                          <div key={inv.id} className="p-3 border border-border/60 hover:bg-muted/10 rounded-xl flex justify-between items-center transition-colors text-left">
-                            <div>
-                              <span className="text-xs font-bold text-foreground">{inv.desc}</span>
-                              <span className="block text-[9px] text-muted-foreground mt-0.5">Inv Ref: {inv.id}</span>
-                            </div>
-                            <span className="text-xs font-black text-foreground">{formatCurrency(inv.amount)}</span>
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Right Column: Manual Invoice Logging override */}
-                  <div className="lg:col-span-4 bg-white dark:bg-gray-900 p-4.5 rounded-2xl border border-border/60 shadow-sm space-y-3 self-start">
-                    <div className="text-left">
-                      <h4 className="font-heading font-bold text-foreground text-xs uppercase tracking-wider">
-                        ✍️ Manual Override Logger
-                      </h4>
-                      <p className="text-[10px] text-muted-foreground">
-                        Use this only for advance payments, retention billing, or non-QC works.
-                        {isLiveSupabase() && (
-                          <span className="block mt-1 font-bold text-amber-600 dark:text-amber-400 bg-amber-500/5 border border-amber-500/10 p-2 rounded-lg">
-                            ⚠️ Note: Manual override invoices are saved as local-only drafts in live mode. Use the unified Finance Cockpit to record permanent vendor bills.
-                          </span>
-                        )}
-                      </p>
-                    </div>
-
-                    <form onSubmit={handleInvoiceSubmit} className="space-y-3.5 text-xs text-left">
-                      <label className="block space-y-1">
-                        <span className="font-bold text-muted-foreground uppercase text-[9px]">Link to Site Activity (Optional)</span>
-                        <select
-                          value={selectedWcActivity}
-                          onChange={e => {
-                            setSelectedWcActivity(e.target.value);
-                            const wc = workCompletions.find(w => w.id === e.target.value);
-                            if (wc) {
-                              const mv = measurementVerifications.find(m => m.activityName === wc.activityName);
-                              const qty = mv?.verifiedQty || wc.completedQty || 100;
-                              setInvoiceAmount(qty * 1250);
-                              setInvoiceDesc(`RA Bill: ${wc.activityName} (${wc.block} - ${wc.floor})`);
-                            } else {
-                              setInvoiceAmount('');
-                              setInvoiceDesc('');
-                            }
-                          }}
-                          className="w-full text-xs p-2.5 rounded-lg border border-border bg-background outline-none focus:border-[#b68d40] text-foreground font-semibold"
-                        >
-                          <option value="">-- None (Advance/Retention Payment) --</option>
-                          {workCompletions.map(wc => (
-                            <option key={wc.id} value={wc.id}>
-                              {wc.activityName} ({wc.block} - {wc.floor})
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="block space-y-1">
-                        <span className="font-bold text-muted-foreground uppercase text-[9px]">Invoice Description *</span>
-                        <input
-                          type="text"
-                          value={invoiceDesc}
-                          onChange={e => setInvoiceDesc(e.target.value)}
-                          placeholder="e.g. Mobilization Advance claim"
-                          className="w-full text-xs p-2.5 rounded-lg border border-border bg-background outline-none focus:border-[#b68d40] text-foreground"
-                          required
-                        />
-                      </label>
-                      <label className="block space-y-1">
-                        <span className="font-bold text-muted-foreground uppercase text-[9px]">Amount * (INR)</span>
-                        <input
-                          type="number"
-                          value={invoiceAmount}
-                          onChange={e => setInvoiceAmount(e.target.value === '' ? '' : Number(e.target.value))}
-                          placeholder="e.g. 250000"
-                          className="w-full text-xs p-2.5 rounded-lg border border-border bg-background outline-none focus:border-[#b68d40] text-foreground"
-                          required
-                        />
-                      </label>
-                      <button
-                        type="submit"
-                        className="w-full py-2.5 bg-secondary hover:bg-[#b68d40] text-secondary-foreground hover:text-white transition-all text-[10px] font-extrabold uppercase tracking-wide rounded-lg cursor-pointer"
-                      >
-                        Override & Log Invoice
-                      </button>
-                    </form>
-                  </div>
-                </div>
-              </div>
-            )}
 
             {/* ANALYTICS */}
             {activeTab === 'analytics' && (
@@ -9625,7 +9160,7 @@ Rules:
 
             {/* TASK ASSIGNMENT */}
             {activeTab === 'tasks' && (
-              <TaskModule project={project} overviewData={overviewData} />
+              <TaskModule project={project} />
             )}
 
             {/* USER MANAGEMENT */}
@@ -9933,17 +9468,25 @@ Rules:
                 </h4>
                 {(() => {
                   const parseModalLineCount = (line: any) => {
-                    const text = [line.activity_name, line.remarks, line.activity_text, selectedTimelineDPR.activities_completed, selectedTimelineDPR.summary].filter(Boolean).join(' ');
-                    const m = text.match(/(?:Persons|Workers|Laborers|Masons|Headcount)\s*[:=]\s*(\d+)/i) || text.match(/(\d+)\s*(?:persons|workers|laborers|masons|men)/i);
+                    if (typeof line.no_of_persons === 'number' && line.no_of_persons > 0) return line.no_of_persons;
+                    if (typeof line.persons === 'number' && line.persons > 0) return line.persons;
+                    if (typeof line.work_done_qty === 'number' && line.work_done_qty > 0) return line.work_done_qty;
+                    if (line.no_of_persons && !isNaN(parseInt(line.no_of_persons)) && parseInt(line.no_of_persons) > 0) return parseInt(line.no_of_persons);
+                    if (line.persons && !isNaN(parseInt(line.persons)) && parseInt(line.persons) > 0) return parseInt(line.persons);
+                    
+                    const lineText = [line.activity_name, line.remarks, line.activity_text].filter(Boolean).join(' ');
+                    const m = lineText.match(/(?:Persons|Workers|Laborers|Masons|Headcount)\s*[:=]\s*(\d+)/i) || lineText.match(/(\d+)\s*(?:persons|workers|laborers|masons|men)/i);
                     if (m) {
                       const val = parseInt(m[1], 10);
                       if (!isNaN(val) && val > 0) return val;
                     }
+                    
                     const num = Number(line.headcount || line.manpower_count);
-                    return (!isNaN(num) && num > 0 && num !== 12) ? num : 10;
+                    if (!isNaN(num) && num > 0) return num;
+                    return 5;
                   };
 
-                  const linesList = (selectedTimelineDPR.dpr_activity_lines && selectedTimelineDPR.dpr_activity_lines.length > 0)
+                  const rawLines = (selectedTimelineDPR.dpr_activity_lines && selectedTimelineDPR.dpr_activity_lines.length > 0)
                     ? selectedTimelineDPR.dpr_activity_lines
                     : (selectedTimelineDPR.activities && selectedTimelineDPR.activities.length > 0)
                     ? selectedTimelineDPR.activities
@@ -9956,67 +9499,127 @@ Rules:
                         remarks: selectedTimelineDPR.activities_completed || selectedTimelineDPR.summary || selectedTimelineDPR.workCompleted || '[In Progress] Loc: Tower A | Slab work done'
                       }];
 
+                  const linesList = rawLines.flatMap((line: any) => {
+                    const fullText = line.activity_name || line.completed_work || line.work_description || line.trade_name || '';
+                    if (typeof fullText === 'string' && (fullText.includes(';') || fullText.includes('\n'))) {
+                      const parts = fullText.split(/;\s*|\n+/).map((p: string) => p.trim()).filter(Boolean);
+                      if (parts.length > 1) {
+                        return parts.map((part: string) => {
+                          let title = part.replace(/^\d+\.\s*/, '');
+                          let tower = line.location_zone || line.location || line.tower_location || 'Tower A';
+                          let desc = line.remarks || line.description || line.comments_issues || '-';
+                          
+                          const match = title.match(/^([^()]+)\s*\(([^()]+)\)$/);
+                          if (match) {
+                            title = match[1].trim();
+                            tower = match[2].trim();
+                          }
+                          return {
+                            ...line,
+                            activity_name: title,
+                            completed_work: title,
+                            work_description: title,
+                            location: tower,
+                            location_zone: tower,
+                            tower_location: tower,
+                            remarks: desc !== '-' ? desc : '-',
+                            description: desc !== '-' ? desc : '-',
+                          };
+                        });
+                      }
+                    }
+                    
+                    // Single item check for parenthesis tower like "Activity Title (B & C)"
+                    if (typeof fullText === 'string') {
+                      let title = fullText.replace(/^\d+\.\s*/, '');
+                      let tower = line.location_zone || line.location || line.tower_location || 'Tower A';
+                      let desc = line.remarks || line.description || line.comments_issues || '-';
+                      const match = title.match(/^([^()]+)\s*\(([^()]+)\)$/);
+                      if (match) {
+                        title = match[1].trim();
+                        tower = match[2].trim();
+                        return [{
+                          ...line,
+                          activity_name: title,
+                          completed_work: title,
+                          work_description: title,
+                          location: tower,
+                          location_zone: tower,
+                          tower_location: tower,
+                          remarks: desc !== '-' ? desc : '-',
+                          description: desc !== '-' ? desc : '-',
+                        }];
+                      }
+                    }
+                    return [line];
+                  });
+
                   return (
-                    <div className="divide-y divide-border/40 border border-border/60 rounded-2xl overflow-hidden bg-white dark:bg-gray-900">
-                      {linesList.map((line: any, idx: number) => {
-                        const wCount = parseModalLineCount(line);
-                        return (
-                          <div key={idx} className="p-4 text-xs space-y-2">
-                            <div className="flex justify-between items-start flex-wrap gap-2">
-                              <div className="flex-1">
-                                {isEditingModalDPR ? (
-                                  <div className="space-y-1">
-                                    <span className="text-[10px] text-muted-foreground font-bold uppercase block">Activity Description</span>
+                    <div className="overflow-x-auto border border-border/70 rounded-2xl bg-white dark:bg-gray-900 shadow-xs">
+                      <table className="w-full text-left text-xs border-collapse">
+                        <thead>
+                          <tr className="bg-muted/40 text-muted-foreground uppercase text-[10px] font-bold tracking-wider border-b border-border/70">
+                            <th className="p-3 border-r border-border/50">Activity Name</th>
+                            <th className="p-3 border-r border-border/50">Tower</th>
+                            <th className="p-3 border-r border-border/50">Workers</th>
+                            <th className="p-3">Description (if any)</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-border/50 text-foreground">
+                          {linesList.map((line: any, idx: number) => {
+                            const getCleanDesc = (raw: any) => {
+                              if (!raw || typeof raw !== 'string') return '-';
+                              const cleaned = raw
+                                .replace(/^\[In Progress\]\s*/i, '')
+                                .replace(/^\[Completed\]\s*/i, '')
+                                .replace(/^\[Delayed\]\s*/i, '')
+                                .replace(/^Workers:\s*\d+\s*\|?\s*/i, '')
+                                .replace(/^Status:\s*\w+\s*\|?\s*/i, '')
+                                .trim();
+                              return (cleaned && cleaned !== '[In Progress]' && cleaned !== 'In Progress') ? cleaned : '-';
+                            };
+
+                            const wCount = parseModalLineCount(line);
+                            const actName = line.activity_name || line.completed_work || line.work_description || line.trade_name || 'Activity logged';
+                            const towerVal = line.location_zone || line.location || line.tower_location || 'Tower A';
+                            const descVal = getCleanDesc(line.description || line.comments_issues || line.remarks || line.voice_note);
+
+                            return (
+                              <tr key={idx} className="hover:bg-muted/10 transition-colors">
+                                <td className="p-3 font-bold border-r border-border/50 text-foreground">
+                                  {isEditingModalDPR ? (
                                     <input
                                       type="text"
-                                      value={line.activity_name || line.completed_work || line.trade_name || 'Slab work done'}
+                                      value={actName}
                                       onChange={(e) => {
                                         const updatedLines = [...linesList];
                                         updatedLines[idx] = { ...updatedLines[idx], activity_name: e.target.value, completed_work: e.target.value };
                                         setSelectedTimelineDPR({ ...selectedTimelineDPR, dpr_activity_lines: updatedLines, activities: updatedLines });
                                       }}
-                                      className="font-bold text-xs p-1.5 rounded border border-border bg-white dark:bg-gray-950 text-foreground w-full"
+                                      className="w-full text-xs font-bold p-1 rounded border border-border bg-white dark:bg-gray-950 text-foreground"
                                     />
-                                    <div className="flex gap-2 text-[10px]">
-                                      <input
-                                        type="text"
-                                        placeholder="Category"
-                                        value={line.trade_name || line.work_type || 'Civil/Structure'}
-                                        onChange={(e) => {
-                                          const updatedLines = [...linesList];
-                                          updatedLines[idx] = { ...updatedLines[idx], trade_name: e.target.value, work_type: e.target.value };
-                                          setSelectedTimelineDPR({ ...selectedTimelineDPR, dpr_activity_lines: updatedLines, activities: updatedLines });
-                                        }}
-                                        className="p-1 rounded border border-border bg-white dark:bg-gray-950 text-foreground w-1/2 font-medium"
-                                      />
-                                      <input
-                                        type="text"
-                                        placeholder="Agency"
-                                        value={line.contractor_name || selectedTimelineDPR.agency_name || 'Ram workers'}
-                                        onChange={(e) => {
-                                          const updatedLines = [...linesList];
-                                          updatedLines[idx] = { ...updatedLines[idx], contractor_name: e.target.value };
-                                          setSelectedTimelineDPR({ ...selectedTimelineDPR, dpr_activity_lines: updatedLines, activities: updatedLines, agency_name: e.target.value });
-                                        }}
-                                        className="p-1 rounded border border-border bg-white dark:bg-gray-950 text-foreground w-1/2 font-medium"
-                                      />
-                                    </div>
-                                  </div>
-                                ) : (
-                                  <>
-                                    <span className="font-bold text-sm text-foreground block">
-                                      {line.activity_name || line.completed_work || line.trade_name || line.work_type || 'Slab work done'}
-                                    </span>
-                                    <span className="text-[10px] text-muted-foreground font-semibold">
-                                      Category: <strong className="text-foreground">{line.trade_name || line.work_type || 'Civil/Structure'}</strong> • Agency: <strong className="text-foreground">{line.contractor_name || selectedTimelineDPR.agency_name || 'Ram workers'}</strong>
-                                    </span>
-                                  </>
-                                )}
-                              </div>
-                              <div className="flex items-center gap-2">
-                                {isEditingModalDPR ? (
-                                  <div className="flex items-center gap-1">
-                                    <span className="text-[10px] font-bold text-muted-foreground">Workers:</span>
+                                  ) : (
+                                    <span>{actName}</span>
+                                  )}
+                                </td>
+                                <td className="p-3 font-semibold border-r border-border/50 text-muted-foreground whitespace-nowrap">
+                                  {isEditingModalDPR ? (
+                                    <input
+                                      type="text"
+                                      value={towerVal}
+                                      onChange={(e) => {
+                                        const updatedLines = [...linesList];
+                                        updatedLines[idx] = { ...updatedLines[idx], location: e.target.value, location_zone: e.target.value };
+                                        setSelectedTimelineDPR({ ...selectedTimelineDPR, dpr_activity_lines: updatedLines, activities: updatedLines });
+                                      }}
+                                      className="w-full text-xs font-semibold p-1 rounded border border-border bg-white dark:bg-gray-950 text-foreground"
+                                    />
+                                  ) : (
+                                    <span>{towerVal}</span>
+                                  )}
+                                </td>
+                                <td className="p-3 font-bold border-r border-border/50 text-emerald-600 whitespace-nowrap">
+                                  {isEditingModalDPR ? (
                                     <input
                                       type="number"
                                       value={wCount}
@@ -10027,114 +9630,31 @@ Rules:
                                       }}
                                       className="w-16 text-xs font-bold p-1 rounded border border-emerald-500/40 bg-white dark:bg-gray-950 text-emerald-600 text-center"
                                     />
-                                  </div>
-                                ) : (
-                                  <>
-                                    <span className="text-emerald-600 bg-emerald-500/10 px-2.5 py-1 rounded-full border border-emerald-500/20 text-[11px] font-bold">
-                                      👷 {wCount} Workers
-                                    </span>
-                                    <span className="text-blue-600 bg-blue-500/10 px-2.5 py-1 rounded-full border border-blue-500/20 text-[11px] font-bold">
-                                      👔 1 Supervisor
-                                    </span>
-                                  </>
-                                )}
-                              </div>
-                            </div>
-
-                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 py-2 px-3 bg-muted/20 rounded-xl text-[11px] font-medium border border-border/40">
-                              <div>
-                                <span className="text-[9px] text-muted-foreground font-bold uppercase block">Location / Tower</span>
-                                {isEditingModalDPR ? (
-                                  <input
-                                    type="text"
-                                    value={line.location_zone || line.location || 'Tower A'}
-                                    onChange={(e) => {
-                                      const updatedLines = [...linesList];
-                                      updatedLines[idx] = { ...updatedLines[idx], location: e.target.value, location_zone: e.target.value };
-                                      setSelectedTimelineDPR({ ...selectedTimelineDPR, dpr_activity_lines: updatedLines, activities: updatedLines });
-                                    }}
-                                    className="w-full text-xs font-bold p-1 rounded border border-border bg-white dark:bg-gray-950 text-foreground"
-                                  />
-                                ) : (
-                                  <span className="text-foreground font-bold">{line.location_zone || line.location || 'Tower A'}</span>
-                                )}
-                              </div>
-                              <div>
-                                <span className="text-[9px] text-muted-foreground font-bold uppercase block">Shift</span>
-                                {isEditingModalDPR ? (
-                                  <input
-                                    type="text"
-                                    value={line.shift || 'Day Shift'}
-                                    onChange={(e) => {
-                                      const updatedLines = [...linesList];
-                                      updatedLines[idx] = { ...updatedLines[idx], shift: e.target.value };
-                                      setSelectedTimelineDPR({ ...selectedTimelineDPR, dpr_activity_lines: updatedLines, activities: updatedLines });
-                                    }}
-                                    className="w-full text-xs font-bold p-1 rounded border border-border bg-white dark:bg-gray-950 text-foreground"
-                                  />
-                                ) : (
-                                  <span className="text-foreground font-bold">{line.shift || 'Day Shift'}</span>
-                                )}
-                              </div>
-                              <div>
-                                <span className="text-[9px] text-muted-foreground font-bold uppercase block">Work Status</span>
-                                {isEditingModalDPR ? (
-                                  <input
-                                    type="text"
-                                    value={line.status || 'In Progress'}
-                                    onChange={(e) => {
-                                      const updatedLines = [...linesList];
-                                      updatedLines[idx] = { ...updatedLines[idx], status: e.target.value };
-                                      setSelectedTimelineDPR({ ...selectedTimelineDPR, dpr_activity_lines: updatedLines, activities: updatedLines });
-                                    }}
-                                    className="w-full text-xs font-bold p-1 rounded border border-border bg-white dark:bg-gray-950 text-amber-600"
-                                  />
-                                ) : (
-                                  <span className="text-amber-600 font-bold">{line.status || 'In Progress'}</span>
-                                )}
-                              </div>
-                              <div>
-                                <span className="text-[9px] text-muted-foreground font-bold uppercase block">Quantity Completed</span>
-                                {isEditingModalDPR ? (
-                                  <input
-                                    type="text"
-                                    value={line.quantity_completed || 'As specified'}
-                                    onChange={(e) => {
-                                      const updatedLines = [...linesList];
-                                      updatedLines[idx] = { ...updatedLines[idx], quantity_completed: e.target.value };
-                                      setSelectedTimelineDPR({ ...selectedTimelineDPR, dpr_activity_lines: updatedLines, activities: updatedLines });
-                                    }}
-                                    className="w-full text-xs font-bold p-1 rounded border border-border bg-white dark:bg-gray-950 text-foreground"
-                                  />
-                                ) : (
-                                  <span className="text-foreground font-bold">{line.quantity_completed ? `${line.quantity_completed} ${line.unit || ''}` : 'As specified'}</span>
-                                )}
-                              </div>
-                            </div>
-
-                            <div className="pt-1 text-[11px]">
-                              <span className="font-bold text-muted-foreground">Remarks / Field Notes:</span>
-                              {isEditingModalDPR ? (
-                                <textarea
-                                  rows={2}
-                                  value={line.remarks || line.activity_text || selectedTimelineDPR.activities_completed || ''}
-                                  onChange={(e) => {
-                                    const updatedLines = [...linesList];
-                                    updatedLines[idx] = { ...updatedLines[idx], remarks: e.target.value, activity_text: e.target.value };
-                                    setSelectedTimelineDPR({ ...selectedTimelineDPR, dpr_activity_lines: updatedLines, activities: updatedLines, activities_completed: e.target.value });
-                                  }}
-                                  className="w-full text-xs font-medium p-2 rounded-lg mt-1 border border-border bg-white dark:bg-gray-950 text-foreground leading-relaxed"
-                                  placeholder="Enter un-truncated remarks or field notes..."
-                                />
-                              ) : (
-                                <p className="text-foreground font-medium bg-muted/10 p-2.5 rounded-lg mt-1 border border-border/30 whitespace-pre-wrap leading-relaxed">
-                                  {line.remarks || line.activity_text || selectedTimelineDPR.activities_completed || 'No additional remarks.'}
-                                </p>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })}
+                                  ) : (
+                                    <span>👷 {wCount}</span>
+                                  )}
+                                </td>
+                                <td className="p-3 text-muted-foreground font-medium">
+                                  {isEditingModalDPR ? (
+                                    <input
+                                      type="text"
+                                      value={descVal !== '-' ? descVal : ''}
+                                      onChange={(e) => {
+                                        const updatedLines = [...linesList];
+                                        updatedLines[idx] = { ...updatedLines[idx], remarks: e.target.value, description: e.target.value };
+                                        setSelectedTimelineDPR({ ...selectedTimelineDPR, dpr_activity_lines: updatedLines, activities: updatedLines });
+                                      }}
+                                      className="w-full text-xs p-1 rounded border border-border bg-white dark:bg-gray-950 text-foreground"
+                                    />
+                                  ) : (
+                                    <span>{descVal}</span>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
                     </div>
                   );
                 })()}
@@ -10209,68 +9729,7 @@ Rules:
                 })()}
 
               {/* Historical Point-in-Time Reported Issues & Delays (Immutable Record) */}
-              {(() => {
-                const reportDateStr = selectedTimelineDPR.report_date || selectedTimelineDPR.date;
-                const explicitIssues = Array.isArray(selectedTimelineDPR.issues) ? selectedTimelineDPR.issues : [];
-                const textDelays = typeof selectedTimelineDPR.delays === 'string' && selectedTimelineDPR.delays.trim() 
-                  ? [{ issue_description: selectedTimelineDPR.delays, reason: selectedTimelineDPR.delays }] 
-                  : (Array.isArray(selectedTimelineDPR.delays) ? selectedTimelineDPR.delays : []);
-                
-                const matchingDbDelays = delayEvents.filter((d: any) => {
-                  const cDate = (d.created_at || d.planned_date || '').split('T')[0];
-                  return reportDateStr ? cDate <= reportDateStr : true;
-                }).map((d: any) => ({
-                  issue_description: `${d.reason_code || 'Site Issue'}${d.responsible_team ? ' (' + d.responsible_team + ')' : ''}: ${d.reason_details || ''}`,
-                  reason: d.reason_code || 'Site Issue',
-                  details: d.reason_details,
-                  status: d.status,
-                  created_at: d.created_at,
-                  resolution_notes: d.corrective_action || '',
-                  severity: d.impact_on_timeline || 'Medium'
-                }));
 
-                const allHistoricalIssues = [...explicitIssues, ...textDelays, ...matchingDbDelays];
-                const uniqueHistoricalIssues = Array.from(
-                  new Map(allHistoricalIssues.map(item => [(item.issue_description || item.reason || '').trim(), item])).values()
-                );
-
-                if (uniqueHistoricalIssues.length === 0) return null;
-
-                return (
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <h4 className="font-bold text-xs uppercase tracking-wider text-rose-500 border-l-2 border-rose-500 pl-2">
-                        Historical Site Delays Recorded on {reportDateStr || 'Report Date'} (Immutable Record)
-                      </h4>
-                      <span className="text-[10px] bg-rose-500/10 text-rose-600 px-2 py-0.5 rounded-full font-bold border border-rose-500/20">
-                        Snapshot Preserved
-                      </span>
-                    </div>
-                    <div className="space-y-2">
-                      {uniqueHistoricalIssues.map((iss: any, idx: number) => (
-                        <div key={idx} className="p-3 bg-rose-500/5 border border-rose-500/20 rounded-2xl text-xs text-rose-700 dark:text-rose-400 space-y-1">
-                          <div className="font-bold flex items-center justify-between">
-                            <span>⚠️ {iss.issue_description || iss.reason}</span>
-                            <div className="flex items-center gap-2">
-                              {iss.status && (
-                                <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold border ${
-                                  iss.status === 'resolved' ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20' : 'bg-rose-500/10 text-rose-600 border-rose-500/20'
-                                }`}>
-                                  {iss.status === 'resolved' ? 'Resolved Later' : 'Logged Stoppage'}
-                                </span>
-                              )}
-                              <span className="text-[10px] bg-rose-500/10 px-2 py-0.5 rounded-full border border-rose-500/20">{iss.severity || 'High Priority'}</span>
-                            </div>
-                          </div>
-                          {iss.resolution_notes && (
-                            <p className="text-[11px] text-muted-foreground mt-1">🔧 Action Plan / Resolution: {iss.resolution_notes}</p>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })()}
 
               {/* Attached Photos */}
               {((selectedTimelineDPR.site_verification && selectedTimelineDPR.site_verification.length > 0) ||

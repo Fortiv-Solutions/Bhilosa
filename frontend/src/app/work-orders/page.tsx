@@ -1,39 +1,87 @@
-// Aggregates contractor, agency, work-order, and fleet operations across project sites.
+// Central registry for work orders issued to vendors/contractors across project sites.
 'use client';
 
+import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { BriefcaseBusiness, HardHat, Truck, Users } from 'lucide-react';
-import { useAppStore } from '@/store/use-app-store';
+import { Briefcase, CalendarDays, ClipboardList, IndianRupee, Plus, AlertTriangle } from 'lucide-react';
+import { getWorkOrders } from '@/lib/work-orders';
+import { isLiveSupabase } from '@/lib/erp/supabase-modules';
+import { CreateWorkOrderModal } from '@/components/work-orders/create-work-order-modal';
+
+const WO_STATUS_STYLES: Record<string, string> = {
+  draft: 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300',
+  issued: 'bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-300',
+  active: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300',
+  closed: 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400',
+  cancelled: 'bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-300',
+};
+
+function formatAmount(n: number) {
+  if (n >= 10000000) return `₹${(n / 10000000).toFixed(2)} Cr`;
+  if (n >= 100000) return `₹${(n / 100000).toFixed(2)} L`;
+  return `₹${n.toLocaleString('en-IN')}`;
+}
 
 export default function WorkOrdersPage() {
-  const { projects } = useAppStore();
-  const contractorRecords = projects.flatMap((project) =>
-    project.labourRecords.map((record) => ({ ...record, projectName: project.name, projectId: project.id })),
-  );
-  const equipment = projects.flatMap((project) =>
-    project.equipments.map((item) => ({ ...item, projectName: project.name })),
-  );
-  const tasks = projects.flatMap((project) =>
-    project.tasks.map((task) => ({ ...task, projectName: project.name, projectId: project.id })),
-  );
-  const averageProductivity = contractorRecords.length
-    ? contractorRecords.reduce((total, record) => total + record.productivity, 0) / contractorRecords.length
-    : 0;
+  const [workOrders, setWorkOrders] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+
+  const refresh = useCallback(() => {
+    if (!isLiveSupabase()) return;
+    setLoading(true);
+    getWorkOrders()
+      .then((data) => setWorkOrders(data || []))
+      .catch(console.error)
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  const orders = workOrders.map((wo) => ({
+    id: wo.id,
+    workOrderNumber: wo.work_order_number,
+    scopeOfWork: wo.scope_of_work,
+    projectName: wo.projects?.name || 'Unknown Project',
+    projectId: wo.project_id,
+    agencyName: wo.site_agencies?.agency_name || wo.vendor?.display_name || wo.vendor?.legal_name || wo.contractor?.display_name || 'Unassigned',
+    woType: (wo.wo_type || 'fixed_scope') as string,
+    totalAmount: Number(wo.total_amount || 0),
+    billedToDate: Number(wo.billed_to_date || 0),
+    remainingBalance: Number(wo.remaining_balance ?? wo.total_amount ?? 0),
+    hasScopeVariance: Boolean(wo.has_scope_variance),
+    woStatus: (wo.wo_status || 'draft') as string,
+    startDate: wo.issue_date || wo.start_date,
+  }));
+
+  const totalValue = orders.reduce((sum, wo) => sum + wo.totalAmount, 0);
+  const openCount = orders.filter((wo) => !['closed', 'cancelled'].includes(wo.woStatus)).length;
+  const activeCount = orders.filter((wo) => wo.woStatus === 'active').length;
 
   return (
     <div className="space-y-5">
-      <header>
-        <span className="rounded-full border border-orange-100 bg-orange-50 px-2.5 py-1 text-[11px] font-semibold uppercase text-primary dark:border-orange-900/40 dark:bg-orange-950/30">Contractor Management</span>
-        <h1 className="font-heading mt-2 text-2xl font-semibold text-gray-950 dark:text-white">Work Orders</h1>
-        <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">Agencies, contractors, assigned work, performance, and operational fleet across all sites.</p>
+      <header className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
+        <div>
+          <span className="rounded-full border border-orange-100 bg-orange-50 px-2.5 py-1 text-[11px] font-semibold uppercase text-primary dark:border-orange-900/40 dark:bg-orange-950/30">Vendor &amp; Contractor Ops</span>
+          <h1 className="font-heading mt-2 text-2xl font-semibold text-gray-950 dark:text-white">Work Orders</h1>
+          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">Every work order issued to an agency across all project sites, with scope, value, billed-to-date, and remaining balance.</p>
+        </div>
+        <button
+          onClick={() => setIsCreateModalOpen(true)}
+          className="inline-flex h-10 items-center gap-2 rounded-lg bg-primary px-4 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90 shadow-sm"
+        >
+          <Plus className="h-4 w-4" /> New Work Order
+        </button>
       </header>
 
       <section className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         {[
-          { label: 'Contractor Records', value: contractorRecords.length, icon: Users },
-          { label: 'Open Work Orders', value: tasks.filter((task) => task.status !== 'COMPLETED').length, icon: BriefcaseBusiness },
-          { label: 'Avg. Productivity', value: `${averageProductivity.toFixed(1)}%`, icon: HardHat },
-          { label: 'Fleet in Maintenance', value: equipment.filter((item) => item.status === 'MAINTENANCE').length, icon: Truck },
+          { label: 'Total Work Orders', value: orders.length, icon: ClipboardList },
+          { label: 'Open (Issued/Active)', value: openCount, icon: Briefcase },
+          { label: 'Active', value: activeCount, icon: CalendarDays },
+          { label: 'Total Order Value', value: formatAmount(totalValue), icon: IndianRupee },
         ].map((metric) => {
           const Icon = metric.icon;
           return (
@@ -46,46 +94,68 @@ export default function WorkOrdersPage() {
         })}
       </section>
 
-      <section className="grid grid-cols-1 gap-5 xl:grid-cols-2">
-        <div className="rounded-3xl border border-gray-100 bg-white p-5 shadow-sm dark:border-gray-850 dark:bg-gray-900">
-          <h2 className="font-heading text-base font-semibold">Contractor Performance</h2>
-          <div className="mt-4 overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="border-b border-gray-200 text-gray-400 dark:border-gray-800">
-                <tr><th className="pb-3">Contractor</th><th className="pb-3">Site</th><th className="pb-3">Manpower</th><th className="pb-3">Productivity</th></tr>
-              </thead>
-              <tbody>
-                {contractorRecords.map((record) => (
-                  <tr key={record.id} className="border-b border-gray-50 dark:border-gray-850">
-                    <td className="py-3 font-bold">{record.contractorName}</td>
-                    <td className="py-3"><Link href={`/projects/${record.projectId}`} className="font-semibold text-primary">{record.projectName}</Link></td>
-                    <td className="py-3">{record.presentCount} present</td>
-                    <td className="py-3 font-bold">{record.productivity}%</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
+      <div className="rounded-3xl border border-gray-100 bg-white p-5 shadow-sm dark:border-gray-850 dark:bg-gray-900">
+        <h2 className="font-heading text-base font-semibold">All Work Orders</h2>
+        <div className="mt-4 overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead className="border-b border-gray-200 text-gray-400 dark:border-gray-800">
+              <tr>
+                <th className="pb-3">WO Number</th>
+                <th className="pb-3">Project</th>
+                <th className="pb-3">Agency</th>
+                <th className="pb-3">Type</th>
+                <th className="pb-3">WO Value</th>
+                <th className="pb-3">Billed to Date</th>
+                <th className="pb-3">Remaining</th>
+                <th className="pb-3">Issue Date</th>
+                <th className="pb-3">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {orders.map((wo) => (
+                <tr key={wo.id} className="border-b border-gray-50 dark:border-gray-850">
+                  <td className="py-3 font-bold">
+                    <Link href={`/work-orders/${wo.id}`} className="text-primary hover:underline">{wo.workOrderNumber}</Link>
+                  </td>
+                  <td className="py-3">
+                    <Link href={`/projects/${wo.projectId}`} className="font-semibold text-primary">{wo.projectName}</Link>
+                  </td>
+                  <td className="py-3">{wo.agencyName}</td>
+                  <td className="py-3 text-gray-500">{wo.woType === 'rate_based' ? 'Rate-based' : 'Fixed-scope'}</td>
+                  <td className="py-3 font-bold">{formatAmount(wo.totalAmount)}</td>
+                  <td className="py-3 text-gray-500">{formatAmount(wo.billedToDate)}</td>
+                  <td className="py-3 font-bold">{formatAmount(wo.remainingBalance)}</td>
+                  <td className="py-3 text-gray-500">{wo.startDate || '-'}</td>
+                  <td className="py-3">
+                    <div className="flex items-center gap-1.5">
+                      <span className={`rounded-full px-2 py-1 text-[9px] font-bold uppercase ${WO_STATUS_STYLES[wo.woStatus] || WO_STATUS_STYLES.draft}`}>{wo.woStatus}</span>
+                      {wo.hasScopeVariance && (
+                        <span title="Scope variance detected">
+                          <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))}
 
-        <div className="rounded-3xl border border-gray-100 bg-white p-5 shadow-sm dark:border-gray-850 dark:bg-gray-900">
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="font-heading text-base font-semibold">Operations Fleet</h2>
-              <p className="mt-1 text-xs text-gray-400">Fleet management is grouped under operations.</p>
-            </div>
-            <Link href="/equipment" className="text-xs font-bold text-primary">Detailed view</Link>
-          </div>
-          <div className="mt-4 space-y-2">
-            {equipment.map((item) => (
-              <div key={item.id} className="flex items-center justify-between rounded-xl border border-gray-100 px-3 py-2.5 text-xs dark:border-gray-800">
-                <div><p className="font-bold">{item.name}</p><p className="mt-0.5 text-gray-400">{item.projectName}</p></div>
-                <span className={`rounded-full px-2 py-1 text-[9px] font-bold ${item.status === 'ACTIVE' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30' : 'bg-amber-50 text-amber-700 dark:bg-amber-950/30'}`}>{item.status}</span>
-              </div>
-            ))}
-          </div>
+              {!loading && orders.length === 0 && (
+                <tr>
+                  <td colSpan={9} className="py-12 text-center text-gray-400">
+                    No work orders issued yet.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
-      </section>
+      </div>
+
+      <CreateWorkOrderModal
+        isOpen={isCreateModalOpen}
+        onClose={() => setIsCreateModalOpen(false)}
+        onSuccess={() => { setIsCreateModalOpen(false); refresh(); }}
+      />
     </div>
   );
 }

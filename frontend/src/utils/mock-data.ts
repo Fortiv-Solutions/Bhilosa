@@ -30,6 +30,16 @@ export interface DPRActivityLine {
   photos: string[];
 }
 
+export interface SiteActivity {
+  id: string;
+  projectId: string;
+  title: string;
+  plannedStartDate: string;
+  plannedEndDate: string;
+  actualEndDate?: string | null;
+  createdAt?: string;
+}
+
 export interface DailyActivity {
   id: string;
   projectId: string;
@@ -41,6 +51,12 @@ export interface DailyActivity {
   issues: string | null;
   risks: string | null;
   progressDelta: number;
+  activityId?: string | null;
+  activityName?: string | null;
+  activityPlannedEndDate?: string | null;
+  isDelayed?: boolean;
+  delayDays?: number;
+  delayReason?: string | null;
   status?: 'Draft' | 'Submitted' | 'Under Review' | 'Reviewed' | 'Correction Required' | 'Approved' | 'Rejected';
   activities?: DPRActivityLine[];
   totalLabourCount?: number;

@@ -434,7 +434,7 @@ export function InboxModule({project}:{project:ProjectSite}) {
         setProfile(meProfile);
         setIsMockInbox(false);
 
-        const realProjectId = 'f6704467-df8c-4f51-a49b-ddfdc40c39af';
+        const realProjectId = getDbSiteId(project?.id || '') || '00000000-0000-0000-0000-000000000001';
         setDbProjectId(realProjectId);
 
         const memberRows: MemberRow[] = [
@@ -619,21 +619,19 @@ export function InboxModule({project}:{project:ProjectSite}) {
             </button>)}
           </div>
         </div>
-        <div>
-          <h3 className="px-2 text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-1.5 flex items-center justify-between">
-            Direct Messages
-          </h3>
-          <div className="space-y-0.5">
-            {(conversations || []).filter(c=>c.type!=='project_group').map(c=><button key={c.id} onClick={()=>setActive(c)} className={`w-full text-left px-2 py-1.5 rounded-md flex items-center gap-2 transition-colors ${active?.id===c.id?'bg-[#b68d40]/10 text-[#9a742f] dark:bg-[#b68d40]/20 dark:text-[#d4b068] font-medium':'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800/50'}`}>
-              <div className="w-4 h-4 rounded-[4px] bg-gradient-to-br from-gray-200 to-gray-300 dark:from-gray-700 dark:to-gray-800 text-[8px] flex items-center justify-center font-bold text-gray-600 dark:text-gray-300 uppercase shrink-0">{getInitials(c.title)}</div>
-              <span className="text-[13px] truncate flex-1">{c.title||'Direct message'}</span>{Boolean(c.unread_count)&&<span className="rounded-full bg-[#b68d40] text-white text-[9px] px-1.5 py-0.5 leading-none">{c.unread_count}</span>}
-            </button>)}
-            {(members || []).filter(m=>m.user_id!==profile?.id && !(conversations || []).some(c=>c.type!=='project_group' && c.title===(m.profiles?.name||m.profiles?.email))).map(m=><button key={m.user_id} onClick={()=>openDirect(m.user_id)} className="w-full text-left px-2 py-1.5 rounded-md flex items-center gap-2 transition-colors text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800/50 group">
-              <div className="w-4 h-4 rounded-[4px] border border-dashed border-gray-300 dark:border-gray-600 flex items-center justify-center text-gray-400 group-hover:text-gray-600 dark:group-hover:text-gray-300 shrink-0"><Plus className="w-3 h-3"/></div>
-              <span className="text-[13px] truncate flex-1">{m.profiles?.name||m.profiles?.email}</span>
-            </button>)}
+        {(conversations || []).some(c => c.type !== 'project_group') && (
+          <div>
+            <h3 className="px-2 text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-1.5 flex items-center justify-between">
+              Direct Messages
+            </h3>
+            <div className="space-y-0.5">
+              {(conversations || []).filter(c=>c.type!=='project_group').map(c=><button key={c.id} onClick={()=>setActive(c)} className={`w-full text-left px-2 py-1.5 rounded-md flex items-center gap-2 transition-colors ${active?.id===c.id?'bg-[#b68d40]/10 text-[#9a742f] dark:bg-[#b68d40]/20 dark:text-[#d4b068] font-medium':'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800/50'}`}>
+                <div className="w-4 h-4 rounded-[4px] bg-gradient-to-br from-gray-200 to-gray-300 dark:from-gray-700 dark:to-gray-800 text-[8px] flex items-center justify-center font-bold text-gray-600 dark:text-gray-300 uppercase shrink-0">{getInitials(c.title)}</div>
+                <span className="text-[13px] truncate flex-1">{c.title||'Direct message'}</span>{Boolean(c.unread_count)&&<span className="rounded-full bg-[#b68d40] text-white text-[9px] px-1.5 py-0.5 leading-none">{c.unread_count}</span>}
+              </button>)}
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </aside>
     <section className={`flex-1 min-w-0 flex flex-col bg-white dark:bg-[#111] ${active ? 'flex' : 'hidden md:flex'}`}>

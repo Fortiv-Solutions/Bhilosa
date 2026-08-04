@@ -39,7 +39,31 @@ export async function bootstrapInboxData(){
 }
 export async function listProjectMembers(projectId:string){const {data,error}=await supabase.from('project_members').select('user_id,project_role,profiles!project_members_user_id_fkey(id,name,email,role)').eq('project_id',projectId).eq('is_active',true);if(error)throw error;return data??[];}
 export async function assignMember(projectId:string,email:string,projectRole='member'){const found=await supabase.from('profiles').select('id').ilike('email',email.trim()).single();if(found.error)throw new Error('No Supabase user exists with that email.');const {error}=await supabase.from('project_members').upsert({project_id:projectId,user_id:found.data.id,project_role:projectRole,is_active:true});if(error)throw error;}
-export async function listConversations(projectId:string){const {data,error}=await supabase.from('conversations').select('id,project_id,type,title,updated_at').eq('project_id',projectId).order('updated_at',{ascending:false});if(error)throw error;const {data:{user}}=await supabase.auth.getUser();return Promise.all(((data??[])as Conversation[]).map(async c=>{const [latest,membership]=await Promise.all([supabase.from('messages').select('body,type,created_at').eq('conversation_id',c.id).order('created_at',{ascending:false}).limit(1).maybeSingle(),user?supabase.from('conversation_members').select('last_read_at').eq('conversation_id',c.id).eq('user_id',user.id).maybeSingle():Promise.resolve({data:null})]);let unread=0;if(user){let q=supabase.from('messages').select('id',{count:'exact',head:true}).eq('conversation_id',c.id).neq('sender_id',user.id);if(membership.data?.last_read_at)q=q.gt('created_at',membership.data.last_read_at);const count=await q;unread=count.count??0;}return{...c,latest_message:latest.data?.body||latest.data?.type||null,unread_count:unread};}));}
+export async function listConversations(projectId:string){
+  const targetIds = Array.from(new Set([
+    projectId,
+    '00000000-0000-0000-0000-000000000001',
+    'f6704467-df8c-4f51-a49b-ddfdc40c39af'
+  ].filter(Boolean)));
+
+  const {data,error}=await supabase.from('conversations').select('id,project_id,type,title,updated_at').in('project_id',targetIds).order('updated_at',{ascending:false});
+  if(error)throw error;
+  const {data:{user}}=await supabase.auth.getUser();
+  return Promise.all(((data??[])as Conversation[]).map(async c=>{
+    const [latest,membership]=await Promise.all([
+      supabase.from('messages').select('body,type,created_at').eq('conversation_id',c.id).order('created_at',{ascending:false}).limit(1).maybeSingle(),
+      user?supabase.from('conversation_members').select('last_read_at').eq('conversation_id',c.id).eq('user_id',user.id).maybeSingle():Promise.resolve({data:null})
+    ]);
+    let unread=0;
+    if(user){
+      let q=supabase.from('messages').select('id',{count:'exact',head:true}).eq('conversation_id',c.id).neq('sender_id',user.id);
+      if(membership.data?.last_read_at)q=q.gt('created_at',membership.data.last_read_at);
+      const count=await q;
+      unread=count.count??0;
+    }
+    return{...c,latest_message:latest.data?.body||latest.data?.type||null,unread_count:unread};
+  }));
+}
 export async function createDirectConversation(projectId:string,userId:string){const {data,error}=await supabase.rpc('get_or_create_direct_conversation',{target_project:projectId,other_user:userId});if(error)throw error;return data as string;}
 export async function listMessages(conversationId:string,before?:string){let query=supabase.from('messages').select('*,message_attachments(*)').eq('conversation_id',conversationId).order('created_at',{ascending:false}).limit(50);if(before)query=query.lt('created_at',before);const {data,error}=await query;if(error)throw error;return((data??[])as InboxMessage[]).reverse();}
 export async function markRead(conversationId:string){const {data:{user}}=await supabase.auth.getUser();if(user)await supabase.from('conversation_members').update({last_read_at:new Date().toISOString()}).eq('conversation_id',conversationId).eq('user_id',user.id);}

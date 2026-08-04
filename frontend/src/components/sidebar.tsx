@@ -7,7 +7,7 @@ import {
   MessageSquare,
   Building2,
   ShoppingCart,
-  Users,
+  ClipboardCheck,
   CircleDollarSign,
   FileText,
   Settings2,
@@ -37,11 +37,11 @@ export default function Sidebar() {
       icon: ShoppingCart,
       groupPaths: ['/procurement', '/vendors', '/inventory']
     },
-    { 
-      label: 'Workforce', 
-      path: '/labour', 
-      icon: Users,
-      groupPaths: ['/labour', '/equipment']
+    {
+      label: 'Work Orders',
+      path: '/work-orders',
+      icon: ClipboardCheck,
+      groupPaths: ['/work-orders']
     },
     { 
       label: 'Financials', 
@@ -71,7 +71,7 @@ export default function Sidebar() {
   return (
     <aside className="relative hidden lg:flex flex-col bg-white dark:bg-gray-900 border-r border-gray-200 dark:border-gray-800 flex-shrink-0 h-[calc(100vh-3.5rem)] sticky top-14 w-20 select-none overflow-hidden">
       {/* Navigation menu items stacked vertically (Zoho format) */}
-      <nav className="flex flex-col flex-1 py-4 gap-1.5">
+      <nav className="flex flex-col flex-1 pt-0 pb-4 gap-1.5">
         {slimNavItems.map((item) => {
           const Icon = item.icon;
           const isActive = isItemActive(item.groupPaths);
