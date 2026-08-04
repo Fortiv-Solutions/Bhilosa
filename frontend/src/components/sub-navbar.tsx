@@ -9,11 +9,7 @@ export default function SubNavBar() {
   const pathname = usePathname();
   const { activeRole } = useAppStore();
 
-  // If we are in project details or login, do not show subnavbar
-  const isProjectDetails = pathname.startsWith('/projects/') && pathname !== '/projects';
-  const isLoginPage = pathname === '/login';
-
-  if (isProjectDetails || isLoginPage) return null;
+  if (pathname === '/login') return null;
 
   // Define tab groups
   const groups = [

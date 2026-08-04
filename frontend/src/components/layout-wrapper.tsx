@@ -134,19 +134,7 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
     return null;
   }
 
-  if (isProjectDetails) {
-    return (
-      <div className="flex flex-1 bg-background w-full min-h-screen relative">
-        <main className="flex-1 flex flex-col min-w-0 w-full">
-          <div className="flex min-h-0 flex-1 flex-col w-full">
-            {children}
-          </div>
-        </main>
-        <FloatingChatbot />
-        <NotificationPoller />
-      </div>
-    );
-  }
+
 
   return (
     <div className="flex flex-col h-screen w-full overflow-hidden bg-background">

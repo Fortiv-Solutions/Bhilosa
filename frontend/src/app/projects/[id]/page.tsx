@@ -3847,8 +3847,8 @@ Rules:
 
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden w-full">
-        {/* Top Navbar */}
-        <div className="flex items-center justify-between bg-white dark:bg-gray-900 border-b border-gray-200/60 dark:border-gray-800/60 px-4 h-14 flex-shrink-0">
+        {/* Top Navbar (Hidden on desktop in favor of standard HeaderNavbar & SubNavBar) */}
+        <div className="hidden flex items-center justify-between bg-white dark:bg-gray-900 border-b border-gray-200/60 dark:border-gray-800/60 px-4 h-14 flex-shrink-0">
           {/* Left: Exit/Menu/Brand or active tab title */}
           <div className="flex items-center gap-2 sm:gap-4 pl-1 sm:pl-2">
             <button onClick={() => setIsMobileMenuOpen(true)} className="md:hidden w-11 h-11 flex items-center justify-center rounded-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300 shadow-sm transition-all">
