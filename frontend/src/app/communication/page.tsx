@@ -565,7 +565,7 @@ export default function CommunicationPage() {
                   const transcript = msg.transcriptions?.[0]?.clean_transcript || msg.clean_messages?.[0]?.clean_text;
                   mediaContent = resolvedMediaUrl ? (
                     <div className="mb-2 flex flex-col gap-2">
-                      <audio controls className="max-w-[240px] h-[40px] rounded-full">
+                      <audio controls className="w-full min-w-[220px] max-w-[260px] h-[40px] rounded-full shadow-xs">
                         <source src={resolvedMediaUrl} />
                         Your browser does not support the audio element.
                       </audio>
