@@ -52,7 +52,11 @@ import {
   Video,
   Smartphone,
   FolderClosed,
-  AlertTriangle
+  AlertTriangle,
+  Moon,
+  Sun,
+  Download,
+  UserCog
 } from 'lucide-react';
 import { use } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -67,7 +71,8 @@ import { isLiveSupabase, createSiteActivity, completeSiteActivity } from '@/lib/
 import { getDPRs, approveDPR, rejectDPR } from '@/lib/dpr';
 import { getSiteActivities } from '@/lib/site-activities';
 import type { SiteActivity } from '@/utils/mock-data';
-import { isUpperManagement } from '@/lib/rbac';
+import { isUpperManagement, ROLE_LABELS } from '@/lib/rbac';
+import { downloadWholeReport } from '@/utils/report-generator';
 import { getPendingApprovals } from '@/lib/approvals';
 import { getQCInspections, getSafetyIncidents } from '@/lib/safety-qc';
 import { listProcurementDashboard, type ProcurementDashboardData } from '@/lib/procurement';
@@ -151,6 +156,9 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
     markNotificationRead,
     clearNotifications,
     currentUser,
+    activeRole,
+    theme = 'light',
+    toggleTheme = () => {},
     initSupabase
   } = useAppStore();
 
@@ -3847,195 +3855,123 @@ Rules:
 
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden w-full">
-        {/* Top Navbar */}
-        <div className="flex items-center justify-between bg-white dark:bg-gray-900 border-b border-gray-200/60 dark:border-gray-800/60 px-4 h-14 flex-shrink-0">
-          {/* Left: Exit/Menu/Brand or active tab title */}
-          <div className="flex items-center gap-2 sm:gap-4 pl-1 sm:pl-2">
-            <button onClick={() => setIsMobileMenuOpen(true)} className="md:hidden w-11 h-11 flex items-center justify-center rounded-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300 shadow-sm transition-all">
+        {/* Top Navbar (Matching HeaderNavbar Image Design) */}
+        <div className="flex items-center justify-between bg-white dark:bg-gray-900 border-b border-border px-5 h-14 flex-shrink-0">
+          {/* Left: Brand, Breadcrumb & Global Search */}
+          <div className="flex items-center gap-4">
+            <button onClick={() => setIsMobileMenuOpen(true)} className="md:hidden w-9 h-9 flex items-center justify-center rounded-lg bg-muted text-foreground transition-all">
               <Menu className="w-5 h-5" />
             </button>
-            <div className="flex items-center gap-2 md:hidden">
-              <svg className="w-8 h-8 text-[#b68d40] drop-shadow-md" viewBox="30 1 36 29" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path className="fill-[#b68d40]" d="M52.13,17.62v2.6s7.81,1.18,9,9.31h4.34a4.39,4.39,0,0,1-1.9-2.21C63,25.74,60.25,18.65,52.13,17.62ZM34.47,3.9H44.72V14.23C37.23,14.15,34.62,13.2,34.47,3.9ZM30,1.38A5.14,5.14,0,0,1,32,5.24v.63c.71,9.31,4.65,10.57,12.7,10.65V27.16h-.08s-.4,2.21-1.58,2.37h4.18V1.38H30ZM43.53,17.62v2.6s-7.8,1.18-8.91,9.31H30.29a4.07,4.07,0,0,0,1.81-2.21C32.65,25.74,35.49,18.65,43.53,17.62ZM51,14.23V3.9H61.28C61,13.2,58.44,14.15,51,14.23ZM63.8,1.38H48.5V29.53h4.1C51.5,29.37,51,27.16,51,27.16h0V16.52c8-0.08,12-1.34,12.61-10.65a1.71,1.71,0,0,0,.08-.63,4.93,4.93,0,0,1,2-3.86Z"/>
-              </svg>
-              <span className="font-bold text-sm text-gray-900 dark:text-white">{project!.name}</span>
+
+            {/* Brand Logo & Page Title Breadcrumb */}
+            <div className="flex items-center gap-2 select-none">
+              <span className="text-[14px] font-heading font-black tracking-wider text-[#b68d40] leading-none uppercase">
+                PRAGATI
+              </span>
+              <span className="text-muted-foreground/30 text-xs">/</span>
+              <span className="text-[11px] font-extrabold text-muted-foreground uppercase tracking-widest leading-none">
+                PROJECTS
+              </span>
             </div>
-            
-            {/* Active Tab Label Title (Shown on Desktop) */}
-            <h1 className="hidden md:block text-base font-heading font-black text-gray-950 dark:text-white uppercase tracking-wider pl-2">
-              {activeTab === 'project-management' ? 'Overview' : projectModules.find(m => m.id === activeTab)?.label || 'Overview'}
-            </h1>
+
+            <div className="h-5 w-[1px] bg-border/80 hidden sm:block" />
+
+            {/* Global Search Pill Bar */}
+            <div className="relative max-w-xs w-64 hidden xl:block">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+              <input
+                type="text"
+                placeholder="Search projects, materials, t..."
+                className="w-full pl-9 pr-4 py-1.5 text-[11px] font-semibold rounded-full border border-border/80 bg-muted/20 focus:bg-background focus:border-primary/50 outline-none transition-all placeholder:text-muted-foreground/60 shadow-2xs"
+              />
+            </div>
           </div>
 
-          {/* Right: Utils */}
-          <div className="flex items-center gap-2 pr-1">
-            <button className="w-11 h-11 flex items-center justify-center rounded-full bg-gray-50 dark:bg-gray-800/80 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-gray-600 dark:text-gray-300 shadow-sm border border-gray-100 dark:border-gray-800">
-              <Search className="w-5 h-5" />
-            </button>
-          
-          <div ref={notificationMenuRef} className="relative">
-            <button 
-              className="w-11 h-11 flex items-center justify-center rounded-full bg-gray-50 dark:bg-gray-800/80 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-gray-600 dark:text-gray-300 shadow-sm border border-gray-100 dark:border-gray-800" 
-              onClick={() => setIsNotificationOpen(!isNotificationOpen)}
-            >
-              <Bell className="w-5 h-5" />
-              {unreadNotificationCount > 0 && <span className="absolute top-2.5 right-2.5 w-2 h-2 bg-red-500 rounded-full border border-white dark:border-gray-900"></span>}
-            </button>
-            {isNotificationOpen && (
-              <div className="absolute right-0 top-12 z-50 w-72 bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-xl shadow-xl overflow-hidden">
-                 <div className="p-3 border-b border-gray-100 dark:border-gray-800 flex justify-between items-center">
-                   <span className="text-xs font-bold text-gray-900 dark:text-white">Notifications</span>
-                   <span className="text-xs text-gray-500">{unreadNotificationCount} unread</span>
-                 </div>
-                 <div className="max-h-60 overflow-y-auto p-1">
-                   {notifications.length === 0 ? (
-                     <div className="p-3 text-center text-xs text-gray-500">No new notifications</div>
-                   ) : (
-                     notifications.map(n => (
-                       <div key={n.id} onClick={() => markNotificationRead(n.id)} className="p-2 hover:bg-gray-50 dark:hover:bg-gray-800 rounded-lg cursor-pointer">
-                         <div className="text-xs font-bold text-gray-800 dark:text-gray-200">{n.title}</div>
-                         <div className="text-[10px] text-gray-500 line-clamp-1 mt-0.5">{n.message}</div>
-                       </div>
-                     ))
-                   )}
-
-                     {/* ➕ Work Completion Entry Form */}
-                     <div className="bg-white dark:bg-gray-900 p-4 rounded-2xl border border-border/60 shadow-sm space-y-4 text-left">
-                       <div className="border-b border-border/60 pb-3">
-                         <h4 className="font-heading font-black text-foreground text-xs uppercase tracking-wider flex items-center gap-1.5">
-                           ➕ Log New Work Completion &amp; Generate QC Request
-                         </h4>
-                         <p className="text-[11px] text-muted-foreground mt-0.5 font-medium">
-                           Record completed site work. Automatically generates a linked QC inspection request with category-specific checkpoints.
-                         </p>
-                       </div>
-                       <form onSubmit={handleWorkCompletionSubmit} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                         <label className="block space-y-1 text-[10px]">
-                           <span className="font-bold text-muted-foreground uppercase tracking-wider">QC Category *</span>
-                           <select
-                             value={wcCategory}
-                             onChange={e => setWcCategory(e.target.value)}
-                             className="w-full p-2 rounded-lg border border-border bg-background text-foreground font-semibold text-xs outline-none focus:border-[#b68d40] cursor-pointer"
-                           >
-                             <option value="qc-concrete">🏗️ Concrete Casting</option>
-                             <option value="qc-masonry">🧱 Masonry &amp; Plastering</option>
-                             <option value="qc-plumbing">🚿 Plumbing &amp; Sanitary</option>
-                             <option value="qc-electrical">⚡ Electrical Installation</option>
-                           </select>
-                           {wcCategory && (
-                             <p className="text-[9px] text-[#b68d40] font-semibold pt-0.5">
-                               ✓ {(qcTemplates.find(t => t.id === wcCategory)?.checkpoints?.length ?? 0)} checkpoints will be auto-loaded
-                             </p>
-                           )}
-                         </label>
-                         <label className="block space-y-1 text-[10px]">
-                           <span className="font-bold text-muted-foreground uppercase tracking-wider">Activity Name *</span>
-                           <input type="text" value={wcActivityName} onChange={e => setWcActivityName(e.target.value)}
-                             placeholder="e.g. RCC Slab Casting Tower A L7"
-                             className="w-full p-2 rounded-lg border border-border bg-background text-foreground font-semibold text-xs outline-none focus:border-[#b68d40]" required />
-                         </label>
-                         <label className="block space-y-1 text-[10px]">
-                           <span className="font-bold text-muted-foreground uppercase tracking-wider">Contractor Name *</span>
-                           <input type="text" value={wcContractorName} onChange={e => setWcContractorName(e.target.value)}
-                             placeholder="e.g. Pragati Builders Pvt Ltd"
-                             className="w-full p-2 rounded-lg border border-border bg-background text-foreground font-semibold text-xs outline-none focus:border-[#b68d40]" required />
-                         </label>
-                         <label className="block space-y-1 text-[10px]">
-                           <span className="font-bold text-muted-foreground uppercase tracking-wider">Block / Zone</span>
-                           <select value={wcBlock} onChange={e => setWcBlock(e.target.value)}
-                             className="w-full p-2 rounded-lg border border-border bg-background text-foreground font-semibold text-xs outline-none focus:border-[#b68d40] cursor-pointer">
-                             <option value="Tower A">Tower A</option>
-                             <option value="Tower B">Tower B</option>
-                             <option value="Tower C">Tower C</option>
-                             <option value="Podium">Podium</option>
-                             <option value="Basement">Basement</option>
-                           </select>
-                         </label>
-                         <label className="block space-y-1 text-[10px]">
-                           <span className="font-bold text-muted-foreground uppercase tracking-wider">Floor / Level</span>
-                           <input type="text" value={wcFloor} onChange={e => setWcFloor(e.target.value)}
-                             placeholder="e.g. L7 Slab, Ground Floor"
-                             className="w-full p-2 rounded-lg border border-border bg-background text-foreground font-semibold text-xs outline-none focus:border-[#b68d40]" />
-                         </label>
-                         <label className="block space-y-1 text-[10px]">
-                           <span className="font-bold text-muted-foreground uppercase tracking-wider">BOQ Reference</span>
-                           <input type="text" value={wcBoqItem} onChange={e => setWcBoqItem(e.target.value)}
-                             placeholder="e.g. BOQ-012 (M30 Concrete)"
-                             className="w-full p-2 rounded-lg border border-border bg-background text-foreground font-semibold text-xs outline-none focus:border-[#b68d40]" />
-                         </label>
-                         <label className="block space-y-1 text-[10px]">
-                           <span className="font-bold text-muted-foreground uppercase tracking-wider">Completed Qty *</span>
-                           <input type="number" value={wcCompletedQty || ''} onChange={e => setWcCompletedQty(parseFloat(e.target.value) || 0)}
-                             placeholder="e.g. 180" min={0}
-                             className="w-full p-2 rounded-lg border border-border bg-background text-foreground font-semibold text-xs outline-none focus:border-[#b68d40]" required />
-                         </label>
-                         <label className="block space-y-1 text-[10px]">
-                           <span className="font-bold text-muted-foreground uppercase tracking-wider">Planned Qty</span>
-                           <input type="number" value={wcPlannedQty || ''} onChange={e => setWcPlannedQty(parseFloat(e.target.value) || 0)}
-                             placeholder="e.g. 200" min={0}
-                             className="w-full p-2 rounded-lg border border-border bg-background text-foreground font-semibold text-xs outline-none focus:border-[#b68d40]" />
-                         </label>
-                         <label className="block space-y-1 text-[10px]">
-                           <span className="font-bold text-muted-foreground uppercase tracking-wider">Unit</span>
-                           <select value={wcUnit} onChange={e => setWcUnit(e.target.value)}
-                             className="w-full p-2 rounded-lg border border-border bg-background text-foreground font-semibold text-xs outline-none focus:border-[#b68d40] cursor-pointer">
-                             <option value="Sqft">Sqft</option>
-                             <option value="Sqm">Sqm</option>
-                             <option value="Cum">Cum (m³)</option>
-                             <option value="Rmt">Rmt (m)</option>
-                             <option value="Nos">Nos</option>
-                             <option value="MT">MT (Tonnes)</option>
-                             <option value="Kg">Kg</option>
-                           </select>
-                         </label>
-                         <label className="block space-y-1 text-[10px] sm:col-span-2 lg:col-span-3">
-                           <span className="font-bold text-muted-foreground uppercase tracking-wider">Site Remarks</span>
-                           <input type="text" value={wcRemarks} onChange={e => setWcRemarks(e.target.value)}
-                             placeholder="Brief notes about work conditions, issues, or observations..."
-                             className="w-full p-2 rounded-lg border border-border bg-background text-foreground font-semibold text-xs outline-none focus:border-[#b68d40]" />
-                         </label>
-                         <div className="sm:col-span-2 lg:col-span-3 flex items-center gap-3 pt-1">
-                           <button type="submit"
-                             className="px-6 py-2.5 bg-[#b68d40] hover:bg-[#967332] text-white text-[10px] font-extrabold uppercase tracking-wider rounded-lg cursor-pointer transition-all shadow-sm">
-                             ➕ Submit &amp; Generate QC Inspection Request
-                           </button>
-                           <span className="text-[10px] text-muted-foreground">
-                             Auto-populates <span className="font-bold text-foreground">{qcTemplates.find(t => t.id === wcCategory)?.checkpoints?.length ?? 0}</span> checkpoints
-                             from <span className="font-bold text-[#b68d40]">{qcTemplates.find(t => t.id === wcCategory)?.category ?? ''}</span>
-                           </span>
-                         </div>
-                       </form>
-                     </div>
-                 </div>
-              </div>
-            )}
-          </div>
-          
-          <button className="w-11 h-11 items-center justify-center rounded-full bg-gray-50 dark:bg-gray-800/80 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-gray-600 dark:text-gray-300 shadow-sm border border-gray-100 dark:border-gray-800 hidden sm:flex">
-            <Settings className="w-5 h-5" />
-          </button>
-          
-          <div className="flex items-center gap-1.5 ml-1 sm:ml-2">
-            {(() => {
-              const initials = currentUser.name
-                ? currentUser.name.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase()
-                : 'SU';
-              return (
-                <div className="w-11 h-11 flex items-center justify-center rounded-full bg-primary/10 text-primary border border-primary/20 text-xs font-extrabold font-heading select-none">
-                  {initials}
-                </div>
-              );
-            })()}
+          {/* Right: Actions & User Profile Card */}
+          <div className="flex items-center gap-3">
+            {/* Theme Toggle */}
             <button
-              onClick={() => router.push('/login')}
-              title="Sign Out"
-              className="w-11 h-11 flex items-center justify-center rounded-full bg-red-50 dark:bg-red-500/10 hover:bg-red-100 dark:hover:bg-red-500/20 text-red-500 border border-red-100 dark:border-red-500/20 transition-colors shadow-sm"
+              type="button"
+              onClick={toggleTheme}
+              className="grid h-9 w-9 place-items-center rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors cursor-pointer"
+              title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
             >
-              <LogOut className="w-4 h-4" />
+              {theme === 'light' ? <Moon className="h-4.5 w-4.5" strokeWidth={1.8} /> : <Sun className="h-4.5 w-4.5" strokeWidth={1.8} />}
             </button>
+
+            {/* Notifications Button */}
+            <div ref={notificationMenuRef} className="relative">
+              <button 
+                type="button"
+                onClick={() => setIsNotificationOpen(!isNotificationOpen)}
+                className="grid h-9 w-9 place-items-center rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors cursor-pointer relative"
+                title="Notifications"
+              >
+                <Bell className="h-4.5 w-4.5" strokeWidth={1.8} />
+                {unreadNotificationCount > 0 && <span className="absolute top-2 right-2 w-2 h-2 rounded-full bg-primary ring-2 ring-card" />}
+              </button>
+              {isNotificationOpen && (
+                <div className="absolute right-0 top-12 z-50 w-72 bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-xl shadow-xl overflow-hidden">
+                  <div className="p-3 border-b border-gray-100 dark:border-gray-800 flex justify-between items-center">
+                    <span className="text-xs font-bold text-gray-900 dark:text-white">Notifications</span>
+                    <span className="text-xs text-gray-500">{unreadNotificationCount} unread</span>
+                  </div>
+                  <div className="max-h-60 overflow-y-auto p-1">
+                    {notifications.length === 0 ? (
+                      <div className="p-3 text-center text-xs text-gray-500">No new notifications</div>
+                    ) : (
+                      notifications.map(n => (
+                        <div key={n.id} onClick={() => markNotificationRead(n.id)} className="p-2 hover:bg-gray-50 dark:hover:bg-gray-800 rounded-lg cursor-pointer">
+                          <div className="text-xs font-bold text-gray-800 dark:text-gray-200">{n.title}</div>
+                          <div className="text-[10px] text-gray-500 line-clamp-1 mt-0.5">{n.message}</div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Download Report Button */}
+            <button
+              type="button"
+              onClick={() => downloadWholeReport(projects)}
+              className="grid h-9 w-9 place-items-center rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors cursor-pointer"
+              title="Download Executive Report"
+            >
+              <Download className="h-4.5 w-4.5" strokeWidth={1.8} />
+            </button>
+
+            {/* Users & Roles Link */}
+            <Link
+              href="/users"
+              className="grid h-9 w-9 place-items-center rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors cursor-pointer"
+              title="Users & Roles"
+            >
+              <UserCog className="h-4.5 w-4.5" strokeWidth={1.8} />
+            </Link>
+
+            <div className="h-5 w-px bg-border" />
+
+            {/* User Profile Selector Pill */}
+            <div className="flex h-9 items-center gap-2 rounded-md px-2 select-none hover:bg-muted/40 transition-colors cursor-pointer">
+              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#b68d40]/15 text-[#b68d40] border border-[#b68d40]/30 text-[10px] font-extrabold font-heading">
+                {currentUser?.name
+                  ? currentUser.name.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase()
+                  : 'ED'}
+              </div>
+              <div className="hidden sm:block text-left">
+                <span className="block truncate text-xs font-bold text-foreground leading-none">
+                  {currentUser?.name || 'Executive Director'}
+                </span>
+                <span className="mt-0.5 block truncate text-[9px] font-bold uppercase tracking-wider text-[#b68d40] leading-none">
+                  {ROLE_LABELS[activeRole as keyof typeof ROLE_LABELS] || 'UPPER MANAGEMENT'}
+                </span>
+              </div>
+              <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+            </div>
           </div>
         </div>
-      </div>
 
       {/* Mobile Tab Switcher (Horizontal scroll) - Visible on mobile/tablet under md breakpoint */}
       <div className="flex md:hidden items-center gap-2 overflow-x-auto pb-2 w-full sticky top-16 bg-background/95 backdrop-blur-sm z-30 px-1 pt-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
@@ -4721,85 +4657,33 @@ Rules:
             {/* 2. DAILY PROGRESS REPORTS AND FLEET MANAGEMENT */}
             {activeTab === 'site-operations' && (
               <div className="space-y-4">
-                {/* Operations Sub-Tab Navigation bar */}
-                <div className="flex border-b border-border/60 pb-2 mb-4 gap-2.5 sm:gap-4 overflow-x-auto print:hidden">
-                  <button
-                    type="button"
-                    onClick={() => setOperationsSubTab('timeline')}
-                    className={`pb-1 text-xs font-bold transition-all relative border-b-2 whitespace-nowrap ${
-                      operationsSubTab === 'timeline'
-                        ? 'border-primary text-primary'
-                        : 'border-transparent text-muted-foreground hover:text-foreground'
-                    }`}
-                  >
-                    🗓️ Activity Timeline
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setOperationsSubTab('feed')}
-                    className={`pb-1 text-xs font-bold transition-all relative border-b-2 whitespace-nowrap ${
-                      operationsSubTab === 'feed'
-                        ? 'border-primary text-primary'
-                        : 'border-transparent text-muted-foreground hover:text-foreground'
-                    }`}
-                  >
-                    📝 Log Feed & Submit
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setOperationsSubTab('agencies')}
-                    className={`pb-1 text-xs font-bold transition-all relative border-b-2 whitespace-nowrap ${
-                      operationsSubTab === 'agencies'
-                        ? 'border-primary text-primary'
-                        : 'border-transparent text-muted-foreground hover:text-foreground'
-                    }`}
-                  >
-                    👷‍♂️ Agency & Headcount
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setOperationsSubTab('issues')}
-                    className={`pb-1 text-xs font-bold transition-all relative border-b-2 whitespace-nowrap ${
-                      operationsSubTab === 'issues'
-                        ? 'border-primary text-primary'
-                        : 'border-transparent text-muted-foreground hover:text-foreground'
-                    }`}
-                  >
-                    🚨 Issue Radar
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setOperationsSubTab('photos')}
-                    className={`pb-1 text-xs font-bold transition-all relative border-b-2 whitespace-nowrap ${
-                      operationsSubTab === 'photos'
-                        ? 'border-primary text-primary'
-                        : 'border-transparent text-muted-foreground hover:text-foreground'
-                    }`}
-                  >
-                    📸 Site Gallery
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setOperationsSubTab('client-report')}
-                    className={`pb-1 text-xs font-bold transition-all relative border-b-2 whitespace-nowrap ${
-                      operationsSubTab === 'client-report'
-                        ? 'border-primary text-primary'
-                        : 'border-transparent text-muted-foreground hover:text-foreground'
-                    }`}
-                  >
-                    📊 Client DPR Dashboard
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setOperationsSubTab('history')}
-                    className={`pb-1 text-xs font-bold transition-all relative border-b-2 whitespace-nowrap ${
-                      operationsSubTab === 'history'
-                        ? 'border-primary text-primary'
-                        : 'border-transparent text-muted-foreground hover:text-foreground'
-                    }`}
-                  >
-                    📅 DPR History
-                  </button>
+                {/* Operations Sub-Tab Navigation bar (Matching SubNavBar Image Design) */}
+                <div className="h-11 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 flex items-center px-4 sm:px-6 gap-5 sm:gap-6 select-none flex-shrink-0 overflow-x-auto scrollbar-none whitespace-nowrap print:hidden mb-4 rounded-xl shadow-2xs">
+                  {[
+                    { id: 'timeline', label: 'Activity Timeline' },
+                    { id: 'feed', label: 'Log Feed & Submit' },
+                    { id: 'agencies', label: 'Agency & Headcount' },
+                    { id: 'issues', label: 'Issue Radar' },
+                    { id: 'photos', label: 'Site Gallery' },
+                    { id: 'client-report', label: 'Client DPR Dashboard' },
+                    { id: 'history', label: 'DPR History' },
+                  ].map((tab) => {
+                    const isActive = operationsSubTab === tab.id;
+                    return (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        onClick={() => setOperationsSubTab(tab.id as any)}
+                        className={`h-full flex items-center text-xs font-semibold px-1 border-b-2 transition-all duration-150 cursor-pointer ${
+                          isActive
+                            ? 'border-[#b68d40] text-[#b68d40]'
+                            : 'border-transparent text-gray-500 hover:text-gray-900 dark:hover:text-white'
+                        }`}
+                      >
+                        {tab.label}
+                      </button>
+                    );
+                  })}
                 </div>
 
                 {operationsSubTab === 'timeline' ? (
