@@ -20,7 +20,20 @@ export async function getSessionProfile() {
     return null;
   }
 }
-export async function signIn(email:string,password:string){const {error}=await supabase.auth.signInWithPassword({email,password});if(error)throw error;return getSessionProfile();}
+export async function signIn(email: string, password: string) {
+  try {
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) throw error;
+    return getSessionProfile();
+  } catch (err: unknown) {
+    if (err instanceof TypeError && err.message.includes('Failed to fetch')) {
+      throw new Error(
+        'Unable to connect to Supabase authentication server (net::ERR_NAME_NOT_RESOLVED / Failed to fetch). Please check your internet connection and verify that NEXT_PUBLIC_SUPABASE_URL in your deployment settings points to a valid Supabase domain.',
+      );
+    }
+    throw err;
+  }
+}
 export async function signOut(){await supabase.auth.signOut();}
 export async function listProjects(){const {data,error}=await supabase.from('projects').select('id,code,name').eq('status','active').order('name');if(error)throw error;return(data??[])as InboxProject[];}
 export async function ensureProject(code:string,name:string){const current=await supabase.from('projects').select('id,code,name').eq('code',code).maybeSingle();if(current.error)throw current.error;if(current.data)return current.data as InboxProject;const {data:{user}}=await supabase.auth.getUser();if(!user)throw new Error('Sign in before creating a project inbox.');const {data,error}=await supabase.from('projects').insert({code,name,created_by:user.id}).select('id,code,name').single();if(error)throw error;return data as InboxProject;}
