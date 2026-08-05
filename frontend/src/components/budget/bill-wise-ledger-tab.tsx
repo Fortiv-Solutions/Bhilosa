@@ -452,8 +452,14 @@ export default function BillWiseLedgerTab({ permissions }: { permissions: Budget
                       {(row.payment_status || 'pending').replaceAll('_', ' ')}
                     </span>
                   </td>
-                  <td className="px-3 py-2 text-right">
-                    <Paperclip className="inline h-3.5 w-3.5 text-muted-foreground" />
+                  <td className="px-3 py-2 text-right" onClick={(e) => e.stopPropagation()}>
+                    <button
+                      type="button"
+                      onClick={() => setOpenBill({ source: row.bill_source, id: row.bill_id })}
+                      className="inline-flex items-center gap-1.5 rounded-md border border-primary/40 bg-primary/10 px-2.5 py-1 text-[11px] font-bold text-primary hover:bg-primary hover:text-primary-foreground transition-colors cursor-pointer shadow-2xs"
+                    >
+                      <Paperclip className="h-3 w-3" /> View &amp; Files
+                    </button>
                   </td>
                 </tr>
               ))}
