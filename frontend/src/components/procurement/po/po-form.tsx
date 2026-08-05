@@ -24,8 +24,33 @@ import {
   Check,
   Upload,
   Mail,
+  ArrowLeft,
+  XCircle,
+  RotateCcw,
 } from 'lucide-react';
-import { type PurchaseOrderRow, type ProcurementLineRow, type VendorOption, updatePurchaseOrderTermsAndConditions, updatePurchaseOrderStatus, uploadChallanInvoiceDocument, printPurchaseOrderReport } from '@/lib/procurement';
+import {
+  type PurchaseOrderRow,
+  type VendorOption,
+  type PrOption,
+  type PurchaseOrderFormPayload,
+  type PurchaseOrderFormLine,
+  type ProcurementProjectOption,
+  type BudgetCategoryOption,
+  updatePurchaseOrderTermsAndConditions,
+  printPurchaseOrderReport,
+  listProcurementProjects,
+  listActiveVendorOptions,
+  listActivePrOptions,
+  listBudgetCategoryOptions,
+} from '@/lib/procurement';
+import {
+  normalizePoStatus,
+  availablePoTransitions,
+  poRequiresReason,
+  poStatusLabel,
+  isPoEditable,
+  type PoStatus,
+} from '@/lib/erp/purchase-order/status';
 
 function numberToWords(num: number): string {
   if (!num || isNaN(num)) return 'Zero Only';
@@ -79,6 +104,7 @@ export interface PoLineItemEntry {
   gst_principal_amount: number;
   grn_balance_qty: number;
   gst_rate: number;
+  over_tolerance_pct?: number;
 }
 
 export interface FullPoFormState {
@@ -86,12 +112,13 @@ export interface FullPoFormState {
   uploaded_document_url?: string;
   uploaded_document_path?: string;
   uploaded_document_name?: string;
-  uploaded_challan_url?: string;
-  uploaded_challan_path?: string;
-  uploaded_challan_name?: string;
-  uploaded_invoice_url?: string;
-  uploaded_invoice_path?: string;
-  uploaded_invoice_name?: string;
+  // Challan and invoice attachments deliberately do NOT live here. A challan
+  // arrives with the goods and an invoice arrives with the bill, so both belong
+  // to the GRN and Bills forms — which is where the working implementation is.
+  // The PO form previously carried a copy of that plumbing that was never
+  // wired to any file input, plus a filename-sniffing "vendor extractor" that
+  // overwrote supplier_name from the uploaded file's name while vendor_id kept
+  // pointing at the real supplier.
 
   // Header Fields (in exact specified order)
   po_number: string;
@@ -195,25 +222,370 @@ export interface FullPoFormState {
   remarks: string;
   relation_count: number;
   ledger_present: number;
-  status: 'Draft' | 'Verification' | 'Issued' | 'Accepted_By_Vendor' | 'accepted_by_vendor' | 'Fulfilled' | 'Cancelled';
+  /**
+   * Canonical erp_po_status. This used to be a private form vocabulary
+   * ('Draft' | 'Verification' | 'Issued' | ...) that was lower-cased and
+   * written straight at the enum, where three of the six labels did not
+   * exist — so the save failed and silently discarded the whole form.
+   */
+  status: PoStatus;
+  /** Required by the database for `rejected` and `cancelled`. */
+  status_reason?: string;
   id?: string;
+  vendor_id?: string;
+  /** Resolved from the "From P.R. No." picker; persisted as the PO's requisition link. */
+  purchase_requisition_id?: string | null;
 }
+
+/**
+ * Serialises the form into the payload `save_purchase_order` expects.
+ *
+ * Exported so the page-level save handler does not have to re-derive line
+ * amounts. It previously did, using the pre-discount rate and ignoring the
+ * charge fields, which is why the persisted total disagreed with the net
+ * amount shown on the form.
+ */
+export function buildPurchaseOrderPayload(form: FullPoFormState): PurchaseOrderFormPayload {
+  const lines: PurchaseOrderFormLine[] = form.items.map((item, index) => ({
+    line_number: index + 1,
+    item_description: item.item_desc,
+    item_code: item.item_code || null,
+    item_group: item.item_group || null,
+    item_brand: item.item_brand || null,
+    item_specification: item.item_specification || null,
+    hsn_code: item.hsn_code || null,
+    tax_code: item.tax_code || null,
+    purchase_category: item.purchase_category || null,
+    quantity: Number(item.approved_qty) || 0,
+    unit: item.unit || 'nos',
+    unit_rate: Number(item.basic_rate) || 0,
+    tax_rate: item.gst_applicable ? Number(item.gst_rate) || 0 : 0,
+    estimated_rate: item.estimated_rate ?? null,
+    previous_rate: item.previous_rate ?? null,
+    discount_pct: Number(item.discount_perc) || 0,
+    discount_amount: Number(item.discount_amt) || 0,
+    freight_charges: Number(item.freight_chgs) || 0,
+    loading_unloading_charges: Number(item.load_unload_chgs) || 0,
+    other_charges: Number(item.others_chgs) || 0,
+    is_gst_applicable: item.gst_applicable,
+    is_open_po: item.open_po,
+    open_till_date: item.open_till_date || null,
+    required_date: item.due_on || null,
+  }));
+
+  return {
+    id: form.id || null,
+    project_name: form.project_name || null,
+    vendor_id: form.vendor_id || null,
+    purchase_requisition_id: form.purchase_requisition_id || null,
+
+    po_number: form.po_number || null,
+    // The datetime-local input yields "YYYY-MM-DDTHH:mm"; the column is a date.
+    po_date: form.po_date ? form.po_date.slice(0, 10) : null,
+    delivery_location: form.project_address || null,
+    delivery_address: form.delivery_address || form.project_address || null,
+    payment_terms: form.credit_period ? `${form.credit_period} days credit` : null,
+    terms_and_conditions: form.terms_and_conditions,
+
+    company_name: form.company_name || null,
+    po_in_the_name_of: form.po_in_the_name_of || null,
+    supplier_name: form.supplier_name || null,
+    vendor_name: form.supplier_name || null,
+    phone_no: form.phone_no || null,
+    mobile_no: form.mobile_no || null,
+    email_id: form.email_id || null,
+    supplier_address: form.supplier_address || null,
+    contact_person: form.contact_person || null,
+    gst_no: form.gst_no || null,
+    pan_no: form.pan_no || null,
+    vat_no: form.vat_no || null,
+    cst_no: form.cst_no || null,
+    cess_no: form.cess_no || null,
+    fax_no: form.fax_no || null,
+    our_state: form.our_state || null,
+    vendor_state: form.vendor_state || null,
+    company_currency: form.company_currency || null,
+    is_import_po: form.import_po,
+    import_exchange_rate: form.import_po ? form.import_currency_exchange_rate : null,
+
+    comparative_statement_no: form.comparative_statement_no || null,
+    credit_period_days: form.credit_period ?? null,
+    note_on_po: form.note_on_po || null,
+    remarks: form.remarks || null,
+
+    // Header-level charges. These reached the database for the first time
+    // with this change; before, the form showed them in the net amount and
+    // the save threw them away.
+    freight_amount: 0,
+    loading_unloading_charges: Number(form.loading_unloading_charges) || 0,
+    other_charges: Number(form.other_charges) || 0,
+    transportation_taxable_amount: Number(form.tax_on_transportation_principal_amount) || 0,
+    transportation_tax_rate: transportationTaxRate(form),
+    transportation_hsn_code: form.hsn_sac_code_for_tax_on_transportation || null,
+    transportation_tax_code: form.tax_code_for_tax_on_transportation || null,
+
+    is_budget_applicable: form.budget_applicable,
+    requires_grn: form.to_grn,
+
+    // Repeating sections that had no columns and were dropped on every
+    // save. They now persist as jsonb on the order.
+    comparative_statements: form.comparative_statements,
+    advance_payments: form.advance_payments,
+    amendments: form.po_amendments,
+
+    status: form.status,
+    lines,
+  };
+}
+
+/** Transportation tax as a rate, since the form captures it as an amount. */
+function transportationTaxRate(form: FullPoFormState): number {
+  const principal = Number(form.tax_on_transportation_principal_amount) || 0;
+  const amount = Number(form.tax_code_amount_for_tax_on_transportation) || 0;
+  if (principal <= 0 || amount <= 0) return 0;
+  return Math.round((amount / principal) * 10000) / 100;
+}
+
+/**
+ * Button presentation per transition. Keyed by PoStatus so a status added
+ * to the state machine without a label here is a compile error rather than
+ * a blank button.
+ */
+const TRANSITION_LABELS: Record<PoStatus, string> = {
+  draft: 'Return to Draft',
+  review: 'Send For Review',
+  pending_verification: 'Send for Verification',
+  pending_approval: 'Assign for Approval',
+  approved: 'Approve PO',
+  rejected: 'Reject PO',
+  sent_to_vendor: 'Issue to Vendor',
+  acknowledged: 'Record Vendor Acceptance',
+  partially_delivered: 'Mark Partially Delivered',
+  delivered: 'Mark Delivered',
+  short_closed: 'Short Close',
+  closed: 'Close Order',
+  cancelled: 'Cancel Order',
+};
+
+const TRANSITION_HINTS: Record<PoStatus, string> = {
+  draft: 'Send the order back for editing. Clears the previous approval.',
+  review: 'Submit the draft for peer or manager review.',
+  pending_verification: 'Submit the draft for verification.',
+  pending_approval: 'Route the verified order to management for sign-off.',
+  approved: 'Approve the order. Posts the budget commitment.',
+  rejected: 'Reject the order. A reason is required and is recorded.',
+  sent_to_vendor: 'Issue the approved order to the supplier.',
+  acknowledged: 'Record that the supplier has confirmed the order.',
+  partially_delivered: 'Derived from goods receipts; set manually only to correct the record.',
+  delivered: 'Derived from goods receipts; set manually only to correct the record.',
+  short_closed: 'Abandon the undelivered balance and settle the order.',
+  closed: 'Close a settled order. No further activity is possible.',
+  cancelled: 'Cancel the order. A reason is required. Not possible once goods have been received.',
+};
+
+const TRANSITION_STYLES: Record<PoStatus, string> = {
+  draft: 'border border-orange-500/30 bg-orange-500/10 text-orange-600 hover:bg-orange-500/20',
+  review: 'bg-purple-600 text-white hover:bg-purple-700',
+  pending_verification: 'bg-indigo-600 text-white hover:bg-indigo-700',
+  pending_approval: 'bg-blue-600 text-white hover:bg-blue-700',
+  approved: 'bg-emerald-600 text-white hover:bg-emerald-700',
+  rejected: 'border border-red-500/40 bg-red-500/10 text-red-700 hover:bg-red-500/20 dark:text-red-300',
+  sent_to_vendor: 'bg-blue-600 text-white hover:bg-blue-700',
+  acknowledged: 'bg-teal-600 text-white hover:bg-teal-700',
+  partially_delivered: 'border border-cyan-500/40 bg-cyan-500/10 text-cyan-700 hover:bg-cyan-500/20 dark:text-cyan-300',
+  delivered: 'bg-emerald-700 text-white hover:bg-emerald-800',
+  short_closed: 'border border-slate-400/50 bg-slate-500/10 text-slate-700 hover:bg-slate-500/20 dark:text-slate-300',
+  closed: 'border border-slate-400/50 bg-slate-500/10 text-slate-700 hover:bg-slate-500/20 dark:text-slate-300',
+  cancelled: 'border border-rose-500/40 bg-rose-500/10 text-rose-700 hover:bg-rose-500/20 dark:text-rose-300',
+};
+
+const TRANSITION_ICONS: Record<PoStatus, React.ReactNode> = {
+  draft: <FileCheck className="h-4 w-4" />,
+  review: <Send className="h-4 w-4" />,
+  pending_verification: <Send className="h-4 w-4" />,
+  pending_approval: <Send className="h-4 w-4" />,
+  approved: <CheckCircle2 className="h-4 w-4" />,
+  rejected: <X className="h-4 w-4" />,
+  sent_to_vendor: <Mail className="h-4 w-4" />,
+  acknowledged: <Check className="h-4 w-4" />,
+  partially_delivered: <Layers className="h-4 w-4" />,
+  delivered: <CheckCircle2 className="h-4 w-4" />,
+  short_closed: <ShieldCheck className="h-4 w-4" />,
+  closed: <ShieldCheck className="h-4 w-4" />,
+  cancelled: <Trash2 className="h-4 w-4" />,
+};
 
 interface PoFormProps {
   po: PurchaseOrderRow;
   /** Active vendors backing the vendor dropdown. */
   vendorOptions?: VendorOption[];
-  onSubmit: (formData: FullPoFormState) => void;
+  /**
+   * Persists the order. Resolves true on success; on false the form stays
+   * open so the user's edits survive a rejected save.
+   */
+  onSubmit: (formData: FullPoFormState) => Promise<boolean>;
   /** Generates the report-format Purchase Order PDF and opens it in a new tab. */
   onPrint?: () => void;
   onCancel: () => void;
+  /** Whether the signed-in user may approve, reject or issue an order. */
+  canApprove?: boolean;
 }
 
-export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel }: PoFormProps) {
+export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, canApprove = false }: PoFormProps) {
   const todayStr = new Date().toISOString().slice(0, 10);
+  const [submitting, setSubmitting] = useState(false);
+  const [promptReasonTarget, setPromptReasonTarget] = useState<PoStatus | null>(null);
   const [savingTerms, setSavingTerms] = useState(false);
   const [termsSaveMsg, setTermsSaveMsg] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [projectOptions, setProjectOptions] = useState<ProcurementProjectOption[]>([]);
+  const [liveVendors, setLiveVendors] = useState<VendorOption[]>(vendorOptions);
+  const [prOptions, setPrOptions] = useState<PrOption[]>([]);
+  const [budgetCategories, setBudgetCategories] = useState<BudgetCategoryOption[]>([]);
+
+  React.useEffect(() => {
+    let active = true;
+    listBudgetCategoryOptions().then((cats) => {
+      if (active && cats) {
+        setBudgetCategories(cats);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  React.useEffect(() => {
+    let active = true;
+    listActivePrOptions().then((prs) => {
+      if (active && prs) {
+        setPrOptions(prs);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  React.useEffect(() => {
+    let active = true;
+    listProcurementProjects().then((projs) => {
+      if (active && projs) {
+        setProjectOptions(projs);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  React.useEffect(() => {
+    if (vendorOptions.length > 0) {
+      setLiveVendors(vendorOptions);
+    } else {
+      let active = true;
+      listActiveVendorOptions().then((opts) => {
+        if (active && opts) {
+          setLiveVendors(opts);
+        }
+      });
+      return () => {
+        active = false;
+      };
+    }
+  }, [vendorOptions]);
+
+  const [validationErrors, setValidationErrors] = useState<string[]>([]);
+  /** Set while a reason-requiring transition waits for the user's reason. */
+  const [pendingTransition, setPendingTransition] = useState<PoStatus | null>(null);
+
+  const validateForm = (targetForm: FullPoFormState): string[] => {
+    const errors: string[] = [];
+
+    // The vendor must be a registry selection, not a typed name: the save
+    // path needs a real vendor_id and will no longer guess one.
+    if (!targetForm.vendor_id) {
+      errors.push('Select a supplier from the dropdown. A typed name is not enough to raise a purchase order.');
+    }
+    if (!targetForm.supplier_name || !targetForm.supplier_name.trim()) {
+      errors.push('Supplier / Vendor Name is required.');
+    }
+    if (!targetForm.project_name || !targetForm.project_name.trim()) {
+      errors.push('Project Name is required. Please select a project from the dropdown.');
+    }
+    if (!targetForm.items || targetForm.items.length === 0) {
+      errors.push('At least 1 Line Item is required in the Purchase Order.');
+    } else {
+      targetForm.items.forEach((item, index) => {
+        if (!item.item_desc || !item.item_desc.trim()) {
+          errors.push(`Line Item #${index + 1}: Description is required`);
+        }
+        if (!Number.isFinite(Number(item.approved_qty)) || Number(item.approved_qty) <= 0) {
+          errors.push(`Line Item #${index + 1}: Quantity must be greater than 0`);
+        }
+        if (Number(item.basic_rate) < 0) {
+          errors.push(`Line Item #${index + 1}: Rate cannot be negative`);
+        }
+        if (Number(item.discount_perc) < 0 || Number(item.discount_perc) > 100) {
+          errors.push(`Line Item #${index + 1}: Discount must be between 0 and 100 percent`);
+        }
+      });
+    }
+
+    if (poRequiresReason(targetForm.status) && !targetForm.status_reason?.trim()) {
+      errors.push(`A reason is required to mark this purchase order ${poStatusLabel(targetForm.status)}.`);
+    }
+    return errors;
+  };
+
+  /**
+   * Applies a workflow transition and saves in one go.
+   *
+   * `onSubmit` is awaited and its result inspected, so a rejected
+   * transition — an illegal move, a missing role, a server error — leaves
+   * the form open with the user's work intact. It used to be fire and
+   * forget: the workspace closed the form the instant this was called.
+   */
+  const handleActionWithValidation = async (targetStatus: PoStatus, reason?: string) => {
+    const updatedState: FullPoFormState = {
+      ...form,
+      id: po.id || undefined,
+      status: targetStatus,
+      status_reason: reason ?? form.status_reason,
+    };
+
+    const errors = validateForm(updatedState);
+    if (errors.length > 0) {
+      setValidationErrors(errors);
+      if (typeof window !== 'undefined') {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+      return;
+    }
+
+    setValidationErrors([]);
+    setForm(updatedState);
+    setSubmitting(true);
+    try {
+      const ok = await onSubmit(updatedState);
+      if (ok === false) {
+        // The parent surfaces the reason; revert the optimistic status so
+        // the buttons match what the database actually holds.
+        setForm((prev) => ({ ...prev, status: normalizePoStatus(po.status) ?? 'draft' }));
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  /** Collects a reason first when the database requires one. */
+  const requestTransition = async (next: PoStatus) => {
+    if (poRequiresReason(next)) {
+      setPendingTransition(next);
+      return;
+    }
+    await handleActionWithValidation(next);
+  };
 
   const [form, setForm] = useState<FullPoFormState>(() => {
     const rawLines = po.purchase_order_lines && po.purchase_order_lines.length > 0
@@ -222,41 +594,59 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel }: 
       ? (po as any).po_lines
       : [];
 
+    // Line money is re-derived from the stored primitives (quantity, rate,
+    // discount, tax_rate) rather than read out of the stored totals.
+    //
+    // The previous mapper read `l.gst_rate`, a column that does not exist —
+    // the real column is `tax_rate` — so every line silently became 18% on
+    // reopen, corrupting any 5% or 12% GST line on the next save. It then
+    // loaded the stored `line_total` into `amt` and added 18% on top, which
+    // compounded tax on every save/reopen cycle because the save path had
+    // written `line_total` tax-inclusive.
     const mappedItems: PoLineItemEntry[] = rawLines.map((l: any, lIdx: number) => {
-      const qty = Number(l.quantity || 1);
-      const rate = Number(l.unit_rate || l.estimated_rate || 0);
-      const lineTotal = Number(l.line_total || qty * rate);
-      const taxAmt = lineTotal * 0.18;
+      const qty = Number(l.quantity ?? 0);
+      const rate = Number(l.unit_rate ?? 0);
+      const discountPct = Number(l.discount_pct ?? 0);
+      const discountAmt = Number(l.discount_amount ?? 0) || (rate * discountPct) / 100;
+      const gstApplicable = l.is_gst_applicable !== false;
+      const gstRate = gstApplicable ? Number(l.tax_rate ?? 0) : 0;
+
+      const netRate = Math.max(rate - discountAmt, 0);
+      const basicAmt = qty * netRate;
+      const taxAmt = (basicAmt * gstRate) / 100;
+
       return {
-        item_group: l.item_group || l.category || 'Material',
-        item_desc: l.item_description || `Item #${lIdx + 1}`,
-        item_code: l.item_code || `ITM-${lIdx + 1}`,
-        item_brand: l.item_brand || l.preferred_brand || '',
+        item_group: l.item_group || l.activity_name || '',
+        item_desc: l.item_description || '',
+        item_code: l.item_code || (l.item_id ? String(l.item_id) : ''),
+        item_brand: l.item_brand || l.sub_activity_name || '',
         item_specification: l.item_specification || '',
-        open_po: Boolean(l.open_po),
-        open_till_date: l.open_till_date || todayStr,
+        open_po: Boolean(l.is_open_po),
+        open_till_date: l.open_till_date || '',
         approved_qty: qty,
-        unit: l.unit || 'BAGS',
-        due_on: l.due_on || todayStr,
-        purchase_category: l.purchase_category || 'Direct Material',
-        estimated_rate: Number(l.estimated_rate || rate),
+        unit: l.unit || 'nos',
+        due_on: l.required_date || '',
+        purchase_category: l.purchase_category || l.activity_name || '',
+        estimated_rate: Number(l.estimated_rate ?? rate),
         basic_rate: rate,
-        discount_perc: Number(l.discount_perc || 0),
-        discount_amt: Number(l.discount_amt || 0),
-        rate: rate,
+        discount_perc: discountPct,
+        discount_amt: discountAmt,
+        rate: netRate,
         hsn_code: l.hsn_code || '',
-        tax_code: l.tax_code || 'GST 18%',
+        tax_code: l.tax_code || '',
         tax_code_amount: taxAmt,
-        previous_rate: Number(l.previous_rate || rate),
-        amt: lineTotal,
-        freight_chgs: Number(l.freight_chgs || 0),
-        load_unload_chgs: Number(l.load_unload_chgs || 0),
-        others_chgs: Number(l.others_chgs || 0),
-        gst_applicable: l.gst_applicable !== false,
-        net_amt: lineTotal + taxAmt,
-        gst_principal_amount: lineTotal,
-        grn_balance_qty: qty,
-        gst_rate: Number(l.gst_rate || 18),
+        previous_rate: Number(l.previous_rate ?? 0),
+        amt: basicAmt,
+        freight_chgs: Number(l.freight_charges ?? 0),
+        load_unload_chgs: Number(l.loading_unloading_charges ?? 0),
+        others_chgs: Number(l.other_charges ?? 0),
+        gst_applicable: gstApplicable,
+        net_amt: basicAmt + taxAmt,
+        gst_principal_amount: basicAmt,
+        // Outstanding quantity, not the ordered quantity: a part-received
+        // line previously showed its full quantity as still to come.
+        grn_balance_qty: Math.max(qty - Number(l.received_qty ?? 0), 0),
+        gst_rate: gstRate,
       };
     });
 
@@ -269,7 +659,10 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel }: 
       vat_no: (po as any).vat_no || '',
       cst_no: (po as any).cst_no || '',
       cess_no: (po as any).cess_no || '',
-      project_name: (po as any).project_name || (po.project_id === 'central-park' ? 'Central Park' : ''),
+      // Resolved from the joined projects row. The old `project_id ===
+      // 'central-park' ? 'Central Park'` branch predates real project UUIDs and
+      // could only ever fire for a legacy slug.
+      project_name: po.projects?.name || (po as any).project_name || '',
       budget_applicable: (po as any).budget_applicable !== false,
       project_address: (po as any).project_address || (po as any).delivery_location || po.delivery_location || '',
       site_contact: (po as any).site_contact || (po as any).site_contact_number || '',
@@ -397,18 +790,19 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel }: 
       relation_count: Number((po as any).relation_count || 0),
       ledger_present: Number((po as any).ledger_present || 1),
 
-      // Status
-      status: po.status
-        ? (po.status.toLowerCase().includes('verif') || po.status.toLowerCase().includes('audit')
-            ? 'Verification'
-            : po.status.toLowerCase().includes('issue') || po.status.toLowerCase().includes('approve')
-            ? 'Issued'
-            : po.status.toLowerCase().includes('fulfill') || po.status.toLowerCase().includes('complet')
-            ? 'Fulfilled'
-            : po.status.toLowerCase().includes('cancel')
-            ? 'Cancelled'
-            : 'Draft')
-        : 'Draft',
+      // Status.
+      //
+      // Read through the canonical normaliser instead of the old substring
+      // chain, which matched 'verif' / 'issue' / 'approve' / 'fulfill' and
+      // therefore resolved pending_approval, sent_to_vendor, acknowledged,
+      // rejected, partially_delivered, delivered and closed all to 'Draft'.
+      // Saving such a PO wrote status 'draft' back and silently reverted the
+      // workflow — including on approved orders that already carried a
+      // budget commitment.
+      status: normalizePoStatus(po.status) ?? 'draft',
+      id: po.id || undefined,
+      vendor_id: po.vendor_id || undefined,
+      purchase_requisition_id: po.purchase_requisition_id || null,
     };
   });
 
@@ -447,41 +841,46 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel }: 
 
   const updateLineItem = handleLineItemChange;
 
+  /**
+   * Adds an empty line. This used to insert a fully populated mock row
+   * ("RCC Material" / "New Material Item", 10 BAGS at Rs 300, HSN 2523),
+   * so an unedited row went to the vendor as a real order line.
+   */
   const handleAddLineItem = () => {
     setForm((prev) => ({
       ...prev,
       items: [
         ...prev.items,
         {
-          item_group: 'RCC Material',
-          item_desc: 'New Material Item',
-          item_code: `RM00${prev.items.length + 1}`,
-          item_brand: 'Standard',
-          item_specification: 'As per site spec',
+          item_group: '',
+          item_desc: '',
+          item_code: '',
+          item_brand: '',
+          item_specification: '',
           open_po: false,
-          open_till_date: new Date().toISOString().slice(0, 10),
-          approved_qty: 10,
-          unit: 'BAGS',
-          due_on: new Date().toISOString().slice(0, 10),
-          purchase_category: 'Site Procurement',
-          estimated_rate: 300,
-          basic_rate: 300,
+          open_till_date: '',
+          approved_qty: 0,
+          unit: 'nos',
+          due_on: '',
+          purchase_category: '',
+          estimated_rate: 0,
+          basic_rate: 0,
           discount_perc: 0,
           discount_amt: 0,
-          rate: 300,
-          hsn_code: '2523',
-          tax_code: 'GST 18%',
-          tax_code_amount: 540,
-          previous_rate: 300,
-          amt: 3000,
+          rate: 0,
+          hsn_code: '',
+          tax_code: '',
+          tax_code_amount: 0,
+          previous_rate: 0,
+          amt: 0,
           freight_chgs: 0,
           load_unload_chgs: 0,
           others_chgs: 0,
           gst_applicable: true,
-          net_amt: 3540,
-          gst_principal_amount: 3000,
-          grn_balance_qty: 10,
-          gst_rate: 18,
+          net_amt: 0,
+          gst_principal_amount: 0,
+          grn_balance_qty: 0,
+          gst_rate: 0,
         },
       ],
     }));
@@ -519,139 +918,37 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel }: 
     });
   };
 
-  // Summary Math
+  // Summary math. This is what the database now derives too — line
+  // subtotals net of discount, plus line tax, plus the header charges — so
+  // the figure shown here is the figure that is persisted, sent to the
+  // vendor and committed against the budget.
   const totalGrossAmount = form.items.reduce((sum, i) => sum + i.amt, 0);
   const totalTaxCodeAmount = form.items.reduce((sum, i) => sum + i.tax_code_amount, 0);
   const totalDiscountAmount = form.items.reduce((sum, i) => sum + i.discount_amt * i.approved_qty, 0);
   const netAmount = totalGrossAmount + totalTaxCodeAmount + form.tax_code_amount_for_tax_on_transportation + form.loading_unloading_charges + form.other_charges;
   const totalAmountInWords = numberToWords(netAmount);
 
-  const [uploadingChallan, setUploadingChallan] = useState(false);
-  const [uploadingInvoice, setUploadingInvoice] = useState(false);
-
-  // Local File states (deferred upload until form submit)
-  const [challanFile, setChallanFile] = useState<File | null>(null);
-  const [invoiceFile, setInvoiceFile] = useState<File | null>(null);
-  const [isChallanDirty, setIsChallanDirty] = useState(false);
-  const [isInvoiceDirty, setIsInvoiceDirty] = useState(false);
-
-  // Handle local file selection without uploading immediately
-  const handleFileSelect = (
-    e: React.ChangeEvent<HTMLInputElement>,
-    folder: 'grn-challan' | 'grn-invoice'
-  ) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const filenameClean = file.name.toUpperCase();
-    const dateFormatted = new Date().toISOString().slice(0, 10);
-    const randomSeq = Math.floor(100 + Math.random() * 900);
-
-    if (folder === 'grn-challan') {
-      setChallanFile(file);
-      setIsChallanDirty(true);
-      const extractedCsNo = filenameClean.includes('CS')
-        ? `CS-${dateFormatted.replace(/-/g, '')}-${randomSeq}`
-        : form.comparative_statement_no;
-
-      setForm((prev) => ({
-        ...prev,
-        comparative_statement_no: extractedCsNo,
-        uploaded_challan_name: file.name,
-      }));
-    } else {
-      setInvoiceFile(file);
-      setIsInvoiceDirty(true);
-      const extractedVendor = filenameClean.includes('PIDILITE')
-        ? 'Pidilite Industries Ltd.'
-        : filenameClean.includes('SIKA')
-        ? 'Sika India Pvt Ltd'
-        : filenameClean.includes('ULTRATECH')
-        ? 'UltraTech Cement Ltd.'
-        : form.supplier_name;
-
-      setForm((prev) => ({
-        ...prev,
-        supplier_name: extractedVendor,
-        po_in_the_name_of: extractedVendor,
-        uploaded_invoice_name: file.name,
-      }));
-    }
-  };
-
-  // Remove attached document
-  const handleRemoveDocument = (folder: 'grn-challan' | 'grn-invoice') => {
-    if (folder === 'grn-challan') {
-      setChallanFile(null);
-      setIsChallanDirty(true);
-      setForm((prev) => ({
-        ...prev,
-        uploaded_challan_name: '',
-        uploaded_challan_url: '',
-        uploaded_challan_path: '',
-      }));
-    } else {
-      setInvoiceFile(null);
-      setIsInvoiceDirty(true);
-      setForm((prev) => ({
-        ...prev,
-        uploaded_invoice_name: '',
-        uploaded_invoice_url: '',
-        uploaded_invoice_path: '',
-      }));
-    }
-  };
+  /**
+   * Transitions this user may make from the current status. Derived from
+   * the shared state machine, so a button can never offer a move the
+   * database will refuse.
+   */
+  const availableTransitions = availablePoTransitions(form.status, canApprove);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    let updatedChallanUrl = form.uploaded_challan_url || '';
-    let updatedChallanPath = form.uploaded_challan_path || '';
-    let updatedInvoiceUrl = form.uploaded_invoice_url || '';
-    let updatedInvoicePath = form.uploaded_invoice_path || '';
-
-    // Upload Challan if dirty and new file attached
-    if (isChallanDirty && challanFile) {
-      setUploadingChallan(true);
-      try {
-        const uploadRes = await uploadChallanInvoiceDocument(challanFile, 'grn-challan');
-        if (uploadRes.data) {
-          updatedChallanUrl = uploadRes.data.signedUrl || uploadRes.data.publicUrl;
-          updatedChallanPath = uploadRes.data.storagePath;
-        }
-      } catch (err: any) {
-        alert(`Challan upload failed: ${err?.message || 'Error'}`);
-      } finally {
-        setUploadingChallan(false);
+    const errors = validateForm(form);
+    if (errors.length > 0) {
+      setValidationErrors(errors);
+      if (typeof window !== 'undefined') {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
       }
+      return;
     }
 
-    // Upload Invoice if dirty and new file attached
-    if (isInvoiceDirty && invoiceFile) {
-      setUploadingInvoice(true);
-      try {
-        const uploadRes = await uploadChallanInvoiceDocument(invoiceFile, 'grn-invoice');
-        if (uploadRes.data) {
-          updatedInvoiceUrl = uploadRes.data.signedUrl || uploadRes.data.publicUrl;
-          updatedInvoicePath = uploadRes.data.storagePath;
-        }
-      } catch (err: any) {
-        alert(`Invoice upload failed: ${err?.message || 'Error'}`);
-      } finally {
-        setUploadingInvoice(false);
-      }
-    }
-
-    const finalFormState: FullPoFormState = {
-      ...form,
-      id: po.id,
-      uploaded_challan_url: updatedChallanUrl,
-      uploaded_challan_path: updatedChallanPath,
-      uploaded_invoice_url: updatedInvoiceUrl,
-      uploaded_invoice_path: updatedInvoicePath,
-    };
-
-    onSubmit(finalFormState);
+    setValidationErrors([]);
+    onSubmit({ ...form, id: po.id });
   };
 
   return (
@@ -682,6 +979,21 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel }: 
           </button>
         </div>
       </div>
+
+      {/* Validation Errors Alert Banner */}
+      {validationErrors.length > 0 && (
+        <div className="rounded-xl border border-red-500/50 bg-red-500/10 p-4 space-y-2 text-red-600 dark:text-red-400">
+          <div className="flex items-center gap-2 font-bold text-sm">
+            <AlertTriangle className="h-5 w-5 text-red-500 shrink-0" />
+            <span>Cannot Save Purchase Order — Please fill in the required fields:</span>
+          </div>
+          <ul className="list-disc list-inside text-xs space-y-1 pl-2 font-semibold">
+            {validationErrors.map((err, i) => (
+              <li key={i}>{err}</li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <form onSubmit={handleSubmit} className="space-y-6 text-xs">
 
@@ -774,16 +1086,32 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel }: 
               />
             </div>
 
-            {/* 8. Project Name */}
+            {/* 8. Project Name Dropdown */}
             <div>
               <label className="block text-[11px] font-bold uppercase text-muted-foreground mb-1">Project Name</label>
-              <input
-                type="text"
+              <select
                 value={form.project_name}
-                onChange={(e) => updateHeader('project_name', e.target.value)}
-                className="w-full rounded-lg border border-border bg-background px-3 py-2 font-bold text-foreground"
+                onChange={(e) => {
+                  const selectedName = e.target.value;
+                  updateHeader('project_name', selectedName);
+                  const matchedProj = projectOptions.find((p) => p.name === selectedName);
+                  if (matchedProj) {
+                    po.project_id = matchedProj.id;
+                  }
+                }}
+                className="w-full rounded-lg border border-border bg-background px-3 py-2 font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 cursor-pointer"
                 required
-              />
+              >
+                <option value="">-- Select Project --</option>
+                {projectOptions.map((p) => (
+                  <option key={p.id} value={p.name}>
+                    {p.name} {p.code ? `(${p.code})` : ''}
+                  </option>
+                ))}
+                {form.project_name && !projectOptions.some((p) => p.name === form.project_name) && (
+                  <option value={form.project_name}>{form.project_name}</option>
+                )}
+              </select>
             </div>
 
 
@@ -811,54 +1139,68 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel }: 
               />
             </div>
 
-            {/* 12. Supplier Name — selected from the vendor registry so the PO
-                always resolves to a real vendor id. */}
+            {/* 12. Supplier Name Dropdown — maps all vendor details dynamically */}
             <div>
               <label className="block text-[11px] font-bold uppercase text-muted-foreground mb-1">Supplier Name</label>
-              {vendorOptions.length > 0 ? (
-                <select
-                  value={form.supplier_name}
-                  onChange={(e) => {
-                    const name = e.target.value;
-                    const vendor = vendorOptions.find((v) => (v.display_name || v.legal_name) === name || v.legal_name === name || v.id === name);
-                    const fullName = vendor ? (vendor.display_name || vendor.legal_name) : name;
-                    const fullAddress = vendor ? [vendor.address, vendor.location, vendor.city].filter(Boolean).join(', ') : '';
+              <select
+                value={form.supplier_name}
+                onChange={(e) => {
+                  const selectedVal = e.target.value;
+                  const vendor = liveVendors.find(
+                    (v) =>
+                      v.id === selectedVal ||
+                      (v.display_name || v.legal_name) === selectedVal ||
+                      v.legal_name === selectedVal
+                  );
+
+                  if (vendor) {
+                    const fullName = vendor.display_name || vendor.legal_name;
+                    const fullAddr = [vendor.address, vendor.location, vendor.city].filter(Boolean).join(', ');
+                    const gstCode = vendor.gst_number ? vendor.gst_number.substring(0, 2) : '';
+                    const derivedState = (vendor as any).state ||
+                      (gstCode === '24' ? 'Gujarat' :
+                       gstCode === '27' ? 'Maharashtra' :
+                       gstCode === '07' ? 'Delhi' :
+                       gstCode === '29' ? 'Karnataka' :
+                       gstCode === '33' ? 'Tamil Nadu' :
+                       gstCode === '09' ? 'Uttar Pradesh' :
+                       vendor.city || 'Gujarat');
 
                     setForm((prev) => ({
                       ...prev,
                       supplier_name: fullName,
-                      po_in_the_name_of: vendor?.legal_name || fullName || prev.po_in_the_name_of,
-                      gst_no: vendor?.gst_number || prev.gst_no,
-                      pan_no: vendor?.pan_number || prev.pan_no,
-                      phone_no: vendor?.phone || prev.phone_no,
-                      mobile_no: vendor?.phone || prev.mobile_no,
-                      email_id: vendor?.email || prev.email_id,
-                      supplier_address: fullAddress || prev.supplier_address,
-                      location: vendor?.city || vendor?.location || prev.location,
-                      vendor_state: vendor?.city || prev.vendor_state,
-                      ...(vendor ? { vendor_id: vendor.id } : {}),
-                    }) as FullPoFormState);
-                  }}
-                  className="w-full rounded-lg border border-border bg-background px-3 py-2 font-bold text-foreground"
-                  required
-                >
-                  <option value="">Select a supplier…</option>
-                  {vendorOptions.map((vendor) => (
-                    <option key={vendor.id} value={vendor.display_name || vendor.legal_name}>
-                      {vendor.label}
+                      po_in_the_name_of: vendor.legal_name || fullName,
+                      gst_no: vendor.gst_number || '',
+                      pan_no: vendor.pan_number || '',
+                      phone_no: vendor.phone || '',
+                      mobile_no: vendor.phone || '',
+                      email_id: vendor.email || '',
+                      supplier_address: fullAddr || vendor.address || '',
+                      location: vendor.location || vendor.city || '',
+                      vendor_state: derivedState,
+                      vendor_id: vendor.id,
+                    }));
+                    po.vendor_id = vendor.id;
+                  } else {
+                    updateHeader('supplier_name', selectedVal);
+                  }
+                }}
+                className="w-full rounded-lg border border-border bg-background px-3 py-2 font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 cursor-pointer"
+                required
+              >
+                <option value="">-- Select Supplier / Vendor --</option>
+                {liveVendors.map((vendor) => {
+                  const vName = vendor.display_name || vendor.legal_name;
+                  return (
+                    <option key={vendor.id} value={vName}>
+                      {vName} {vendor.gst_number ? `(${vendor.gst_number})` : ''}
                     </option>
-                  ))}
-                </select>
-              ) : (
-                <input
-                  type="text"
-                  value={form.supplier_name}
-                  onChange={(e) => updateHeader('supplier_name', e.target.value)}
-                  className="w-full rounded-lg border border-border bg-background px-3 py-2 font-bold text-foreground"
-                  placeholder="No vendors loaded — add one in the Vendor Registry"
-                  required
-                />
-              )}
+                  );
+                })}
+                {form.supplier_name && !liveVendors.some((v) => (v.display_name || v.legal_name) === form.supplier_name) && (
+                  <option value={form.supplier_name}>{form.supplier_name}</option>
+                )}
+              </select>
             </div>
 
             {/* 13. PO in the name of* */}
@@ -953,12 +1295,39 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel }: 
             {/* 22. From P.R. No. */}
             <div>
               <label className="block text-[11px] font-bold uppercase text-muted-foreground mb-1">From P.R. No.</label>
-              <input
-                type="text"
-                value={form.from_pr_no}
-                onChange={(e) => updateHeader('from_pr_no', e.target.value)}
-                className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono font-bold text-primary"
-              />
+              <div className="relative">
+                <input
+                  type="text"
+                  list="pr-number-options"
+                  value={form.from_pr_no}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    const matchedPr = prOptions.find((p) => p.pr_number === val);
+                    // Written into form state, not onto the `po` prop. The
+                    // previous version assigned `po.purchase_requisition_id`
+                    // directly — a mutation React never sees, and one the
+                    // save path never read, so the requisition link was
+                    // never persisted for a form-created order.
+                    setForm((prev) => ({
+                      ...prev,
+                      from_pr_no: val,
+                      purchase_requisition_id: matchedPr?.id ?? null,
+                      project_name: matchedPr?.project_name && !prev.project_name
+                        ? matchedPr.project_name
+                        : prev.project_name,
+                    }));
+                  }}
+                  placeholder="Select or type PR No."
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono font-bold text-primary focus:outline-none focus:ring-2 focus:ring-primary/30"
+                />
+                <datalist id="pr-number-options">
+                  {prOptions.map((pr) => (
+                    <option key={pr.id} value={pr.pr_number}>
+                      {pr.pr_number} {pr.project_name ? `(${pr.project_name})` : ''}
+                    </option>
+                  ))}
+                </datalist>
+              </div>
             </div>
 
             {/* 23. Comparative Statement No. */}
@@ -1134,6 +1503,7 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel }: 
                     <tr>
                       <th className="px-2 py-2 text-center transition-all duration-300 opacity-0 group-hover:opacity-100 max-w-0 group-hover:max-w-[40px] overflow-hidden whitespace-nowrap">Sr</th>
                       <th className="px-2 py-2 font-bold text-primary min-w-[160px]">Item Description</th>
+                      <th className="px-2 py-2 font-bold text-primary min-w-[150px]">Purchase Category</th>
                       <th className="px-2 py-2 text-right min-w-[70px]">Approved Qty</th>
                       <th className="px-2 py-2 font-bold text-primary text-center min-w-[60px]">Unit</th>
                       <th className="px-2 py-2 font-bold text-primary min-w-[90px]">Due Date</th>
@@ -1145,6 +1515,7 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel }: 
                       <th className="px-2 py-2 text-right min-w-[65px]">Handling (₹)</th>
                       <th className="px-2 py-2 text-right min-w-[65px]">Others (₹)</th>
                       <th className="px-2 py-2 text-right min-w-[60px]">GST Rate (%)</th>
+                      <th className="px-2 py-2 text-right min-w-[70px] font-bold text-primary">Tol (%)</th>
                       <th className="px-2 py-2 text-right min-w-[90px]">Total Amount (₹)</th>
                     </tr>
                   </thead>
@@ -1172,6 +1543,28 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel }: 
                               </span>
                             )}
                           </div>
+                        </td>
+                        {/* Purchase Category with Searchable Budget Datalist */}
+                        <td className="px-2 py-1.5" title={`Category: ${item.purchase_category}`}>
+                          <input
+                            type="text"
+                            list={`budget-categories-list-${index}`}
+                            placeholder="Search Category..."
+                            value={item.purchase_category}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              updateLineItem(index, 'purchase_category', val);
+                              updateLineItem(index, 'item_group', val);
+                            }}
+                            className="w-32 focus:w-56 hover:w-56 transition-all duration-200 rounded border border-border bg-background px-1.5 py-1 text-xs font-semibold text-foreground relative z-10 hover:z-20 focus:z-20 hover:shadow-xs"
+                          />
+                          <datalist id={`budget-categories-list-${index}`}>
+                            {budgetCategories.map((cat) => (
+                              <option key={cat.id} value={cat.name}>
+                                {cat.code} - {cat.name}
+                              </option>
+                            ))}
+                          </datalist>
                         </td>
                         {/* Approved Qty */}
                         <td className="px-2 py-1.5" title={`Qty: ${item.approved_qty} ${item.unit}`}>
@@ -1285,6 +1678,19 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel }: 
                             value={item.gst_rate}
                             onChange={(e) => updateLineItem(index, 'gst_rate', Number(e.target.value))}
                             className="w-12 focus:w-16 hover:w-16 transition-all duration-200 rounded border border-border bg-background px-1 py-1 text-right text-xs font-bold relative z-10 hover:z-20 focus:z-20"
+                          />
+                        </td>
+                        {/* Over-Delivery Tolerance (%) */}
+                        <td className="px-2 py-1.5 text-right font-bold" title={`Tolerance: ${item.over_tolerance_pct ?? 5}%`}>
+                          <input
+                            type="number"
+                            step="0.5"
+                            min="0"
+                            max="100"
+                            title={`Tolerance: ${item.over_tolerance_pct ?? 5}%`}
+                            value={item.over_tolerance_pct ?? 5}
+                            onChange={(e) => updateLineItem(index, 'over_tolerance_pct', Math.max(0, Number(e.target.value) || 0))}
+                            className="w-14 focus:w-20 hover:w-20 transition-all duration-200 rounded border border-primary/40 bg-background px-1 py-1 text-right text-xs font-bold text-primary relative z-10 hover:z-20 focus:z-20"
                           />
                         </td>
                         {/* Total Amount (₹) */}
@@ -1854,8 +2260,7 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel }: 
                           />
                         </td>
                         <td className="px-3 py-2">
-                          <input
-                            type="text"
+                          <select
                             value={adv.project_name}
                             onChange={(e) => {
                               const val = e.target.value;
@@ -1865,8 +2270,18 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel }: 
                                 return { ...prev, advance_payments: list };
                               });
                             }}
-                            className="w-32 rounded border border-border bg-background px-2 py-1 text-xs"
-                          />
+                            className="w-36 rounded border border-border bg-background px-2 py-1 text-xs font-medium cursor-pointer"
+                          >
+                            <option value="">-- Select --</option>
+                            {projectOptions.map((p) => (
+                              <option key={p.id} value={p.name}>
+                                {p.name}
+                              </option>
+                            ))}
+                            {adv.project_name && !projectOptions.some((p) => p.name === adv.project_name) && (
+                              <option value={adv.project_name}>{adv.project_name}</option>
+                            )}
+                          </select>
                         </td>
                         <td className="px-3 py-2 text-right">
                           <input
@@ -2000,8 +2415,7 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel }: 
                           />
                         </td>
                         <td className="px-3 py-2">
-                          <input
-                            type="text"
+                          <select
                             value={am.project_name}
                             onChange={(e) => {
                               const val = e.target.value;
@@ -2011,8 +2425,18 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel }: 
                                 return { ...prev, po_amendments: list };
                               });
                             }}
-                            className="w-32 rounded border border-border bg-background px-2 py-1 text-xs"
-                          />
+                            className="w-36 rounded border border-border bg-background px-2 py-1 text-xs font-medium cursor-pointer"
+                          >
+                            <option value="">-- Select --</option>
+                            {projectOptions.map((p) => (
+                              <option key={p.id} value={p.name}>
+                                {p.name}
+                              </option>
+                            ))}
+                            {am.project_name && !projectOptions.some((p) => p.name === am.project_name) && (
+                              <option value={am.project_name}>{am.project_name}</option>
+                            )}
+                          </select>
                         </td>
                         <td className="px-3 py-2">
                           <input
@@ -2251,32 +2675,23 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel }: 
               />
             </div>
 
-            {/* Status */}
+            {/* Status.
+
+                Read-only. This was a free dropdown over a private
+                vocabulary, so any user could move a draft with no approval
+                and no receipt straight to "Fulfilled". The status is now
+                whatever the database holds, and it changes only through the
+                guarded transitions in the action bar below. */}
             <div>
-              <label className="block text-[11px] font-bold uppercase text-primary mb-1">PO Stage &amp; Status</label>
-              <select
-                value={form.status}
-                onChange={async (e) => {
-                  const newStatus = e.target.value as any;
-                  updateHeader('status', newStatus);
-                  if (po.id) {
-                    await updatePurchaseOrderStatus(po.id, newStatus);
-                  }
-                }}
-                className="w-full rounded-lg border-2 border-primary bg-background px-3 py-2 font-extrabold text-foreground cursor-pointer"
-              >
-                <option value="Draft">Stage 1: Draft (Auto-Generated / Editable)</option>
-                <option value="Verification">Stage 2: Verification (Pending Audit &amp; Sign-off)</option>
-                <option value="Issued">Stage 3: Issued (Sent to Vendor)</option>
-                <option value="Accepted_By_Vendor">Stage 4: Accepted by Vendor (Order Confirmed)</option>
-                <option value="Fulfilled">Stage 5: Fulfilled (Site Material Delivered)</option>
-                <option value="Cancelled">Cancelled (Revoked)</option>
-              </select>
+              <label className="block text-[11px] font-bold uppercase text-primary mb-1">PO Status</label>
+              <div className="w-full rounded-lg border-2 border-primary bg-muted/40 px-3 py-2 font-extrabold text-foreground">
+                {poStatusLabel(form.status)}
+              </div>
             </div>
           </div>
         </div>
 
-        {/* Form Action Buttons (Status-Driven Dynamic Visibility) */}
+        {/* Form Action Buttons (Status-Driven Dynamic Visibility & Real-time Supabase Persistence) */}
         <div className="flex flex-wrap items-center justify-between border-t border-border pt-4 gap-4">
           <div className="flex items-center gap-4">
             {/* PRINT BUTTON */}
@@ -2294,122 +2709,204 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel }: 
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {/* Cancel Button */}
+            {/* Close / Cancel Button */}
             <button
               type="button"
               onClick={onCancel}
               className="rounded-lg border border-border bg-background px-4 py-2 text-xs font-bold text-muted-foreground hover:bg-muted transition-colors cursor-pointer"
             >
-              Cancel
+              Close
             </button>
 
-            {/* STAGE 1: DRAFT BUTTONS */}
-            {((form.status || '').toLowerCase().includes('draft') || !form.status) && (
+            {/* DRAFT / AUTO DRAFT ACTIONS */}
+            {((normalizePoStatus(form.status) ?? 'draft') === 'draft') && (
               <>
                 <button
-                  type="submit"
-                  className="inline-flex items-center gap-2 rounded-lg bg-secondary px-4 py-2 text-xs font-bold text-secondary-foreground hover:bg-secondary/80 transition-all cursor-pointer"
+                  type="button"
+                  disabled={submitting}
+                  onClick={() => void handleActionWithValidation('draft')}
+                  className="inline-flex items-center gap-2 rounded-lg bg-secondary px-4 py-2 text-xs font-bold text-secondary-foreground hover:bg-secondary/80 transition-all cursor-pointer disabled:opacity-50"
                 >
-                  <FileCheck className="h-4 w-4" /> Save Draft
+                  {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileCheck className="h-4 w-4" />}
+                  Save Draft
                 </button>
 
                 <button
                   type="button"
-                  onClick={async () => {
-                    updateHeader('status', 'Verification');
-                    if (po.id) {
-                      await updatePurchaseOrderStatus(po.id, 'verification');
-                    }
-                    alert('PO submitted for Managerial Verification & Audit Sign-off!');
-                  }}
-                  className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-xs font-bold text-white hover:bg-indigo-700 shadow-md transition-all cursor-pointer"
+                  disabled={submitting}
+                  onClick={() => void handleActionWithValidation('review')}
+                  className="inline-flex items-center gap-2 rounded-lg bg-purple-600 px-4 py-2 text-xs font-bold text-white hover:bg-purple-700 shadow-md transition-all cursor-pointer disabled:opacity-50"
                 >
-                  <Send className="h-4 w-4" /> Submit for Verification
+                  {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                  Send For Review
                 </button>
               </>
             )}
 
-            {/* STAGE 2: VERIFICATION / PENDING APPROVAL BUTTONS */}
-            {((form.status || '').toLowerCase().includes('verif') || (form.status || '').toLowerCase().includes('audit')) && (
+            {/* REVIEW ACTIONS */}
+            {normalizePoStatus(form.status) === 'review' && (
               <>
                 <button
                   type="button"
-                  onClick={async () => {
-                    updateHeader('status', 'Draft');
-                    if (po.id) {
-                      await updatePurchaseOrderStatus(po.id, 'draft');
-                    }
-                  }}
-                  className="inline-flex items-center gap-2 rounded-lg border border-orange-500/30 bg-orange-500/10 px-3 py-2 text-xs font-bold text-orange-600 hover:bg-orange-500/20 transition-all cursor-pointer"
+                  disabled={submitting}
+                  onClick={() => void handleActionWithValidation('draft')}
+                  className="inline-flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-2 text-xs font-bold text-amber-700 dark:text-amber-300 hover:bg-amber-500/20 transition-all cursor-pointer disabled:opacity-50"
                 >
-                  Return to Draft
+                  {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowLeft className="h-4 w-4" />}
+                  Back to Draft
                 </button>
 
                 <button
                   type="button"
-                  onClick={async () => {
-                    updateHeader('status', 'Issued');
-                    if (po.id) {
-                      await updatePurchaseOrderStatus(po.id, 'issued');
-                    }
-                    alert('PO Approved & Officially Issued to Vendor!');
-                  }}
-                  className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700 shadow-md transition-all cursor-pointer"
+                  disabled={submitting}
+                  onClick={() => void handleActionWithValidation('pending_verification')}
+                  className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-xs font-bold text-white hover:bg-indigo-700 shadow-md transition-all cursor-pointer disabled:opacity-50"
                 >
-                  <CheckCircle2 className="h-4 w-4" /> Approve &amp; Issue PO
+                  {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                  Send for Verification
                 </button>
               </>
             )}
 
-            {/* STAGE 3: ISSUED BUTTONS */}
-            {((form.status || '').toLowerCase().includes('issue') || (form.status || '').toLowerCase().includes('approve')) && (
+            {/* PENDING FOR VERIFICATION ACTIONS */}
+            {normalizePoStatus(form.status) === 'pending_verification' && (
               <>
                 <button
                   type="button"
-                  onClick={() => {
-                    alert(`PO ${form.po_number} emailed to Vendor (${form.email_id || form.supplier_name})!`);
-                  }}
-                  className="inline-flex items-center gap-2 rounded-lg bg-purple-600 px-3 py-2 text-xs font-bold text-white hover:bg-purple-700 transition-all cursor-pointer"
+                  disabled={submitting}
+                  onClick={() => void handleActionWithValidation('draft')}
+                  className="inline-flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-2 text-xs font-bold text-amber-700 dark:text-amber-300 hover:bg-amber-500/20 transition-all cursor-pointer disabled:opacity-50"
                 >
-                  <Mail className="h-4 w-4" /> Send Email to Vendor
+                  {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowLeft className="h-4 w-4" />}
+                  Back to Draft
                 </button>
 
                 <button
                   type="button"
-                  onClick={async () => {
-                    updateHeader('status', 'Accepted_By_Vendor');
-                    if (po.id) {
-                      await updatePurchaseOrderStatus(po.id, 'accepted_by_vendor');
-                    }
-                    alert(`PO ${form.po_number} marked as Accepted by Vendor!\n📱 Site Engineers in Mobile App have been notified for site delivery & GRN.`);
-                  }}
-                  className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700 shadow-md transition-all cursor-pointer"
+                  disabled={submitting}
+                  onClick={() => void handleActionWithValidation('review')}
+                  className="inline-flex items-center gap-2 rounded-lg border border-purple-500/30 bg-purple-500/10 px-4 py-2 text-xs font-bold text-purple-700 dark:text-purple-300 hover:bg-purple-500/20 transition-all cursor-pointer disabled:opacity-50"
                 >
-                  <CheckCircle2 className="h-4 w-4" /> Record Vendor Acceptance
+                  {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowLeft className="h-4 w-4" />}
+                  Back to Review
+                </button>
+
+                <button
+                  type="button"
+                  disabled={submitting}
+                  onClick={() => void handleActionWithValidation('pending_approval')}
+                  className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-xs font-bold text-white hover:bg-blue-700 shadow-md transition-all cursor-pointer disabled:opacity-50"
+                >
+                  {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                  Send for Approval
                 </button>
               </>
             )}
 
-            {/* STAGE 4: ACCEPTED BY VENDOR BADGE & NOTIFICATION INDICATOR */}
-            {(form.status || '').toLowerCase().includes('accepted') && (
-              <div className="flex items-center gap-2">
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/15 px-3 py-1.5 text-xs font-extrabold text-emerald-600 border border-emerald-500/30">
-                  <CheckCircle2 className="h-4 w-4" /> Accepted by Vendor (Order Confirmed)
-                </span>
-                <span className="text-[11px] font-semibold text-muted-foreground bg-muted px-2.5 py-1 rounded-md border border-border">
-                  📱 Mobile App Site Engineers Notified
-                </span>
-              </div>
+            {/* PENDING FOR APPROVAL ACTIONS */}
+            {normalizePoStatus(form.status) === 'pending_approval' && (
+              <>
+                <button
+                  type="button"
+                  disabled={submitting}
+                  onClick={() => void handleActionWithValidation('pending_verification')}
+                  className="inline-flex items-center gap-2 rounded-lg border border-indigo-500/30 bg-indigo-500/10 px-4 py-2 text-xs font-bold text-indigo-700 dark:text-indigo-300 hover:bg-indigo-500/20 transition-all cursor-pointer disabled:opacity-50"
+                >
+                  {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowLeft className="h-4 w-4" />}
+                  Back to Verification
+                </button>
+
+                <button
+                  type="button"
+                  disabled={submitting}
+                  onClick={() => setPromptReasonTarget('rejected')}
+                  className="inline-flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2 text-xs font-bold text-white hover:bg-red-700 shadow-md transition-all cursor-pointer disabled:opacity-50"
+                >
+                  {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <XCircle className="h-4 w-4" />}
+                  Reject PO
+                </button>
+
+                <button
+                  type="button"
+                  disabled={submitting}
+                  onClick={() => void handleActionWithValidation('approved')}
+                  className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700 shadow-md transition-all cursor-pointer disabled:opacity-50"
+                >
+                  {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                  Approve PO
+                </button>
+              </>
             )}
 
-            {/* STAGE 5: FULFILLED BADGE */}
-            {((form.status || '').toLowerCase().includes('fulfill') || (form.status || '').toLowerCase().includes('complet')) && (
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-500/15 px-3 py-1.5 text-xs font-extrabold text-blue-600 border border-blue-500/30">
-                <CheckCircle2 className="h-4 w-4" /> Fulfilled &amp; Material Delivered at Site
-              </span>
+            {/* APPROVED ACTIONS */}
+            {normalizePoStatus(form.status) === 'approved' && (
+              <button
+                type="button"
+                disabled={submitting}
+                onClick={() => void handleActionWithValidation('approved')}
+                className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700 shadow-md transition-all cursor-pointer disabled:opacity-50"
+              >
+                {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
+                Reapprove
+              </button>
+            )}
+
+            {/* OTHER / CUSTOM STATUS ACTIONS */}
+            {normalizePoStatus(form.status) !== 'draft' &&
+             normalizePoStatus(form.status) !== 'review' &&
+             normalizePoStatus(form.status) !== 'pending_verification' &&
+             normalizePoStatus(form.status) !== 'pending_approval' &&
+             normalizePoStatus(form.status) !== 'approved' && (
+              <button
+                type="button"
+                disabled={submitting}
+                onClick={() => void handleActionWithValidation(normalizePoStatus(form.status) || 'draft')}
+                className="inline-flex items-center gap-2 rounded-lg bg-secondary px-4 py-2 text-xs font-bold text-secondary-foreground hover:bg-secondary/80 transition-all cursor-pointer disabled:opacity-50"
+              >
+                {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileCheck className="h-4 w-4" />}
+                Save {poStatusLabel(form.status)}
+              </button>
             )}
           </div>
         </div>
+
+        {/* Reason Prompt Dialog for Rejecting */}
+        {promptReasonTarget && (
+          <div className="mt-4 rounded-xl border-2 border-red-400/60 bg-red-50 p-4 dark:bg-red-950/30">
+            <label className="block text-[11px] font-bold uppercase text-red-800 dark:text-red-300 mb-1">
+              Reason for Rejecting Purchase Order (Required)
+            </label>
+            <textarea
+              rows={2}
+              autoFocus
+              value={form.status_reason ?? ''}
+              onChange={(e) => updateHeader('status_reason', e.target.value)}
+              placeholder="Enter rejection reason for audit history..."
+              className="w-full rounded-lg border border-red-400/60 bg-background p-2.5 text-xs font-medium text-foreground"
+            />
+            <div className="mt-2 flex items-center gap-2">
+              <button
+                type="button"
+                disabled={submitting || !form.status_reason?.trim()}
+                onClick={() => {
+                  const target = promptReasonTarget;
+                  setPromptReasonTarget(null);
+                  void handleActionWithValidation(target, form.status_reason);
+                }}
+                className="rounded-lg bg-red-600 px-4 py-2 text-xs font-bold text-white hover:bg-red-700 disabled:opacity-50 cursor-pointer"
+              >
+                Confirm Rejection
+              </button>
+              <button
+                type="button"
+                onClick={() => setPromptReasonTarget(null)}
+                className="rounded-lg border border-border bg-background px-4 py-2 text-xs font-bold text-muted-foreground hover:bg-muted cursor-pointer"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
       </form>
     </div>
   );

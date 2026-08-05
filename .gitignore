@@ -92,3 +92,6 @@ $RECYCLE.BIN/
 *.log
 logs/
 
+# Database dumps / schema dumps
+supabase/schemma/
+

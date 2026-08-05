@@ -14,6 +14,8 @@ import {
   X,
   ShieldCheck,
   AlertTriangle,
+  AlertCircle,
+  History as HistoryIcon,
   FileCheck,
   Scale,
   Edit3,
@@ -28,6 +30,7 @@ import {
   uploadChallanInvoiceDocument,
   fetchPurchaseOrderOptions,
   fetchPoLinesWithBalances,
+  updatePurchaseOrderLine,
   listProcurementProjects,
   type ProcurementProjectOption,
   printGrnReport,
@@ -35,9 +38,13 @@ import {
   findDuplicateInvoice,
   saveGrnInvoiceExtraction,
   type VendorOption,
+  type PoLineWithBalance,
 } from '@/lib/procurement';
+import { GrnPoItemPickerModal } from './grn-po-item-picker-modal';
 
 export interface GrnPurchaseEntry {
+  item_id?: string | null;
+  purchase_order_line_id?: string | null;
   po_no: string;
   item_group: string;
   item_description: string;
@@ -52,6 +59,9 @@ export interface GrnPurchaseEntry {
   return_qty: number;
   challan_qty: number;
   received_qty: number;
+  unit_rate?: number;
+  over_tolerance_pct?: number;
+  max_allowable_qty?: number;
   balance_quantity_allowed: boolean;
   pr_no: string;
   test_report_no: string;
@@ -189,6 +199,14 @@ interface GrnFormProps {
   onCancel: () => void;
 }
 
+function normalizeGrnFormStatus(st?: string): FullGrnFormState['status'] {
+  const s = (st || '').toLowerCase().trim();
+  if (s === 'pending_verification' || s === 'pending verification') return 'Pending Verification';
+  if (s === 'pending_approval' || s === 'pending approval') return 'Pending Approval';
+  if (s === 'approved' || s === 'posted') return 'Approved';
+  return 'Draft';
+}
+
 export function GrnForm({
   grn,
   vendorOptions = [],
@@ -202,6 +220,11 @@ export function GrnForm({
   // Local File states (deferred upload until form submit)
   const [invoiceFile, setInvoiceFile] = useState<File | null>(null);
   const [isInvoiceDirty, setIsInvoiceDirty] = useState(false);
+
+  // PO Item Picker Drawer State
+  const [showPoItemPicker, setShowPoItemPicker] = useState(false);
+  const [currentPoLinesWithBalance, setCurrentPoLinesWithBalance] = useState<PoLineWithBalance[]>([]);
+  const [showExtraItemsTable, setShowExtraItemsTable] = useState(() => Boolean((grn as any).extra_items && ((grn as any).extra_items as any[]).length > 0));
 
   // Deterministic OCR extraction state.
   const [extracting, setExtracting] = useState(false);
@@ -254,29 +277,61 @@ export function GrnForm({
       po_exist: !!(grn.po_number && grn.po_number !== '—' && grn.po_number !== ''),
       from_pos: grn.po_number && grn.po_number !== '—' ? grn.po_number : 'Not Exist',
 
-      purchase_entries: isNew ? [] : [
-        {
-          po_no: grn.po_number || '',
-          item_group: 'Material',
-          item_description: 'Received Goods',
-          item_code: 'ITM-001',
-          item_brand: '',
-          location: 'Main Site Store',
-          unit: 'NOS',
-          purchase_category: 'Direct Construction Material',
-          open: true,
-          approved_qty: 1,
-          as_on_date_po_balance_qty: 1,
-          return_qty: 0,
-          challan_qty: 1,
-          received_qty: 1,
-          balance_quantity_allowed: true,
-          pr_no: '',
-          test_report_no: '',
-          expiry_date: '',
-          current_balance_qty: 0,
-        },
-      ],
+      purchase_entries: (() => {
+        if (isNew) return [];
+        const rawLines: any[] = (grn as any).raw_lines || (grn as any).goods_receipt_note_lines || [];
+        if (rawLines.length > 0) {
+          return rawLines.map((l: any, idx: number) => ({
+            item_id: l.item_id || null,
+            purchase_order_line_id: l.purchase_order_line_id || null,
+            po_no: l.po_number || grn.po_number || '',
+            item_group: l.item_group || 'Material',
+            item_description: l.item_description || 'Received Goods',
+            item_code: l.item_code || `ITM-00${idx + 1}`,
+            item_brand: l.item_brand || '',
+            location: l.location || grn.godown_name || 'Main Site Store',
+            unit: l.unit || 'NOS',
+            purchase_category: l.purchase_category || 'Direct Material',
+            open: true,
+            approved_qty: Number(l.approved_qty ?? l.accepted_qty ?? 1),
+            as_on_date_po_balance_qty: Number(l.po_balance_qty ?? l.accepted_qty ?? 1),
+            return_qty: Number(l.rejected_qty ?? l.return_qty ?? 0),
+            challan_qty: Number(l.challan_qty ?? l.received_qty ?? 1),
+            received_qty: Number(l.received_qty ?? l.accepted_qty ?? 1),
+            unit_rate: Number(l.unit_rate ?? 0),
+            over_tolerance_pct: 5,
+            max_allowable_qty: Number(l.approved_qty ?? l.received_qty ?? 1) * 1.05,
+            balance_quantity_allowed: true,
+            pr_no: l.pr_number || '',
+            test_report_no: l.test_report_no || '',
+            expiry_date: l.expiry_date || '',
+            current_balance_qty: Number(l.current_balance_qty ?? 0),
+          }));
+        }
+        return [
+          {
+            po_no: grn.po_number || '',
+            item_group: 'Material',
+            item_description: 'Received Goods',
+            item_code: 'ITM-001',
+            item_brand: '',
+            location: 'Main Site Store',
+            unit: 'NOS',
+            purchase_category: 'Direct Construction Material',
+            open: true,
+            approved_qty: 1,
+            as_on_date_po_balance_qty: 1,
+            return_qty: 0,
+            challan_qty: 1,
+            received_qty: 1,
+            balance_quantity_allowed: true,
+            pr_no: '',
+            test_report_no: '',
+            expiry_date: '',
+            current_balance_qty: 0,
+          },
+        ];
+      })(),
 
       extra_items: [],
       total_extra_items_received: 0,
@@ -289,38 +344,10 @@ export function GrnForm({
 
       pb_lines_created: isNew ? 0 : 1,
       unlocked_fy: 2026,
-      status: isNew ? 'Draft' : ((grn as any).raw_status || 'Draft') as FullGrnFormState['status'],
+      status: isNew ? 'Draft' : normalizeGrnFormStatus((grn as any).quantity_verification || (grn as any).raw_status || grn?.status),
       assigned_approval_role: '',
     };
   });
-
-  // Supabase fetched Purchase Orders
-  const [poOptions, setPoOptions] = useState<{
-    id: string;
-    po_number: string;
-    vendor_name?: string;
-    material_details?: string;
-    vendor_details?: {
-      gst_number?: string;
-      pan_number?: string;
-      phone?: string;
-      email?: string;
-      address?: string;
-      contact_person?: string;
-    };
-  }[]>([]);
-
-  useEffect(() => {
-    let active = true;
-    fetchPurchaseOrderOptions(undefined, form?.supplier_name).then((list) => {
-      if (active) {
-        setPoOptions(list);
-      }
-    });
-    return () => {
-      active = false;
-    };
-  }, [form?.supplier_name, form?.po_exist]);
 
   // Supabase fetched Project Sites
   const [projectOptions, setProjectOptions] = useState<ProcurementProjectOption[]>([]);
@@ -336,6 +363,60 @@ export function GrnForm({
       active = false;
     };
   }, []);
+
+  // Supabase fetched Purchase Orders
+  const [poOptions, setPoOptions] = useState<{
+    id: string;
+    po_number: string;
+    project_name?: string;
+    vendor_name?: string;
+    company_name?: string;
+    godown_name?: string;
+    material_details?: string;
+    vendor_details?: {
+      gst_number?: string;
+      pan_number?: string;
+      phone?: string;
+      email?: string;
+      address?: string;
+      contact_person?: string;
+    };
+  }[]>([]);
+
+  useEffect(() => {
+    let active = true;
+    const selectedProj = projectOptions.find((p) => p.name === form?.project_name);
+    fetchPurchaseOrderOptions(selectedProj?.id, form?.supplier_name).then((list) => {
+      if (active) {
+        setPoOptions(list);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [form?.project_name, form?.supplier_name, form?.po_exist, projectOptions]);
+
+  useEffect(() => {
+    const total = (form.purchase_entries || []).reduce((sum, entry) => {
+      const recv = Number(entry.received_qty || 0);
+      const ret = Number(entry.return_qty || 0);
+      const acc = Math.max(0, recv - ret);
+      const rate = Number(entry.unit_rate || 0);
+      return sum + acc * rate;
+    }, 0);
+    setForm((prev) => ({ ...prev, account_posting_material_amount: total }));
+  }, [form.purchase_entries]);
+
+  useEffect(() => {
+    const totalCount = (form.purchase_entries || []).length + (form.extra_items || []).length;
+    setForm((prev) => ({ ...prev, pb_lines_created: totalCount }));
+  }, [form.purchase_entries.length, form.extra_items.length]);
+
+  useEffect(() => {
+    if (form.from_pos && form.from_pos !== 'Not Exist') {
+      setNewPoRemark((prev) => ({ ...prev, po_no: prev.po_no || form.from_pos }));
+    }
+  }, [form.from_pos]);
 
   /**
    * Reads the uploaded invoice with the deterministic OCR pipeline and merges the
@@ -925,6 +1006,89 @@ export function GrnForm({
           </h3>
 
           <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2 lg:grid-cols-4">
+            {/* 1. Select Purchase Order */}
+            <div className="sm:col-span-2 lg:col-span-1">
+              <label className="block text-[11px] font-bold uppercase text-primary mb-1">Select Purchase Order*</label>
+              <select
+                value={form.from_pos === 'Not Exist' ? '' : form.from_pos}
+                onChange={async (e) => {
+                  const selectedPoNumber = e.target.value;
+                  const poObj = poOptions.find((p) => p.po_number === selectedPoNumber);
+                  updateHeader('from_pos', selectedPoNumber);
+
+                  setForm((prev) => ({
+                    ...prev,
+                    from_pos: selectedPoNumber,
+                    project_name: poObj?.project_name || prev.project_name,
+                    supplier_name: poObj?.vendor_name || prev.supplier_name,
+                    company_name: poObj?.company_name || prev.company_name,
+                    godown_name: poObj?.godown_name || prev.godown_name,
+                    phone_no: poObj?.vendor_details?.phone || prev.phone_no,
+                    mobile_no: poObj?.vendor_details?.phone || prev.mobile_no,
+                  }));
+
+                  if (poObj?.id) {
+                    const fetchedLines = await fetchPoLinesWithBalances(poObj.id);
+                    if (fetchedLines && fetchedLines.length > 0) {
+                      setCurrentPoLinesWithBalance(fetchedLines);
+                      setShowPoItemPicker(true);
+                    }
+                  }
+                }}
+                className="w-full rounded-lg border-2 border-primary/60 bg-background px-3 py-2 font-mono font-extrabold text-primary text-xs cursor-pointer focus:ring-2 focus:ring-primary shadow-2xs"
+              >
+                <option value="">-- Select Purchase Order --</option>
+                {poOptions.map((po) => {
+                  const desc = [po.material_details].filter(Boolean).join(' - ');
+                  return (
+                    <option key={po.id || po.po_number} value={po.po_number}>
+                      {po.po_number} {desc ? `(${desc})` : ''}
+                    </option>
+                  );
+                })}
+                {form.from_pos && form.from_pos !== 'Not Exist' && !poOptions.some((p) => p.po_number === form.from_pos) && (
+                  <option value={form.from_pos}>{form.from_pos}</option>
+                )}
+              </select>
+            </div>
+
+            {/* 2. Select Items From PO */}
+            <div className="sm:col-span-2 lg:col-span-2">
+              <label className="block text-[11px] font-bold uppercase text-primary mb-1">Select Items From PO*</label>
+              <button
+                type="button"
+                onClick={async () => {
+                  if (currentPoLinesWithBalance.length > 0) {
+                    setShowPoItemPicker(true);
+                  } else if (form.from_pos) {
+                    const poObj = poOptions.find((p) => p.po_number === form.from_pos);
+                    if (poObj?.id) {
+                      const lines = await fetchPoLinesWithBalances(poObj.id);
+                      setCurrentPoLinesWithBalance(lines);
+                      setShowPoItemPicker(true);
+                    }
+                  }
+                }}
+                disabled={!form.from_pos || form.from_pos === 'Not Exist'}
+                className="w-full inline-flex items-center justify-between rounded-lg border-2 border-primary bg-primary/10 px-3 py-2 text-xs font-bold text-primary hover:bg-primary/20 transition-all cursor-pointer shadow-2xs disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <span className="flex items-center gap-2">
+                  <Layers className="h-4 w-4" />
+                  <span>{form.from_pos ? `Select / Filter Items from ${form.from_pos}` : 'Select a PO first'}</span>
+                </span>
+                <span className="rounded bg-primary px-2 py-0.5 text-[10px] text-primary-foreground font-extrabold">
+                  {form.purchase_entries.length} Item(s) Selected ➔
+                </span>
+              </button>
+            </div>
+
+            {/* 3. LINKED SOURCE PR */}
+            <div className="sm:col-span-2 lg:col-span-1">
+              <label className="block text-[11px] font-bold uppercase text-muted-foreground mb-1">LINKED SOURCE PR</label>
+              <div className="w-full rounded-lg border border-border bg-muted/40 px-3 py-2 font-mono font-extrabold text-foreground text-xs truncate">
+                {form.purchase_entries?.[0]?.pr_no || (poOptions.find((p) => p.po_number === form.from_pos) as any)?.purchase_requisitions?.pr_number || 'PR-Not Linked'}
+              </div>
+            </div>
             {/* 1. QC No. */}
             <div>
               <label className="block text-[11px] font-bold uppercase text-muted-foreground mb-1">QC No.</label>
@@ -1346,104 +1510,12 @@ export function GrnForm({
               </>
             )}
 
-            {/* 33. P.O. Exist */}
-            <div>
-              <label className="block text-[11px] font-bold uppercase text-muted-foreground mb-1">P.O. Exist</label>
-              <select
-                value={form.po_exist ? 'Yes' : 'No'}
-                onChange={(e) => {
-                  const exists = e.target.value === 'Yes';
-                  updateHeader('po_exist', exists);
-                  if (!exists) updateHeader('from_pos', 'Not Exist');
-                  else if (form.from_pos === 'Not Exist') updateHeader('from_pos', '');
-                }}
-                className="w-full rounded-lg border-2 border-primary/40 bg-background px-3 py-2 font-bold text-foreground text-xs cursor-pointer"
-              >
-                <option value="No">No</option>
-                <option value="Yes">Yes</option>
-              </select>
-            </div>
-
-            {/* 34. From P.O.s */}
-            {form.po_exist ? (
-              <div className="sm:col-span-2 lg:col-span-3">
-                <label className="block text-[11px] font-bold uppercase text-primary mb-1">From P.O.s</label>
-                <select
-                  value={form.from_pos === 'Not Exist' ? '' : form.from_pos}
-                  onChange={async (e) => {
-                    const selectedPoNumber = e.target.value;
-                    const poObj = poOptions.find((p) => p.po_number === selectedPoNumber);
-                    updateHeader('from_pos', selectedPoNumber);
-
-                    setForm((prev) => ({
-                      ...prev,
-                      from_pos: selectedPoNumber,
-                      supplier_name: poObj?.vendor_name || prev.supplier_name,
-                      phone_no: poObj?.vendor_details?.phone || prev.phone_no,
-                      mobile_no: poObj?.vendor_details?.phone || prev.mobile_no,
-                    }));
-
-                    if (poObj?.id) {
-                      const fetchedLines = await fetchPoLinesWithBalances(poObj.id);
-                      if (fetchedLines && fetchedLines.length > 0) {
-                        const mappedEntries: GrnPurchaseEntry[] = fetchedLines.map((l: any) => ({
-                          po_no: selectedPoNumber,
-                          item_group: l.item_group || 'Material',
-                          item_description: l.item_description,
-                          item_code: l.item_code || '',
-                          item_brand: l.item_brand || '',
-                          location: 'Main Site Store',
-                          unit: l.unit || 'NOS',
-                          purchase_category: 'Direct Construction Material',
-                          open: true,
-                          approved_qty: l.approved_qty,
-                          as_on_date_po_balance_qty: l.as_on_date_po_balance_qty,
-                          return_qty: 0,
-                          challan_qty: l.as_on_date_po_balance_qty,
-                          received_qty: l.as_on_date_po_balance_qty,
-                          balance_quantity_allowed: true,
-                          pr_no: '',
-                          test_report_no: '',
-                          expiry_date: '',
-                          current_balance_qty: 0,
-                        }));
-
-                        setForm((prev) => ({
-                          ...prev,
-                          purchase_entries: mappedEntries,
-                        }));
-                      }
-                    }
-                  }}
-                  className="w-full rounded-lg border-2 border-primary/50 bg-background px-3 py-2 font-mono font-extrabold text-primary text-xs cursor-pointer"
-                >
-                  <option value="">-- Select P.O. Number --</option>
-                  {poOptions.map((po) => {
-                    const desc = [po.vendor_name, po.material_details].filter(Boolean).join(' - ');
-                    return (
-                      <option key={po.id || po.po_number} value={po.po_number}>
-                        {po.po_number} {desc ? `(${desc})` : ''}
-                      </option>
-                    );
-                  })}
-                  {form.from_pos && form.from_pos !== 'Not Exist' && !poOptions.some((p) => p.po_number === form.from_pos) && (
-                    <option value={form.from_pos}>{form.from_pos}</option>
-                  )}
-                </select>
-              </div>
-            ) : (
-              <div className="sm:col-span-2 lg:col-span-3">
-                <label className="block text-[11px] font-bold uppercase text-muted-foreground mb-1">From P.O.s</label>
-                <div className="w-full rounded-lg border-2 border-border bg-muted/40 px-3 py-2.5 font-mono font-extrabold text-muted-foreground text-xs">
-                  Not Exist
-                </div>
-              </div>
-            )}
           </div>
         </div>
 
-        {/* SECTION 2: PURCHASE ENTRIES TABLE (19 Columns + Action) */}
+        {/* SECTION 2: PURCHASE ENTRIES TABLE (21 Columns + Action) */}
         <div className="space-y-3">
+
           <div className="flex items-center justify-between border-b border-border pb-2">
             <div>
               <h3 className="text-xs font-bold uppercase tracking-wider text-foreground flex items-center gap-2">
@@ -1455,275 +1527,256 @@ export function GrnForm({
               </p>
             </div>
 
-            <button
-              type="button"
-              onClick={handleAddPurchaseEntry}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-bold text-primary-foreground hover:bg-primary/90 transition-all cursor-pointer shadow-xs"
-            >
-              <Plus className="h-3.5 w-3.5" /> Add Purchase Entry
-            </button>
-          </div>
-
-          {/* PO Live Balance & Over/Under Delivery Tolerance Guidance Banner */}
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-blue-500/30 bg-blue-500/5 p-3 text-xs shadow-2xs">
-            <div className="flex items-center gap-2.5">
-              <Scale className="h-4 w-4 text-blue-600 shrink-0" />
-              <div>
-                <span className="font-bold text-foreground font-heading">Live PO Balance &amp; Item Over-Delivery Tolerance Engine</span>
-                <p className="text-[11px] text-muted-foreground">
-                  Current receipts are dynamically validated against remaining PO balances and configured <strong>+5% over-delivery tolerance limits</strong>.
-                </p>
-              </div>
-            </div>
             <div className="flex items-center gap-2">
-              <span className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[10px] font-extrabold text-emerald-700 dark:text-emerald-300">
-                ✓ Standard Receipt (&le; Balance)
-              </span>
-              <span className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] font-extrabold text-amber-700 dark:text-amber-300">
-                ⚠️ Within +5% Tolerance
-              </span>
-              <span className="rounded-md border border-red-500/40 bg-red-500/10 px-2 py-1 text-[10px] font-extrabold text-red-700 dark:text-red-300">
-                ❌ Exceeds Tolerance Limit
-              </span>
+              <button
+                type="button"
+                onClick={async () => {
+                  if (currentPoLinesWithBalance.length > 0) {
+                    setShowPoItemPicker(true);
+                  } else if (form.from_pos) {
+                    const poObj = poOptions.find((p) => p.po_number === form.from_pos);
+                    if (poObj?.id) {
+                      const lines = await fetchPoLinesWithBalances(poObj.id);
+                      setCurrentPoLinesWithBalance(lines);
+                      setShowPoItemPicker(true);
+                    }
+                  }
+                }}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-primary bg-primary/10 px-3.5 py-1.5 text-xs font-bold text-primary hover:bg-primary/20 transition-all cursor-pointer shadow-xs"
+              >
+                <Layers className="h-4 w-4" /> Select Items from PO ({form.purchase_entries.length})
+              </button>
+
+              <button
+                type="button"
+                onClick={handleAddPurchaseEntry}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-bold text-muted-foreground hover:bg-muted transition-all cursor-pointer shadow-xs"
+              >
+                <Plus className="h-3.5 w-3.5" /> Manual Entry
+              </button>
             </div>
           </div>
 
           <div className="overflow-x-auto rounded-xl border border-border shadow-2xs">
-            <table className="w-full text-left text-xs whitespace-nowrap">
-              <thead className="bg-muted/60 font-heading text-[10px] font-bold uppercase tracking-wider text-muted-foreground border-b border-border">
-                <tr>
-                  <th className="px-3 py-3 font-bold text-primary min-w-[140px]">1. PO No.*</th>
-                  <th className="px-3 py-3 font-bold text-primary min-w-[140px]">2. Item Group*</th>
-                  <th className="px-3 py-3 font-bold text-primary min-w-[180px]">3. Item Description*</th>
-                  <th className="px-3 py-3 min-w-[110px]">4. Item Code</th>
-                  <th className="px-3 py-3 font-bold text-primary min-w-[130px]">5. Item Brand*</th>
-                  <th className="px-3 py-3 min-w-[140px]">6. Location</th>
-                  <th className="px-3 py-3 font-bold text-primary text-center min-w-[90px]">7. Unit*</th>
-                  <th className="px-3 py-3 min-w-[140px]">8. Purchase Category</th>
-                  <th className="px-3 py-3 text-center min-w-[70px]">9. Open</th>
-                  <th className="px-3 py-3 text-right min-w-[110px]">10. Approved Qty.</th>
-                  <th className="px-3 py-3 text-right min-w-[150px]">11. As on Date PO Balance Qty.</th>
-                  <th className="px-3 py-3 text-right min-w-[100px]">12. Return Qty.</th>
-                  <th className="px-3 py-3 text-right min-w-[100px]">13. Challan Qty.</th>
-                  <th className="px-3 py-3 text-right min-w-[110px]">14. Received Qty.</th>
-                  <th className="px-3 py-3 text-center min-w-[140px]">15. Balance Quantity Allowed</th>
-                  <th className="px-3 py-3 font-bold text-primary min-w-[120px]">16. P.RNo*</th>
-                  <th className="px-3 py-3 min-w-[120px]">17. Test Report No</th>
-                  <th className="px-3 py-3 min-w-[110px]">18. Expiry Date</th>
-                  <th className="px-3 py-3 text-right min-w-[130px]">19. Current Balance Qty</th>
-                  <th className="px-3 py-3 text-center min-w-[70px]">Action</th>
+            <table className="w-full text-left text-xs whitespace-nowrap border-collapse">
+              <thead className="bg-muted/80 font-heading uppercase text-muted-foreground border-b border-border">
+                {/* Row 1: Group Category Banners */}
+                <tr className="border-b border-border/70 text-[10px] font-extrabold tracking-wider text-center">
+                  <th colSpan={3} className="bg-primary/10 text-primary py-2 border-r border-border/60">
+                    📦 1. ITEM IDENTIFICATION &amp; SPECIFICATION
+                  </th>
+                  <th colSpan={3} className="bg-amber-500/10 text-amber-700 dark:text-amber-300 py-2 border-r border-border/60">
+                    📊 2. PO &amp; CUMULATIVE POSITION
+                  </th>
+                  <th colSpan={4} className="bg-blue-500/10 text-blue-700 dark:text-blue-300 py-2 border-r border-border/60">
+                    🚚 3. CURRENT SHIPMENT RECEIPT
+                  </th>
+                  <th colSpan={3} className="bg-purple-500/10 text-purple-700 dark:text-purple-300 py-2 border-r border-border/60">
+                    ⚖️ 4. TOLERANCE &amp; OVER-DELIVERY
+                  </th>
+                  <th colSpan={2} className="bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 py-2">
+                    📋 5. AUDIT &amp; ACTION
+                  </th>
+                </tr>
+
+                {/* Row 2: Detail Sub-Headers */}
+                <tr className="text-[10px] font-bold tracking-wider">
+                  {/* Group 1 */}
+                  <th className="px-3 py-2.5 min-w-[200px]">Item Description</th>
+                  <th className="px-3 py-2.5 min-w-[110px]">Brand / Make</th>
+                  <th className="px-3 py-2.5 text-center border-r border-border/60 min-w-[70px]">Unit</th>
+
+                  {/* Group 2 */}
+                  <th className="px-3 py-2.5 text-right min-w-[90px]">PO Qty</th>
+                  <th className="px-3 py-2.5 text-right min-w-[110px]">Prev. Received</th>
+                  <th className="px-3 py-2.5 text-right border-r border-border/60 min-w-[110px]">Open Balance</th>
+
+                  {/* Group 3 */}
+                  <th className="px-3 py-2.5 text-right min-w-[100px]">Challan Qty</th>
+                  <th className="px-3 py-2.5 text-right min-w-[90px]">Return Qty</th>
+                  <th className="px-3 py-2.5 text-right font-bold text-primary min-w-[110px]">Accepted Qty*</th>
+                  <th className="px-3 py-2.5 text-right border-r border-border/60 min-w-[100px]">Unit Rate (₹)</th>
+
+                  {/* Group 4 */}
+                  <th className="px-3 py-2.5 text-center min-w-[80px]">Tol. %</th>
+                  <th className="px-3 py-2.5 text-right min-w-[100px]">Max Allow.</th>
+                  <th className="px-3 py-2.5 text-center border-r border-border/60 min-w-[140px]">Tolerance Status</th>
+
+                  {/* Group 5 */}
+                  <th className="px-3 py-2.5 text-center min-w-[80px]">Audit</th>
+                  <th className="px-3 py-2.5 text-center min-w-[60px]">Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/60">
                 {form.purchase_entries.length === 0 ? (
                   <tr>
-                    <td colSpan={20} className="px-3 py-6 text-center text-muted-foreground font-sans">
-                      No purchase entries added yet. Click <strong>+ Add Purchase Entry</strong> to add rows.
+                    <td colSpan={15} className="px-3 py-8 text-center text-muted-foreground font-sans">
+                      No purchase entries added yet. Click <strong>🛒 Select Items from PO</strong> or <strong>+ Manual Entry</strong> to add rows.
                     </td>
                   </tr>
                 ) : (
-                  form.purchase_entries.map((item, idx) => (
-                    <tr key={idx} className="hover:bg-muted/30 transition-colors align-middle font-mono">
-                      {/* 1. PO No.* */}
-                      <td className="px-3 py-2">
-                        <input
-                          type="text"
-                          value={item.po_no}
-                          onChange={(e) => handlePurchaseEntryChange(idx, 'po_no', e.target.value)}
-                          className="w-32 rounded border border-border bg-background px-2 py-1 font-sans text-xs font-bold text-primary"
-                        />
-                      </td>
-                      {/* 2. Item Group* */}
-                      <td className="px-3 py-2">
-                        <input
-                          type="text"
-                          value={item.item_group}
-                          onChange={(e) => handlePurchaseEntryChange(idx, 'item_group', e.target.value)}
-                          className="w-32 rounded border border-border bg-background px-2 py-1 font-sans text-xs font-semibold text-foreground"
-                        />
-                      </td>
-                      {/* 3. Item Description* */}
-                      <td className="px-3 py-2">
-                        <input
-                          type="text"
-                          value={item.item_description}
-                          onChange={(e) => handlePurchaseEntryChange(idx, 'item_description', e.target.value)}
-                          className="w-44 rounded border border-border bg-background px-2 py-1 font-sans text-xs font-bold text-foreground"
-                        />
-                      </td>
-                      {/* 4. Item Code */}
-                      <td className="px-3 py-2">
-                        <input
-                          type="text"
-                          value={item.item_code}
-                          onChange={(e) => handlePurchaseEntryChange(idx, 'item_code', e.target.value)}
-                          className="w-24 rounded border border-border bg-background px-2 py-1 text-xs text-muted-foreground"
-                        />
-                      </td>
-                      {/* 5. Item Brand* */}
-                      <td className="px-3 py-2">
-                        <input
-                          type="text"
-                          value={item.item_brand}
-                          onChange={(e) => handlePurchaseEntryChange(idx, 'item_brand', e.target.value)}
-                          className="w-28 rounded border border-border bg-background px-2 py-1 font-sans text-xs font-bold text-foreground"
-                        />
-                      </td>
-                      {/* 6. Location */}
-                      <td className="px-3 py-2">
-                        <input
-                          type="text"
-                          value={item.location}
-                          onChange={(e) => handlePurchaseEntryChange(idx, 'location', e.target.value)}
-                          className="w-32 rounded border border-border bg-background px-2 py-1 font-sans text-xs text-muted-foreground"
-                        />
-                      </td>
-                      {/* 7. Unit* */}
-                      <td className="px-3 py-2 text-center">
-                        <input
-                          type="text"
-                          value={item.unit}
-                          onChange={(e) => handlePurchaseEntryChange(idx, 'unit', e.target.value)}
-                          className="w-16 text-center rounded border border-border bg-background px-1.5 py-1 font-sans text-xs font-bold text-foreground"
-                        />
-                      </td>
-                      {/* 8. Purchase Category */}
-                      <td className="px-3 py-2">
-                        <input
-                          type="text"
-                          value={item.purchase_category}
-                          onChange={(e) => handlePurchaseEntryChange(idx, 'purchase_category', e.target.value)}
-                          className="w-36 rounded border border-border bg-background px-2 py-1 font-sans text-xs text-muted-foreground"
-                        />
-                      </td>
-                      {/* 9. Open */}
-                      <td className="px-3 py-2 text-center">
-                        <input
-                          type="checkbox"
-                          checked={item.open}
-                          onChange={(e) => handlePurchaseEntryChange(idx, 'open', e.target.checked)}
-                          className="h-4 w-4 rounded border-border text-primary focus:ring-primary"
-                        />
-                      </td>
-                      {/* 10. Approved Qty. */}
-                      <td className="px-3 py-2 text-right">
-                        <input
-                          type="number"
-                          value={item.approved_qty}
-                          onChange={(e) => handlePurchaseEntryChange(idx, 'approved_qty', Number(e.target.value))}
-                          className="w-20 rounded border border-border bg-background px-1.5 py-1 text-right text-xs font-extrabold text-foreground"
-                        />
-                      </td>
-                      {/* 11. As on Date PO Balance Qty. */}
-                      <td className="px-3 py-2 text-right">
-                        <input
-                          type="number"
-                          value={item.as_on_date_po_balance_qty}
-                          onChange={(e) => handlePurchaseEntryChange(idx, 'as_on_date_po_balance_qty', Number(e.target.value))}
-                          className="w-24 rounded border border-border bg-background px-1.5 py-1 text-right text-xs font-bold text-muted-foreground"
-                        />
-                      </td>
-                      {/* 12. Return Qty. */}
-                      <td className="px-3 py-2 text-right">
-                        <input
-                          type="number"
-                          value={item.return_qty}
-                          onChange={(e) => handlePurchaseEntryChange(idx, 'return_qty', Number(e.target.value))}
-                          className="w-20 rounded border border-border bg-background px-1.5 py-1 text-right text-xs font-bold text-red-600"
-                        />
-                      </td>
-                      {/* 13. Challan Qty. */}
-                      <td className="px-3 py-2 text-right">
-                        <input
-                          type="number"
-                          value={item.challan_qty}
-                          onChange={(e) => handlePurchaseEntryChange(idx, 'challan_qty', Number(e.target.value))}
-                          className="w-20 rounded border border-border bg-background px-1.5 py-1 text-right text-xs font-extrabold text-primary"
-                        />
-                      </td>
-                      {/* 14. Received Qty. */}
-                      <td className="px-3 py-2 text-right">
-                        <div className="flex flex-col items-end gap-0.5">
+                  form.purchase_entries.map((item, idx) => {
+                    const approvedQty = Number(item.approved_qty || 0);
+                    const prevReceived = (item as any).prev_accepted_qty ?? Math.max(0, approvedQty - Number(item.as_on_date_po_balance_qty || 0));
+                    const openBalance = Number(item.as_on_date_po_balance_qty || 0);
+                    const challanQty = Number(item.challan_qty || 0);
+                    const returnQty = Number(item.return_qty || 0);
+                    const acceptedQty = Math.max(0, challanQty - returnQty);
+                    const tolerancePct = typeof item.over_tolerance_pct === 'number' ? item.over_tolerance_pct : 5;
+                    const maxAllowable = approvedQty * (1 + tolerancePct / 100) - prevReceived;
+
+                    const isOverMax = acceptedQty > maxAllowable + 0.01;
+                    const isWithinTol = !isOverMax && acceptedQty > openBalance + 0.01;
+
+                    return (
+                      <tr key={idx} className="hover:bg-muted/30 transition-colors align-middle font-mono text-xs">
+                        {/* Group 1: Item Identification */}
+                        <td className="px-3 py-2.5">
+                          <div className="font-bold text-foreground font-sans text-xs">
+                            {item.item_description || '—'}
+                          </div>
+                          {item.po_no && (
+                            <div className="text-[10px] text-muted-foreground font-mono mt-0.5">
+                              • {item.po_no}
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-3 py-2.5 font-sans">
+                          <input
+                            type="text"
+                            value={item.item_brand}
+                            onChange={(e) => handlePurchaseEntryChange(idx, 'item_brand', e.target.value)}
+                            className="w-24 rounded border border-border bg-background px-2 py-1 text-xs font-semibold text-foreground"
+                          />
+                        </td>
+                        <td className="px-3 py-2.5 text-center border-r border-border/60">
+                          <input
+                            type="text"
+                            value={item.unit}
+                            onChange={(e) => handlePurchaseEntryChange(idx, 'unit', e.target.value)}
+                            className="w-14 text-center rounded border border-border bg-background px-1.5 py-1 text-xs font-bold text-foreground"
+                          />
+                        </td>
+
+                        {/* Group 2: PO & Cumulative Position */}
+                        <td className="px-3 py-2.5 text-right font-bold text-foreground">
+                          {approvedQty.toLocaleString('en-IN')}
+                        </td>
+                        <td className="px-3 py-2.5 text-right text-muted-foreground">
+                          {prevReceived.toLocaleString('en-IN')}
+                        </td>
+                        <td className="px-3 py-2.5 text-right font-extrabold text-amber-600 dark:text-amber-400 border-r border-border/60">
+                          {openBalance.toLocaleString('en-IN')}
+                        </td>
+
+                        {/* Group 3: Current Shipment Receipt */}
+                        <td className="px-3 py-2.5 text-right">
                           <input
                             type="number"
-                            value={item.received_qty}
-                            onChange={(e) => handlePurchaseEntryChange(idx, 'received_qty', Number(e.target.value))}
-                            className={`w-24 rounded border px-1.5 py-1 text-right text-xs font-extrabold transition-colors ${
-                              (item.received_qty || 0) > (item.as_on_date_po_balance_qty || 0) * 1.05 + 0.01
-                                ? 'border-red-500 bg-red-500/10 text-red-700 dark:text-red-300 ring-1 ring-red-500'
-                                : (item.received_qty || 0) > (item.as_on_date_po_balance_qty || 0)
-                                ? 'border-amber-500 bg-amber-500/10 text-amber-800 dark:text-amber-300 ring-1 ring-amber-500'
-                                : 'border-border bg-background text-foreground'
-                            }`}
-                            title={`Live PO Balance: ${item.as_on_date_po_balance_qty || 0}. Max Allowable (+5% Tol): ${((item.as_on_date_po_balance_qty || 0) * 1.05).toFixed(2)}`}
+                            step="0.01"
+                            value={item.challan_qty}
+                            onChange={(e) => {
+                              const val = Number(e.target.value) || 0;
+                              handlePurchaseEntryChange(idx, 'challan_qty', val);
+                              handlePurchaseEntryChange(idx, 'received_qty', val);
+                            }}
+                            className="w-20 rounded border border-primary/50 bg-background px-2 py-1 text-right font-extrabold text-primary text-xs"
                           />
-                          {(item.received_qty || 0) > (item.as_on_date_po_balance_qty || 0) * 1.05 + 0.01 ? (
-                            <span className="text-[9px] font-extrabold text-red-600 dark:text-red-400">❌ Exceeds 5% Tol</span>
-                          ) : (item.received_qty || 0) > (item.as_on_date_po_balance_qty || 0) ? (
-                            <span className="text-[9px] font-extrabold text-amber-600 dark:text-amber-400">⚠️ +5% Tol</span>
+                        </td>
+                        <td className="px-3 py-2.5 text-right">
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={item.return_qty}
+                            onChange={(e) => handlePurchaseEntryChange(idx, 'return_qty', Number(e.target.value) || 0)}
+                            className="w-16 rounded border border-border bg-background px-1.5 py-1 text-right font-bold text-red-600 text-xs"
+                          />
+                        </td>
+                        <td className="px-3 py-2.5 text-right font-extrabold text-emerald-600 dark:text-emerald-400">
+                          {acceptedQty.toLocaleString('en-IN')}
+                        </td>
+                        <td className="px-3 py-2.5 text-right border-r border-border/60">
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={item.unit_rate || 0}
+                            onChange={(e) => handlePurchaseEntryChange(idx, 'unit_rate', Number(e.target.value) || 0)}
+                            className="w-20 rounded border border-border bg-background px-1.5 py-1 text-right text-xs font-bold text-foreground"
+                          />
+                        </td>
+
+                        {/* Group 4: Tolerance & Over-Delivery */}
+                        <td className="px-3 py-2.5 text-center">
+                          <input
+                            type="number"
+                            step="0.5"
+                            value={item.over_tolerance_pct ?? 5}
+                            onChange={(e) => {
+                              const newPct = Math.max(0, Number(e.target.value) || 0);
+                              handlePurchaseEntryChange(idx, 'over_tolerance_pct', newPct);
+                              const newCeiling = approvedQty * (1 + newPct / 100) - prevReceived;
+                              handlePurchaseEntryChange(idx, 'max_allowable_qty', Math.max(0, newCeiling));
+                              if (item.purchase_order_line_id) {
+                                updatePurchaseOrderLine(item.purchase_order_line_id, { over_tolerance_pct: newPct });
+                              }
+                            }}
+                            className="w-14 rounded border border-purple-400/50 bg-background px-1.5 py-1 text-center font-bold text-purple-600 dark:text-purple-400 text-xs"
+                          />
+                        </td>
+                        <td className="px-3 py-2.5 text-right text-muted-foreground font-semibold">
+                          {maxAllowable.toLocaleString('en-IN', { maximumFractionDigits: 2 })}
+                        </td>
+                        <td className="px-3 py-2.5 text-center border-r border-border/60">
+                          {isOverMax ? (
+                            <span className="inline-flex items-center gap-1 rounded bg-red-500/10 px-2 py-0.5 text-[10px] font-extrabold text-red-600 dark:text-red-400 border border-red-500/30">
+                              <AlertCircle className="h-3 w-3" /> Exceeds +{tolerancePct}% Tol
+                            </span>
+                          ) : isWithinTol ? (
+                            <span className="inline-flex items-center gap-1 rounded bg-amber-500/10 px-2 py-0.5 text-[10px] font-extrabold text-amber-700 dark:text-amber-300 border border-amber-500/30">
+                              <Scale className="h-3 w-3" /> Within +{tolerancePct}% Tol
+                            </span>
                           ) : (
-                            <span className="text-[9px] font-semibold text-emerald-600 dark:text-emerald-400">✓ In Balance</span>
+                            <span className="inline-flex items-center gap-1 rounded bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold text-emerald-600 dark:text-emerald-400 border border-emerald-500/30">
+                              <CheckCircle2 className="h-3 w-3" /> ✓ Standard Receipt
+                            </span>
                           )}
-                        </div>
-                      </td>
-                      {/* 15. Balance Quantity Allowed */}
-                      <td className="px-3 py-2 text-center">
-                        <input
-                          type="checkbox"
-                          checked={item.balance_quantity_allowed}
-                          onChange={(e) => handlePurchaseEntryChange(idx, 'balance_quantity_allowed', e.target.checked)}
-                          className="h-4 w-4 rounded border-border text-primary focus:ring-primary"
-                        />
-                      </td>
-                      {/* 16. P.RNo* */}
-                      <td className="px-3 py-2">
-                        <input
-                          type="text"
-                          value={item.pr_no}
-                          onChange={(e) => handlePurchaseEntryChange(idx, 'pr_no', e.target.value)}
-                          className="w-28 rounded border border-border bg-background px-2 py-1 font-sans text-xs font-bold text-primary"
-                        />
-                      </td>
-                      {/* 17. Test Report No */}
-                      <td className="px-3 py-2">
-                        <input
-                          type="text"
-                          value={item.test_report_no}
-                          onChange={(e) => handlePurchaseEntryChange(idx, 'test_report_no', e.target.value)}
-                          className="w-28 rounded border border-border bg-background px-2 py-1 font-sans text-xs text-muted-foreground"
-                        />
-                      </td>
-                      {/* 18. Expiry Date */}
-                      <td className="px-3 py-2">
-                        <input
-                          type="date"
-                          value={item.expiry_date}
-                          onChange={(e) => handlePurchaseEntryChange(idx, 'expiry_date', e.target.value)}
-                          className="w-28 rounded border border-border bg-background px-1.5 py-1 font-sans text-xs text-muted-foreground"
-                        />
-                      </td>
-                      {/* 19. Current Balance Qty */}
-                      <td className="px-3 py-2 text-right">
-                        <input
-                          type="number"
-                          value={item.current_balance_qty}
-                          onChange={(e) => handlePurchaseEntryChange(idx, 'current_balance_qty', Number(e.target.value))}
-                          className="w-24 rounded border border-border bg-background px-1.5 py-1 text-right text-xs font-bold text-foreground"
-                        />
-                      </td>
-                      {/* Action: Remove */}
-                      <td className="px-3 py-2 text-center">
-                        <button
-                          type="button"
-                          onClick={() => handleRemovePurchaseEntry(idx)}
-                          className="rounded p-1 text-red-600 hover:bg-red-50 transition-colors cursor-pointer"
-                          title="Remove Purchase Entry"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </td>
-                    </tr>
-                  ))
+                        </td>
+
+                        {/* Group 5: Audit & Action */}
+                        <td className="px-3 py-2.5 text-center">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (currentPoLinesWithBalance.length > 0) {
+                                setShowPoItemPicker(true);
+                              } else if (form.from_pos) {
+                                const poObj = poOptions.find((p) => p.po_number === form.from_pos);
+                                if (poObj?.id) {
+                                  fetchPoLinesWithBalances(poObj.id).then((lines) => {
+                                    setCurrentPoLinesWithBalance(lines);
+                                    setShowPoItemPicker(true);
+                                  });
+                                }
+                              }
+                            }}
+                            className="inline-flex items-center gap-1 rounded border border-border bg-background px-2 py-1 text-[10px] font-bold text-primary hover:bg-primary/10 transition-all cursor-pointer"
+                            title="Audit Receipt History"
+                          >
+                             <HistoryIcon className="h-3.5 w-3.5" /> Audit
+                          </button>
+                        </td>
+                        <td className="px-3 py-2.5 text-center">
+                          <button
+                            type="button"
+                            onClick={() => handleRemovePurchaseEntry(idx)}
+                            className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors cursor-pointer"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>
@@ -1731,33 +1784,45 @@ export function GrnForm({
         </div>
 
         {/* SECTION 3: EXTRA ITEM RECEIVED TABLE (10 Columns + Action) */}
-        <div className="space-y-3">
-          <div className="flex items-center justify-between border-b border-border pb-2">
-            <div>
-              <h3 className="text-xs font-bold uppercase tracking-wider text-foreground flex items-center gap-2">
+        <div className="space-y-3 rounded-xl border border-border/60 bg-muted/20 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <label className="flex items-center gap-2.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={showExtraItemsTable}
+                onChange={(e) => {
+                  const checked = e.target.checked;
+                  setShowExtraItemsTable(checked);
+                  if (checked && form.extra_items.length === 0) {
+                    handleAddExtraItem();
+                  }
+                }}
+                className="h-4 w-4 rounded border-border text-primary focus:ring-primary cursor-pointer"
+              />
+              <span className="text-xs font-bold uppercase tracking-wider text-foreground flex items-center gap-2">
                 <Plus className="h-4 w-4 text-primary" />
-                3. Extra Item Received Table ({form.extra_items.length})
-              </h3>
-              <p className="text-[11px] font-semibold text-muted-foreground">
-                Unscheduled / Bonus Material Items
-              </p>
-            </div>
+                3. Include Extra / Unscheduled Bonus Material Items ({form.extra_items.length})
+              </span>
+            </label>
 
-            <button
-              type="button"
-              onClick={handleAddExtraItem}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-emerald-700 transition-all cursor-pointer shadow-xs"
-            >
-              <Plus className="h-3.5 w-3.5" /> Add Extra Item
-            </button>
+            {showExtraItemsTable && (
+              <button
+                type="button"
+                onClick={handleAddExtraItem}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-emerald-700 transition-all cursor-pointer shadow-xs"
+              >
+                <Plus className="h-3.5 w-3.5" /> Add Extra Item
+              </button>
+            )}
           </div>
 
-          {form.extra_items.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-border p-4 text-center text-xs text-muted-foreground">
-              No extra un-ordered items added yet. Click <strong>+ Add Extra Item</strong> to add rows.
-            </div>
-          ) : (
-            <div className="overflow-x-auto rounded-xl border border-border shadow-2xs">
+          {showExtraItemsTable && (
+            form.extra_items.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-border p-4 text-center text-xs text-muted-foreground bg-background">
+                No extra un-ordered items added yet. Click <strong>+ Add Extra Item</strong> to add rows.
+              </div>
+            ) : (
+              <div className="overflow-x-auto rounded-xl border border-border bg-background shadow-2xs">
               <table className="w-full text-left text-xs whitespace-nowrap">
                 <thead className="bg-muted/60 font-heading text-[10px] font-bold uppercase tracking-wider text-muted-foreground border-b border-border">
                   <tr>
@@ -1865,7 +1930,7 @@ export function GrnForm({
                 </tbody>
               </table>
             </div>
-          )}
+          ))}
         </div>
 
         {/* ========================================================================= */}
@@ -2133,139 +2198,179 @@ export function GrnForm({
             </div>
           </div>
 
-          {/* ---------- DRAFT STATUS BUTTONS ---------- */}
-          {form.status === 'Draft' && (
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                onClick={onCancel}
-                className="rounded-lg border border-border bg-background px-4 py-2 text-xs font-bold text-muted-foreground hover:bg-muted transition-colors cursor-pointer"
-              >
-                Cancel
-              </button>
+          {/* ---------- DYNAMIC WORKFLOW STATUS BUTTONS ---------- */}
+          {(() => {
+            const activeStatus = normalizeGrnFormStatus(form.status);
 
-              <button
-                type="button"
-                onClick={() => {
-                  updateHeader('status', 'Draft');
-                  onSubmit({ ...form, status: 'Draft' });
-                }}
-                className="inline-flex items-center gap-2 rounded-lg border-2 border-amber-500/50 bg-amber-500/10 px-4 py-2 text-xs font-bold text-amber-700 dark:text-amber-300 hover:bg-amber-500/20 transition-all cursor-pointer"
-              >
-                <Save className="h-4 w-4" /> Save as Draft
-              </button>
+            if (activeStatus === 'Draft') {
+              return (
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={onCancel}
+                    className="rounded-lg border border-border bg-background px-4 py-2 text-xs font-bold text-muted-foreground hover:bg-muted transition-colors cursor-pointer"
+                  >
+                    Close
+                  </button>
 
-              <button
-                type="button"
-                onClick={() => {
-                  updateHeader('status', 'Pending Verification');
-                  onSubmit({ ...form, status: 'Pending Verification' });
-                }}
-                className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-5 py-2 text-xs font-bold text-white hover:bg-blue-700 shadow-md transition-all cursor-pointer"
-              >
-                <Send className="h-4 w-4" /> Send for Verification
-              </button>
-            </div>
-          )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      updateHeader('status', 'Draft');
+                      onSubmit({ ...form, status: 'Draft' });
+                    }}
+                    className="inline-flex items-center gap-2 rounded-lg border-2 border-amber-500/50 bg-amber-500/10 px-4 py-2 text-xs font-bold text-amber-700 dark:text-amber-300 hover:bg-amber-500/20 transition-all cursor-pointer"
+                  >
+                    <Save className="h-4 w-4" /> Save Draft
+                  </button>
 
-          {/* ---------- PENDING VERIFICATION STATUS BUTTONS ---------- */}
-          {form.status === 'Pending Verification' && (
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                onClick={() => {
-                  updateHeader('status', 'Draft');
-                  onSubmit({ ...form, status: 'Draft' });
-                }}
-                className="inline-flex items-center gap-2 rounded-lg border-2 border-amber-500/50 bg-amber-500/10 px-4 py-2 text-xs font-bold text-amber-700 dark:text-amber-300 hover:bg-amber-500/20 transition-all cursor-pointer"
-              >
-                <ArrowLeft className="h-4 w-4" /> Return to Draft
-              </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      updateHeader('status', 'Pending Verification');
+                      onSubmit({ ...form, status: 'Pending Verification' });
+                    }}
+                    className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-5 py-2 text-xs font-bold text-white hover:bg-blue-700 shadow-md transition-all cursor-pointer"
+                  >
+                    <Send className="h-4 w-4" /> Send for Verification
+                  </button>
+                </div>
+              );
+            }
 
-              <div className="flex items-center gap-1.5">
-                <select
-                  value={form.assigned_approval_role || ''}
-                  onChange={(e) => updateHeader('assigned_approval_role', e.target.value)}
-                  className="rounded-lg border-2 border-purple-500/50 bg-background px-3 py-2 text-xs font-bold text-foreground cursor-pointer"
-                >
-                  <option value="">Select Role…</option>
-                  <option value="Site Engineer">Site Engineer</option>
-                  <option value="Store Keeper">Store Keeper</option>
-                  <option value="Project Manager">Project Manager</option>
-                  <option value="Purchase Manager">Purchase Manager</option>
-                  <option value="QC Inspector">QC Inspector</option>
-                  <option value="Upper Management">Upper Management</option>
-                </select>
+            if (activeStatus === 'Pending Verification') {
+              return (
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={onCancel}
+                    className="rounded-lg border border-border bg-background px-4 py-2 text-xs font-bold text-muted-foreground hover:bg-muted transition-colors cursor-pointer"
+                  >
+                    Close
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      updateHeader('status', 'Draft');
+                      onSubmit({ ...form, status: 'Draft' });
+                    }}
+                    className="inline-flex items-center gap-2 rounded-lg border-2 border-amber-500/50 bg-amber-500/10 px-4 py-2 text-xs font-bold text-amber-700 dark:text-amber-300 hover:bg-amber-500/20 transition-all cursor-pointer"
+                  >
+                    <ArrowLeft className="h-4 w-4" /> Back to Draft
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      updateHeader('status', 'Approved');
+                      onSubmit({ ...form, status: 'Approved' });
+                    }}
+                    className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-5 py-2 text-xs font-bold text-white hover:bg-emerald-700 shadow-md transition-all cursor-pointer"
+                  >
+                    <ShieldCheck className="h-4 w-4" /> Approve
+                  </button>
+                </div>
+              );
+            }
+
+            if (activeStatus === 'Pending Approval') {
+              return (
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={onCancel}
+                    className="rounded-lg border border-border bg-background px-4 py-2 text-xs font-bold text-muted-foreground hover:bg-muted transition-colors cursor-pointer"
+                  >
+                    Close
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      updateHeader('status', 'Draft');
+                      onSubmit({ ...form, status: 'Draft' });
+                    }}
+                    className="inline-flex items-center gap-2 rounded-lg border-2 border-amber-500/50 bg-amber-500/10 px-4 py-2 text-xs font-bold text-amber-700 dark:text-amber-300 hover:bg-amber-500/20 transition-all cursor-pointer"
+                  >
+                    <ArrowLeft className="h-4 w-4" /> Back to Draft
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      updateHeader('status', 'Approved');
+                      onSubmit({ ...form, status: 'Approved' });
+                    }}
+                    className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-5 py-2 text-xs font-bold text-white hover:bg-emerald-700 shadow-md transition-all cursor-pointer"
+                  >
+                    <ShieldCheck className="h-4 w-4" /> Approve
+                  </button>
+                </div>
+              );
+            }
+
+            return (
+              <div className="flex items-center gap-3">
                 <button
                   type="button"
-                  disabled={!form.assigned_approval_role}
-                  onClick={() => {
-                    updateHeader('status', 'Pending Approval');
-                    onSubmit({ ...form, status: 'Pending Approval' });
-                  }}
-                  className="inline-flex items-center gap-2 rounded-lg bg-purple-600 px-4 py-2 text-xs font-bold text-white hover:bg-purple-700 shadow-xs transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                  onClick={onCancel}
+                  className="rounded-lg border border-border bg-background px-4 py-2 text-xs font-bold text-muted-foreground hover:bg-muted transition-colors cursor-pointer"
                 >
-                  <UserCheck className="h-4 w-4" /> Assign for Approval
+                  Close
                 </button>
+                <div className="inline-flex items-center gap-2 rounded-lg bg-emerald-500/15 border border-emerald-500/30 px-4 py-2 text-xs font-extrabold text-emerald-700 dark:text-emerald-300">
+                  <ShieldCheck className="h-4 w-4" /> GRN Approved
+                </div>
               </div>
-
-              <button
-                type="button"
-                onClick={() => {
-                  updateHeader('status', 'Approved');
-                  onSubmit({ ...form, status: 'Approved' });
-                }}
-                className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-5 py-2 text-xs font-bold text-white hover:bg-emerald-700 shadow-md transition-all cursor-pointer"
-              >
-                <ShieldCheck className="h-4 w-4" /> Send for PB (GRN Approved)
-              </button>
-            </div>
-          )}
-
-          {/* ---------- PENDING APPROVAL STATUS BUTTONS ---------- */}
-          {form.status === 'Pending Approval' && (
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                onClick={() => {
-                  updateHeader('status', 'Draft');
-                  onSubmit({ ...form, status: 'Draft' });
-                }}
-                className="inline-flex items-center gap-2 rounded-lg border-2 border-amber-500/50 bg-amber-500/10 px-4 py-2 text-xs font-bold text-amber-700 dark:text-amber-300 hover:bg-amber-500/20 transition-all cursor-pointer"
-              >
-                <ArrowLeft className="h-4 w-4" /> Return to Draft
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  updateHeader('status', 'Approved');
-                  onSubmit({ ...form, status: 'Approved' });
-                }}
-                className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-5 py-2 text-xs font-bold text-white hover:bg-emerald-700 shadow-md transition-all cursor-pointer"
-              >
-                <ShieldCheck className="h-4 w-4" /> Send for PB (GRN Approved)
-              </button>
-            </div>
-          )}
-
-          {/* ---------- APPROVED STATUS BUTTONS ---------- */}
-          {form.status === 'Approved' && (
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                onClick={onCancel}
-                className="rounded-lg border border-border bg-background px-4 py-2 text-xs font-bold text-muted-foreground hover:bg-muted transition-colors cursor-pointer"
-              >
-                Close
-              </button>
-              <div className="inline-flex items-center gap-2 rounded-lg bg-emerald-500/15 border border-emerald-500/30 px-4 py-2 text-xs font-extrabold text-emerald-700 dark:text-emerald-300">
-                <ShieldCheck className="h-4 w-4" /> GRN Approved — PB Lines Created
-              </div>
-            </div>
-          )}
+            );
+          })()}
         </div>
       </form>
+
+      {/* Slide-over PO Item Picker & Multi-GRN Audit History Modal */}
+      {showPoItemPicker && (
+        <GrnPoItemPickerModal
+          poNumber={form.from_pos}
+          poLines={currentPoLinesWithBalance}
+          alreadySelectedPoLineIds={form.purchase_entries.map((e) => e.purchase_order_line_id || '').filter(Boolean)}
+          onConfirmSelection={(selectedItems) => {
+            const mapped: GrnPurchaseEntry[] = selectedItems.map(({ line, receivingQty }) => ({
+              item_id: line.item_id || null,
+              purchase_order_line_id: line.po_line_id,
+              po_no: form.from_pos,
+              item_group: line.item_group || '',
+              item_description: line.item_description || '',
+              item_code: line.item_code || '',
+              item_brand: line.item_brand || '',
+              location: form.godown_name || form.project_name || '',
+              unit: line.unit || 'nos',
+              purchase_category: line.purchase_category || line.item_group || '',
+              open: true,
+              approved_qty: line.approved_qty,
+              as_on_date_po_balance_qty: line.as_on_date_po_balance_qty,
+              return_qty: 0,
+              challan_qty: receivingQty,
+              received_qty: receivingQty,
+              unit_rate: line.unit_rate || 0,
+              over_tolerance_pct: typeof line.over_tolerance_pct === 'number' ? line.over_tolerance_pct : 0,
+              max_allowable_qty: line.approved_qty * (1 + (typeof line.over_tolerance_pct === 'number' ? line.over_tolerance_pct : 0) / 100) - line.prev_accepted_qty,
+              balance_quantity_allowed: true,
+              pr_no: line.pr_no || '',
+              test_report_no: '',
+              expiry_date: '',
+              current_balance_qty: 0,
+            }));
+
+            setForm((prev) => ({
+              ...prev,
+              purchase_entries: mapped,
+            }));
+            setShowPoItemPicker(false);
+          }}
+          onClose={() => setShowPoItemPicker(false)}
+        />
+      )}
     </div>
   );
 }

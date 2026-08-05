@@ -6,8 +6,15 @@ import { requireSupabaseUser } from '@/lib/supabase/server';
  *
  * Requires an authenticated session (this route previously had no auth check
  * at all) and reads through the caller's own client so row level security
- * applies. As with the PR route, no PDF is rendered into storage — the
- * returned URL is the printable preview.
+ * applies.
+ *
+ * No PDF is rendered into storage here. The route used to return a
+ * `storagePath` of `purchase-orders/<id>/<number>.pdf` whenever the column
+ * was null — a path to a file that had never been written — so callers
+ * that trusted it went on to request a signed URL for a nonexistent
+ * object. `storagePath` is now returned only when a file genuinely exists;
+ * otherwise it is null and `signedUrl` points at the live preview, which
+ * is rendered on demand from the order's current data.
  */
 export async function POST(
   req: NextRequest,
@@ -40,11 +47,11 @@ export async function POST(
     }
 
     const row = po as { po_number?: string; pdf_storage_path?: string | null };
-    const poNumber = row.po_number || `PO-${id.slice(0, 8)}`;
 
     return NextResponse.json({
       purchaseOrderId: id,
-      storagePath: row.pdf_storage_path || `purchase-orders/${id}/${poNumber}.pdf`,
+      poNumber: row.po_number ?? null,
+      storagePath: row.pdf_storage_path ?? null,
       signedUrl: `/api/procurement/preview-pdf?type=PO&id=${encodeURIComponent(id)}`,
     });
   } catch (err: unknown) {

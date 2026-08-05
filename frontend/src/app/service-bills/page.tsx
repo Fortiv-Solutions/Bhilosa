@@ -12,7 +12,13 @@ import {
   Wrench,
   Plus,
 } from 'lucide-react';
-import { listServiceBills, approveServiceBill, rejectServiceBill, type ServiceBillRow } from '@/lib/service-bills';
+import {
+  listServiceBills,
+  approveServiceBill,
+  rejectServiceBill,
+  verifyServiceBill,
+  type ServiceBillRow,
+} from '@/lib/service-bills';
 import { isLiveSupabase } from '@/lib/erp/supabase-modules';
 import { useAppStore } from '@/store/use-app-store';
 import { formatIndianCurrency } from '@/utils/format-currency';
@@ -60,29 +66,30 @@ export default function ServiceBillsPage() {
   }, [refresh]);
 
   const totalBilled = bills.reduce((total, bill) => total + Number(bill.total_amount || 0), 0);
-  const approvedAmount = bills
+  // "Certified" is the figure that has actually become project cost in the budget
+  // ledger — approved and paid bills only.
+  const certifiedAmount = bills
     .filter((bill) => bill.status === 'approved' || bill.status === 'paid')
     .reduce((total, bill) => total + Number(bill.total_amount || 0), 0);
+  const retentionHeld = bills
+    .filter((bill) => bill.status === 'approved' || bill.status === 'paid')
+    .reduce((total, bill) => total + Number(bill.retention_amount || 0), 0);
   const rejectedCount = bills.filter((bill) => bill.status === 'rejected').length;
 
-  async function handleApprove(billId: string) {
+  async function runAction(billId: string, action: () => Promise<{ error: Error | null }>) {
     setActioningId(billId);
-    const result = await approveServiceBill(billId);
+    setError(null);
+    const result = await action();
     setActioningId(null);
-    if (result.error) {
-      setError(result.error.message);
-    } else {
-      refresh();
-    }
+    // Server-side rules (QC gate, no-WO-no-bill) surface here verbatim.
+    if (result.error) setError(result.error.message);
+    else refresh();
   }
 
   async function handleReject(billId: string) {
-    const remarks = window.prompt('Reason for rejection:');
-    if (!remarks) return;
-    setActioningId(billId);
-    await rejectServiceBill(billId, remarks);
-    setActioningId(null);
-    refresh();
+    const reason = window.prompt('Reason for rejection:');
+    if (!reason?.trim()) return;
+    await runAction(billId, () => rejectServiceBill(billId, reason));
   }
 
   return (
@@ -135,9 +142,9 @@ export default function ServiceBillsPage() {
 
       <section className="grid grid-cols-1 gap-3 sm:grid-cols-4">
         <Metric label="Total Bills" value={bills.length.toString()} icon={ReceiptIndianRupee} />
-        <Metric label="Submitted Value" value={formatIndianCurrency(totalBilled)} icon={CircleDollarSign} />
-        <Metric label="Approved Value" value={formatIndianCurrency(approvedAmount)} icon={FileCheck2} />
-        <Metric label="Rejected" value={rejectedCount.toString()} icon={AlertTriangle} tone={rejectedCount ? 'danger' : 'success'} />
+        <Metric label="Claimed Value" value={formatIndianCurrency(totalBilled)} icon={CircleDollarSign} />
+        <Metric label="Certified (in budget)" value={formatIndianCurrency(certifiedAmount)} icon={FileCheck2} />
+        <Metric label="Retention Held" value={formatIndianCurrency(retentionHeld)} icon={AlertTriangle} tone={rejectedCount ? 'danger' : 'neutral'} />
       </section>
 
       <section className="rounded-lg border border-border bg-card p-4 shadow-sm">
@@ -151,10 +158,12 @@ export default function ServiceBillsPage() {
             <thead className="border-b border-gray-200 text-gray-400 dark:border-gray-800">
               <tr>
                 <th className="pb-3">Bill</th>
+                <th className="pb-3">RA</th>
                 <th className="pb-3">Vendor / Contractor</th>
                 <th className="pb-3">Work Order</th>
-                <th className="pb-3">WO Remaining</th>
-                <th className="pb-3">Amount</th>
+                <th className="pb-3 text-right">Gross</th>
+                <th className="pb-3 text-right">Retention</th>
+                <th className="pb-3 text-right">Net Payable</th>
                 <th className="pb-3">Bill Date</th>
                 <th className="pb-3">Status</th>
                 <th className="pb-3 text-right">Action</th>
@@ -163,11 +172,22 @@ export default function ServiceBillsPage() {
             <tbody>
               {bills.map((bill) => (
                 <tr key={bill.id} className="border-b border-gray-50 dark:border-gray-850 hover:bg-muted/30 transition-colors">
-                  <td className="py-3 font-bold">{bill.bill_number}</td>
+                  <td className="py-3 font-bold">
+                    {bill.bill_number}
+                    {bill.supplier_bill_no && (
+                      <span className="ml-1 font-normal text-gray-400">/ {bill.supplier_bill_no}</span>
+                    )}
+                  </td>
+                  <td className="py-3 text-gray-500">{bill.ra_sequence ? `RA-${bill.ra_sequence}` : '-'}</td>
                   <td className="py-3 text-gray-500">{bill.vendors?.display_name || bill.vendors?.legal_name || 'Vendor'}</td>
                   <td className="py-3 text-gray-500">{bill.work_orders?.work_order_number || <PendingPill label="Unlinked" />}</td>
-                  <td className="py-3 text-gray-500">{bill.work_orders ? formatIndianCurrency(Number(bill.work_orders.remaining_balance || 0)) : '-'}</td>
-                  <td className="py-3 font-bold">{formatIndianCurrency(Number(bill.total_amount || 0))}</td>
+                  <td className="py-3 text-right font-bold">{formatIndianCurrency(Number(bill.total_amount || 0))}</td>
+                  <td className="py-3 text-right text-gray-500">
+                    {Number(bill.retention_amount || 0) > 0 ? `−${formatIndianCurrency(Number(bill.retention_amount))}` : '-'}
+                  </td>
+                  <td className="py-3 text-right font-bold text-primary">
+                    {formatIndianCurrency(Number(bill.net_payable_amount || bill.total_amount || 0))}
+                  </td>
                   <td className="py-3 text-gray-500">{bill.bill_date}</td>
                   <td className="py-3">
                     <span className={`inline-flex rounded-full border px-2 py-1 text-[10px] font-bold uppercase ${statusTone(bill.status)}`}>
@@ -178,13 +198,25 @@ export default function ServiceBillsPage() {
                     <div className="flex justify-end gap-2">
                       {bill.status !== 'approved' && bill.status !== 'rejected' && bill.status !== 'paid' && (
                         <>
+                          {/* Site verification of measured work, ahead of commercial certification. */}
+                          {bill.status === 'submitted' && (
+                            <button
+                              type="button"
+                              disabled={actioningId === bill.id}
+                              onClick={() => runAction(bill.id, () => verifyServiceBill(bill.id))}
+                              className="rounded-md border border-blue-200 bg-blue-50 px-3 py-1.5 font-bold text-blue-700 hover:bg-blue-100 shadow-sm transition-colors text-xs disabled:opacity-50"
+                            >
+                              Verify
+                            </button>
+                          )}
                           <button
                             type="button"
                             disabled={actioningId === bill.id}
-                            onClick={() => handleApprove(bill.id)}
+                            onClick={() => runAction(bill.id, () => approveServiceBill(bill.id))}
+                            title="Certifies the bill: posts cost to the budget and releases the Work Order's commitment"
                             className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1.5 font-bold text-emerald-700 hover:bg-emerald-100 shadow-sm transition-colors text-xs disabled:opacity-50"
                           >
-                            Approve
+                            Certify
                           </button>
                           <button
                             type="button"

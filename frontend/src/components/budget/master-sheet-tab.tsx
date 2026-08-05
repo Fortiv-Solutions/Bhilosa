@@ -275,10 +275,19 @@ export default function MasterSheetTab({ permissions }: { permissions: BudgetPer
       setShowJustificationModal(false);
       setJustification('');
       await refresh();
+
+      // Since Phase 7 a Master Budget save RAISES a change document; the
+      // baseline is untouched until it is approved. Reporting it as saved would
+      // leave the user believing a number changed when it has not.
+      const applied = (revision as { status?: string }).status === 'approved';
+      const reference =
+        (revision as { document_number?: string }).document_number || revision.version_label;
+      const netChange = `₹${Math.round(revision.net_diff_amount).toLocaleString('en-IN')}`;
+
       setNotice(
-        `Saved to Supabase as ${revision.version_label}. ${patches.length} line item(s) revised, net change ₹${Math.round(
-          revision.net_diff_amount,
-        ).toLocaleString('en-IN')}.`,
+        applied
+          ? `Applied as ${reference}. ${patches.length} line item(s) revised, net change ${netChange}.`
+          : `Raised as ${reference} — awaiting approval. ${patches.length} line item(s) proposed, net change ${netChange}. The Master Budget is unchanged until it is signed off under Budget Changes.`,
       );
     } catch (err) {
       setSaveError(

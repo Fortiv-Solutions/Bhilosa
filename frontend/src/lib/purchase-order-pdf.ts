@@ -371,15 +371,41 @@ export async function generatePurchaseOrderPdfBlob(po: Partial<PurchaseOrderRow>
     y -= 16;
   });
 
-  const grandTotal = subtotal + totalTax;
+  // The printed order must show the figure that was actually approved and
+  // committed to budget, which the database derives from the lines plus the
+  // header charges. Falling back to the locally summed lines would reprint the
+  // old bug where the PDF, the approval screen and the budget disagreed.
+  const money = (value: unknown): number => {
+    const parsed = Number(value ?? 0);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+  const transportTaxable = money(po.transportation_taxable_amount);
+  const transportTax = money(po.transportation_tax_amount);
+  const loadingCharges = money(po.loading_unloading_charges);
+  const otherCharges = money(po.other_charges);
+  const freight = money(po.freight_amount);
+
+  const headerTotal = money(po.total_amount);
+  const derivedTotal =
+    subtotal + totalTax + transportTaxable + transportTax + loadingCharges + otherCharges + freight;
+  const grandTotal = headerTotal > 0 ? headerTotal : derivedTotal;
+
+  // Sum of per-line discounts, which the database has already applied inside
+  // each line's subtotal_amount. Printed for transparency, not re-subtracted.
+  const totalDiscount = (po.purchase_order_lines ?? []).reduce(
+    (sum, line) => sum + money((line as { discount_amount?: number }).discount_amount),
+    money(po.discount_amount),
+  );
+
+  const amount = (value: number): string => value.toFixed(2);
 
   // 5. TOTALS SUMMARY GRID
-  drawKvRow(y, 16, 'Total Gross Amount', `${subtotal.toFixed(2)}`, 'Tax On Transportation Principal Amount*', String((po as any).tax_on_transportation_principal_amount || '0.00'), true); y -= 16;
-  drawKvRow(y, 16, 'Total Tax Code Amount', `${totalTax.toFixed(2)}`, 'Tax Code for Tax On Transportation*', String((po as any).tax_code_for_tax_on_transportation || '')); y -= 16;
-  drawKvRow(y, 16, 'HSN/SAC Code for Tax On Transportation*', String((po as any).hsn_sac_code_for_tax_on_transportation || ''), 'Tax Code Amount for Tax On Transportation', String((po as any).tax_code_amount_for_tax_on_transportation || '0.00')); y -= 16;
-  drawKvRow(y, 16, 'Net Amount', `${grandTotal.toFixed(2)}`, 'Total Amount', `${grandTotal.toFixed(2)}`, true, true); y -= 16;
-  drawKvRow(y, 16, 'Total Discount Amount', '0.00', 'Total Amount in Words', numberToWords(grandTotal), false, true); y -= 16;
-  drawKvRow(y, 16, 'Loading/Unloading Charges', String((po as any).loading_unloading_charges || ''), 'Other Charges', String((po as any).other_charges || '')); y -= 16;
+  drawKvRow(y, 16, 'Total Gross Amount', amount(subtotal), 'Tax On Transportation Principal Amount*', amount(transportTaxable), true); y -= 16;
+  drawKvRow(y, 16, 'Total Tax Code Amount', amount(totalTax), 'Tax Code for Tax On Transportation*', sanitizeWinAnsi(po.transportation_tax_code)); y -= 16;
+  drawKvRow(y, 16, 'HSN/SAC Code for Tax On Transportation*', sanitizeWinAnsi(po.transportation_hsn_code), 'Tax Code Amount for Tax On Transportation', amount(transportTax)); y -= 16;
+  drawKvRow(y, 16, 'Net Amount', amount(grandTotal), 'Total Amount', amount(grandTotal), true, true); y -= 16;
+  drawKvRow(y, 16, 'Total Discount Amount', amount(totalDiscount), 'Total Amount in Words', numberToWords(grandTotal), false, true); y -= 16;
+  drawKvRow(y, 16, 'Loading/Unloading Charges', amount(loadingCharges), 'Other Charges', amount(otherCharges)); y -= 16;
 
   y -= 10;
   y = checkNewPage(y, 100);

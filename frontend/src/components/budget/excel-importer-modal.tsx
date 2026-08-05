@@ -493,20 +493,49 @@ export default function ExcelImporterModal({
         {step === 2 && (
           <div className="mt-5 space-y-4">
             {result ? (
-              <div className="space-y-2 rounded-xl border border-emerald-300 bg-emerald-50 p-4 dark:border-emerald-900/40 dark:bg-emerald-950/25">
-                <p className="flex items-center gap-2 text-sm font-bold text-emerald-900 dark:text-emerald-300">
+              // Since Phase 7 an import RAISES A CHANGE DOCUMENT; it no longer
+              // rewrites the live baseline on upload. Saying "committed" when the
+              // sheet is still awaiting approval would be a lie the user acts on.
+              <div
+                className={`space-y-2 rounded-xl border p-4 ${
+                  result.requires_approval
+                    ? 'border-blue-300 bg-blue-50 dark:border-blue-900/40 dark:bg-blue-950/25'
+                    : 'border-emerald-300 bg-emerald-50 dark:border-emerald-900/40 dark:bg-emerald-950/25'
+                }`}
+              >
+                <p
+                  className={`flex items-center gap-2 text-sm font-bold ${
+                    result.requires_approval
+                      ? 'text-blue-900 dark:text-blue-300'
+                      : 'text-emerald-900 dark:text-emerald-300'
+                  }`}
+                >
                   <CheckCircle2 className="h-5 w-5" aria-hidden="true" />
-                  Committed to Supabase as Excel Import v{result.version_number}
+                  {result.requires_approval
+                    ? `Raised as ${result.document_number ?? `v${result.version_number}`} — awaiting approval`
+                    : `Applied as ${result.document_number ?? `v${result.version_number}`}`}
                 </p>
-                <ul className="ml-7 list-disc space-y-0.5 text-xs font-semibold text-emerald-800 dark:text-emerald-400">
-                  <li>{result.inserted} line item(s) added</li>
-                  <li>{result.updated} line item(s) updated</li>
-                  {result.archived > 0 && <li>{result.archived} line item(s) archived</li>}
+                <ul
+                  className={`ml-7 list-disc space-y-0.5 text-xs font-semibold ${
+                    result.requires_approval
+                      ? 'text-blue-800 dark:text-blue-400'
+                      : 'text-emerald-800 dark:text-emerald-400'
+                  }`}
+                >
+                  <li>{result.inserted} line item(s) to be added</li>
+                  <li>{result.updated} line item(s) to be updated</li>
+                  {result.archived > 0 && <li>{result.archived} line item(s) to be retired</li>}
                   <li>
                     Baseline ₹{Math.round(result.old_total).toLocaleString('en-IN')} → ₹
                     {Math.round(result.new_total).toLocaleString('en-IN')}
                   </li>
                 </ul>
+                {result.requires_approval && (
+                  <p className="ml-7 text-[11px] text-blue-800 dark:text-blue-400">
+                    The Master Budget is unchanged until this is approved. Review and sign it off under{' '}
+                    <strong>Budget Changes</strong>.
+                  </p>
+                )}
               </div>
             ) : (
               <>

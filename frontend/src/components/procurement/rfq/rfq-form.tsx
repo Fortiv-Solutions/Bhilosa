@@ -192,9 +192,18 @@ export function RfqForm({
     approvedPr.delivery_address ||
     `Site Office, Block A, ${autoProjectName}, Ring Road, Surat, Gujarat - 395007`;
 
-  // Derive initial status from approvedPr status
-  const getInitialStatus = (pr: PurchaseRequisitionRow): RfqStatusType => {
-    const s = (pr?.status || '').toLowerCase();
+  // Derive initial status from RFQ DB status, falling back to approvedPr status
+  const getInitialStatus = (pr: PurchaseRequisitionRow, rfqDbStatus?: string | null): RfqStatusType => {
+    const rfqSt = (rfqDbStatus || '').toLowerCase().trim();
+    if (rfqSt === 'published' || rfqSt === 'rfq_sent' || rfqSt === 'rfq sent') return 'RFQ Sent';
+    if (rfqSt === 'quotes_received' || rfqSt === 'quotations_received' || rfqSt === 'quotes received') return 'Quotes Received';
+    if (rfqSt === 'under_evaluation' || rfqSt === 'under evaluation') return 'Under Evaluation';
+    if (rfqSt === 'awarded' || rfqSt === 'vendor_selected' || rfqSt === 'vendor selected') return 'Awarded';
+    if (rfqSt === 'po_issued' || rfqSt === 'po issued') return 'PO Issued';
+    if (rfqSt === 'cancelled') return 'Cancelled';
+    if (rfqSt === 'draft') return 'Draft';
+
+    const s = (pr?.status || '').toLowerCase().trim();
     if (s === 'rfq_sent') return 'RFQ Sent';
     if (s === 'quotes_received') return 'Quotes Received';
     if (s === 'under_evaluation') return 'Under Evaluation';
@@ -290,15 +299,8 @@ export function RfqForm({
   const [selectedFocusItemIdx, setSelectedFocusItemIdx] = useState<number>(0);
   const [itemSearchQuery, setItemSearchQuery] = useState<string>('');
   
-  // Sync status and load saved RFQ details (header, suppliers, line rates) from Supabase on mount
+  // Load saved RFQ details (header, suppliers, line rates, status) from Supabase on mount
   useEffect(() => {
-    if (approvedPr) {
-      setForm((prev) => ({
-        ...prev,
-        status: getInitialStatus(approvedPr),
-      }));
-    }
-
     async function loadSavedRfqData() {
       if (!approvedPr?.id) return;
       try {
@@ -366,7 +368,7 @@ export function RfqForm({
               delivery_address: rfq.delivery_address || prev.delivery_address,
               remarks: cleanRemarks,
               process_type: rfq.process_type || prev.process_type,
-              status: getInitialStatus(approvedPr),
+              status: getInitialStatus(approvedPr, rfq.status),
               selected_quotation_url: rfq.selected_quotation_url || prev.selected_quotation_url,
               suppliers: savedSuppliers.length > 0 ? savedSuppliers : prev.suppliers,
               items: savedItems.length > 0 ? savedItems : prev.items,

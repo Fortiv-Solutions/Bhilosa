@@ -1,43 +1,60 @@
 'use client';
 
-import {
-  ShoppingBag,
-  Building2,
-  Layers,
-  FileCheck2,
-  CheckCircle2,
-  Edit3,
-  FileText,
-  Printer,
-  Eye,
-  Check,
-  PackageCheck,
-} from 'lucide-react';
+import { ShoppingBag, Building2, Edit3, Printer, Eye, Check, PackageCheck, XCircle, Ban } from 'lucide-react';
 import type { PurchaseOrderRow } from '@/lib/procurement';
-
-/** PO states in which goods may still be received. */
-const RECEIVABLE_STATUSES = new Set([
-  'approved',
-  'sent_to_vendor',
-  'acknowledged',
-  'partially_delivered',
-]);
+import {
+  normalizePoStatus,
+  poStatusLabel,
+  poStatusTone,
+  isPoReceivable,
+  isPoEditable,
+  PO_TRANSITIONS,
+} from '@/lib/erp/purchase-order/status';
 
 interface PoTableViewProps {
   purchaseOrders: PurchaseOrderRow[];
   onOpenPoForm: (po: PurchaseOrderRow) => void;
   onPrintPo?: (po: PurchaseOrderRow) => void;
   onApprove?: (po: PurchaseOrderRow) => void;
+  /** Opens the reason prompt; rejection is refused server-side without one. */
+  onReject?: (po: PurchaseOrderRow) => void;
+  onCancel?: (po: PurchaseOrderRow) => void;
+  /** Records the supplier's confirmation of an issued order. */
+  onAcknowledge?: (po: PurchaseOrderRow) => void;
   onReceiveGoods?: (po: PurchaseOrderRow) => void;
   canApprove?: boolean;
 }
 
 function formatDate(dateStr: string | null | undefined): string {
   if (!dateStr) return '—';
-  return new Date(dateStr).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+  const parsed = new Date(dateStr);
+  if (Number.isNaN(parsed.getTime())) return '—';
+  return parsed.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
 }
 
-export function PoTableView({ purchaseOrders, onOpenPoForm, onPrintPo, onApprove, onReceiveGoods, canApprove }: PoTableViewProps) {
+function formatAmount(value: number | null | undefined): string {
+  const amount = Number(value ?? 0);
+  if (!Number.isFinite(amount)) return '—';
+  return `₹${amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+/** An em dash for anything the record genuinely does not carry. */
+function orDash(value: string | null | undefined): string {
+  const trimmed = String(value ?? '').trim();
+  return trimmed || '—';
+}
+
+export function PoTableView({
+  purchaseOrders,
+  onOpenPoForm,
+  onPrintPo,
+  onApprove,
+  onReject,
+  onCancel,
+  onAcknowledge,
+  onReceiveGoods,
+  canApprove,
+}: PoTableViewProps) {
   if (purchaseOrders.length === 0) {
     return (
       <div className="rounded-2xl border border-dashed border-border bg-card p-12 text-center shadow-xs">
@@ -46,7 +63,8 @@ export function PoTableView({ purchaseOrders, onOpenPoForm, onPrintPo, onApprove
           No Purchase Orders Found
         </p>
         <p className="mt-1 text-xs text-muted-foreground/70 font-medium">
-          Once an RFQ or Direct PO is approved, Auto Draft POs will appear here automatically for verification and dispatch.
+          Draft purchase orders appear here once they are generated from an approved RFQ award, or
+          created directly with the New PO Form.
         </p>
       </div>
     );
@@ -60,183 +78,116 @@ export function PoTableView({ purchaseOrders, onOpenPoForm, onPrintPo, onApprove
             <thead>
               <tr className="border-b border-border bg-muted/50 font-heading text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
                 <th className="px-3 py-3.5 w-12 text-center">SR NO.</th>
-                <th className="px-4 py-3.5 min-w-[150px]">PO NAME</th>
-                <th className="px-3 py-3.5">PO Date</th>
-                <th className="px-4 py-3.5 min-w-[180px]">Name Of Company</th>
-                <th className="px-4 py-3.5 min-w-[140px]">Project Name</th>
-                <th className="px-4 py-3.5 min-w-[180px]">Supplier Name</th>
-                <th className="px-4 py-3.5 min-w-[180px]">PO in the name of</th>
-                <th className="px-3 py-3.5 font-mono">from P.R. No.</th>
-                <th className="px-3 py-3.5 font-mono">GST NO.</th>
-                <th className="px-4 py-3.5 min-w-[140px]">Location</th>
+                <th className="px-4 py-3.5 min-w-[150px]">PO No. & Date</th>
+                <th className="px-4 py-3.5 min-w-[140px]">Project</th>
+                <th className="px-4 py-3.5 min-w-[180px]">Supplier</th>
+                <th className="px-3 py-3.5 min-w-[150px]">Linked Source</th>
+                <th className="px-3 py-3.5 text-right">Amount (₹)</th>
                 <th className="px-3 py-3.5 text-center">Status</th>
                 <th className="px-4 py-3.5 text-right">Action</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border/60">
               {purchaseOrders.map((po, idx) => {
-                const poStatus = (po.status || 'draft').toLowerCase();
-                const isDraft = poStatus === 'draft' || poStatus === 'draft_auto';
-                // `pending_approval` is the real DB status for a PO awaiting management sign-off.
-                const isPending = poStatus === 'pending_approval' || poStatus === 'verification' || poStatus === 'under_review';
-                const isIssued = poStatus === 'issued' || poStatus === 'approved' || poStatus === 'sent_to_vendor';
-                const isAcceptedByVendor = poStatus === 'accepted_by_vendor';
-                const isPartiallyReceived = poStatus === 'partially_received';
-                const isShortClosed = poStatus === 'short_closed';
-                const isFulfilled = poStatus === 'fulfilled' || poStatus === 'completed' || poStatus === 'delivered';
-
-                // Supplier Details
-                const supplierName = po.vendors?.display_name || po.vendors?.legal_name || 'UltraTech Cement Ltd.';
-                const poInTheNameOf = (po as any).po_in_the_name_of || 'Pramukh Group Infrastructure Ltd.';
-                const companyName = (po as any).company_name || 'Pramukh Group Infrastructure Ltd.';
-                const projectName = (po as any).project_name || 'Central Park';
-                const prNo = po.purchase_requisition_id ? 'PR-20260718-004' : (po as any).pr_number || 'PR-Approved';
-                const gstNo = po.vendors?.gst_number || (po as any).vendor_gstin || '—';
-                const location = (po as any).location || 'Surat Site Office';
+                const status = normalizePoStatus(po.status);
+                const supplierName =
+                  po.supplier_name || po.vendors?.display_name || po.vendors?.legal_name;
+                const gstNo = po.gst_no || po.vendors?.gst_number;
+                const prNo = po.purchase_requisitions?.pr_number;
+                const rfqNo = po.comparative_statement_no || (po.rfq_id ? `RFQ-${po.rfq_id.slice(0, 6).toUpperCase()}` : null);
 
                 return (
                   <tr key={po.id || idx} className="group hover:bg-muted/30 transition-colors align-middle">
-                    {/* 1. SR NO. */}
                     <td className="px-3 py-3 text-center font-bold text-muted-foreground">{idx + 1}</td>
 
-                    {/* 2. PO NAME */}
+                    {/* PO No. & Date */}
                     <td className="px-4 py-3">
-                      <div className="flex flex-col">
-                        <span className="font-mono font-bold text-foreground hover:text-primary transition-colors text-xs">
-                          {po.po_number || `PO-20260722-${(idx + 1).toString().padStart(3, '0')}`}
-                        </span>
-                        {isDraft && (
-                          <span className="text-[9px] text-amber-700 dark:text-amber-300 font-extrabold uppercase">
-                            ⚡ Auto Draft
-                          </span>
-                        )}
+                      <div className="font-mono font-bold text-foreground text-xs">
+                        {orDash(po.po_number)}
+                      </div>
+                      <div className="text-[10px] font-medium text-muted-foreground">
+                        {formatDate(po.po_date || po.created_at)}
                       </div>
                     </td>
 
-                    {/* 3. PO Date */}
-                    <td className="px-3 py-3 font-medium text-foreground text-xs">
-                      {formatDate(po.po_date || po.created_at)}
-                    </td>
-
-                    {/* 4. Name Of Company */}
-                    <td className="px-4 py-3 font-bold text-foreground text-xs truncate max-w-[180px]">
-                      {companyName}
-                    </td>
-
-                    {/* 5. Project Name */}
-                    <td className="px-4 py-3 font-semibold text-muted-foreground text-xs flex items-center gap-1">
-                      <Building2 className="h-3 w-3 text-muted-foreground/60 shrink-0" />
-                      <span>{projectName}</span>
-                    </td>
-
-                    {/* 6. Supplier Name */}
-                    <td className="px-4 py-3 font-bold text-foreground text-xs truncate max-w-[180px]">
-                      {supplierName}
-                    </td>
-
-                    {/* 7. PO in the name of */}
-                    <td className="px-4 py-3 font-semibold text-foreground text-xs truncate max-w-[180px]">
-                      {poInTheNameOf}
-                    </td>
-
-                    {/* 8. from P.R. No. */}
-                    <td className="px-3 py-3">
-                      <span className="inline-flex items-center rounded bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-bold font-mono text-blue-600 dark:text-blue-400">
-                        {prNo}
+                    {/* Project */}
+                    <td className="px-4 py-3 font-semibold text-muted-foreground text-xs">
+                      <span className="flex items-center gap-1">
+                        <Building2 className="h-3 w-3 text-muted-foreground/60 shrink-0" />
+                        <span className="truncate max-w-[140px]">{orDash(po.projects?.name)}</span>
                       </span>
                     </td>
 
-                    {/* 9. GST NO. */}
-                    <td className="px-3 py-3 font-mono text-muted-foreground text-xs">
-                      {isDraft && (gstNo === '—' || !gstNo) ? (
-                        <span className="text-muted-foreground font-semibold text-xs">—</span>
-                      ) : (
-                        <span className="font-bold text-foreground">{gstNo}</span>
-                      )}
+                    {/* Supplier with GST */}
+                    <td className="px-4 py-3">
+                      <div className="font-bold text-foreground text-xs truncate max-w-[180px]">
+                        {orDash(supplierName)}
+                      </div>
+                      <div className="text-[10px] font-mono text-muted-foreground">
+                        {gstNo ? `GST: ${gstNo}` : 'GST: —'}
+                      </div>
                     </td>
 
-                    {/* 10. Location */}
-                    <td className="px-4 py-3 font-medium text-muted-foreground text-xs truncate max-w-[140px]">
-                      {location}
+                    {/* Linked Source (PR & RFQ) */}
+                    <td className="px-3 py-3 font-mono text-xs">
+                      <div className="flex flex-col gap-0.5">
+                        {prNo ? (
+                          <span className="inline-flex items-center rounded bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-bold text-blue-600 dark:text-blue-400 w-max">
+                            PR: {prNo}
+                          </span>
+                        ) : null}
+                        {rfqNo ? (
+                          <span className="inline-flex items-center rounded bg-purple-500/10 px-1.5 py-0.5 text-[10px] font-bold text-purple-600 dark:text-purple-400 w-max">
+                            RFQ: {rfqNo}
+                          </span>
+                        ) : null}
+                        {!prNo && !rfqNo ? (
+                          <span className="text-muted-foreground">—</span>
+                        ) : null}
+                      </div>
                     </td>
 
-                    {/* 11. Status */}
+                    {/* Amount */}
+                    <td className="px-3 py-3 text-right font-mono font-bold text-foreground text-xs">
+                      {formatAmount(po.total_amount)}
+                    </td>
+
+                    {/* Status */}
                     <td className="px-3 py-3 text-center">
-                      {isDraft ? (
-                        <span className="inline-flex items-center gap-1 rounded-md border border-amber-200 bg-amber-100 px-2 py-0.5 text-[10px] font-extrabold text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
-                          📌 Auto Draft
-                        </span>
-                      ) : isPending ? (
-                        <span className="inline-flex items-center gap-1 rounded-md border border-purple-200 bg-purple-100 px-2 py-0.5 text-[10px] font-extrabold text-purple-800 dark:bg-purple-950/40 dark:text-purple-300">
-                          🔍 Pending Audit
-                        </span>
-                      ) : isPartiallyReceived ? (
-                        <span className="inline-flex items-center gap-1 rounded-md border border-cyan-300 bg-cyan-100 px-2 py-0.5 text-[10px] font-extrabold text-cyan-800 dark:bg-cyan-950/40 dark:text-cyan-300">
-                          📦 Partially Received
-                        </span>
-                      ) : isShortClosed ? (
-                        <span className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-slate-100 px-2 py-0.5 text-[10px] font-extrabold text-slate-800 dark:bg-slate-800/40 dark:text-slate-300">
-                          🔒 Short Closed
-                        </span>
-                      ) : isAcceptedByVendor ? (
-                        <span className="inline-flex items-center gap-1 rounded-md border border-emerald-300 bg-emerald-100 px-2 py-0.5 text-[10px] font-extrabold text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300">
-                          <CheckCircle2 className="h-3 w-3" /> Vendor Accepted
-                        </span>
-                      ) : isIssued ? (
-                        <span className="inline-flex items-center gap-1 rounded-md border border-blue-200 bg-blue-100 px-2 py-0.5 text-[10px] font-extrabold text-blue-800 dark:bg-blue-950/40 dark:text-blue-300">
-                          <FileCheck2 className="h-3 w-3" /> Issued
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-100 px-2 py-0.5 text-[10px] font-extrabold text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300">
-                          <CheckCircle2 className="h-3 w-3" /> Fulfilled
-                        </span>
-                      )}
+                      <span
+                        className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[10px] font-extrabold ${poStatusTone(po.status)}`}
+                        title={po.rejection_reason || po.cancellation_reason || undefined}
+                      >
+                        {poStatusLabel(po.status)}
+                      </span>
                     </td>
 
-                    {/* 12. Action */}
+                    {/* Action */}
                     <td className="px-4 py-3 text-right">
                       <div className="flex items-center justify-end gap-1.5">
-                        {isPending && canApprove && onApprove && (
-                          <button
-                            onClick={() => onApprove(po)}
-                            className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-xs font-bold text-emerald-800 dark:text-emerald-200 hover:bg-emerald-500/20 transition-all shadow-2xs"
-                            title="Approve and send this Purchase Order to the vendor"
-                          >
-                            <Check className="h-3.5 w-3.5 text-emerald-600" />
-                            <span>Approve &amp; Send</span>
-                          </button>
-                        )}
-                        {onReceiveGoods && RECEIVABLE_STATUSES.has((po.status || '').toLowerCase()) && (
-                          <button
-                            onClick={() => onReceiveGoods(po)}
-                            className="inline-flex items-center gap-1.5 rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-1.5 text-xs font-bold text-sky-800 dark:text-sky-200 hover:bg-sky-500/20 transition-all shadow-2xs"
-                            title="Record a goods receipt against this Purchase Order"
-                          >
-                            <PackageCheck className="h-3.5 w-3.5 text-sky-600" />
-                            <span>Receive Goods</span>
-                          </button>
-                        )}
-                        {isDraft ? (
+                        {isPoEditable(po.status) ? (
                           <button
                             onClick={() => onOpenPoForm(po)}
-                            className="inline-flex items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs font-bold text-amber-900 dark:text-amber-200 hover:bg-amber-500/20 transition-all shadow-2xs"
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-xs font-bold text-amber-900 dark:text-amber-200 hover:bg-amber-500/20 transition-all shadow-2xs cursor-pointer"
+                            title="Edit Purchase Order"
                           >
                             <Edit3 className="h-3.5 w-3.5 text-amber-600" />
-                            <span>Edit Form</span>
+                            <span>Edit</span>
                           </button>
                         ) : (
                           <button
                             onClick={() => onOpenPoForm(po)}
-                            className="inline-flex items-center gap-1.5 rounded-lg border border-primary/40 bg-primary/10 px-3 py-1.5 text-xs font-bold text-primary hover:bg-primary/20 transition-all shadow-2xs"
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-primary/40 bg-primary/10 px-2.5 py-1.5 text-xs font-bold text-primary hover:bg-primary/20 transition-all shadow-2xs cursor-pointer"
+                            title="View Purchase Order Details"
                           >
                             <Eye className="h-3.5 w-3.5" />
-                            <span>Open Form</span>
+                            <span>View</span>
                           </button>
                         )}
 
                         <button
                           onClick={() => onPrintPo?.(po)}
-                          className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs font-bold text-muted-foreground hover:bg-muted hover:text-foreground transition-all shadow-2xs"
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs font-bold text-muted-foreground hover:bg-muted hover:text-foreground transition-all shadow-2xs cursor-pointer"
                           title="Print Purchase Order PDF"
                         >
                           <Printer className="h-3.5 w-3.5" />

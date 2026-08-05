@@ -43,6 +43,7 @@ import {
   recommendVendorSelection,
   reviewMaterialRequestInventory,
   issueMaterialFromStock,
+  setPurchaseOrderStatus,
   savePurchaseBill,
   savePurchaseOrderForm,
   updateGrnStatus,
@@ -71,7 +72,11 @@ import {
 } from '@/components/procurement/rfq/rfq-sourcing-basket';
 import MaterialRequestWorkQueue from '@/components/procurement/material-request-work-queue';
 import { POWorkspace } from '@/components/procurement/po/po-workspace';
-import type { FullPoFormState } from '@/components/procurement/po/po-form';
+import {
+  buildPurchaseOrderPayload,
+  type FullPoFormState,
+} from '@/components/procurement/po/po-form';
+import { normalizePoStatus, poStatusLabel, type PoStatus } from '@/lib/erp/purchase-order/status';
 import { GrnWorkspace } from '@/components/procurement/grn/grn-workspace';
 import { BillsWorkspace } from '@/components/procurement/bills/bills-workspace';
 import { useAppStore } from '@/store/use-app-store';
@@ -99,6 +104,7 @@ const emptyData: ProcurementDashboardData = {
   inventorySnapshots: [],
   vendors: [],
   prAttachments: [],
+  purchaseOrderCount: 0,
 };
 
 export interface ProcurementModuleProps {
@@ -846,41 +852,58 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
     }
   }
 
-  /** Saves the full PO form. Previously the form had no persistence path at all. */
+  /**
+   * Saves the full PO form.
+   *
+   * Amounts are deliberately NOT computed here any more. This function used
+   * to recompute the total as `qty x basic_rate + tax`, dropping the line
+   * discounts and the freight / loading / other / transportation-tax fields
+   * the form had already added into the net amount on screen — so the buyer
+   * approved one figure and the vendor was sent another. The database
+   * derives every amount from the line primitives plus the header charges,
+   * and `savePurchaseOrderForm` reads the result back.
+   *
+   * Returns the saved order so the caller can keep the form open on failure
+   * instead of closing it over a discarded edit.
+   */
   async function handleSavePoForm(formData: FullPoFormState) {
-    const activeId = formData.id || (formData as any).po?.id || (formData as any).po_id;
-    await runAction('Purchase order save', () =>
-      savePurchaseOrderForm({
-        id: activeId,
-        project_id: selectedProjectId !== 'all' ? selectedProjectId : undefined,
-        vendor_id: (formData as unknown as { vendor_id?: string }).vendor_id,
-        po_date: (formData as unknown as { po_date?: string }).po_date,
-        delivery_location: (formData as unknown as { delivery_location?: string }).delivery_location,
-        delivery_date: (formData as unknown as { delivery_date?: string }).delivery_date,
-        payment_terms: (formData as unknown as { payment_terms?: string }).payment_terms,
-        terms_and_conditions: (formData as unknown as { terms_and_conditions?: string }).terms_and_conditions,
-        company_name: (formData as unknown as { company_name?: string }).company_name,
-        contractor_name: (formData as unknown as { contractor_name?: string }).contractor_name,
-        contract_reference: (formData as unknown as { contract_reference?: string }).contract_reference,
-        site_contact_person: (formData as unknown as { site_contact_person?: string }).site_contact_person,
-        site_contact_number: (formData as unknown as { site_contact_number?: string }).site_contact_number,
-        status: (formData as unknown as { status?: string }).status,
-        lines: ((formData as unknown as { lines?: unknown[] }).lines || []).map((raw) => {
-          const line = raw as Record<string, unknown>;
-          const quantity = Number(line.quantity ?? line.qty ?? 0);
-          const rate = Number(line.unit_rate ?? line.rate ?? 0);
-          const taxRate = Number(line.tax_rate ?? 0);
-          return {
-            item_id: (line.item_id as string) || null,
-            item_description: String(line.item_description ?? line.description ?? ''),
-            quantity,
-            unit_rate: rate,
-            tax_rate: taxRate,
-            line_total: Number(line.line_total ?? quantity * rate * (1 + taxRate / 100)),
-          };
-        }),
-      }),
-    );
+    const matchedProjId =
+      liveProjects.find((p) => p.name === formData.project_name)?.id ??
+      (selectedProjectId !== 'all' ? selectedProjectId : undefined);
+    const requestedStatus = normalizePoStatus(formData.status);
+
+    return runAction('Purchase order save', async () => {
+      const saved = await savePurchaseOrderForm({
+        ...buildPurchaseOrderPayload(formData),
+        project_id: matchedProjId ?? null,
+      });
+      if (saved.error || !saved.data) return saved;
+
+      // save_purchase_order deliberately refuses to move the workflow — a
+      // content save must never change state, which is what made re-saving a
+      // live order revert it to draft. So a button like "Submit for
+      // Verification" saves the content here and then asks for the transition
+      // explicitly, through the guarded RPC that validates it.
+      //
+      // On insert the RPC does honour the requested status, so this second call
+      // only fires when the two genuinely differ.
+      if (requestedStatus && requestedStatus !== saved.data.status) {
+        const moved = await setPurchaseOrderStatus(
+          saved.data.purchaseOrderId,
+          requestedStatus,
+          formData.status_reason,
+        );
+        // The content is already committed. Report the refused transition
+        // rather than a blanket save failure, so the user knows what persisted.
+        if (moved.error) return { data: null, error: moved.error };
+        return {
+          data: { ...saved.data, status: moved.data?.status ?? saved.data.status },
+          error: null,
+        };
+      }
+
+      return saved;
+    });
   }
 
   async function handleApprovePo(po: PurchaseOrderRow) {
@@ -889,6 +912,13 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
       return;
     }
     await runAction(`Approval of PO ${po.po_number || ''}`.trim(), () => approveAndSendPurchaseOrder(po));
+  }
+
+  async function handlePoStatusChange(po: PurchaseOrderRow, status: PoStatus, reason?: string) {
+    await runAction(
+      `PO ${po.po_number || ''} → ${poStatusLabel(status)}`.trim(),
+      () => setPurchaseOrderStatus(po.id, status, reason),
+    );
   }
 
   async function handleGeneratePoPdf(po: PurchaseOrderRow) {
@@ -1158,7 +1188,18 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
 
   /** Persists the full purchase-bill form. Only `status` used to be saved. */
   async function handleSaveBillForm(billId: string, payload: Record<string, unknown>) {
-    await runAction('Purchase bill save', () => savePurchaseBill({ id: billId, ...payload }));
+    const resolvedProjectId =
+      (payload.project_id as string) ||
+      (selectedProjectId !== 'all' ? selectedProjectId : undefined) ||
+      projectOptions[0]?.id;
+
+    await runAction('Purchase bill save', () =>
+      savePurchaseBill({
+        id: billId,
+        project_id: resolvedProjectId,
+        ...payload,
+      })
+    );
   }
 
   async function handleBillStatusChange(billId: string, status: string) {
@@ -1350,10 +1391,12 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
       {activeTab === 'orders' && (
         <POWorkspace
           purchaseOrders={data.purchaseOrders}
+          totalCount={data.purchaseOrderCount}
           activeRole={activeRole as any}
           vendorOptions={vendorChoices}
           onSavePo={handleSavePoForm}
           onApprove={handleApprovePo}
+          onChangeStatus={handlePoStatusChange}
           onReceiveGoods={handleOpenGrnModal}
           onPrintPo={(po) => printPurchaseOrderReport(po)}
           onRefresh={refresh}
@@ -1385,6 +1428,10 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
           bills={data.vendorBills}
           activeRole={activeRole as any}
           vendorOptions={vendorChoices}
+          approvedGrns={(data?.grns || []).filter((g: any) =>
+            ['posted', 'approved', 'site_engineer'].includes((g.status || '').toLowerCase()) ||
+            ['posted', 'approved'].includes((g.raw_status || '').toLowerCase())
+          )}
           billableGrns={billableGrns}
           onCreateBill={handleOpenPbModal}
           onSaveBill={handleSaveBillForm}
@@ -1679,160 +1726,7 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
         </div>
       )}
 
-      {/* 7. Create Purchase Bill (PB) Modal */}
-      {pbModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-2xl rounded-xl border border-border bg-card p-6 shadow-xl">
-            <div className="flex items-center justify-between border-b border-border pb-3">
-              <div>
-                <h3 className="text-lg font-bold text-foreground">Create Purchase Bill (PB)</h3>
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  Raise a bill from a posted GRN for automatic three-way matching, or start a bill without one.
-                </p>
-              </div>
-              <button type="button" onClick={() => setPbModalOpen(false)} className="rounded-md p-1 hover:bg-muted"><X className="h-5 w-5" /></button>
-            </div>
 
-            <form onSubmit={handleCreatePb} className="mt-4 space-y-4 max-h-[75vh] overflow-y-auto pr-1">
-              <div>
-                <label className="text-xs font-bold text-foreground">Bill Source</label>
-                <div className="mt-2 grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setPbSource('grn')}
-                    disabled={billableGrns.length === 0}
-                    className={`rounded-lg border p-3 text-left text-xs transition-all disabled:opacity-50 ${
-                      pbSource === 'grn'
-                        ? 'border-primary bg-primary/10 text-foreground'
-                        : 'border-border bg-background text-muted-foreground hover:bg-muted'
-                    }`}
-                  >
-                    <span className="block font-bold">From a posted GRN</span>
-                    <span className="mt-0.5 block">
-                      {billableGrns.length > 0
-                        ? `${billableGrns.length} unbilled GRN(s). PO, GRN and invoice values are matched automatically.`
-                        : 'No posted, unbilled GRNs available.'}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setPbSource('manual')}
-                    className={`rounded-lg border p-3 text-left text-xs transition-all ${
-                      pbSource === 'manual'
-                        ? 'border-primary bg-primary/10 text-foreground'
-                        : 'border-border bg-background text-muted-foreground hover:bg-muted'
-                    }`}
-                  >
-                    <span className="block font-bold">Without a GRN</span>
-                    <span className="mt-0.5 block">
-                      Creates a draft bill against a supplier. No three-way match is possible.
-                    </span>
-                  </button>
-                </div>
-              </div>
-
-              {pbSource === 'grn' ? (
-                <div>
-                  <label className="text-xs font-bold text-foreground">Posted GRN</label>
-                  <select
-                    required
-                    value={pbGrnId}
-                    onChange={(e) => setPbGrnId(e.target.value)}
-                    className="mt-1 w-full rounded-md border border-border bg-card p-2 text-sm text-foreground outline-none"
-                  >
-                    <option value="">Select a GRN…</option>
-                    {billableGrns.map((grn) => (
-                      <option key={grn.id} value={grn.id}>
-                        {grn.grn_number} — {grn.vendor_name}
-                        {grn.po_number ? ` (PO ${grn.po_number})` : ''} — {formatCurrency(grn.value)}
-                      </option>
-                    ))}
-                  </select>
-                  {pbGrnId && (
-                    <p className="mt-1.5 text-xs text-muted-foreground">
-                      The supplier, project, purchase order and line items are taken from the GRN.
-                    </p>
-                  )}
-                </div>
-              ) : (
-                <div>
-                  <label className="text-xs font-bold text-foreground">Supplier</label>
-                  <select
-                    required
-                    value={pbVendorId}
-                    onChange={(e) => setPbVendorId(e.target.value)}
-                    className="mt-1 w-full rounded-md border border-border bg-card p-2 text-sm text-foreground outline-none"
-                  >
-                    <option value="">Select a supplier…</option>
-                    {vendorChoices.map((vendor) => (
-                      <option key={vendor.id} value={vendor.id}>{vendor.label}</option>
-                    ))}
-                  </select>
-                  {selectedProjectId === 'all' && (
-                    <p className="mt-1.5 text-xs font-semibold text-amber-600">
-                      Choose a specific project above before creating a bill without a GRN.
-                    </p>
-                  )}
-                </div>
-              )}
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="text-xs font-bold text-foreground">Supplier&rsquo;s Bill / Invoice No.</label>
-                  <input
-                    type="text" value={pbSupplierBillNo}
-                    onChange={(e) => setPbSupplierBillNo(e.target.value)}
-                    placeholder="As printed on the supplier invoice"
-                    className="mt-1 w-full rounded-md border border-border bg-card p-2 text-sm text-foreground outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs font-bold text-foreground">Supplier&rsquo;s Bill Date</label>
-                  <input
-                    type="date" value={pbSupplierBillDate}
-                    onChange={(e) => setPbSupplierBillDate(e.target.value)}
-                    className="mt-1 w-full rounded-md border border-border bg-card p-2 text-sm text-foreground outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs font-bold text-foreground">Invoice Value (₹)</label>
-                  <input
-                    type="number" min={0} step="any" value={pbInvoiceValue}
-                    onChange={(e) => setPbInvoiceValue(e.target.value)}
-                    placeholder={pbSource === 'grn' ? 'Leave blank to use the GRN value' : '0.00'}
-                    className="mt-1 w-full rounded-md border border-border bg-card p-2 text-sm text-foreground outline-none"
-                  />
-                </div>
-                {pbSource === 'grn' && (
-                  <div>
-                    <label className="text-xs font-bold text-foreground">Match Tolerance (₹)</label>
-                    <input
-                      type="number" min={0} step="any" value={pbTolerance}
-                      onChange={(e) => setPbTolerance(e.target.value)}
-                      className="mt-1 w-full rounded-md border border-border bg-card p-2 text-sm text-foreground outline-none"
-                    />
-                    <p className="mt-1 text-[11px] text-muted-foreground">
-                      A variance beyond this blocks approval until it is resolved.
-                    </p>
-                  </div>
-                )}
-              </div>
-
-              <div className="flex items-center justify-between border-t border-border pt-4">
-                <p className="text-xs text-muted-foreground">
-                  The bill opens in the Bills tab, where the remaining sections can be completed.
-                </p>
-                <div className="flex gap-2">
-                  <button type="button" onClick={() => setPbModalOpen(false)} className="rounded-md border border-border px-4 py-2 text-sm font-bold hover:bg-muted">Cancel</button>
-                  <button type="submit" disabled={creatingPb} className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-bold text-white shadow-sm transition-colors hover:bg-emerald-700 disabled:opacity-50">
-                    {creatingPb ? 'Creating…' : 'Create Purchase Bill'}
-                  </button>
-                </div>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
 
       {/* 6. GRN Creation Modal */}
       {grnModalOpen && selectedPoForGrn && (

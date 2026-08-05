@@ -22,6 +22,7 @@ import BudgetOverviewDashboard from '@/components/budget/budget-overview-dashboa
 import MasterSheetTab from '@/components/budget/master-sheet-tab';
 import VarianceAnalysisTab from '@/components/budget/variance-analysis-tab';
 import BillWiseLedgerTab from '@/components/budget/bill-wise-ledger-tab';
+import BudgetMovementsTab from '@/components/budget/budget-movements-tab';
 import BudgetCashFlowChart from '@/components/budget-cash-flow-chart';
 import BudgetSettingsTab from '@/components/budget/budget-settings-tab';
 import { BudgetDataProvider, useBudgetData } from '@/components/budget/budget-data-context';
@@ -46,11 +47,21 @@ import {
   WalletCards,
 } from 'lucide-react';
 
-type BudgetTab = 'dashboard' | 'master-sheet' | 'variance' | 'ledger' | 'cash-flow' | 'settings';
+type BudgetTab =
+  | 'dashboard'
+  | 'master-sheet'
+  | 'movements'
+  | 'variance'
+  | 'ledger'
+  | 'cash-flow'
+  | 'settings';
 
 const TABS: { key: BudgetTab; label: string; icon: typeof BarChart3 }[] = [
   { key: 'dashboard', label: 'Overview & Risk Alerts', icon: BarChart3 },
   { key: 'master-sheet', label: 'Master Budget', icon: FileSpreadsheet },
+  // Every baseline change is an approvable document since Phase 7; this is the
+  // register of them.
+  { key: 'movements', label: 'Budget Changes', icon: WalletCards },
   { key: 'variance', label: 'Variance', icon: TrendingUp },
   { key: 'ledger', label: 'Bill-Wise Ledger', icon: ClipboardCheck },
   { key: 'cash-flow', label: 'Cash Flow S-Curve', icon: CircleDollarSign },
@@ -267,6 +278,8 @@ function BudgetPageBody({
       {activeTab === 'dashboard' && <BudgetOverviewDashboard permissions={permissions} />}
 
       {activeTab === 'master-sheet' && <MasterSheetTab permissions={permissions} />}
+
+      {activeTab === 'movements' && <BudgetMovementsTab permissions={permissions} />}
 
       {activeTab === 'variance' && <VarianceAnalysisTab permissions={permissions} />}
 
