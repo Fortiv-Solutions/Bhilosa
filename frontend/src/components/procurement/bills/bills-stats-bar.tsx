@@ -27,11 +27,13 @@ export interface VendorBillRow {
   tds_posting_amount: number;
   total_bill_amount: number;
   final_bill_amount: number;
-  status: 'auto_draft_grn' | 'issue' | 'approved';
+  status: 'auto_draft_grn' | 'issue' | 'approved' | 'draft' | 'pending_verification' | 'pending_approval';
+  raw_status?: string;
   // Legacy alias helpers for workspace compatibility
   invoice_no?: string;
   net_payable?: number;
   matching_status?: string;
+  raw_row?: unknown;
   // Denormalised source references carried from PO/GRN (used by the bill form prefill)
   vendor_name?: string | null;
   po_number?: string | null;

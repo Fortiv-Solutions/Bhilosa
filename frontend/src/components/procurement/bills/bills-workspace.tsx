@@ -14,18 +14,36 @@ const APPROVED_STATUSES = new Set(['approved', 'paid', 'three_way_matched', 'mat
 // to the rich display row the Bills table + form expect.
 function toDisplayBill(b: DbVendorBillRow): VendorBillRow {
   const match = b.three_way_matches?.[0]?.match_status;
-  const status: 'auto_draft_grn' | 'issue' | 'approved' = APPROVED_STATUSES.has((b.status || '').toLowerCase())
-    ? 'approved'
-    : 'auto_draft_grn';
+  const rawSt = (b.status || '').toLowerCase();
+
+  let status: VendorBillRow['status'] = 'draft';
+  if (APPROVED_STATUSES.has(rawSt)) {
+    status = 'approved';
+  } else if (rawSt === 'auto_draft_grn' || rawSt === 'auto_draft') {
+    status = 'auto_draft_grn';
+  } else if (rawSt === 'pending_verification') {
+    status = 'pending_verification';
+  } else if (rawSt === 'pending_approval') {
+    status = 'pending_approval';
+  } else if (rawSt === 'issue') {
+    status = 'issue';
+  } else {
+    status = 'draft';
+  }
+
   const supplier = b.vendors?.display_name || b.vendors?.legal_name || b.vendor_name || '—';
   const row = b as DbVendorBillRow & Record<string, unknown>;
+  const projName = (row.projects as { name?: string })?.name || (row.project_name as string) || '—';
+  const poNum = b.po_number || (row.from_pos as string) || null;
+  const grnNum = b.grn_no || (row.from_challans as string) || null;
+
   return {
     id: b.id,
     bill_no: b.bill_number,
     accounting_date: (row.accounting_date as string) || b.bill_date,
     bill_no_of_supplier: (row.supplier_bill_no as string) || b.bill_book_number || '—',
     bill_date_of_supplier: (row.supplier_bill_date as string) || b.bill_date,
-    project_name: '—',
+    project_name: projName,
     company_name: (row.company_name as string) || '—',
     supplier_name: supplier,
     total_tax_code_amount: Number(b.tax_amount) || 0,
@@ -37,10 +55,12 @@ function toDisplayBill(b: DbVendorBillRow): VendorBillRow {
     // advance adjustment and other deductions are applied.
     final_bill_amount: Number(row.net_payable_amount) || Number(b.total_amount) || 0,
     status,
+    raw_status: b.status,
     vendor_name: supplier,
-    po_number: b.po_number ?? null,
-    grn_no: b.grn_no ?? null,
+    po_number: poNum,
+    grn_no: grnNum,
     matching_status: match,
+    raw_row: b,
   };
 }
 
@@ -57,6 +77,8 @@ interface BillsWorkspaceProps {
   activeRole?: Role;
   /** Active suppliers, for the supplier dropdown on the bill form. */
   vendorOptions?: VendorOption[];
+  /** Approved GRNs available to select for billing */
+  approvedGrns?: any[];
   /** Posted GRNs with no bill yet, offered as the source for a new bill. */
   billableGrns?: GrnOption[];
   /** Opens the Create PB flow. */
@@ -75,6 +97,7 @@ export function BillsWorkspace({
   bills = [],
   activeRole,
   vendorOptions = [],
+  approvedGrns = [],
   billableGrns = [],
   onCreateBill,
   onSaveBill,
@@ -107,11 +130,6 @@ export function BillsWorkspace({
    * every save. Approval is applied as a separate, role-checked transition.
    */
   const handleFormSubmit = async (formData: FullBillsFormState) => {
-    if (!activeBill?.id) {
-      onError?.('This bill has no id and cannot be saved. Reopen it from the bills table.');
-      return;
-    }
-
     const dbStatus = FORM_STATUS_TO_DB[formData.status] || 'draft';
 
     // A non-approver may still edit the bill; they just cannot approve it.
@@ -119,12 +137,23 @@ export function BillsWorkspace({
       onError?.('Saved without approval: only upper management may approve a purchase bill.');
     }
 
-    await onSaveBill?.(activeBill.id, {
+    const toNum = (v: unknown): number => {
+      if (v === null || v === undefined || v === '') return 0;
+      if (typeof v === 'string') {
+        const cleaned = v.replace(/[^0-9.-]/g, '');
+        const n = Number(cleaned);
+        return isNaN(n) ? 0 : n;
+      }
+      const n = Number(v);
+      return isNaN(n) ? 0 : n;
+    };
+
+    await onSaveBill?.(activeBill?.id || '', {
       vendor_id: formData.supplier_name && vendorByName.get(formData.supplier_name)
         ? vendorByName.get(formData.supplier_name)
         : undefined,
       bill_received_date: formData.bill_received_date || undefined,
-      accounting_date: formData.accounting_date || undefined,
+      accounting_date: formData.accounting_date ? formData.accounting_date.slice(0, 10) : undefined,
       supplier_bill_no: formData.bill_no_of_supplier || formData.supplier_bill_no || undefined,
       supplier_bill_date: formData.bill_date_of_supplier || formData.supplier_bill_date || undefined,
       company_name: formData.company_name || undefined,
@@ -138,39 +167,58 @@ export function BillsWorkspace({
       sub_project: formData.sub_project || undefined,
       from_pos: formData.from_pos || undefined,
       from_challans: formData.from_challans || undefined,
-      payment_days: formData.payment_days,
+      payment_days: toNum(formData.payment_days) || 30,
       bill_due_date: formData.bill_due_date || undefined,
-      auto_debit: formData.auto_debit,
-      perc: formData.perc,
-      lumpsum_other_charges: formData.lumpsum_other_charges,
-      lumpsum_loading_unloading_charges: formData.lumpsum_loading_unloading_charges,
-      lumpsum_freight_charges: formData.lumpsum_freight_charges,
-      lumpsum_discount_amount: formData.lumpsum_discount_amount,
-      roundoff_adjustment: formData.roundoff_adjustment,
-      total_adjusted_amount: formData.total_adjusted_amount,
-      cheque_amount: formData.cheque_amount,
-      total_cheque_payments: formData.total_cheque_payments,
-      debit_details: formData.debit_details,
-      credit_details: formData.credit_details,
-      lbt_payable_by_us: formData.lbt_payable_by_us,
+      auto_debit: !!formData.auto_debit,
+      perc: toNum(formData.perc),
+      lumpsum_other_charges: toNum(formData.lumpsum_other_charges),
+      lumpsum_loading_unloading_charges: toNum(formData.lumpsum_loading_unloading_charges),
+      lumpsum_freight_charges: toNum(formData.lumpsum_freight_charges),
+      lumpsum_discount_amount: toNum(formData.lumpsum_discount_amount),
+      roundoff_adjustment: toNum(formData.roundoff_adjustment),
+      total_adjusted_amount: toNum(formData.total_adjusted_amount),
+      cheque_amount: toNum(formData.cheque_amount),
+      total_cheque_payments: toNum(formData.total_cheque_payments),
+      debit_details: toNum(formData.debit_details),
+      credit_details: toNum(formData.credit_details),
+      lbt_payable_by_us: !!formData.lbt_payable_by_us,
       additional_transportation_stax_applicable:
-        formData.additional_transportation_service_tax_applicable,
-      stax_principal_amount: formData.stax_principal_amount,
-      transportation_stax_rate: formData.transportation_stax_rate,
-      stax_amount: formData.stax_amount,
-      lbt_principal_amount: formData.lbt_principal_amount,
-      lbt_tax_rate: formData.lbt_tax_rate,
-      lbt_amount: formData.lbt_amount,
+        !!formData.additional_transportation_service_tax_applicable,
+      stax_principal_amount: toNum(formData.stax_principal_amount),
+      transportation_stax_rate: toNum(formData.transportation_stax_rate),
+      stax_amount: toNum(formData.stax_amount),
+      lbt_principal_amount: toNum(formData.lbt_principal_amount),
+      lbt_tax_rate: toNum(formData.lbt_tax_rate),
+      lbt_amount: toNum(formData.lbt_amount),
       project_location: formData.project_location || undefined,
       supplier_location: formData.supplier_location || undefined,
       narration: formData.narration || undefined,
       assigned_approval_role: formData.assigned_approval_role || undefined,
-      bill_has_already_signed: formData.bill_has_already_signed,
+      bill_has_already_signed: !!formData.bill_has_already_signed,
       status_issue_relation_count: formData.status_issue_relation_count || undefined,
-      unlocked_fy: formData.unlocked_fy,
-      // Approval is never granted through a plain save.
-      status: dbStatus === 'approved' && !canApproveBills ? 'pending_approval' : dbStatus,
-      lines: (formData.purchase_bill_entries || []).map((entry) => ({ ...entry })),
+      unlocked_fy: toNum(formData.unlocked_fy) || new Date().getFullYear(),
+      // Save requested status directly to database
+      status: dbStatus,
+      lines: (formData.purchase_bill_entries || []).map((entry) => ({
+        ...entry,
+        received_qty: toNum(entry.received_qty),
+        po_basic_rate: toNum(entry.po_basic_rate),
+        po_discount_perc: toNum(entry.po_discount_perc),
+        po_discount_amt: toNum(entry.po_discount_amt),
+        po_rate: toNum(entry.po_rate),
+        bill_rate: toNum(entry.bill_rate),
+        bill_discount_perc: toNum(entry.bill_discount_perc),
+        bill_discount_amt: toNum(entry.bill_discount_amt),
+        gross_amount: toNum(entry.gross_amount),
+        po_excise_duty_rate: toNum(entry.po_excise_duty_rate),
+        loading_unloading_chgs: toNum(entry.loading_unloading_chgs),
+        freight_chgs: toNum(entry.freight_chgs),
+        others_chgs: toNum(entry.others_chgs),
+        po_vat_rate: toNum(entry.po_vat_rate),
+        vat_amt: toNum(entry.vat_amt),
+        po_lbt_rate: toNum(entry.po_lbt_rate),
+        net_amount: toNum(entry.net_amount),
+      })),
       form_payload: {
         advance_payment_entries: formData.advance_payment_entries || [],
         payment_vouchers: formData.payment_vouchers || [],
@@ -182,9 +230,9 @@ export function BillsWorkspace({
       },
     });
 
+    await onRefresh?.();
     setViewMode('list');
     setActiveBill(null);
-    void onRefresh?.();
   };
 
   const filteredBills = displayBills.filter((b) => {
@@ -217,25 +265,36 @@ export function BillsWorkspace({
           >
             <ListChecks className="h-3.5 w-3.5" /> Bills Landing Table ({filteredBills.length})
           </button>
-          {onCreateBill && (
-            <button
-              type="button"
-              onClick={onCreateBill}
-              title={
-                billableGrns.length > 0
-                  ? `${billableGrns.length} posted GRN(s) available to bill`
-                  : 'Raise a purchase bill'
-              }
-              className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-emerald-600 px-3 text-xs font-bold text-white shadow-xs transition-colors hover:bg-emerald-700"
-            >
-              <Plus className="h-3.5 w-3.5" /> Create PB
-              {billableGrns.length > 0 && (
-                <span className="ml-0.5 rounded-full bg-white/20 px-1.5 text-[10px] font-bold">
-                  {billableGrns.length}
-                </span>
-              )}
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={() => {
+              setActiveBill({
+                id: '',
+                bill_no: '',
+                accounting_date: new Date().toISOString().slice(0, 10),
+                bill_no_of_supplier: '',
+                bill_date_of_supplier: new Date().toISOString().slice(0, 10),
+                project_name: '',
+                company_name: 'Pramukh Group',
+                supplier_name: '',
+                total_tax_code_amount: 0,
+                net_amt: 0,
+                tax_code_amount_transportation: 0,
+                tds_posting_amount: 0,
+                total_bill_amount: 0,
+                final_bill_amount: 0,
+                status: 'draft',
+                vendor_name: '',
+                po_number: null,
+                grn_no: null,
+                matching_status: 'unmatched',
+              });
+              setViewMode('form');
+            }}
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-emerald-600 px-3 text-xs font-bold text-white shadow-xs transition-colors hover:bg-emerald-700 cursor-pointer"
+          >
+            <Plus className="h-3.5 w-3.5" /> Create PB
+          </button>
         </div>
       </div>
 

@@ -72,3 +72,26 @@ __pycache__/
 
 # Reference report templates (kept local, not committed)
 Procurement_Report_Formate/
+
+# IDE & Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# System / OS files
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Antigravity & AI Assistant Cache
+.gemini/
+.antigravity/
+
+# Logs
+*.log
+logs/
+
+# Database dumps / schema dumps
+supabase/schemma/
+

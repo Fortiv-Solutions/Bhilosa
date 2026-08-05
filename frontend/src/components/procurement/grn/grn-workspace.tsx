@@ -5,6 +5,7 @@ import { Truck, ListChecks, Smartphone, ArrowLeft, Plus } from 'lucide-react';
 import {
   createFullGoodsReceiptNote,
   updateGrnStatus,
+  createAutoDraftPurchaseBillFromGrn,
   type GrnRow as DbGrnRow,
   type PurchaseOrderRow,
   type VendorOption,
@@ -13,29 +14,34 @@ import type { Role } from '@/lib/roles';
 import { GrnStatsBar, type GrnRow } from './grn-stats-bar';
 import { GrnTableView } from './grn-table-view';
 import { GrnForm, type FullGrnFormState } from './grn-form';
+import { GrnWizard } from './grn-wizard';
 
 const APPROVED_STATUSES = new Set(['posted', 'approved', 'accepted', 'completed']);
 
 // Bridge the flat Supabase GRN row to display format
 function toDisplayGrn(g: DbGrnRow): GrnRow {
   const lines = g.goods_receipt_note_lines ?? [];
-  const status: 'site_engineer' | 'approved' = APPROVED_STATUSES.has((g.status || '').toLowerCase())
+  const status: GrnRow['status'] = APPROVED_STATUSES.has((g.status || '').toLowerCase())
     ? 'approved'
     : 'site_engineer';
   return {
     id: g.id,
     grn_number: g.grn_number,
     po_number: g.purchase_orders?.po_number || '—',
-    gate_entry_no: 'GE-001',
+    gate_entry_no: g.qc_no || (g.grn_number ? `GE-${g.grn_number.slice(-4)}` : 'GE-001'),
     vehicle_no: g.vehicle_no || g.physical_inspection || '—',
     received_date: g.receipt_date ? g.receipt_date.slice(0, 10) : new Date().toISOString().slice(0, 10),
     vendor_name: g.vendors?.display_name || g.vendors?.legal_name || '—',
-    project_name: 'Pramukh Orbit 3',
+    project_name: (g as any).projects?.name || (g as any).project_name || 'Main Site',
     godown_name: g.godown_name || 'Main Site Store',
     challan_no: g.challan_no || g.quantity_verification || '—',
     status,
+    raw_status: g.status,
+    raw_lines: lines,
     items_received: lines.length,
     total_val: lines.reduce((sum, l) => sum + (Number(l.accepted_qty) || 0) * (Number(l.unit_rate) || 0), 0),
+    uploaded_challan_url: g.uploaded_challan_url || undefined,
+    uploaded_invoice_url: g.uploaded_invoice_url || undefined,
   };
 }
 
@@ -123,8 +129,7 @@ export function GrnWorkspace({
       formData.status === 'Pending Approval' ? 'pending_approval' :
       formData.status === 'Approved' ? 'posted' : 'draft';
 
-    // Never create straight into `posted`; submit for approval instead.
-    const createStatus = workflowStatus === 'posted' ? 'pending_approval' : workflowStatus;
+    const createStatus = formData.status;
 
     // The PO is identified either by the header's "from POs" reference or by
     // the PO number on the first purchase entry line.
@@ -136,69 +141,85 @@ export function GrnWorkspace({
       vendorOptions.find((v) => (v.display_name || v.legal_name) === formData.supplier_name)?.id ||
       linkedPo?.vendor_id;
 
-    if (!activeGrn?.id) {
-      if (!linkedPo && !vendorId) {
-        onError?.('Select the purchase order or the supplier this goods receipt is against.');
-        return;
-      }
+    let savedGrnId = activeGrn?.id || '';
 
-      const res = await createFullGoodsReceiptNote({
-        grn_number: formData.gr_no || '',
-        grn_date: formData.grn_date,
-        purchase_order_id: linkedPo?.id,
-        vendor_id: vendorId,
-        project_id: linkedPo?.project_id,
-        challan_no: formData.challan_no,
-        vehicle_no: formData.vehicle_no,
-        supplier_name: formData.supplier_name,
-        godown_name: formData.godown_name,
-        transporter_name: formData.transporter_name,
-        dealer_name: formData.dealer_name,
-        qc_no: formData.qc_no,
-        // Weighbridge readings, recorded in their own columns rather than
-        // being crammed into the inspection fields as they once were.
-        in_weight: formData.in_wt1 ? String(formData.in_wt1) : undefined,
-        out_weight: formData.out_wt1 ? String(formData.out_wt1) : undefined,
-        net_weight: formData.net_weight1 ? String(formData.net_weight1) : undefined,
-        volume_in_brass: formData.volume_in_brass ? String(formData.volume_in_brass) : undefined,
-        asset_item: formData.asset_item,
-        asset_amount: formData.asset_amount,
-        remarks: formData.remarks,
-        status: createStatus,
-        uploaded_invoice_url: formData.uploaded_invoice_url,
-        uploaded_invoice_path: formData.uploaded_invoice_path,
-        uploaded_invoice_name: formData.uploaded_invoice_name,
-        // Each purchase entry becomes a real GRN line, so received quantities
-        // are persisted instead of being dropped at the workspace boundary.
-        lines: (formData.purchase_entries || [])
-          .filter((entry) => (Number(entry.received_qty) || 0) > 0)
-          .map((entry) => {
-            const received = Number(entry.received_qty) || 0;
-            const returned = Number(entry.return_qty) || 0;
-            const poLine = linkedPo?.purchase_order_lines?.find(
-              (l) => l.item_description === entry.item_description,
-            );
-            return {
-              item_id: poLine?.item_id || null,
-              purchase_order_line_id: poLine?.id || null,
-              received_qty: received,
-              rejected_qty: returned,
-              accepted_qty: Math.max(received - returned, 0),
-              unit_rate: Number(poLine?.unit_rate) || 0,
-              remarks: entry.test_report_no || undefined,
-            };
-          }),
-      });
+    if (!activeGrn?.id && !linkedPo && !vendorId) {
+      onError?.('Select the purchase order or the supplier this goods receipt is against.');
+      return;
+    }
 
-      if (res.error) {
-        onError?.(`Could not save the goods receipt note: ${res.error.message}`);
-        return;
-      }
-    } else {
-      const res = await updateGrnStatus(activeGrn.id, workflowStatus);
-      if (res.error) {
-        onError?.(`Could not update the goods receipt note: ${res.error.message}`);
-        return;
+    const res = await createFullGoodsReceiptNote({
+      id: activeGrn?.id || undefined,
+      grn_number: formData.gr_no || '',
+      grn_date: formData.grn_date,
+      purchase_order_id: linkedPo?.id,
+      vendor_id: vendorId,
+      project_id: linkedPo?.project_id,
+      challan_no: formData.challan_no,
+      vehicle_no: formData.vehicle_no,
+      supplier_name: formData.supplier_name,
+      godown_name: formData.godown_name,
+      transporter_name: formData.transporter_name,
+      dealer_name: formData.dealer_name,
+      qc_no: formData.qc_no,
+      in_weight: formData.in_wt1 ? String(formData.in_wt1) : undefined,
+      out_weight: formData.out_wt1 ? String(formData.out_wt1) : undefined,
+      net_weight: formData.net_weight1 ? String(formData.net_weight1) : undefined,
+      volume_in_brass: formData.volume_in_brass ? String(formData.volume_in_brass) : undefined,
+      asset_item: formData.asset_item,
+      asset_amount: formData.asset_amount,
+      remarks: formData.remarks,
+      status: createStatus,
+      uploaded_invoice_url: formData.uploaded_invoice_url,
+      uploaded_invoice_path: formData.uploaded_invoice_path,
+      uploaded_invoice_name: formData.uploaded_invoice_name,
+      lines: (formData.purchase_entries || [])
+        .filter((entry) => (Number(entry.received_qty) || 0) > 0)
+        .map((entry) => {
+          const received = Number(entry.received_qty) || 0;
+          const returned = Number(entry.return_qty) || 0;
+          const poLine = linkedPo?.purchase_order_lines?.find(
+            (l) => l.id === (entry as any).purchase_order_line_id || l.item_description === entry.item_description,
+          );
+          return {
+            item_id: (entry as any).item_id || poLine?.item_id || null,
+            purchase_order_line_id: (entry as any).purchase_order_line_id || poLine?.id || null,
+            received_qty: received,
+            rejected_qty: returned,
+            accepted_qty: Math.max(received - returned, 0),
+            unit_rate: Number((entry as any).unit_rate || poLine?.unit_rate || 0),
+            remarks: entry.test_report_no || undefined,
+            po_number: entry.po_no || linkedPo?.po_number || null,
+            pr_number: entry.pr_no || null,
+            item_group: entry.item_group || null,
+            item_code: entry.item_code || null,
+            item_brand: entry.item_brand || null,
+            item_description: entry.item_description || null,
+            location: entry.location || null,
+            purchase_category: entry.purchase_category || null,
+            unit: entry.unit || null,
+            approved_qty: Number(entry.approved_qty || 0),
+            po_balance_qty: Number(entry.as_on_date_po_balance_qty || 0),
+            return_qty: returned,
+            challan_qty: Number(entry.challan_qty || received),
+            balance_allowed: entry.balance_quantity_allowed ? 1 : 0,
+            current_balance_qty: Number(entry.current_balance_qty || 0),
+            test_report_no: entry.test_report_no || null,
+            expiry_date: entry.expiry_date || null,
+          };
+        }),
+    });
+
+    if (res.error) {
+      onError?.(`Could not save the goods receipt note: ${res.error.message}`);
+      return;
+    }
+    if (res.data?.id) savedGrnId = res.data.id;
+
+    if ((formData as any).auto_create_pb && savedGrnId) {
+      const pbRes = await createAutoDraftPurchaseBillFromGrn(savedGrnId);
+      if (pbRes.error) {
+        console.warn('Auto draft Purchase Bill creation notice:', pbRes.error.message);
       }
     }
 

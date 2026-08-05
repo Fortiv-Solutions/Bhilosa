@@ -1,11 +1,130 @@
 'use client';
 
-// PR item-details table: clean ERP grid with requested column removals.
-// Removed columns: MR Number, Status, Priority, Stock Audit, Actions.
+// PR item-details table: clean ERP grid with all 26 editable columns.
 
-import { useState } from 'react';
-import { Plus, CalendarDays, MapPin, AlertTriangle } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { Plus, AlertTriangle } from 'lucide-react';
 import type { PrFormLine } from '@/lib/erp/purchase-requisition/types';
+
+export const STANDARD_UNITS = [
+  'NOS',
+  'KGS',
+  'BAGS',
+  'BRASS',
+  'BUCKET',
+  'BOX',
+  'PACKET',
+  'BUNDLE',
+  'RFT',
+  'SQ.FT.',
+  'LTR',
+  'MT',
+  'CUM',
+  'SET',
+] as const;
+
+export function normalizeUnit(rawUnit?: string | null): string {
+  if (!rawUnit || !rawUnit.trim()) return 'NOS';
+  const u = rawUnit.trim();
+  const lower = u.toLowerCase();
+
+  if (/^(nos|no|number|numbers|pcs|piece|pieces)$/i.test(lower)) return 'NOS';
+  if (/^(kg|kgs|kilogram|kilograms)$/i.test(lower)) return 'KGS';
+  if (/^(bag|bags|bagsbags)$/i.test(lower)) return 'BAGS';
+  if (/^(brass)$/i.test(lower)) return 'BRASS';
+  if (/^(bucket|buckets)$/i.test(lower)) return 'BUCKET';
+  if (/^(box|boxes)$/i.test(lower)) return 'BOX';
+  if (/^(packet|packets|pkt)$/i.test(lower)) return 'PACKET';
+  if (/^(bundle|bundles|bndl)$/i.test(lower)) return 'BUNDLE';
+  if (/^(rn\.ft|rnft|rft|running feet|running foot)$/i.test(lower)) return 'RFT';
+  if (/^(sqf|sqft|sq\.ft\.|sq\.ft|square feet)$/i.test(lower)) return 'SQ.FT.';
+  if (/^(lit|liter|liters|litre|litres|ltr)$/i.test(lower)) return 'LTR';
+  if (/^(mt|metric ton|ton|tons)$/i.test(lower)) return 'MT';
+  if (/^(cum|cubic meter|cubic metre)$/i.test(lower)) return 'CUM';
+  if (/^(set|sets)$/i.test(lower)) return 'SET';
+
+  return u.toUpperCase();
+}
+
+function SearchableUnitInput({
+  value,
+  onChange,
+  disabled = false,
+}: {
+  value: string;
+  onChange: (val: string) => void;
+  disabled?: boolean;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [isTyping, setIsTyping] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  const filtered = isTyping && value.trim() !== ''
+    ? STANDARD_UNITS.filter((u) => u.toLowerCase().includes(value.trim().toLowerCase()))
+    : STANDARD_UNITS;
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setIsOpen(false);
+        setIsTyping(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  if (disabled) return <span className="font-bold text-foreground">{value || 'NOS'}</span>;
+
+  return (
+    <div ref={ref} className="relative w-24 mx-auto">
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => {
+          onChange(e.target.value);
+          setIsTyping(true);
+          setIsOpen(true);
+        }}
+        onFocus={() => {
+          setIsTyping(false);
+          setIsOpen(true);
+        }}
+        placeholder="Unit"
+        className="w-full rounded border border-border bg-background px-2 py-1 text-xs text-center font-bold outline-none focus:border-primary uppercase"
+      />
+      {isOpen && (
+        <div className="absolute left-0 z-50 mt-1 max-h-48 w-36 overflow-y-auto rounded-lg border border-border bg-popover text-popover-foreground shadow-xl text-left">
+          <div className="py-1">
+            {filtered.length > 0 ? (
+              filtered.map((u) => (
+                <button
+                  key={u}
+                  type="button"
+                  className={`w-full px-2.5 py-1 text-xs font-semibold transition-colors hover:bg-accent hover:text-accent-foreground cursor-pointer ${
+                    u.toLowerCase() === (value || '').trim().toLowerCase() ? 'bg-accent text-primary font-extrabold' : ''
+                  }`}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    onChange(u);
+                    setIsOpen(false);
+                    setIsTyping(false);
+                  }}
+                >
+                  {u}
+                </button>
+              ))
+            ) : (
+              <div className="px-2.5 py-1.5 text-[10px] text-muted-foreground italic">
+                Custom: &quot;{value}&quot;
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 interface PrItemTableProps {
   lines: PrFormLine[];
@@ -19,18 +138,13 @@ interface PrItemTableProps {
 
 const TH = 'px-2.5 py-2.5 font-bold uppercase tracking-wider text-[10px] whitespace-nowrap border-r border-border/50';
 const TD = 'px-2.5 py-2 whitespace-nowrap align-middle border-r border-border/40 text-xs';
-const INPUT = 'w-full rounded border border-border bg-background px-2 py-1 text-xs outline-none focus:border-primary';
+const INPUT = 'w-full rounded border border-border bg-background px-2 py-1 text-xs outline-none focus:border-primary font-medium';
 
 export function PrItemTable({
   lines,
   readOnly = false,
   onChangeLine,
-  onAddManual,
-  onBulkRequiredDate,
-  onBulkDeliveryLocation,
 }: PrItemTableProps) {
-  const [bulkDate, setBulkDate] = useState('');
-  const [bulkLocation, setBulkLocation] = useState('');
 
   function qtyError(line: PrFormLine): string | null {
     if (line.pr_quantity <= 0) return 'Quantity must be greater than zero';
@@ -42,90 +156,43 @@ export function PrItemTable({
 
   return (
     <div className="space-y-2">
-      {/* Bulk action toolbar */}
-      {!readOnly && (
-        <div className="flex flex-wrap items-center gap-2 text-xs">
-          <button onClick={onAddManual} className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1.5 font-bold text-primary-foreground hover:bg-primary/90">
-            <Plus className="h-3.5 w-3.5" /> Add Manual Item
-          </button>
-          <div className="ml-auto flex flex-wrap items-center gap-2">
-            <div className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-2 py-1">
-              <CalendarDays className="h-3.5 w-3.5 text-muted-foreground" />
-              <input type="date" value={bulkDate} onChange={(e) => setBulkDate(e.target.value)} className="bg-transparent text-xs outline-none" />
-              <button onClick={() => bulkDate && onBulkRequiredDate(bulkDate)} disabled={!bulkDate} className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-bold hover:bg-muted-foreground/20 disabled:opacity-40">Apply to all</button>
-            </div>
-            <div className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-2 py-1">
-              <MapPin className="h-3.5 w-3.5 text-muted-foreground" />
-              <input value={bulkLocation} onChange={(e) => setBulkLocation(e.target.value)} placeholder="Delivery location" className="w-32 bg-transparent text-xs outline-none" />
-              <button onClick={() => bulkLocation && onBulkDeliveryLocation(bulkLocation)} disabled={!bulkLocation} className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-bold hover:bg-muted-foreground/20 disabled:opacity-40">Apply to all</button>
-            </div>
-          </div>
-        </div>
-      )}
+
 
       <div className="overflow-x-auto rounded-xl border border-border shadow-xs">
         <table className="w-full border-collapse text-left text-xs">
           <thead className="bg-muted/90 text-muted-foreground">
             <tr>
-              {/* 1. Project & Block (Sticky Left Column) */}
-              <th className={`${TH} sticky left-0 z-20 bg-card shadow-sm border-r border-border font-bold text-foreground`}>Project &amp; Block</th>
-              {/* 2. Work Activity */}
-              <th className={TH}>Work Activity</th>
-              {/* 3. Raised By */}
-              <th className={TH}>Raised By</th>
-              {/* 4. Submitted */}
-              <th className={TH}>Submitted</th>
-              {/* 5. Sr No. */}
-              <th className={TH}>Sr No.</th>
-              {/* 6. Activity Name */}
+              {/* 1. Sr No. */}
+              <th className={`${TH} sticky left-0 z-20 bg-card shadow-sm border-r border-border font-bold text-foreground`}>Sr No.</th>
+              {/* 2. Item Description */}
+              <th className={`${TH} min-w-[200px] font-bold text-foreground`}>Item Description</th>
+              {/* 3. Activity Name */}
               <th className={TH}>Activity Name</th>
-              {/* 7. Code (Activity Code) */}
-              <th className={TH}>Code</th>
-              {/* 8. Item Code */}
-              <th className={TH}>Item Code</th>
-              {/* 9. Item Group */}
+              {/* 4. Sub-Activity */}
+              <th className={TH}>Sub-Activity</th>
+              {/* 5. Item Group */}
               <th className={TH}>Item Group</th>
-              {/* 10. Item Description */}
-              <th className={`${TH} min-w-[180px]`}>Item Description</th>
-              {/* 11. Units (Mandatory) */}
-              <th className={TH}>Units *</th>
-              {/* 12. Required Date (Mandatory) */}
-              <th className={TH}>Required Date *</th>
-              {/* 13. Item Brand */}
+              {/* 6. Item Brand */}
               <th className={TH}>Item Brand</th>
-              {/* 14. Item Specification */}
-              <th className={TH}>Item Specification</th>
-              {/* 15. Est Qty */}
-              <th className={`${TH} text-right`}>Est Qty</th>
-              {/* 16. Ind Qty */}
-              <th className={`${TH} text-right`}>Ind Qty</th>
-              {/* 17. Iss Qty */}
-              <th className={`${TH} text-right`}>Iss Qty</th>
-              {/* 18. Extra Received Qty */}
-              <th className={`${TH} text-right`}>Extra Rec Qty</th>
-              {/* 19. Extra Adjusted Qty */}
-              <th className={`${TH} text-right`}>Extra Adj Qty</th>
-              {/* 20. Quantity (Mandatory) (Highlighted in primary blue) */}
+              {/* 8. Units (Mandatory) */}
+              <th className={`${TH} text-center`}>Units *</th>
+              {/* 10. Quantity (Mandatory) (Highlighted in primary blue) */}
               <th className={`${TH} text-right text-primary bg-primary/10 font-bold border-primary/40`}>Quantity *</th>
-              {/* 21. PR Bal Qty */}
+              {/* 11. PR Bal Qty */}
               <th className={`${TH} text-right`}>PR Bal Qty</th>
-              {/* 22. Lead Period */}
-              <th className={TH}>Lead Period</th>
-              {/* 23. Lead Date */}
-              <th className={TH}>Lead Date</th>
-              {/* 24. Project Stock (Highlighted green) */}
-              <th className={`${TH} text-right text-emerald-600 bg-emerald-500/10 dark:text-emerald-400 font-bold`}>Project Stock</th>
-              {/* 25. Other Site Stock (Highlighted sky blue) */}
-              <th className={`${TH} text-right text-sky-600 bg-sky-500/10 dark:text-sky-400 font-bold`}>Other Site Stock</th>
-              {/* 26. Relation Count List */}
-              <th className={`${TH} text-center`}>Relation Count List</th>
+              {/* 12. Required Date (Mandatory) */}
+              <th className={`${TH} text-center`}>Required Date *</th>
+              {/* 13. Lead Period */}
+              <th className={`${TH} text-center`}>Lead Period</th>
+              {/* 14. Lead Date */}
+              <th className={`${TH} text-center`}>Lead Date</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-border">
             {lines.length === 0 && (
               <tr>
-                <td colSpan={26} className="px-3 py-6 text-center text-sm font-medium text-red-500">
-                  No items yet. Add from an approved MR or add a manual item.
+                <td colSpan={12} className="px-3 py-6 text-center text-sm font-medium text-red-500">
+                  No items yet. Select from an approved MR above.
                 </td>
               </tr>
             )}
@@ -133,127 +200,67 @@ export function PrItemTable({
               const err = qtyError(line);
               return (
                 <tr key={line.key} className={err ? 'bg-red-50/60 dark:bg-red-950/20' : 'hover:bg-muted/20'}>
-                  {/* 1. Project & Block (Sticky Left Column) */}
-                  <td className={`${TD} sticky left-0 z-10 bg-card font-medium text-foreground border-r border-border shadow-xs`}>
-                    {line.project_and_block || 'Central Park (Block A)'}
-                  </td>
-
-                  {/* 2. Work Activity */}
-                  <td className={TD}>
-                    {line.work_activity || 'Slab casting'}
-                  </td>
-
-                  {/* 3. Raised By */}
-                  <td className={TD}>
-                    {line.raised_by || 'Rohan Mehta (Site Eng)'}
-                  </td>
-
-                  {/* 4. Submitted */}
-                  <td className={`${TD} text-muted-foreground`}>
-                    {line.submitted_at || '21-07-2026'}
-                  </td>
-
-                  {/* 5. Sr No. */}
-                  <td className={`${TD} font-bold text-center`}>
+                  {/* 1. Sr No. */}
+                  <td className={`${TD} sticky left-0 z-10 bg-card font-bold text-center border-r border-border shadow-xs`}>
                     {idx + 1}
                   </td>
 
-                  {/* 6. Activity Name */}
-                  <td className={TD}>
-                    {line.activity_name || line.work_activity || 'Slab Casting'}
-                  </td>
-
-                  {/* 7. Code (Activity Code) */}
-                  <td className={`${TD} font-mono text-muted-foreground`}>
-                    {line.activity_code || 'ACT-STR-01'}
-                  </td>
-
-                  {/* 8. Item Code */}
-                  <td className={`${TD} font-mono text-foreground font-medium`}>
-                    {!readOnly ? (
-                      <input value={line.item_code ?? ''} onChange={(e) => onChangeLine(line.key, { item_code: e.target.value })} className={`${INPUT} w-24`} />
-                    ) : (line.item_code || 'MAT-CEM-001')}
-                  </td>
-
-                  {/* 9. Item Group */}
+                  {/* 2. Item Description */}
                   <td className={TD}>
                     {!readOnly ? (
-                      <input value={line.item_group ?? ''} onChange={(e) => onChangeLine(line.key, { item_group: e.target.value })} className={`${INPUT} w-28`} />
-                    ) : (line.item_group || 'Cement & Concrete')}
-                  </td>
-
-                  {/* 10. Item Description */}
-                  <td className={TD}>
-                    {!readOnly ? (
-                      <input value={line.item_description} onChange={(e) => onChangeLine(line.key, { item_description: e.target.value })} placeholder="Item description" className={`${INPUT} min-w-[180px]`} />
+                      <input value={line.item_description} onChange={(e) => onChangeLine(line.key, { item_description: e.target.value })} placeholder="Item description" className={`${INPUT} min-w-[200px] font-bold`} />
                     ) : (
                       <span className="font-semibold text-foreground">{line.item_description}</span>
                     )}
                   </td>
 
-                  {/* 11. Units (Mandatory) */}
-                  <td className={`${TD} font-medium`}>
+                  {/* 3. Activity Name */}
+                  <td className={TD}>
                     {!readOnly ? (
-                      <input value={line.unit} onChange={(e) => onChangeLine(line.key, { unit: e.target.value })} className={`${INPUT} w-16`} />
-                    ) : (line.unit || 'Bags')}
+                      <input value={line.activity_name || line.work_activity || ''} onChange={(e) => onChangeLine(line.key, { activity_name: e.target.value })} placeholder="—" className={`${INPUT} w-28`} />
+                    ) : (line.activity_name || line.work_activity || '—')}
                   </td>
 
-                  {/* 12. Required Date (Mandatory) */}
+                  {/* 4. Sub-Activity */}
                   <td className={TD}>
-                    {readOnly ? (line.required_date || '2026-07-28') : (
-                      <input type="date" value={line.required_date ?? ''} onChange={(e) => onChangeLine(line.key, { required_date: e.target.value })} className={`${INPUT} w-32`} />
-                    )}
+                    {!readOnly ? (
+                      <input value={line.sub_activity_name || ''} onChange={(e) => onChangeLine(line.key, { sub_activity_name: e.target.value })} placeholder="—" className={`${INPUT} w-28`} />
+                    ) : (line.sub_activity_name || '—')}
                   </td>
 
-                  {/* 13. Item Brand */}
+                  {/* 5. Item Group */}
                   <td className={TD}>
-                    {readOnly ? (line.preferred_brand || 'UltraTech') : (
-                      <input value={line.preferred_brand ?? ''} onChange={(e) => onChangeLine(line.key, { preferred_brand: e.target.value })} placeholder="Brand" className={`${INPUT} w-24`} />
-                    )}
+                    {!readOnly ? (
+                      <input value={line.item_group || ''} onChange={(e) => onChangeLine(line.key, { item_group: e.target.value })} placeholder="—" className={`${INPUT} w-28`} />
+                    ) : (line.item_group || '—')}
                   </td>
 
-                  {/* 14. Item Specification */}
+                  {/* 6. Item Brand */}
                   <td className={TD}>
-                    {readOnly ? (line.specification || 'IS 12269 : 2013 Grade 53') : (
-                      <input value={line.specification ?? ''} onChange={(e) => onChangeLine(line.key, { specification: e.target.value })} placeholder="Specification" className={`${INPUT} w-28`} />
-                    )}
+                    {!readOnly ? (
+                      <input value={line.preferred_brand || ''} onChange={(e) => onChangeLine(line.key, { preferred_brand: e.target.value })} placeholder="—" className={`${INPUT} w-24`} />
+                    ) : (line.preferred_brand || '—')}
                   </td>
 
-                  {/* 15. Est Qty */}
-                  <td className={`${TD} text-right text-muted-foreground`}>
-                    {line.est_qty ?? 2500}
+                  {/* 8. Units (Mandatory) */}
+                  <td className={`${TD} text-center`}>
+                    <SearchableUnitInput
+                      value={line.unit || ''}
+                      onChange={(val) => onChangeLine(line.key, { unit: val })}
+                      disabled={readOnly}
+                    />
                   </td>
 
-                  {/* 16. Ind Qty */}
-                  <td className={`${TD} text-right text-muted-foreground`}>
-                    {line.ind_qty ?? 1200}
-                  </td>
-
-                  {/* 17. Iss Qty */}
-                  <td className={`${TD} text-right text-muted-foreground`}>
-                    {line.iss_qty ?? 1000}
-                  </td>
-
-                  {/* 18. Extra Received Qty */}
-                  <td className={`${TD} text-right text-muted-foreground`}>
-                    {line.extra_rec_qty ?? 0}
-                  </td>
-
-                  {/* 19. Extra Adjusted Qty */}
-                  <td className={`${TD} text-right text-muted-foreground`}>
-                    {line.extra_adj_qty ?? 0}
-                  </td>
-
-                  {/* 20. Quantity (Mandatory) (Highlighted in primary blue) */}
+                  {/* 10. Quantity (Mandatory) (Highlighted in primary blue) */}
                   <td className={`${TD} text-right bg-primary/5 border-x-2 border-primary/30`}>
                     {readOnly ? (
-                      <span className="font-bold text-primary text-sm">{line.pr_quantity.toLocaleString('en-IN')}</span>
+                      <span className="font-bold text-primary text-sm">{(line.pr_quantity || 0).toLocaleString('en-IN')}</span>
                     ) : (
                       <div className="relative inline-block">
                         <input
                           type="number"
                           min={0}
-                          value={line.pr_quantity}
+                          value={line.pr_quantity ?? ''}
                           onChange={(e) => onChangeLine(line.key, { pr_quantity: Number(e.target.value), is_modified: line.is_modified || (!line.is_non_mr_item && Number(e.target.value) !== line.remaining_mr_qty) })}
                           className="w-24 rounded-lg border-2 border-primary bg-primary/10 px-2 py-1 text-right font-bold text-primary focus:bg-background focus:outline-none transition-colors text-xs"
                         />
@@ -262,40 +269,40 @@ export function PrItemTable({
                     )}
                   </td>
 
-                  {/* 21. PR Bal Qty */}
-                  <td className={`${TD} text-right font-medium`}>
-                    {line.pr_bal_qty ?? 300}
+                  {/* 11. PR Bal Qty — derived: MR balance still unrequisitioned
+                       after this line's quantity. Read-only; a hand-typed value
+                       could contradict the MR and silently break conversion. */}
+                  <td className={`${TD} text-right`}>
+                    {(() => {
+                      if (line.remaining_mr_qty == null) return <span className="text-muted-foreground">—</span>;
+                      const bal = Math.max(Number(line.remaining_mr_qty) - Number(line.pr_quantity || 0), 0);
+                      return (
+                        <span className={`font-semibold tabular-nums ${bal > 0 ? 'text-amber-600 dark:text-amber-500' : 'text-muted-foreground'}`} title={`MR balance ${line.remaining_mr_qty} − PR qty ${line.pr_quantity || 0}`}>
+                          {bal.toLocaleString('en-IN')}
+                        </span>
+                      );
+                    })()}
                   </td>
 
-                  {/* 22. Lead Period */}
-                  <td className={TD}>
-                    {line.lead_period_days ? `${line.lead_period_days} Days` : '3 Days'}
+                  {/* 12. Required Date (Mandatory) */}
+                  <td className={`${TD} text-center`}>
+                    {readOnly ? (line.required_date || '—') : (
+                      <input type="date" value={line.required_date ?? ''} onChange={(e) => onChangeLine(line.key, { required_date: e.target.value })} className={`${INPUT} w-32`} />
+                    )}
                   </td>
 
-                  {/* 23. Lead Date */}
-                  <td className={`${TD} text-muted-foreground`}>
-                    {line.lead_period_date || '2026-07-25'}
+                  {/* 13. Lead Period */}
+                  <td className={`${TD} text-center`}>
+                    {!readOnly ? (
+                      <input type="number" value={line.lead_period_days ?? ''} placeholder="—" onChange={(e) => onChangeLine(line.key, { lead_period_days: e.target.value === '' ? undefined : Number(e.target.value) })} className={`${INPUT} w-20 text-right`} />
+                    ) : (line.lead_period_days ? `${line.lead_period_days} Days` : '—')}
                   </td>
 
-                  {/* 24. Project Stock (Highlighted green) */}
-                  <td className={`${TD} text-right bg-emerald-500/5`}>
-                    <span className="inline-block rounded-md bg-emerald-500/15 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 font-bold px-2 py-0.5 text-xs">
-                      {line.project_stock ?? 120}
-                    </span>
-                  </td>
-
-                  {/* 25. Other Site Stock (Highlighted sky blue) */}
-                  <td className={`${TD} text-right bg-sky-500/5`}>
-                    <span className="inline-block rounded-md bg-sky-500/15 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300 font-bold px-2 py-0.5 text-xs">
-                      {line.other_project_stock ?? 450}
-                    </span>
-                  </td>
-
-                  {/* 26. Relation Count List */}
-                  <td className={`${TD} text-center font-bold text-foreground`}>
-                    <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-muted font-mono text-[11px]">
-                      {line.relation_count ?? 2}
-                    </span>
+                  {/* 14. Lead Date */}
+                  <td className={`${TD} text-center`}>
+                    {!readOnly ? (
+                      <input type="date" value={line.lead_period_date ?? ''} onChange={(e) => onChangeLine(line.key, { lead_period_date: e.target.value })} className={`${INPUT} w-32`} />
+                    ) : (line.lead_period_date || '—')}
                   </td>
                 </tr>
               );

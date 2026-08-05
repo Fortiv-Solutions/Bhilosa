@@ -8,7 +8,18 @@ export type Conversation={id:string;project_id:string;type:'project_group'|'chan
 export type Attachment={id:string;storage_path:string;mime_type:string;size_bytes:number;duration_seconds:number|null};
 export type InboxMessage={id:string;conversation_id:string;project_id:string;sender_id:string;body:string|null;type:'text'|'image'|'voice';created_at:string;profiles?:{name:string}|null;message_attachments?:Attachment[]};
 
-export async function getSessionProfile(){const {data:{user}}=await supabase.auth.getUser();if(!user)return null;const {data,error}=await supabase.from('profiles').select('*').eq('id',user.id).single();if(error)throw error;return {...data,role:roleToDatabaseRole(normalizeDatabaseRole((data as {role?:string|null}).role))} as Profile;}
+export async function getSessionProfile() {
+  try {
+    const { data: { user }, error: userErr } = await supabase.auth.getUser();
+    if (userErr || !user) return null;
+    const { data, error } = await supabase.from('profiles').select('*').eq('id', user.id).maybeSingle();
+    if (error || !data) return null;
+    return { ...data, role: roleToDatabaseRole(normalizeDatabaseRole((data as { role?: string | null }).role)) } as Profile;
+  } catch (err) {
+    console.warn('getSessionProfile network notice:', err);
+    return null;
+  }
+}
 export async function signIn(email:string,password:string){const {error}=await supabase.auth.signInWithPassword({email,password});if(error)throw error;return getSessionProfile();}
 export async function signOut(){await supabase.auth.signOut();}
 export async function listProjects(){const {data,error}=await supabase.from('projects').select('id,code,name').eq('status','active').order('name');if(error)throw error;return(data??[])as InboxProject[];}

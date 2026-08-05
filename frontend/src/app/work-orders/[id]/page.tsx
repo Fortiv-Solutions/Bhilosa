@@ -2,14 +2,16 @@
 
 import { use, useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, ClipboardCheck, AlertTriangle, Paperclip, CheckCircle2, XCircle } from 'lucide-react';
+import { ArrowLeft, ClipboardCheck, AlertTriangle, Paperclip, CheckCircle2, XCircle, Wallet } from 'lucide-react';
 import {
   getWorkOrder,
+  getWorkOrderBudget,
   submitWorkOrderForApproval,
   approveWorkOrder,
   rejectWorkOrder,
   activateWorkOrder,
   closeWorkOrder,
+  type WorkOrderBudgetPosition,
 } from '@/lib/work-orders';
 import { getEntityAttachments, getAttachmentUrl, uploadEntityAttachment } from '@/lib/documents';
 import { formatIndianCurrency } from '@/utils/format-currency';
@@ -19,6 +21,7 @@ const WO_STAGES = ['draft', 'issued', 'active', 'closed'] as const;
 export default function WorkOrderDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const [wo, setWo] = useState<any>(null);
+  const [budget, setBudget] = useState<WorkOrderBudgetPosition | null>(null);
   const [attachments, setAttachments] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
@@ -27,11 +30,13 @@ export default function WorkOrderDetailPage({ params }: { params: Promise<{ id: 
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [woData, attachmentData] = await Promise.all([
+      const [woData, budgetData, attachmentData] = await Promise.all([
         getWorkOrder(id),
+        getWorkOrderBudget(id).catch(() => null),
         getEntityAttachments('work_orders', id).catch(() => []),
       ]);
       setWo(woData);
+      setBudget(budgetData);
       setAttachments(attachmentData || []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to load Work Order.');
@@ -97,7 +102,7 @@ export default function WorkOrderDetailPage({ params }: { params: Promise<{ id: 
               <>
                 <button
                   disabled={actionLoading}
-                  onClick={() => runAction(() => approveWorkOrder(id, 'current-user'))}
+                  onClick={() => runAction(() => approveWorkOrder(id))}
                   className="inline-flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-700 hover:bg-emerald-100"
                 >
                   <CheckCircle2 className="h-3.5 w-3.5" /> Approve &amp; Issue
@@ -159,10 +164,61 @@ export default function WorkOrderDetailPage({ params }: { params: Promise<{ id: 
         )}
       </header>
 
-      <section className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+      <section className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <MoneyCard label="WO Value" value={Number(wo.total_amount || 0)} />
-        <MoneyCard label="Billed to Date" value={Number(wo.billed_to_date || 0)} />
+        <MoneyCard label="Certified Billed" value={Number(wo.billed_to_date || 0)} />
+        <MoneyCard label="Claimed (uncertified)" value={Number(wo.claimed_to_date || 0)} />
         <MoneyCard label="Remaining Balance" value={Number(wo.remaining_balance ?? wo.total_amount ?? 0)} highlight />
+      </section>
+
+      {wo.has_billing_overrun && (
+        <div className="rounded-lg border border-red-200 bg-red-50 p-3 flex items-start gap-3">
+          <AlertTriangle className="h-4 w-4 text-red-600 shrink-0 mt-0.5" />
+          <div className="text-xs text-red-800">
+            Certified billing on this Work Order exceeds its value. Raise an approved variation, or correct the bills.
+          </div>
+        </div>
+      )}
+
+      {/* Budget position. Commitment figures are read from budget_ledger via
+          work_order_budget_view, so they always agree with the journal. */}
+      <section className="rounded-3xl border border-gray-100 bg-white p-5 shadow-sm dark:border-gray-850 dark:bg-gray-900">
+        <h2 className="font-heading text-base font-semibold flex items-center gap-2">
+          <Wallet className="h-4 w-4 text-primary" /> Budget Position
+        </h2>
+
+        {budget?.budgetAllocationId ? (
+          <>
+            <dl className="mt-3 grid grid-cols-2 gap-4 md:grid-cols-4 text-xs">
+              <div>
+                <dt className="text-muted-foreground uppercase font-bold text-[10px]">Budget Head</dt>
+                <dd className="mt-1 font-semibold">{budget.categoryName || budget.allocationName || '-'}</dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground uppercase font-bold text-[10px]">Master Budget Line</dt>
+                <dd className="mt-1 font-semibold">{budget.masterBudgetItem || 'Not linked'}</dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground uppercase font-bold text-[10px]">Committed</dt>
+                <dd className="mt-1 font-semibold">{formatIndianCurrency(budget.committedAmount)}</dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground uppercase font-bold text-[10px]">Open Commitment</dt>
+                <dd className="mt-1 font-semibold text-primary">{formatIndianCurrency(budget.openCommitment)}</dd>
+              </div>
+            </dl>
+            <p className="mt-3 text-[11px] text-muted-foreground">
+              Bill values draw this Work Order down on their{' '}
+              <strong>{budget.taxInclusive ? 'gross (GST-inclusive)' : 'net-of-tax'}</strong> figure, matching how
+              the WO value was entered.
+            </p>
+          </>
+        ) : (
+          <div className="mt-3 rounded-lg border border-dashed border-amber-300 bg-amber-50 p-3 text-xs text-amber-800 dark:bg-amber-950/20">
+            No budget head is set on this Work Order. It reserves no budget and cannot be issued unless this
+            project explicitly permits unbudgeted Work Orders.
+          </div>
+        )}
       </section>
 
       <section className="rounded-3xl border border-gray-100 bg-white p-5 shadow-sm dark:border-gray-850 dark:bg-gray-900">

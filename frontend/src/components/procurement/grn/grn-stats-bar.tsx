@@ -23,11 +23,16 @@ export interface GrnRow {
   project_name: string;
   godown_name: string;
   challan_no: string;
-  status: 'site_engineer' | 'approved';
+  status: 'site_engineer' | 'approved' | 'draft' | 'pending_verification' | 'pending_approval' | 'posted' | 'rejected';
+  raw_status?: string;
+  raw_lines?: any[];
   items_received: number;
   total_val: number;
   challan_pdf_name?: string;
   site_engineer_name?: string;
+  qc_no?: string;
+  uploaded_challan_url?: string;
+  uploaded_invoice_url?: string;
 }
 
 export function GrnStatsBar({ grns, onSelectTab }: { grns: GrnRow[]; onSelectTab?: (tab: string) => void }) {

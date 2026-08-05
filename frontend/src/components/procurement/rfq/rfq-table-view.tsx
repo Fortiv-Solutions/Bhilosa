@@ -12,7 +12,10 @@ import {
   Eye,
   Printer,
   FileSpreadsheet,
+  Award,
   Clock,
+  SlidersHorizontal,
+  X,
 } from 'lucide-react';
 import type { PurchaseRequisitionRow, RfqRow, QuotationRow, VendorSelectionRow } from '@/lib/procurement';
 
@@ -24,6 +27,7 @@ interface RfqTableViewProps {
   onCreateRfq: (pr: PurchaseRequisitionRow) => void;
   onRecordQuote: (rfq: RfqRow) => void;
   onViewComparison: (rfqId: string) => void;
+  onOpenAwardMatrix?: (rfqId: string) => void;
   onPrintRfq?: (pr: PurchaseRequisitionRow) => void;
 }
 
@@ -45,6 +49,7 @@ export function RfqTableView({
   onCreateRfq,
   onRecordQuote,
   onViewComparison,
+  onOpenAwardMatrix,
 }: RfqTableViewProps) {
   if (approvedPrs.length === 0) {
     return (
@@ -180,41 +185,65 @@ export function RfqTableView({
                           const prSt = (pr.status || '').toLowerCase();
                           const rfqSt = (linkedRfq?.status || '').toLowerCase();
 
-                          if (prSt === 'po_issued' || linkedSelection?.status === 'approved') {
+                          if (prSt === 'po_issued' || rfqSt === 'po issued') {
                             return (
                               <span className="inline-flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-100 px-2.5 py-1 text-[11px] font-extrabold text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800">
-                                <CheckCircle2 className="h-3.5 w-3.5" /> PO Auto-Draft
+                                <CheckCircle2 className="h-3.5 w-3.5" /> PO Issued
                               </span>
                             );
                           }
 
-                          if (prSt === 'vendor_selected' || rfqSt.includes('received') || rfqSt.includes('approved')) {
+                          if (prSt === 'vendor_selected' || rfqSt === 'awarded') {
                             return (
                               <span className="inline-flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-100 px-2.5 py-1 text-[11px] font-extrabold text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800">
-                                <CheckCircle2 className="h-3.5 w-3.5" /> Approved
+                                <CheckCircle2 className="h-3.5 w-3.5" /> Awarded
                               </span>
                             );
                           }
 
-                          if (prSt === 'rfq_sent' || rfqSt.includes('waiting') || rfqSt.includes('sent')) {
+                          if (prSt === 'under_evaluation' || rfqSt === 'under evaluation') {
                             return (
-                              <span className="inline-flex items-center gap-1 rounded-md border border-blue-200 bg-blue-100 px-2.5 py-1 text-[11px] font-extrabold text-blue-800 dark:bg-blue-950/40 dark:text-blue-300 dark:border-blue-800">
-                                <FileCheck2 className="h-3.5 w-3.5" /> Waiting for Quotation
+                              <span className="inline-flex items-center gap-1 rounded-md border border-purple-200 bg-purple-100 px-2.5 py-1 text-[11px] font-extrabold text-purple-800 dark:bg-purple-950/40 dark:text-purple-300 dark:border-purple-800">
+                                <SlidersHorizontal className="h-3.5 w-3.5" /> Under Evaluation
                               </span>
                             );
                           }
 
-                          if (prSt === 'draft' || rfqSt.includes('draft')) {
+                          if (prSt === 'quotes_received' || rfqSt === 'quotes received') {
                             return (
                               <span className="inline-flex items-center gap-1 rounded-md border border-amber-200 bg-amber-100 px-2.5 py-1 text-[11px] font-extrabold text-amber-800 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800">
-                                <Clock className="h-3.5 w-3.5" /> Draft
+                                <FileCheck2 className="h-3.5 w-3.5" /> Quotes Received
+                              </span>
+                            );
+                          }
+
+                          if (prSt === 'rfq_sent' || rfqSt === 'rfq sent') {
+                            return (
+                              <span className="inline-flex items-center gap-1 rounded-md border border-blue-200 bg-blue-100 px-2.5 py-1 text-[11px] font-extrabold text-blue-800 dark:bg-blue-950/40 dark:text-blue-300 dark:border-blue-800">
+                                <Send className="h-3.5 w-3.5" /> RFQ Sent
+                              </span>
+                            );
+                          }
+
+                          if (rfqSt === 'cancelled') {
+                            return (
+                              <span className="inline-flex items-center gap-1 rounded-md border border-red-200 bg-red-100 px-2.5 py-1 text-[11px] font-extrabold text-red-800 dark:bg-red-950/40 dark:text-red-300 dark:border-red-800">
+                                <X className="h-3.5 w-3.5" /> Cancelled
+                              </span>
+                            );
+                          }
+
+                          if (rfqSt === 'auto-draft' || (!linkedRfq && prSt === 'approved')) {
+                            return (
+                              <span className="inline-flex items-center gap-1 rounded-md border border-sky-200 bg-sky-100 px-2.5 py-1 text-[11px] font-extrabold text-sky-800 dark:bg-sky-950/40 dark:text-sky-300 dark:border-sky-800">
+                                ⚡ Auto-Draft
                               </span>
                             );
                           }
 
                           return (
-                            <span className="inline-flex items-center gap-1 rounded-md border border-purple-200 bg-purple-100 px-2.5 py-1 text-[11px] font-extrabold text-purple-800 dark:bg-purple-950/40 dark:text-purple-300 dark:border-purple-800">
-                              ⚡ Auto-Draft
+                            <span className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-100 px-2.5 py-1 text-[11px] font-extrabold text-slate-700 dark:bg-slate-950/40 dark:text-slate-300 dark:border-slate-800">
+                              <Clock className="h-3.5 w-3.5" /> Draft
                             </span>
                           );
                         })()}
@@ -293,6 +322,8 @@ export function RfqTableView({
                             <span>Compare Quotes</span>
                           </button>
                         )}
+
+
                       </div>
                     </td>
                   </tr>

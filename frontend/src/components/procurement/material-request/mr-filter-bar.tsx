@@ -1,6 +1,6 @@
 'use client';
 
-import { Search, RefreshCcw, Plus, AlertTriangle, X } from 'lucide-react';
+import { Search, RefreshCcw, AlertTriangle, X } from 'lucide-react';
 import type { ProcurementProjectOption } from '@/lib/procurement';
 import type { MRFilterState } from '@/lib/erp/material-request/types';
 
@@ -11,7 +11,6 @@ interface MRFilterBarProps {
   workActivities: string[];
   loading: boolean;
   onRefresh: () => Promise<void>;
-  onOpenCreateModal: () => void;
 }
 
 export function MRFilterBar({
@@ -21,7 +20,6 @@ export function MRFilterBar({
   workActivities,
   loading,
   onRefresh,
-  onOpenCreateModal,
 }: MRFilterBarProps) {
   const activeCount = [
     filters.projectId,

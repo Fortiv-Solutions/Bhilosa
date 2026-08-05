@@ -1,0 +1,20 @@
+-- =====================================================================
+-- RETIRED: mock purchase order seed
+-- =====================================================================
+-- This migration used to insert PO-2026-001 and PO-2026-002 as demo data.
+-- PO-2026-001 was seeded with status 'approved' and a Rs 82,600 total,
+-- which fires fn_auto_commit_po_to_budget and posts a real commitment
+-- against a real budget allocation.
+--
+-- The column additions it also performed (rfq_id, supplier_name, gst_no
+-- and the rest of the denormalised supplier block) are already present in
+-- the live schema and are re-asserted idempotently by
+-- 20260805090100_po_module_production_hardening.sql, so nothing is lost by
+-- reducing this file to a no-op.
+--
+-- 20260805090200_remove_mock_purchase_orders.sql deletes the two seeded rows
+-- from any environment where this migration already ran, provided no GRN or
+-- bill was booked against them, and reverses the budget commitment that
+-- PO-2026-001 posted.
+--
+-- Intentionally left with no executable statements.

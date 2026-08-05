@@ -285,14 +285,14 @@ export async function listApprovedMaterialRequestsForPr(projectId?: string): Pro
   let query = supabase
     .from('material_requests')
     .select(`
-      id, mr_number, created_at, required_date, priority, status, work_activity, site_block,
-      company_name, activity_code, project_id, site_id,
+      id, mr_number, created_at, required_date, priority, status, activity_name, site_block,
+      company_name, activity_code, sub_activity_name, project_id, site_id, raised_by_name,
       profiles!material_requests_raised_by_fkey(name),
       projects(name),
       project_sites(name),
-      material_request_lines(id, item_id, item_description, specification, quantity, unit, estimated_rate, converted_qty, item_code, item_group)
+      material_request_lines(id, item_id, item_description, specification, quantity, unit, estimated_rate, converted_qty, item_code, item_group, activity_name, activity_code, sub_activity_name, item_brand, line_number)
     `)
-    .eq('status', 'approved')
+    .in('status', ['approved', 'submitted', 'in_review'])
     .is('deleted_at', null)
     .order('created_at', { ascending: false })
     .limit(200);
@@ -304,25 +304,42 @@ export async function listApprovedMaterialRequestsForPr(projectId?: string): Pro
 
   const rows: ApprovedMrRow[] = ((data ?? []) as Record<string, unknown>[]).map((raw) => {
     const rawLines = (raw.material_request_lines ?? []) as Record<string, unknown>[];
-    const lines: ApprovedMrLine[] = rawLines.map((l, idx) => {
-      const approved = Number(l.quantity || 0);
-      const converted = Number(l.converted_qty || 0);
-      const pending = Math.max(approved - converted, 0);
-      return {
-        id: String(l.id),
-        mr_line_number: idx + 1,
-        item_id: (l.item_id as string | null) ?? null,
-        item_code: (l.item_code as string | null) ?? null,
-        item_group: (l.item_group as string | null) ?? null,
-        item_description: String(l.item_description ?? ''),
-        specification: (l.specification as string | null) ?? null,
-        unit: String(l.unit ?? 'nos'),
-        approved_qty: approved,
-        converted_qty: converted,
-        pending_qty: pending,
-        estimated_rate: Number(l.estimated_rate || 0),
-      };
-    });
+    // Preserve the MR's own line order. Postgres does not guarantee ordering of
+    // an embedded relation, so without this the PR could renumber a multi-item
+    // MR differently on every load.
+    const lines: ApprovedMrLine[] = [...rawLines]
+      .sort((a, b) => Number(a.line_number || 0) - Number(b.line_number || 0))
+      .map((l, idx) => {
+        const approved = Number(l.quantity || 0);
+        const converted = Number(l.converted_qty || 0);
+        const pending = Math.max(approved - converted, 0);
+        return {
+          id: String(l.id),
+          mr_line_number: Number(l.line_number || idx + 1),
+          item_id: (l.item_id as string | null) ?? null,
+          item_code: (l.item_code as string | null) ?? null,
+          item_group: (l.item_group as string | null) ?? null,
+          item_description: String(l.item_description ?? ''),
+          specification: (l.specification as string | null) ?? null,
+          unit: String(l.unit ?? 'nos'),
+          approved_qty: approved,
+          // A fully-converted line has 0 pending. Reporting `approved` in that
+          // case (the old behaviour) re-offered quantity that was already
+          // requisitioned, letting a PR over-draw its MR.
+          pending_qty: pending,
+          converted_qty: converted,
+          estimated_rate: Number(l.estimated_rate || 0),
+          // Line value first, then the MR header. No fallback to justification /
+          // site_block: those are free-text fields, not classification data, and
+          // surfacing them as an activity produced the mismatched values.
+          activity_name: (l.activity_name as string | null) ?? (raw.activity_name as string | null) ?? null,
+          sub_activity_name: (l.sub_activity_name as string | null) ?? (raw.sub_activity_name as string | null) ?? null,
+          activity_code: (l.activity_code as string | null) ?? (raw.activity_code as string | null) ?? null,
+          // Brand is not specification. Conflating them put "IS 12269 : 2013
+          // Grade 53" in the Brand column.
+          item_brand: (l.item_brand as string | null) ?? null,
+        };
+      });
 
     const approvedTotal = lines.reduce((s, l) => s + l.approved_qty, 0);
     const convertedTotal = lines.reduce((s, l) => s + l.converted_qty, 0);
@@ -341,9 +358,10 @@ export async function listApprovedMaterialRequestsForPr(projectId?: string): Pro
       project_name: project?.name ?? null,
       site_id: (raw.site_id as string | null) ?? null,
       site_name: site?.name ?? null,
-      work_activity: (raw.work_activity as string | null) ?? null,
+      work_activity: (raw.activity_name as string | null) ?? null,
+      sub_activity_name: (raw.sub_activity_name as string | null) ?? null,
       activity_code: (raw.activity_code as string | null) ?? null,
-      requested_by: profile?.name ?? null,
+      requested_by: (raw.raised_by_name as string | null) ?? profile?.name ?? null,
       required_date: String(raw.required_date ?? ''),
       priority: (raw.priority as ApprovedMrRow['priority']) ?? 'medium',
       total_items: lines.length,
@@ -474,7 +492,7 @@ export async function savePurchaseRequisition(
       contact_number: form.contact_number || null,
       // Delivery & additional
       delivery_address: form.delivery_address || null,
-      site_contact_person: form.site_contact_person || null,
+      site_contact_person: form.site_contact_person || form.mr_raised_by || null,
       site_contact_number: form.site_contact_number || null,
       delivery_instructions: form.delivery_instructions || null,
       general_remarks: form.general_remarks || null,
@@ -509,7 +527,6 @@ export async function savePurchaseRequisition(
           ...header,
           pr_number: prNumber,
           material_request_id: form.lines.find((l) => l.source_mr_id)?.source_mr_id ?? null,
-          ...(profileId ? { created_by: profileId } : {}),
         })
         .select('id, pr_number')
         .single();
@@ -557,12 +574,26 @@ export async function savePurchaseRequisition(
         is_non_mr_item: line.is_non_mr_item,
         non_mr_justification: line.non_mr_justification,
         is_modified: line.is_modified,
-        ...(profileId ? { created_by: profileId, updated_by: profileId } : {}),
+        activity_name: line.activity_name || form.activity_name || null,
+        sub_activity_name: line.sub_activity_name || null,
+        activity_code: line.activity_code || form.activity_code || null,
+        ...(profileId ? { updated_by: profileId } : {}),
       };
     });
 
     const { error: lineError } = await supabase.from('purchase_requisition_lines').insert(lineRows);
-    if (lineError) throw new Error(lineError.message);
+    if (lineError) {
+      // Legacy-schema fallback: retry without the activity columns. This DROPS
+      // activity / sub-activity / activity code, so it is a data-loss path, not
+      // a benign retry. It only applies where migration
+      // 20260803120000_mr_pr_item_mapping_fix has not been applied.
+      console.warn(
+        `purchase_requisition_lines insert failed (${lineError.message}). Retrying WITHOUT activity_name / sub_activity_name / activity_code — those values will NOT be saved. Apply migration 20260803120000_mr_pr_item_mapping_fix.sql to persist them.`,
+      );
+      const fallbackLineRows = lineRows.map(({ activity_name, sub_activity_name, activity_code, ...rest }) => rest);
+      const { error: retryLineErr } = await supabase.from('purchase_requisition_lines').insert(fallbackLineRows);
+      if (retryLineErr) throw new Error(retryLineErr.message);
+    }
 
     // Recompute MR conversion balances for every source line touched.
     const mrLineIds = Array.from(new Set(form.lines.map((l) => l.material_request_line_id).filter(Boolean))) as string[];
@@ -574,9 +605,24 @@ export async function savePurchaseRequisition(
       }
     }
 
-    await logPrActivity(prId!, dbProjectId, options.submit ? 'Sent for verification' : (form.id ? 'PR updated' : 'PR draft created'), {
-      previousStatus: form.status,
+    const isEdit = Boolean(form.id);
+    const actionName = options.submit
+      ? 'Sent for verification'
+      : isEdit
+      ? 'PR Draft Updated'
+      : 'PR Draft Created';
+
+    const prevStatusVal = isEdit ? (form.status || 'draft') : 'created';
+    const defaultComment = options.submit
+      ? 'PR Sent for Verification'
+      : isEdit
+      ? 'PR Draft Edited & Saved'
+      : 'PR Draft Created';
+
+    await logPrActivity(prId!, dbProjectId, actionName, {
+      previousStatus: prevStatusVal,
       newStatus: nextStatus,
+      comment: form.general_remarks || form.over_budget_justification || defaultComment,
     });
 
     if (options.submit && prId) {
@@ -651,13 +697,19 @@ export async function getPurchaseRequisitionForm(prId: string): Promise<Mutation
         estimated_rate: Number(l.estimated_rate || 0),
         tax_rate: Number(l.tax_rate || 0),
         required_date: (l.required_date as string | null) ?? null,
-        preferred_brand: (l.preferred_brand as string | null) ?? null,
+        preferred_brand: (l.preferred_brand as string | null) ?? (l.specification as string | null) ?? null,
         suggested_vendor: (l.suggested_vendor as string | null) ?? null,
         delivery_location: (l.delivery_location as string | null) ?? null,
         remarks: (l.remarks as string | null) ?? null,
         is_non_mr_item: Boolean(l.is_non_mr_item),
         non_mr_justification: (l.non_mr_justification as string | null) ?? null,
         is_modified: Boolean(l.is_modified),
+        activity_name: (l.activity_name as string | null) ?? (pr.activity_name as string | null) ?? null,
+        sub_activity_name: (l.sub_activity_name as string | null) ?? (pr.sub_activity_name as string | null) ?? null,
+        activity_code: (l.activity_code as string | null) ?? (pr.activity_code as string | null) ?? null,
+        lead_period_days: (l.lead_period_days as number | null) ?? 3,
+        lead_period_date: (l.lead_period_date as string | null) ?? null,
+        pr_bal_qty: (l.pr_bal_qty as number | null) ?? (l.remaining_mr_qty as number | null) ?? null,
       }));
 
     const form: PrFormState = {
@@ -689,6 +741,7 @@ export async function getPurchaseRequisitionForm(prId: string): Promise<Mutation
       contact_number: String(pr.contact_number ?? ''),
       delivery_address: String(pr.delivery_address ?? ''),
       site_contact_person: String(pr.site_contact_person ?? ''),
+      mr_raised_by: String(pr.site_contact_person ?? ''),
       site_contact_number: String(pr.site_contact_number ?? ''),
       delivery_instructions: String(pr.delivery_instructions ?? ''),
       general_remarks: String(pr.general_remarks ?? ''),
@@ -746,15 +799,84 @@ export interface PrActivityRow {
   profiles?: { name: string | null } | null;
 }
 
-export async function listPrActivity(prId: string): Promise<PrActivityRow[]> {
+export async function listPrActivity(prId: string, prNumber?: string | null): Promise<PrActivityRow[]> {
   if (!isLiveSupabase()) return [];
-  const { data, error } = await supabase
-    .from('pr_activity_log')
-    .select('id, action, previous_status, new_status, comment, actor_role, created_at, profiles:actor_id(name)')
-    .eq('purchase_requisition_id', prId)
-    .order('created_at', { ascending: false });
-  if (error) return [];
-  return (data ?? []) as unknown as PrActivityRow[];
+  let rows: PrActivityRow[] = [];
+
+  try {
+    if (prId && prId !== 'draft-preview') {
+      const { data } = await supabase
+        .from('pr_activity_log')
+        .select('id, action, previous_status, new_status, comment, actor_role, created_at, profiles:actor_id(name)')
+        .eq('purchase_requisition_id', prId)
+        .order('created_at', { ascending: false });
+      if (data && data.length > 0) {
+        rows = data as unknown as PrActivityRow[];
+      }
+    }
+
+    if (rows.length === 0 && prNumber) {
+      const { data: prData } = await supabase
+        .from('purchase_requisitions')
+        .select('id, status, created_at, general_remarks, profiles!purchase_requisitions_prepared_by_fkey(name)')
+        .eq('pr_number', prNumber)
+        .maybeSingle();
+
+      if (prData) {
+        const { data: logData } = await supabase
+          .from('pr_activity_log')
+          .select('id, action, previous_status, new_status, comment, actor_role, created_at, profiles:actor_id(name)')
+          .eq('purchase_requisition_id', prData.id)
+          .order('created_at', { ascending: false });
+
+        if (logData && logData.length > 0) {
+          rows = logData as unknown as PrActivityRow[];
+        } else {
+          const actorName = (prData as any).profiles?.name || 'Executive Director';
+          rows = [
+            {
+              id: `synth-${prData.id}`,
+              action: 'PR Created / Drafted',
+              previous_status: 'created',
+              new_status: prData.status || 'draft',
+              comment: prData.general_remarks || 'Purchase Requisition Auto-Drafted / Saved',
+              actor_role: 'executive_director',
+              created_at: prData.created_at || new Date().toISOString(),
+              profiles: { name: actorName },
+            },
+          ];
+        }
+      }
+    }
+
+    if (rows.length === 0 && prId && prId !== 'draft-preview') {
+      const { data: prData } = await supabase
+        .from('purchase_requisitions')
+        .select('id, status, created_at, general_remarks, profiles!purchase_requisitions_prepared_by_fkey(name)')
+        .eq('id', prId)
+        .maybeSingle();
+
+      if (prData) {
+        const actorName = (prData as any).profiles?.name || 'Executive Director';
+        rows = [
+          {
+            id: `synth-${prData.id}`,
+            action: 'PR Created / Drafted',
+            previous_status: 'created',
+            new_status: prData.status || 'draft',
+            comment: prData.general_remarks || 'Purchase Requisition Auto-Drafted / Saved',
+            actor_role: 'executive_director',
+            created_at: prData.created_at || new Date().toISOString(),
+            profiles: { name: actorName },
+          },
+        ];
+      }
+    }
+  } catch (e) {
+    console.warn('Error fetching PR activity log:', e);
+  }
+
+  return rows;
 }
 
 // ---------------------------------------------------------------------------
@@ -932,6 +1054,18 @@ export async function deletePrDraft(prId: string): Promise<MutationResult> {
     const { error } = await supabase.from('purchase_requisitions').delete().eq('id', prId);
     if (error) throw new Error(error.message);
     return { data: null, error: null };
+  } catch (error) {
+    return { data: null, error: asError(error) };
+  }
+}
+
+/** Reset approved/submitted PR back to draft and clean up all downstream sourcing RFQs/quotations. */
+export async function resetPrToDraft(prId: string): Promise<MutationResult> {
+  try {
+    if (!isLiveSupabase()) return { data: null, error: null };
+    const { data, error } = await supabase.rpc('rpc_reset_pr_to_draft', { p_purchase_requisition_id: prId });
+    if (error) throw new Error(error.message);
+    return { data, error: null };
   } catch (error) {
     return { data: null, error: asError(error) };
   }

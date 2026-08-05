@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { ClipboardList, Plus, Trash2, X } from 'lucide-react';
 import type { MaterialRequestRow, ProcurementProjectOption } from '@/lib/erp/material-request/types';
+import type { MaterialRequestLineInput } from '@/lib/procurement';
 
 interface CreateMRModalProps {
   projectOptions: ProcurementProjectOption[];
@@ -12,22 +13,31 @@ interface CreateMRModalProps {
     title: string,
     priority: MaterialRequestRow['priority'],
     requiredDate: string,
-    lines: { itemDescription: string; quantity: number; estimatedRate: number }[]
+    lines: MaterialRequestLineInput[]
   ) => Promise<void>;
 }
+
+const BLANK_LINE: MaterialRequestLineInput = {
+  itemDescription: '',
+  quantity: 1,
+  estimatedRate: 0,
+  unit: 'nos',
+  itemGroup: '',
+  itemBrand: '',
+  activityName: '',
+  subActivityName: '',
+};
 
 export function CreateMRModal({ projectOptions, onClose, onSubmit }: CreateMRModalProps) {
   const [projectId, setProjectId] = useState(projectOptions[0]?.id || 'central-park');
   const [title, setTitle] = useState('');
   const [priority, setPriority] = useState<MaterialRequestRow['priority']>('high');
   const [requiredDate, setRequiredDate] = useState(new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0]);
-  const [lines, setLines] = useState<{ itemDescription: string; quantity: number; estimatedRate: number }[]>([
-    { itemDescription: 'OPC 53 Grade Cement', quantity: 500, estimatedRate: 380 },
-  ]);
+  const [lines, setLines] = useState<MaterialRequestLineInput[]>([{ ...BLANK_LINE }]);
   const [submitting, setSubmitting] = useState(false);
 
   const handleAddLine = () => {
-    setLines([...lines, { itemDescription: '', quantity: 1, estimatedRate: 0 }]);
+    setLines([...lines, { ...BLANK_LINE }]);
   };
 
   const handleRemoveLine = (index: number) => {
@@ -134,37 +144,94 @@ export function CreateMRModal({ projectOptions, onClose, onSubmit }: CreateMRMod
               </button>
             </div>
 
+            <p className="text-[11px] text-muted-foreground">
+              Activity, Sub-Activity, Group and Brand carry through to the Purchase Requisition
+              exactly as entered here.
+            </p>
+
             {lines.map((line, idx) => (
-              <div key={idx} className="flex items-center gap-2">
-                <input
-                  type="text"
-                  value={line.itemDescription}
-                  onChange={(e) => handleLineChange(idx, 'itemDescription', e.target.value)}
-                  placeholder="Material description"
-                  required
-                  className="flex-1 rounded-md border border-border bg-background px-2.5 py-1.5 outline-none"
-                />
-                <input
-                  type="number"
-                  value={line.quantity}
-                  onChange={(e) => handleLineChange(idx, 'quantity', Number(e.target.value))}
-                  placeholder="Qty"
-                  required
-                  min={1}
-                  className="w-20 rounded-md border border-border bg-background px-2 py-1.5 text-right outline-none"
-                />
-                <input
-                  type="number"
-                  value={line.estimatedRate}
-                  onChange={(e) => handleLineChange(idx, 'estimatedRate', Number(e.target.value))}
-                  placeholder="Rate (₹)"
-                  className="w-24 rounded-md border border-border bg-background px-2 py-1.5 text-right outline-none"
-                />
-                {lines.length > 1 && (
-                  <button type="button" onClick={() => handleRemoveLine(idx)} className="text-red-500 hover:text-red-700">
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
-                )}
+              <div key={idx} className="rounded-lg border border-border bg-muted/20 p-2.5 space-y-2">
+                <div className="flex items-center gap-2">
+                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-primary/10 text-[10px] font-bold text-primary">
+                    {idx + 1}
+                  </span>
+                  <input
+                    type="text"
+                    value={line.itemDescription}
+                    onChange={(e) => handleLineChange(idx, 'itemDescription', e.target.value)}
+                    placeholder="Material description"
+                    required
+                    className="flex-1 rounded-md border border-border bg-background px-2.5 py-1.5 font-semibold outline-none focus:border-primary"
+                  />
+                  {lines.length > 1 && (
+                    <button type="button" onClick={() => handleRemoveLine(idx)} title="Remove item" className="text-red-500 hover:text-red-700">
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 pl-7">
+                  <input
+                    type="text"
+                    value={line.activityName ?? ''}
+                    onChange={(e) => handleLineChange(idx, 'activityName', e.target.value)}
+                    placeholder="Activity name"
+                    className="rounded-md border border-border bg-background px-2 py-1.5 outline-none focus:border-primary"
+                  />
+                  <input
+                    type="text"
+                    value={line.subActivityName ?? ''}
+                    onChange={(e) => handleLineChange(idx, 'subActivityName', e.target.value)}
+                    placeholder="Sub-activity"
+                    className="rounded-md border border-border bg-background px-2 py-1.5 outline-none focus:border-primary"
+                  />
+                  <input
+                    type="text"
+                    value={line.itemGroup ?? ''}
+                    onChange={(e) => handleLineChange(idx, 'itemGroup', e.target.value)}
+                    placeholder="Item group"
+                    className="rounded-md border border-border bg-background px-2 py-1.5 outline-none focus:border-primary"
+                  />
+                  <input
+                    type="text"
+                    value={line.itemBrand ?? ''}
+                    onChange={(e) => handleLineChange(idx, 'itemBrand', e.target.value)}
+                    placeholder="Preferred brand"
+                    className="rounded-md border border-border bg-background px-2 py-1.5 outline-none focus:border-primary"
+                  />
+                </div>
+
+                <div className="flex items-center gap-2 pl-7">
+                  <input
+                    type="text"
+                    value={line.unit ?? 'nos'}
+                    onChange={(e) => handleLineChange(idx, 'unit', e.target.value)}
+                    placeholder="Unit"
+                    className="w-20 rounded-md border border-border bg-background px-2 py-1.5 outline-none focus:border-primary"
+                  />
+                  <input
+                    type="number"
+                    value={line.quantity}
+                    onChange={(e) => handleLineChange(idx, 'quantity', Number(e.target.value))}
+                    placeholder="Qty"
+                    required
+                    min={0.0001}
+                    step="any"
+                    className="w-24 rounded-md border border-border bg-background px-2 py-1.5 text-right outline-none focus:border-primary"
+                  />
+                  <input
+                    type="number"
+                    value={line.estimatedRate}
+                    onChange={(e) => handleLineChange(idx, 'estimatedRate', Number(e.target.value))}
+                    placeholder="Rate (₹)"
+                    min={0}
+                    step="any"
+                    className="w-28 rounded-md border border-border bg-background px-2 py-1.5 text-right outline-none focus:border-primary"
+                  />
+                  <span className="ml-auto text-[11px] font-semibold text-muted-foreground tabular-nums">
+                    ₹{((Number(line.quantity) || 0) * (Number(line.estimatedRate) || 0)).toLocaleString('en-IN')}
+                  </span>
+                </div>
               </div>
             ))}
           </div>

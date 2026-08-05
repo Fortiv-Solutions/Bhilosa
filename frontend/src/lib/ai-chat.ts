@@ -1,11 +1,4 @@
-import { createClient } from '@supabase/supabase-js';
-
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-
-function getClient() {
-  return createClient(supabaseUrl, supabaseAnonKey);
-}
+import { supabase } from '@/utils/supabase-client';
 
 export interface ChatSession {
   id: string;
@@ -33,7 +26,7 @@ export async function createChatSession(
   title?: string,
   projectId?: string | null
 ): Promise<ChatSession | null> {
-  const supabase = getClient();
+
   const { data, error } = await supabase
     .from('ai_chat_sessions')
     .insert({
@@ -53,7 +46,7 @@ export async function createChatSession(
 
 /** Load all sessions for a user (most recent first) */
 export async function loadChatSessions(userId: string): Promise<ChatSession[]> {
-  const supabase = getClient();
+
   const { data, error } = await supabase
     .from('ai_chat_sessions')
     .select('*')
@@ -73,7 +66,7 @@ export async function updateSessionTitle(
   sessionId: string,
   title: string
 ): Promise<void> {
-  const supabase = getClient();
+
   await supabase
     .from('ai_chat_sessions')
     .update({ title })
@@ -82,7 +75,7 @@ export async function updateSessionTitle(
 
 /** Archive (soft-delete) a session */
 export async function archiveChatSession(sessionId: string): Promise<void> {
-  const supabase = getClient();
+
   await supabase
     .from('ai_chat_sessions')
     .update({ is_archived: true })
@@ -98,7 +91,7 @@ export async function saveChatMessage(
   content: string,
   tokensUsed?: number
 ): Promise<ChatMessage | null> {
-  const supabase = getClient();
+
   const { data, error } = await supabase
     .from('ai_chat_messages')
     .insert({
@@ -119,7 +112,7 @@ export async function saveChatMessage(
 
 /** Load all messages for a session (oldest first) */
 export async function loadChatMessages(sessionId: string): Promise<ChatMessage[]> {
-  const supabase = getClient();
+
   const { data, error } = await supabase
     .from('ai_chat_messages')
     .select('*')
@@ -135,7 +128,7 @@ export async function loadChatMessages(sessionId: string): Promise<ChatMessage[]
 
 /** Delete all messages in a session (used by clear chat) */
 export async function clearChatMessages(sessionId: string): Promise<void> {
-  const supabase = getClient();
+
   await supabase
     .from('ai_chat_messages')
     .delete()

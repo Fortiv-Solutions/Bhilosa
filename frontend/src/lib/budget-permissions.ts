@@ -17,6 +17,15 @@ import type { Role } from './roles';
 export interface BudgetPermissions {
   /** Read the module at all. */
   canView: boolean;
+  /**
+   * Raise a budget change document (draft/submit). Since Phase 7 this is
+   * deliberately WIDER than approval: a PM can propose, but cannot self-approve.
+   */
+  canProposeBudgetChange: boolean;
+  /** Approve a transfer, return or revision. */
+  canApproveBudgetChange: boolean;
+  /** Approve a supplement or an original sanction — board-tier movements. */
+  canApproveSupplement: boolean;
   /** Change baseline quantities/rates (a change order). */
   canEditMasterBudget: boolean;
   /** Upload an Excel schedule. */
@@ -35,6 +44,9 @@ export interface BudgetPermissions {
 
 const NONE: BudgetPermissions = {
   canView: false,
+  canProposeBudgetChange: false,
+  canApproveBudgetChange: false,
+  canApproveSupplement: false,
   canEditMasterBudget: false,
   canImportBudget: false,
   canEditVariance: false,
@@ -47,6 +59,10 @@ const NONE: BudgetPermissions = {
 const MATRIX: Record<Role, BudgetPermissions> = {
   UPPER_MANAGEMENT: {
     canView: true,
+    canProposeBudgetChange: true,
+    canApproveBudgetChange: true,
+    // Board tier. Modelled separately so a future board role can hold it alone.
+    canApproveSupplement: true,
     canEditMasterBudget: true,
     canImportBudget: true,
     canEditVariance: true,
@@ -57,6 +73,11 @@ const MATRIX: Record<Role, BudgetPermissions> = {
   },
   PROJECT_MANAGER: {
     canView: true,
+    // A PM may RAISE a change but never approve one — that separation is the
+    // point of the Phase 7 workflow.
+    canProposeBudgetChange: true,
+    canApproveBudgetChange: false,
+    canApproveSupplement: false,
     // Baseline changes are a board-level change order, not a PM action.
     canEditMasterBudget: false,
     canImportBudget: false,
@@ -68,6 +89,9 @@ const MATRIX: Record<Role, BudgetPermissions> = {
   },
   PR_TEAM: {
     canView: true,
+    canProposeBudgetChange: false,
+    canApproveBudgetChange: false,
+    canApproveSupplement: false,
     canEditMasterBudget: false,
     canImportBudget: false,
     canEditVariance: false,
@@ -98,5 +122,11 @@ export function applyBudgetLock(
     canEditMasterBudget: false,
     canImportBudget: false,
     canEditVariance: false,
+    // fn_assert_budget_unlocked rejects propose and approve too, so the
+    // affordances must match or the user gets a database error instead of a
+    // disabled button.
+    canProposeBudgetChange: false,
+    canApproveBudgetChange: false,
+    canApproveSupplement: false,
   };
 }

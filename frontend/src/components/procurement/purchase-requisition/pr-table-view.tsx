@@ -8,9 +8,14 @@ import {
   Building2,
   Layers,
   Sparkles,
+  MapPin,
+  User,
+  Eye,
 } from 'lucide-react';
 import type { PurchaseRequisitionRow } from '@/lib/procurement';
+import { isPrEditable } from '@/lib/erp/purchase-requisition/service';
 import { PrStatusBadge, PrPriorityBadge } from './pr-badges';
+import { ProcurementSplitProgressBar } from '../procurement-split-progress-bar';
 
 interface PRTableViewProps {
   rows: PurchaseRequisitionRow[];
@@ -52,18 +57,19 @@ export function PRTableView({ rows, onEdit, onPdf }: PRTableViewProps) {
           <table className="w-full text-left text-xs whitespace-nowrap">
             <thead>
               <tr className="border-b border-border bg-muted/50 font-heading text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
-                <th className="px-4 py-3.5">PR No. &amp; Source MR</th>
+                <th className="px-4 py-3.5">Sr No.</th>
                 <th className="px-4 py-3.5">Company &amp; Project</th>
-                <th className="px-4 py-3.5">Work Activity &amp; Site</th>
                 <th className="px-4 py-3.5">Prepared By / Date</th>
-                <th className="px-4 py-3.5">Items &amp; Value</th>
+                <th className="px-4 py-3.5">Required By</th>
+                <th className="px-4 py-3.5">Site</th>
+                <th className="px-4 py-3.5">No. of Items</th>
                 <th className="px-4 py-3.5">Priority</th>
                 <th className="px-4 py-3.5">Status</th>
                 <th className="px-4 py-3.5 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border/60">
-              {rows.map((row) => {
+              {rows.map((row, rowIndex) => {
                 const lines = row.purchase_requisition_lines || [];
                 const firstLine = lines[0];
                 const lineCount = lines.length;
@@ -87,7 +93,6 @@ export function PRTableView({ rows, onEdit, onPdf }: PRTableViewProps) {
                     ? 'Skyline Towers'
                     : 'Central Park';
 
-                const workActivity = firstLine?.work_activity || row.activity_name || 'Brick Masonry & Wall Construction';
                 const isUuidStr = (s?: string | null) => Boolean(s && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s.trim()));
                 const rawPrepared = row.profiles?.name || (firstLine?.raised_by && !isUuidStr(firstLine.raised_by) ? firstLine.raised_by : null) || row.created_by_name || row.department;
                 const preparedBy = rawPrepared && !isUuidStr(rawPrepared) ? rawPrepared : 'Rohan Mehta (Site Eng)';
@@ -98,27 +103,9 @@ export function PRTableView({ rows, onEdit, onPdf }: PRTableViewProps) {
                     key={row.id}
                     className="group hover:bg-muted/30 transition-colors align-middle"
                   >
-                    {/* Column 1: PR No. & Source MR */}
+                    {/* Column 1: Sr No. */}
                     <td className="px-4 py-3">
-                      <div className="flex flex-col gap-0.5">
-                        <span className="font-mono font-bold text-foreground hover:text-primary transition-colors text-xs">
-                          {row.pr_number || 'PR-Draft'}
-                        </span>
-                        {sourceMr ? (
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            <span className="inline-flex items-center rounded bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-bold font-mono text-blue-600 dark:text-blue-400">
-                              From {sourceMr}
-                            </span>
-                            {isAutoDraft && (
-                              <span className="inline-flex items-center gap-0.5 rounded-full bg-purple-500/15 px-2 py-0.5 text-[9px] font-extrabold text-purple-700 dark:text-purple-300">
-                                ⚡ Auto-Draft
-                              </span>
-                            )}
-                          </div>
-                        ) : (
-                          <span className="text-[10px] text-muted-foreground font-medium">Direct Entry</span>
-                        )}
-                      </div>
+                      <span className="font-bold text-foreground text-xs">{rowIndex + 1}</span>
                     </td>
 
                     {/* Column 2: Company & Project */}
@@ -134,19 +121,7 @@ export function PRTableView({ rows, onEdit, onPdf }: PRTableViewProps) {
                       </div>
                     </td>
 
-                    {/* Column 3: Work Activity & Site */}
-                    <td className="px-4 py-3">
-                      <div className="flex flex-col gap-0.5">
-                        <span className="font-semibold text-foreground text-xs truncate max-w-[220px]">
-                          {workActivity}
-                        </span>
-                        <span className="text-[10px] text-muted-foreground font-mono">
-                          {row.wbs_code || row.activity_code || 'WBS-BLK-A-SL6'}
-                        </span>
-                      </div>
-                    </td>
-
-                    {/* Column 4: Prepared By / Date */}
+                    {/* Column 3: Prepared By / Date */}
                     <td className="px-4 py-3">
                       <div className="flex flex-col gap-0.5">
                         <span className="font-medium text-foreground text-xs truncate max-w-[180px]">
@@ -158,38 +133,66 @@ export function PRTableView({ rows, onEdit, onPdf }: PRTableViewProps) {
                       </div>
                     </td>
 
-                    {/* Column 5: Items & Value */}
+                    {/* Column 4: Required By */}
                     <td className="px-4 py-3">
-                      <div className="flex flex-col gap-0.5">
-                        <span className="font-extrabold text-foreground text-xs">
-                          {formatCurrency(totalAmt)}
-                        </span>
-                        <span className="text-[10px] font-semibold text-muted-foreground flex items-center gap-1">
-                          <Layers className="h-3 w-3 text-primary" />
-                          {lineCount} Line Item(s)
-                        </span>
-                      </div>
+                      <span className={`font-medium text-xs ${row.required_date && new Date(row.required_date) < new Date() ? 'text-red-600 dark:text-red-400 font-bold' : 'text-foreground'}`}>
+                        {formatDate(row.required_date)}
+                      </span>
                     </td>
 
-                    {/* Column 6: Priority */}
+                    {/* Column 5: Site */}
+                    <td className="px-4 py-3">
+                      <span className="font-medium text-xs text-foreground truncate max-w-[160px] block flex items-center gap-1">
+                        <MapPin className="h-3 w-3 text-muted-foreground/60" />
+                        {row.delivery_address || row.wbs_code || (firstLine as any)?.delivery_location || (firstLine as any)?.site_block || 'Project Site'}
+                      </span>
+                    </td>
+
+                    {/* Column 6: No. of Items */}
+                    <td className="px-4 py-3">
+                      <span className="font-bold text-foreground text-xs flex items-center gap-1">
+                        <Layers className="h-3 w-3 text-primary" />
+                        {lineCount}
+                      </span>
+                    </td>
+
+                    {/* Column 5: Priority */}
                     <td className="px-4 py-3">
                       <PrPriorityBadge priority={priorityVal} />
                     </td>
 
-                    {/* Column 7: Status */}
+                    {/* Column 6: Status & Responsible Person */}
                     <td className="px-4 py-3">
-                      <PrStatusBadge status={row.status} />
+                      <div className="flex flex-col gap-1.5 min-w-[150px]">
+                        <PrStatusBadge status={row.status} />
+                        {((row as any).assigned_profile?.name || (row as any).assigned_to_name || (row as any).approved_profile?.name || (row as any).approved_by_name || row.created_by_name || row.profiles?.name || row.site_contact_person || preparedBy) && (
+                          <span className="text-[10px] text-muted-foreground font-medium truncate max-w-[140px] flex items-center gap-1">
+                            <User className="h-2.5 w-2.5 text-muted-foreground/70" />
+                            {(row as any).assigned_profile?.name || (row as any).assigned_to_name || (row as any).approved_profile?.name || (row as any).approved_by_name || row.created_by_name || row.profiles?.name || row.site_contact_person || preparedBy}
+                          </span>
+                        )}
+                        <ProcurementSplitProgressBar prId={row.id} compact showDetails={true} />
+                      </div>
                     </td>
 
-                    {/* Column 8: Actions */}
+                    {/* Column 7: Actions */}
                     <td className="px-4 py-3 text-right">
                       <div className="flex items-center justify-end gap-1.5">
                         <button
                           onClick={() => onEdit(row.id)}
                           className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-bold text-foreground hover:bg-primary hover:text-primary-foreground transition-all shadow-2xs"
                         >
-                          <Edit3 className="h-3.5 w-3.5" />
-                          <span>{isAutoDraft ? 'Open PR Form' : 'Edit PR'}</span>
+                          {row.status === 'approved' ? (
+                            <>
+                              <Eye className="h-3.5 w-3.5 text-muted-foreground/80 group-hover:text-primary-foreground" />
+                              <span>View</span>
+                            </>
+                          ) : (
+                            <>
+                              <Edit3 className="h-3.5 w-3.5" />
+                              <span>Form</span>
+                            </>
+                          )}
                         </button>
 
                         {onPdf && (
@@ -199,7 +202,7 @@ export function PRTableView({ rows, onEdit, onPdf }: PRTableViewProps) {
                             className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-bold text-foreground hover:bg-muted hover:text-foreground transition-colors shadow-2xs"
                           >
                             <FileDown className="h-3.5 w-3.5" />
-                            <span>Download PDF</span>
+                            <span>PDF</span>
                           </button>
                         )}
                       </div>
