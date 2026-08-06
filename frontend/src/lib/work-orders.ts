@@ -82,20 +82,20 @@ export async function getBillableWorkOrders(projectId?: string) {
   let query = supabase
     .from('work_orders')
     .select(
-      'id, work_order_number, scope_of_work, wo_status, wo_type, total_amount, billed_to_date, claimed_to_date, ' +
+      'id, work_order_number, scope_of_work, wo_status, status, wo_type, total_amount, billed_to_date, claimed_to_date, ' +
         'remaining_balance, tax_inclusive, agency_id, vendor_id, contractor_id, activity_id, ' +
         'budget_allocation_id, master_budget_item_id, site_agencies(agency_name)',
     )
     .is('deleted_at', null)
-    .in('wo_status', ['issued', 'active'])
-    .is('deleted_at', null)
-    .order('work_order_number', { ascending: true });
+    .order('created_at', { ascending: false });
   if (projectId) {
     query = query.eq('project_id', getDbSiteId(projectId));
   }
   const { data, error } = await query;
   if (error) throw error;
-  return data;
+  return ((data as unknown as Record<string, unknown>[]) || []).filter(
+    (wo) => wo.wo_status !== 'cancelled' && wo.status !== 'cancelled'
+  );
 }
 
 export async function getWorkOrder(workOrderId: string) {
@@ -151,17 +151,21 @@ export async function createWorkOrder(input: CreateWorkOrderInput): Promise<Muta
     const totalAmount = input.lines.reduce((sum, l) => sum + (l.totalAmount ?? (l.quantity ?? 0) * l.rate), 0);
     const dbProjectId = getDbSiteId(input.projectId);
 
+    const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const toUuidOrNull = (val: string | null | undefined): string | null =>
+      val && UUID_REGEX.test(val) ? val : null;
+
     const { data: wo, error: woError } = await supabase
       .from('work_orders')
       .insert({
         project_id: dbProjectId,
-        site_id: input.siteId || null,
+        site_id: toUuidOrNull(input.siteId),
         agency_id: input.agencyId,
-        activity_id: input.activityId || null,
-        template_id: input.templateId || null,
-        vendor_id: input.vendorId || null,
-        budget_allocation_id: input.budgetAllocationId || null,
-        master_budget_item_id: input.masterBudgetItemId || null,
+        activity_id: toUuidOrNull(input.activityId),
+        template_id: toUuidOrNull(input.templateId),
+        vendor_id: toUuidOrNull(input.vendorId),
+        budget_allocation_id: toUuidOrNull(input.budgetAllocationId),
+        master_budget_item_id: toUuidOrNull(input.masterBudgetItemId),
         tax_inclusive: input.taxInclusive ?? false,
         work_order_number: input.workOrderNumber,
         scope_of_work: input.scopeOfWork,
@@ -286,6 +290,31 @@ export async function activateWorkOrder(workOrderId: string): Promise<MutationRe
 export async function closeWorkOrder(workOrderId: string): Promise<MutationResult> {
   try {
     const { error } = await supabase.from('work_orders').update({ wo_status: 'closed' }).eq('id', workOrderId);
+    if (error) throw new Error(error.message);
+    return { data: null, error: null };
+  } catch (error) {
+    return { data: null, error: asError(error) };
+  }
+}
+
+/** Directly update Work Order status (e.g. draft -> active / issued / closed). */
+export async function updateWorkOrderStatus(
+  workOrderId: string,
+  newStatus: string
+): Promise<MutationResult> {
+  try {
+    const payload: Record<string, unknown> = {
+      wo_status: newStatus,
+      status: newStatus === 'draft' ? 'draft' : newStatus === 'submitted' ? 'submitted' : 'approved',
+    };
+    if (newStatus === 'issued' || newStatus === 'active') {
+      payload.issue_date = new Date().toISOString().slice(0, 10);
+    }
+    const { error } = await supabase
+      .from('work_orders')
+      .update(payload)
+      .eq('id', workOrderId);
+
     if (error) throw new Error(error.message);
     return { data: null, error: null };
   } catch (error) {

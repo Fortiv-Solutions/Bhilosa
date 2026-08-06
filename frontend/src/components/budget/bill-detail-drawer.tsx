@@ -20,7 +20,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  Building,
   CheckCircle2,
+  Coins,
+  CreditCard,
   Download,
   FileText,
   ImageIcon,
@@ -35,10 +38,15 @@ import {
 } from 'lucide-react';
 import {
   fetchBillDetail,
+  getBillVarianceBookings,
+  linkBillToBudgetHead,
+  saveVarianceReconciliation,
   updateBillSettlement,
   type BillDetail,
   type BillSource,
+  type BillVarianceBooking,
 } from '@/lib/supabase-budget';
+import { useBudgetData } from './budget-data-context';
 import {
   BILL_DOCUMENT_TYPES,
   deleteAttachment,
@@ -49,7 +57,8 @@ import {
   uploadEntityAttachments,
   type AttachmentRow,
 } from '@/lib/documents';
-import { formatIndianCurrency } from '@/utils/format-currency';
+import { formatIndianCurrency, numberToIndianWords } from '@/utils/format-currency';
+import { CreateSubCategoryModal } from './create-sub-category-modal';
 
 type Props = {
   billSource: BillSource;
@@ -169,6 +178,7 @@ export function BillDetailDrawer({ billSource, billId, canEditSettlement, onClos
             </div>
             <p className="mt-1 text-xs text-muted-foreground">
               {s(header.vendor_name) || 'Unknown vendor'} · {dmy(header.bill_date)}
+              {header.head_activity ? ` · Activity: ${s(header.head_activity)}` : ''}
               {header.supplier_bill_no ? ` · their ref ${s(header.supplier_bill_no)}` : ''}
             </p>
           </div>
@@ -198,20 +208,203 @@ export function BillDetailDrawer({ billSource, billId, canEditSettlement, onClos
 
           {detail && (
             <>
-              {/* ② Classification */}
-              <Section title="Budget Classification" icon={Wallet}>
+              {/* ② Classification & Procurement References */}
+              <Section
+                title={billSource === 'service' ? 'Service Classification & WO References' : 'Budget Classification & References'}
+                icon={Wallet}
+              >
                 <Grid>
+                  <Field label="Activity Name" value={s(header.head_activity) || s(header.activity_name) || s(header.category_name) || s(header.allocation_name) || 'Unallocated Activity'} />
                   <Field label="Budget Head" value={s(header.category_name) || s(header.allocation_name) || 'Unallocated'} />
                   <Field label="Master Budget Line" value={s(header.master_budget_item) || 'Not linked'} />
-                  <Field label="Project" value={s(header.project_id) ? undefined : undefined} hidden />
                   <Field
                     label={billSource === 'service' ? 'Work Order' : 'Purchase Order'}
                     value={s(header.work_order_number) || s(header.po_number) || '—'}
                   />
+                  <Field
+                    label={billSource === 'service' ? "Contractor's Bill No" : 'Supplier Bill No'}
+                    value={s(header.supplier_bill_no) || s(header.bill_number) || '—'}
+                  />
+                  <Field
+                    label={billSource === 'service' ? 'RA Bill Date' : 'Supplier Bill Date'}
+                    value={dmy(header.supplier_bill_date ?? header.bill_date)}
+                  />
+                  <Field
+                    label={billSource === 'service' ? 'Contractor / Agency Name' : 'Party Name'}
+                    value={s(header.party_name) || s(header.vendor_name) || '—'}
+                  />
+                  <Field label="Company Status" value={s(header.company_status) || 'PARTNERSHIP FIRM'} />
+                  <Field label="Project Location" value={s(header.project_location) || 'Vesu'} />
+                  {billSource === 'material' && (
+                    <Field label="Supplier Location" value={s(header.supplier_location) || 'Local'} />
+                  )}
+                  {billSource === 'service' && Boolean(header.wo_total_amount) && (
+                    <Field label="Work Order Value" value={formatIndianCurrency(n(header.wo_total_amount))} />
+                  )}
+                  {billSource === 'service' && Boolean(header.wo_billed_to_date) && (
+                    <Field label="Certified to Date" value={formatIndianCurrency(n(header.wo_billed_to_date))} />
+                  )}
+                  {billSource === 'material' && Boolean(header.source_doc_rate ?? header.po_rate) && (
+                    <Field label="PO Unit Rate" value={formatIndianCurrency(n(header.source_doc_rate ?? header.po_rate))} />
+                  )}
+                  {billSource === 'material' && (
+                    <Field label="GRN Number" value={s(header.grn_number) || '—'} />
+                  )}
+                  {billSource === 'material' && (
+                    <Field label="Supplier GSTIN" value={s(header.supplier_gst) || '—'} />
+                  )}
+                  <Field label="Narration / Note" value={s(header.narration) || s(header.ledger_remarks) || '—'} />
                 </Grid>
               </Section>
 
-              {/* ③ Line items */}
+              {/* ③ Financial Summary & Charges */}
+              <Section
+                title={billSource === 'service' ? 'RA Bill Financial Summary' : 'Financial Summary & Adjustments'}
+                icon={Coins}
+              >
+                <Grid>
+                  <Field
+                    label={billSource === 'service' ? 'Gross Service Amount' : 'Total Gross Amount'}
+                    value={formatIndianCurrency(n(header.gross_bill_amount) || n(header.subtotal_amount) || n(header.total_amount))}
+                  />
+                  {billSource === 'material' && (
+                    <Field label="Lumpsum Freight Charges" value={formatIndianCurrency(n(header.lumpsum_freight_charges))} />
+                  )}
+                  {billSource === 'material' && (
+                    <Field label="Lumpsum Loading/Unloading" value={formatIndianCurrency(n(header.lumpsum_loading_unloading_charges))} />
+                  )}
+                  {billSource === 'material' && (
+                    <Field label="Lumpsum Other Charges" value={formatIndianCurrency(n(header.lumpsum_other_charges))} />
+                  )}
+                  {billSource === 'service' && Boolean(header.wo_total_amount) && (
+                    <Field label="Work Order Value" value={formatIndianCurrency(n(header.wo_total_amount))} />
+                  )}
+                  <Field label="Lump-sum Discount Amount" value={formatIndianCurrency(n(header.lumpsum_discount_amount))} />
+                  <Field label="Total Amount Before Roundoff" value={formatIndianCurrency(n(header.total_amount_before_roundoff) || (n(header.total_amount) - n(header.roundoff_adjustment)))} />
+                  <Field label="Roundoff Adjustment" value={n(header.roundoff_adjustment) !== 0 ? formatIndianCurrency(n(header.roundoff_adjustment)) : '0.00'} />
+                  <Field
+                    label={billSource === 'service' ? 'Total Net Service Amount (RA Bill)' : 'Total Net Amount (PB)'}
+                    value={formatIndianCurrency(n(header.total_amount) || n(header.net_payable_amount))}
+                  />
+                </Grid>
+                <div className="mt-3 rounded-lg border border-primary/20 bg-primary/5 p-2.5">
+                  <div className="text-[10px] font-bold uppercase text-primary">Amount in Words</div>
+                  <div className="text-xs font-bold text-foreground">
+                    {numberToIndianWords(n(header.total_amount) || n(header.net_payable_amount))}
+                  </div>
+                </div>
+              </Section>
+
+              {/* ④ Advance Payment Adjustment Entries */}
+              <Section
+                title={billSource === 'service' ? 'Advance Recovery & Adjustment' : 'Advance Payment Entries'}
+                icon={CreditCard}
+              >
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-[11px]">
+                    <thead className="border-b border-border text-[10px] uppercase text-muted-foreground">
+                      <tr>
+                        <th className="py-1">Voucher No</th>
+                        <th className="py-1">Voucher Date</th>
+                        <th className="py-1">{billSource === 'service' ? 'W.O. No' : 'P.O. No'}</th>
+                        <th className="py-1 text-right">Advanced Payment</th>
+                        <th className="py-1 text-right">Adjusted Payment</th>
+                        <th className="py-1 text-right">Balance Amt</th>
+                        <th className="py-1 text-right">Adjust Amt</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border/40">
+                      {Array.isArray((header.form_payload as Record<string, unknown>)?.advance_payment_entries) &&
+                      ((header.form_payload as Record<string, unknown>).advance_payment_entries as Record<string, unknown>[]).length > 0 ? (
+                        ((header.form_payload as Record<string, unknown>).advance_payment_entries as Record<string, unknown>[]).map((adv, idx) => (
+                          <tr key={idx}>
+                            <td className="py-1 font-mono font-medium">{s(adv.voucher_no) || '—'}</td>
+                            <td className="py-1">{dmy(adv.voucher_date)}</td>
+                            <td className="py-1 font-mono">{s(adv.po_no) || s(header.work_order_number) || s(header.po_number) || '—'}</td>
+                            <td className="py-1 text-right font-mono">{formatIndianCurrency(n(adv.advanced_payment))}</td>
+                            <td className="py-1 text-right font-mono">{formatIndianCurrency(n(adv.adjusted_payment))}</td>
+                            <td className="py-1 text-right font-mono">{formatIndianCurrency(n(adv.balance_amt))}</td>
+                            <td className="py-1 text-right font-mono font-bold">{formatIndianCurrency(n(adv.adjust_amt))}</td>
+                          </tr>
+                        ))
+                      ) : (
+                        <tr>
+                          <td colSpan={7} className="py-2 text-center text-xs text-muted-foreground">
+                            {n(header.total_adjusted_amount) > 0 || n(header.advance_adjusted) > 0
+                              ? `Advance payment adjusted: ${formatIndianCurrency(n(header.total_adjusted_amount) || n(header.advance_adjusted))}`
+                              : 'No advance payment adjustment entries recorded.'}
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                    <tfoot className="border-t border-border font-bold">
+                      <tr>
+                        <td colSpan={6} className="py-1.5 text-right uppercase text-[10px] text-muted-foreground">
+                          Total Adjusted Amount:
+                        </td>
+                        <td className="py-1.5 text-right font-mono text-primary">
+                          {formatIndianCurrency(n(header.total_adjusted_amount) || n(header.advance_adjusted))}
+                        </td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              </Section>
+
+              {/* ⑤ Payments & Cheque Details */}
+              <Section
+                title={billSource === 'service' ? 'Service Bill Payments & Settlements' : 'Purchase Bill Payments'}
+                icon={Receipt}
+              >
+                <Grid>
+                  <Field
+                    label={billSource === 'service' ? "Contractor's Bill No" : 'Supplier Bill No'}
+                    value={s(header.supplier_bill_no) || s(header.bill_number) || '—'}
+                  />
+                  <Field
+                    label={billSource === 'service' ? 'RA Bill Date' : 'Supplier Bill Date'}
+                    value={dmy(header.supplier_bill_date ?? header.bill_date)}
+                  />
+                  <Field
+                    label={billSource === 'service' ? 'Contractor / Agency Name' : 'Party Name'}
+                    value={s(header.party_name) || s(header.vendor_name) || '—'}
+                  />
+                  <Field label="Company Status" value={s(header.company_status) || 'PARTNERSHIP FIRM'} />
+                  <Field label="Total Bill Amount" value={formatIndianCurrency(n(header.total_amount))} />
+                  <Field label="Total Cheque Payments" value={formatIndianCurrency(n(header.total_cheque_payments) || n(header.cheque_amount))} />
+                  <Field label="Debit or Credit Details" value={`Dr ${formatIndianCurrency(n(header.debit_details))} | Cr ${formatIndianCurrency(n(header.credit_details))}`} />
+                  <Field label="Final Bill Amount" value={formatIndianCurrency(n(header.total_amount))} />
+                </Grid>
+              </Section>
+
+              {/* ⑥ Statutory & Tax Details (Material-only or relevant) */}
+              {billSource === 'material' && (
+                <Section title="Statutory & Tax Details (LBT / S.Tax)" icon={Building}>
+                  <Grid>
+                    <Field label="LBT Payable By Us" value={header.lbt_payable_by_us ? 'Yes' : 'No'} />
+                    <Field label="Additional Transport S.Tax" value={header.additional_transportation_stax_applicable ? 'Yes' : 'No'} />
+                    <Field label="S.Tax Principal Amount" value={formatIndianCurrency(n(header.stax_principal_amount))} />
+                    <Field label="Transportation S.Tax Rate" value={`${n(header.transportation_stax_rate)}% (${formatIndianCurrency(n(header.stax_amount))})`} />
+                    <Field label="LBT Principal Amount" value={formatIndianCurrency(n(header.lbt_principal_amount))} />
+                    <Field label="LBT Tax Rate" value={`${n(header.lbt_tax_rate)}% (${formatIndianCurrency(n(header.lbt_amount))})`} />
+                  </Grid>
+                </Section>
+              )}
+
+              {/* ③ Book Bill & Post to Variance Action Card */}
+              <BookBillToVarianceCard
+                projectId={s(header.project_id)}
+                header={header}
+                lines={detail.lines}
+                billSource={billSource}
+                billId={billId}
+                onCommitted={() => {
+                  void load();
+                  onChanged();
+                }}
+              />
+
+              {/* ③ Line items with Variance Details */}
               <Section title={`Line Items (${detail.lines.length})`} icon={FileText}>
                 {detail.lines.length === 0 ? (
                   <p className="text-xs text-muted-foreground">
@@ -227,36 +420,54 @@ export function BillDetailDrawer({ billSource, billId, canEditSettlement, onClos
                           {billSource === 'service' && <th className="pb-1.5 text-right">Cumulative</th>}
                           {billSource === 'service' && <th className="pb-1.5 text-right">Previous</th>}
                           <th className="pb-1.5 text-right">Qty</th>
-                          <th className="pb-1.5 text-right">Rate</th>
+                          <th className="pb-1.5 text-right">Bill Rate</th>
+                          {billSource === 'material' && <th className="pb-1.5 text-right">PO Rate</th>}
                           <th className="pb-1.5 text-right">GST %</th>
                           <th className="pb-1.5 text-right">Amount</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {detail.lines.map((line, index) => (
-                          <tr key={s(line.id) || index} className="border-b border-border/40">
-                            <td className="py-1.5">{s(line.description)}</td>
-                            <td className="py-1.5 text-muted-foreground">{s(line.unit) || '—'}</td>
-                            {billSource === 'service' && (
-                              <td className="py-1.5 text-right text-muted-foreground">
-                                {n(line.cumulative_quantity).toLocaleString('en-IN')}
+                        {detail.lines.map((line, index) => {
+                          const poRate = n(line.po_rate ?? header.source_doc_rate);
+                          const billRate = n(line.rate);
+                          const rateDiff = poRate > 0 ? billRate - poRate : 0;
+                          return (
+                            <tr key={s(line.id) || index} className="border-b border-border/40">
+                              <td className="py-1.5">
+                                <div className="font-medium">{s(line.description)}</div>
+                                {rateDiff !== 0 && (
+                                  <div className={`text-[9.5px] ${rateDiff > 0 ? 'text-red-500' : 'text-emerald-600'}`}>
+                                    {rateDiff > 0 ? `+${formatIndianCurrency(rateDiff)} over PO rate` : `−${formatIndianCurrency(Math.abs(rateDiff))} under PO rate`}
+                                  </div>
+                                )}
                               </td>
-                            )}
-                            {billSource === 'service' && (
-                              <td className="py-1.5 text-right text-muted-foreground">
-                                {n(line.previous_quantity).toLocaleString('en-IN')}
+                              <td className="py-1.5 text-muted-foreground">{s(line.unit) || '—'}</td>
+                              {billSource === 'service' && (
+                                <td className="py-1.5 text-right text-muted-foreground">
+                                  {n(line.cumulative_quantity).toLocaleString('en-IN')}
+                                </td>
+                              )}
+                              {billSource === 'service' && (
+                                <td className="py-1.5 text-right text-muted-foreground">
+                                  {n(line.previous_quantity).toLocaleString('en-IN')}
+                                </td>
+                              )}
+                              <td className="py-1.5 text-right font-semibold">
+                                {n(line.quantity).toLocaleString('en-IN')}
                               </td>
-                            )}
-                            <td className="py-1.5 text-right font-semibold">
-                              {n(line.quantity).toLocaleString('en-IN')}
-                            </td>
-                            <td className="py-1.5 text-right">{formatIndianCurrency(n(line.rate))}</td>
-                            <td className="py-1.5 text-right text-muted-foreground">{n(line.tax_rate)}</td>
-                            <td className="py-1.5 text-right font-bold">
-                              {formatIndianCurrency(n(line.line_total))}
-                            </td>
-                          </tr>
-                        ))}
+                              <td className="py-1.5 text-right font-semibold">{formatIndianCurrency(billRate)}</td>
+                              {billSource === 'material' && (
+                                <td className="py-1.5 text-right text-muted-foreground">
+                                  {poRate > 0 ? formatIndianCurrency(poRate) : '—'}
+                                </td>
+                              )}
+                              <td className="py-1.5 text-right text-muted-foreground">{n(line.tax_rate)}%</td>
+                              <td className="py-1.5 text-right font-bold">
+                                {formatIndianCurrency(n(line.line_total))}
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -276,46 +487,9 @@ export function BillDetailDrawer({ billSource, billId, canEditSettlement, onClos
                 }}
               />
 
-              {/* ⑤ Traceability */}
-              <Section title="Traceability" icon={CheckCircle2}>
-                {billSource === 'material' ? (
-                  <Chain
-                    steps={[
-                      { label: 'PR', value: s(header.pr_number) },
-                      { label: 'PO', value: s(header.po_number) },
-                      { label: 'GRN', value: s(header.grn_number) },
-                      { label: 'Bill', value: s(header.bill_number) },
-                    ]}
-                    note={
-                      header.match_status
-                        ? `Three-way match: ${s(header.match_status)}`
-                        : 'No three-way match recorded.'
-                    }
-                  />
-                ) : (
-                  <Chain
-                    steps={[
-                      { label: 'Work Order', value: s(header.work_order_number) },
-                      { label: 'QC', value: s(header.qc_status) },
-                      { label: 'RA Bill', value: s(header.bill_number) },
-                    ]}
-                    note={
-                      header.wo_total_amount
-                        ? `WO value ${formatIndianCurrency(n(header.wo_total_amount))} · certified to date ${formatIndianCurrency(n(header.wo_billed_to_date))}`
-                        : undefined
-                    }
-                  />
-                )}
-              </Section>
-
-              {/* ⑥ Budget impact — the drill-through */}
-              <Section title="Budget Impact" icon={Wallet}>
-                {detail.ledger.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">
-                    This bill has not posted to the budget ledger. That happens on certification, and only when a
-                    budget head can be resolved.
-                  </p>
-                ) : (
+              {/* ⑤ Budget Impact */}
+              {detail.ledger.length > 0 && (
+                <Section title="Budget Impact" icon={Wallet}>
                   <div className="space-y-1.5">
                     {detail.ledger.map((row) => (
                       <div
@@ -349,14 +523,12 @@ export function BillDetailDrawer({ billSource, billId, canEditSettlement, onClos
                       withholding tracked separately — it never reduces project cost.
                     </p>
                   </div>
-                )}
-              </Section>
+                </Section>
+              )}
 
-              {/* ⑦ Payments + retention releases */}
-              <Section title="Payments & Retention" icon={Receipt}>
-                {detail.payments.length === 0 && detail.retentionReleases.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">Nothing paid or released yet.</p>
-                ) : (
+              {/* ⑥ Payments + retention releases */}
+              {(detail.payments.length > 0 || detail.retentionReleases.length > 0) && (
+                <Section title="Payments & Retention" icon={Receipt}>
                   <div className="space-y-1.5 text-[11px]">
                     {detail.payments.map((p, i) => (
                       <Row
@@ -375,8 +547,8 @@ export function BillDetailDrawer({ billSource, billId, canEditSettlement, onClos
                       />
                     ))}
                   </div>
-                )}
-              </Section>
+                </Section>
+              )}
 
               {/* ⑧ Documents */}
               <DocumentsSection
@@ -924,4 +1096,371 @@ function StatusDot({ status }: { status: string }) {
   const cls =
     status === 'approved' ? 'bg-emerald-500' : status === 'rejected' ? 'bg-red-500' : 'bg-amber-500';
   return <span className={`absolute right-1 top-1 h-2 w-2 rounded-full ring-2 ring-white ${cls}`} />;
+}
+
+function BookBillToVarianceCard({
+  projectId,
+  header,
+  lines,
+  billSource,
+  billId,
+  onCommitted,
+}: {
+  projectId: string | null;
+  header: Record<string, unknown>;
+  lines: Record<string, unknown>[];
+  billSource: string;
+  billId: string;
+  onCommitted: () => void;
+}) {
+  const { variance, refresh } = useBudgetData();
+  const [selectedCatId, setSelectedCatId] = useState<string>('');
+  const [selectedItemId, setSelectedItemId] = useState<string>('');
+  const [isCreateSubCatModalOpen, setIsCreateSubCatModalOpen] = useState<boolean>(false);
+  const [justification, setJustification] = useState<string>('Billed via Purchase Bill booking');
+  const [booking, setBooking] = useState(false);
+  const [bookSuccess, setBookSuccess] = useState<string | null>(null);
+  const [bookError, setBookError] = useState<string | null>(null);
+
+  // ─── Booking status tracking from Supabase ───────────────────────────────
+  const [existingBookings, setExistingBookings] = useState<BillVarianceBooking[]>([]);
+  const [loadingBookings, setLoadingBookings] = useState(true);
+
+  const loadBookings = useCallback(async () => {
+    if (!billId) return;
+    setLoadingBookings(true);
+    try {
+      const bookings = await getBillVarianceBookings(billId);
+      setExistingBookings(bookings);
+    } catch {
+      // Non-critical — don't block the UI
+      setExistingBookings([]);
+    } finally {
+      setLoadingBookings(false);
+    }
+  }, [billId]);
+
+  useEffect(() => {
+    void loadBookings();
+  }, [loadBookings]);
+
+  const isFullyBooked = existingBookings.length > 0;
+  const bookedVarianceItemIds = useMemo(
+    () => new Set(existingBookings.map((b) => b.variance_item_id)),
+    [existingBookings]
+  );
+
+  // ─── Bill-level computations ─────────────────────────────────────────────
+  const billTotalQty = useMemo(
+    () => lines.reduce((acc, line) => acc + (n(line.quantity) || 0), 0),
+    [lines]
+  );
+
+  const billGrossAmount = useMemo(
+    () => n(header.gross_bill_amount) || n(header.total_amount) || lines.reduce((acc, line) => acc + (n(line.line_total) || 0), 0),
+    [header, lines]
+  );
+
+  const selectedCat = useMemo(
+    () => variance.find((c) => c.id === selectedCatId || c.categoryName === selectedCatId),
+    [variance, selectedCatId]
+  );
+
+  const availableItems = useMemo(() => selectedCat?.items ?? [], [selectedCat]);
+
+  const selectedItem = useMemo(
+    () => availableItems.find((i) => i.id === selectedItemId),
+    [availableItems, selectedItemId]
+  );
+
+  // Check if selected item was already booked from THIS bill
+  const isSelectedItemAlreadyBooked = useMemo(() => {
+    if (!selectedItem) return false;
+    const targetId = selectedItem.varianceItemId ?? selectedItem.id;
+    return bookedVarianceItemIds.has(targetId);
+  }, [selectedItem, bookedVarianceItemIds]);
+
+  const mergedQty = useMemo(() => {
+    if (!selectedItem) return 0;
+    return selectedItem.actualBillQty + billTotalQty;
+  }, [selectedItem, billTotalQty]);
+
+  const mergedCost = useMemo(() => {
+    if (!selectedItem) return 0;
+    return selectedItem.actualTotalCost + billGrossAmount;
+  }, [selectedItem, billGrossAmount]);
+
+  const mergedRate = useMemo(() => {
+    if (mergedQty <= 0) return 0;
+    return Number((mergedCost / mergedQty).toFixed(4));
+  }, [mergedCost, mergedQty]);
+
+  const mergedCostVariance = useMemo(() => {
+    if (!selectedItem) return 0;
+    return selectedItem.budgetCost - mergedCost;
+  }, [selectedItem, mergedCost]);
+
+  const handleBookBill = async () => {
+    if (!projectId) {
+      setBookError('Please select a specific project before booking to variance.');
+      return;
+    }
+    if (!selectedItem) {
+      setBookError('Please select both a Budget Head and Sub-Category item.');
+      return;
+    }
+    if (isSelectedItemAlreadyBooked) {
+      setBookError(`This bill has already been booked to "${selectedItem.subActivity}". Duplicate booking is not allowed.`);
+      return;
+    }
+
+    setBooking(true);
+    setBookError(null);
+    setBookSuccess(null);
+
+    try {
+      await saveVarianceReconciliation(projectId, justification, [
+        {
+          id: selectedItem.varianceItemId ?? selectedItem.id,
+          actual_bill_qty: mergedQty,
+          actual_bill_rate: mergedRate,
+          remark: `Merged PB ${s(header.bill_number)}: ${justification}`,
+          bill_id: billId,
+          bill_source: billSource === 'service' ? 'service' : 'material',
+          bill_number: s(header.bill_number),
+          booked_qty: billTotalQty,
+          booked_amount: billGrossAmount,
+        },
+      ]);
+
+      // Link and store the selected budget head and master budget line in Supabase
+      await linkBillToBudgetHead(
+        billSource as BillSource,
+        billId,
+        selectedItem.masterItemId ?? selectedItem.id,
+        selectedCatId
+      );
+
+      await refresh();
+      await loadBookings(); // Refresh booking status
+      setBookSuccess(`Bill successfully booked & merged into "${selectedItem.subActivity}"!`);
+      onCommitted();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to book bill variance';
+      if (msg.includes('Duplicate booking') || msg.includes('already been booked')) {
+        setBookError(`⚠️ ${msg}`);
+        await loadBookings(); // Refresh to show current state
+      } else {
+        setBookError(msg);
+      }
+    } finally {
+      setBooking(false);
+    }
+  };
+
+  // ─── Status badge logic ──────────────────────────────────────────────────
+  const statusBadge = useMemo(() => {
+    if (loadingBookings) return { label: 'Checking…', color: 'bg-muted text-muted-foreground' };
+    if (existingBookings.length === 0) return { label: 'Not Booked to Variance', color: 'bg-amber-100 text-amber-800 dark:bg-amber-950/50 dark:text-amber-300' };
+    return { label: `✓ Booked to Variance (${existingBookings.length} posting${existingBookings.length > 1 ? 's' : ''})`, color: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300' };
+  }, [loadingBookings, existingBookings]);
+
+  return (
+    <Section title="Book Bill & Update Variance" icon={CheckCircle2}>
+      <div className="space-y-3 text-[11px]">
+        {/* Status Badge */}
+        <div className="flex items-center gap-2">
+          <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide ${statusBadge.color}`}>
+            {loadingBookings && <Loader2 className="h-3 w-3 animate-spin" />}
+            {statusBadge.label}
+          </span>
+        </div>
+
+        {/* Existing Bookings Audit Trail */}
+        {existingBookings.length > 0 && (
+          <div className="rounded-lg border border-emerald-200 bg-emerald-50/50 p-2.5 dark:border-emerald-800 dark:bg-emerald-950/20">
+            <div className="mb-1.5 text-[10px] font-bold uppercase text-emerald-800 dark:text-emerald-300">
+              Booking History
+            </div>
+            <div className="space-y-1.5">
+              {existingBookings.map((bk) => (
+                <div
+                  key={bk.id}
+                  className="flex items-start justify-between gap-2 rounded-md border border-emerald-200/50 bg-white/60 px-2.5 py-1.5 dark:border-emerald-800/30 dark:bg-emerald-950/30"
+                >
+                  <div className="flex-1">
+                    <div className="font-semibold text-foreground">
+                      {bk.sub_activity}
+                    </div>
+                    <div className="text-[10px] text-muted-foreground">
+                      {bk.category_name} · {bk.booked_qty.toLocaleString('en-IN')} qty · {formatIndianCurrency(bk.booked_amount)}
+                    </div>
+                  </div>
+                  <div className="text-right text-[10px] text-muted-foreground">
+                    <div className="font-medium">{bk.booked_by_name ?? 'System'}</div>
+                    <div>{new Date(bk.booked_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <p className="text-xs text-muted-foreground">
+          Select the Budget Head and Sub-Category item. The bill amount and quantity will automatically merge with existing actuals without overwriting previous data.
+        </p>
+
+        {/* Dropdowns */}
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <div>
+            <label className="text-[10px] font-bold uppercase text-muted-foreground">1. Select Budget Head</label>
+            <select
+              value={selectedCatId}
+              onChange={(e) => {
+                setSelectedCatId(e.target.value);
+                setSelectedItemId('');
+                setBookError(null);
+                setBookSuccess(null);
+              }}
+              className="mt-1 w-full rounded-md border border-input bg-background p-1.5 text-[11px] font-semibold"
+            >
+              <option value="">-- Choose Category / Head --</option>
+              {variance.map((cat) => (
+                <option key={cat.id} value={cat.id}>
+                  {cat.categoryName}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="text-[10px] font-bold uppercase text-muted-foreground">2. Select Sub-Category Item</label>
+            <select
+              value={selectedItemId}
+              onChange={(e) => {
+                const val = e.target.value;
+                if (val === 'CREATE_NEW') {
+                  setIsCreateSubCatModalOpen(true);
+                  return;
+                }
+                setSelectedItemId(val);
+                setBookError(null);
+                setBookSuccess(null);
+              }}
+              disabled={!selectedCatId}
+              className="mt-1 w-full rounded-md border border-input bg-background p-1.5 text-[11px] font-semibold disabled:opacity-50"
+            >
+              <option value="">-- Choose Sub-Category Item --</option>
+              <option value="CREATE_NEW" className="font-bold text-primary">
+                + Add New Sub-Category Item...
+              </option>
+              {availableItems.map((item) => {
+                const alreadyBooked = bookedVarianceItemIds.has(item.varianceItemId ?? item.id);
+                return (
+                  <option key={item.id} value={item.id} disabled={alreadyBooked}>
+                    {alreadyBooked ? '✓ ' : ''}{item.srNo} {item.subActivity} ({item.unit}){alreadyBooked ? ' — Already Booked' : ''}
+                  </option>
+                );
+              })}
+            </select>
+          </div>
+        </div>
+
+        <CreateSubCategoryModal
+          isOpen={isCreateSubCatModalOpen}
+          onClose={() => setIsCreateSubCatModalOpen(false)}
+          projectId={projectId || ''}
+          categoryId={selectedCatId}
+          categoryName={selectedCat?.categoryName || ''}
+          onCreated={async (newItem) => {
+            await refresh();
+            setSelectedItemId(newItem.id);
+            setBookSuccess(`Created new sub-category "${newItem.item_description}" under ${selectedCat?.categoryName}!`);
+          }}
+        />
+
+        {/* Duplicate Warning */}
+        {isSelectedItemAlreadyBooked && selectedItem && (
+          <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 p-2.5 dark:border-red-800 dark:bg-red-950/20">
+            <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-red-600" />
+            <div>
+              <div className="text-xs font-bold text-red-700 dark:text-red-400">Duplicate Booking Prevented</div>
+              <div className="text-[10.5px] text-red-600 dark:text-red-400">
+                This bill has already been booked to &quot;{selectedItem.subActivity}&quot;. Each bill can only be posted once to a given variance line item.
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Merged Cumulative Preview Card */}
+        {selectedItem && !isSelectedItemAlreadyBooked && (
+          <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 space-y-2">
+            <div className="flex items-center justify-between font-bold text-primary">
+              <span>Cumulative Merging Preview</span>
+              <span className="text-[10px] uppercase bg-primary/10 px-2 py-0.5 rounded-full font-bold">Accumulate Active</span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 text-[10.5px]">
+              <div>
+                <div className="text-muted-foreground">Billed Quantity:</div>
+                <div className="font-mono">
+                  {selectedItem.actualBillQty.toLocaleString('en-IN')} + <span className="font-bold text-primary">{billTotalQty.toLocaleString('en-IN')}</span> = <span className="font-bold">{mergedQty.toLocaleString('en-IN')} {selectedItem.unit}</span>
+                </div>
+              </div>
+
+              <div>
+                <div className="text-muted-foreground">Actual Cost (₹):</div>
+                <div className="font-mono">
+                  {formatIndianCurrency(selectedItem.actualTotalCost)} + <span className="font-bold text-primary">{formatIndianCurrency(billGrossAmount)}</span> = <span className="font-bold">{formatIndianCurrency(mergedCost)}</span>
+                </div>
+              </div>
+
+              <div>
+                <div className="text-muted-foreground">New Effective Rate:</div>
+                <div className="font-mono font-semibold">{formatIndianCurrency(mergedRate)} / {selectedItem.unit}</div>
+              </div>
+
+              <div>
+                <div className="text-muted-foreground">Updated Cost Variance:</div>
+                <div className={`font-mono font-bold ${mergedCostVariance < 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                  {mergedCostVariance < 0 ? `−${formatIndianCurrency(Math.abs(mergedCostVariance))} (Overrun)` : `+${formatIndianCurrency(mergedCostVariance)} (Savings)`}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Justification & Action */}
+        {selectedItem && !isSelectedItemAlreadyBooked && (
+          <div className="space-y-2 pt-1">
+            <input
+              type="text"
+              value={justification}
+              onChange={(e) => setJustification(e.target.value)}
+              placeholder="Booking Remark / Audit Note"
+              className="w-full rounded-md border border-input bg-background p-1.5 text-[11px]"
+            />
+
+            {bookError && <div className="text-xs font-semibold text-red-600">{bookError}</div>}
+            {bookSuccess && <div className="text-xs font-semibold text-emerald-600">{bookSuccess}</div>}
+
+            <button
+              type="button"
+              onClick={handleBookBill}
+              disabled={booking || isSelectedItemAlreadyBooked}
+              className="w-full flex items-center justify-center gap-2 rounded-lg bg-primary py-2 text-xs font-bold text-primary-foreground shadow-2xs hover:bg-primary/90 disabled:opacity-50 cursor-pointer"
+            >
+              {booking ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+              {booking ? 'Booking Bill to Variance…' : 'Book Bill & Post to Variance'}
+            </button>
+          </div>
+        )}
+
+        {/* Already-booked success state */}
+        {bookSuccess && isFullyBooked && !selectedItem && (
+          <div className="text-xs font-semibold text-emerald-600">{bookSuccess}</div>
+        )}
+      </div>
+    </Section>
+  );
 }

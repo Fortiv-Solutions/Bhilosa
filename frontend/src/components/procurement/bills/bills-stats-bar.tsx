@@ -40,14 +40,19 @@ export interface VendorBillRow {
   grn_no?: string | null;
 }
 
-export function BillsStatsBar({ bills, onSelectTab }: { bills: VendorBillRow[]; onSelectTab?: (tab: string) => void }) {
+export function BillsStatsBar({
+  bills,
+  readyGrnCount = 0,
+  onSelectTab,
+}: {
+  bills: VendorBillRow[];
+  readyGrnCount?: number;
+  onSelectTab?: (tab: string) => void;
+}) {
   const [isBannerVisible, setIsBannerVisible] = useState(true);
 
-  const autoDraftCount = bills.filter((b) => b.status === 'auto_draft_grn').length;
-  const issueCount = bills.filter((b) => b.status === 'issue').length;
+  const issueCount = bills.filter((b) => b.status === 'issue' || b.status === 'pending_approval' || b.status === 'pending_verification').length;
   const approvedCount = bills.filter((b) => b.status === 'approved').length;
-
-  const totalPayableVal = bills.reduce((sum, b) => sum + Number(b.net_payable || 0), 0);
 
   return (
     <div className="space-y-3">
@@ -56,7 +61,7 @@ export function BillsStatsBar({ bills, onSelectTab }: { bills: VendorBillRow[]; 
         <div className="flex justify-end">
           <button
             onClick={() => setIsBannerVisible(true)}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-bold text-muted-foreground hover:bg-muted hover:text-foreground transition-all shadow-2xs"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-bold text-muted-foreground hover:bg-muted hover:text-foreground transition-all shadow-2xs cursor-pointer"
           >
             <RotateCcw className="h-3.5 w-3.5" /> Show Bills Operational Banner
           </button>
@@ -68,7 +73,7 @@ export function BillsStatsBar({ bills, onSelectTab }: { bills: VendorBillRow[]; 
         <div className="relative overflow-hidden rounded-xl border border-emerald-500/20 bg-gradient-to-r from-emerald-500/10 via-emerald-500/5 to-transparent p-4 shadow-sm">
           <button
             onClick={() => setIsBannerVisible(false)}
-            className="absolute top-3 right-3 rounded-lg border border-border/50 bg-background/60 p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+            className="absolute top-3 right-3 rounded-lg border border-border/50 bg-background/60 p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors cursor-pointer"
             title="Dismiss Operational Banner"
           >
             <X className="h-4 w-4" />
@@ -85,22 +90,22 @@ export function BillsStatsBar({ bills, onSelectTab }: { bills: VendorBillRow[]; 
                 </span>
               </div>
               <p className="text-xs font-semibold text-foreground/90">
-                {autoDraftCount} auto-drafted bill(s) from GRN • {issueCount} issued bill(s) • {approvedCount} approved bill(s) cleared.
+                {readyGrnCount} approved GRN(s) ready for billing • {issueCount} issued bill(s) • {approvedCount} approved bill(s) cleared.
               </p>
             </div>
 
             {/* Quick Action Filter Chips */}
             <div className="flex flex-wrap items-center gap-2 text-xs">
               <button
-                onClick={() => onSelectTab?.('auto_draft')}
-                className="inline-flex items-center gap-1 rounded-lg border border-purple-500/30 bg-purple-500/10 px-2.5 py-1 font-extrabold text-purple-800 dark:text-purple-300 hover:bg-purple-500/20 transition-colors"
+                onClick={() => onSelectTab?.('ready_grn')}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-blue-500/30 bg-blue-500/10 px-2.5 py-1 font-extrabold text-blue-800 dark:text-blue-300 hover:bg-blue-500/20 transition-colors cursor-pointer"
               >
-                <span>📝 {autoDraftCount} Auto Draft from GRN</span>
+                <span>📦 {readyGrnCount} GRN(s) Ready for Billing</span>
               </button>
 
               <button
                 onClick={() => onSelectTab?.('approved')}
-                className="inline-flex items-center gap-1 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 font-extrabold text-emerald-800 dark:text-emerald-300 hover:bg-emerald-500/20 transition-colors"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 font-extrabold text-emerald-800 dark:text-emerald-300 hover:bg-emerald-500/20 transition-colors cursor-pointer"
               >
                 <span>✅ {approvedCount} Approved</span>
               </button>
@@ -116,9 +121,9 @@ export function BillsStatsBar({ bills, onSelectTab }: { bills: VendorBillRow[]; 
           <span className="text-lg font-extrabold text-foreground font-mono">{bills.length}</span>
         </div>
 
-        <div className="rounded-xl border border-purple-500/20 bg-purple-500/5 p-3 shadow-2xs">
-          <span className="text-[10px] font-bold uppercase text-purple-700 dark:text-purple-300 block font-heading">Auto Draft from GRN</span>
-          <span className="text-lg font-extrabold text-purple-700 dark:text-purple-300 font-mono">{autoDraftCount}</span>
+        <div className="rounded-xl border border-blue-500/20 bg-blue-500/5 p-3 shadow-2xs">
+          <span className="text-[10px] font-bold uppercase text-blue-700 dark:text-blue-300 block font-heading">GRNs Ready for Billing</span>
+          <span className="text-lg font-extrabold text-blue-700 dark:text-blue-300 font-mono">{readyGrnCount}</span>
         </div>
 
         <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-3 shadow-2xs">

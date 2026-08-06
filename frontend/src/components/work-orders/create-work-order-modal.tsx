@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { X, ClipboardCheck, Plus, Trash2, Paperclip, Wallet, AlertTriangle } from 'lucide-react';
+import { X, ClipboardCheck, Plus, Trash2, Paperclip } from 'lucide-react';
 import {
   createWorkOrder,
   listBudgetHeads,
@@ -140,13 +140,7 @@ export function CreateWorkOrderModal({ isOpen, onClose, onSuccess }: CreateWorkO
       setError('Every item line needs a description.');
       return;
     }
-    // Asked for at creation rather than at issue: without a head the WO cannot be
-    // issued at all (the database blocks it), so collecting it later would only
-    // produce a dead-end draft.
-    if (budgetHeadRequired && !budgetAllocationId && !masterBudgetItemId) {
-      setError('Select a Budget Head (or a Master Budget line) — a Work Order reserves budget, so it cannot be issued without one.');
-      return;
-    }
+
 
     setLoading(true);
     setError(null);
@@ -292,85 +286,7 @@ export function CreateWorkOrderModal({ isOpen, onClose, onSuccess }: CreateWorkO
               </div>
             </div>
 
-            {/* Budget head — a Work Order is an encumbrance, so it must know which
-                budget it reserves before it can be issued. */}
-            <div className="rounded-lg border border-border bg-muted/20 p-3 space-y-3">
-              <div className="flex items-center gap-2">
-                <Wallet className="h-4 w-4 text-primary" />
-                <h3 className="text-sm font-semibold">Budget</h3>
-                {budgetHeadRequired && <span className="text-[10px] font-bold uppercase text-red-500">Required to issue</span>}
-              </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1">
-                  <label className="text-xs font-semibold text-muted-foreground">Master Budget Line</label>
-                  <select
-                    value={masterBudgetItemId}
-                    onChange={(e) => applyMasterLine(e.target.value)}
-                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                  >
-                    <option value="">Not linked to a specific line…</option>
-                    {masterLines.map((l) => (
-                      <option key={l.id} value={l.id}>
-                        {l.srNo ? `${l.srNo}. ` : ''}{l.description} ({formatIndianCurrency(l.budgetedCost)})
-                      </option>
-                    ))}
-                  </select>
-                  {masterLines.length === 0 && (
-                    <p className="text-[11px] text-muted-foreground">
-                      No service/labour/subcontract lines in the Master Budget for this project.
-                    </p>
-                  )}
-                </div>
-
-                <div className="space-y-1">
-                  <label className="text-xs font-semibold text-muted-foreground">
-                    Budget Head {budgetHeadRequired && <span className="text-red-500">*</span>}
-                  </label>
-                  <select
-                    value={budgetAllocationId}
-                    onChange={(e) => setBudgetAllocationId(e.target.value)}
-                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                  >
-                    <option value="">Select a budget head…</option>
-                    {budgetHeads.map((h) => (
-                      <option key={h.id} value={h.id}>
-                        {h.categoryName || h.allocationName} — {formatIndianCurrency(h.availableAmount)} available
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              {selectedHead && (
-                <div className="rounded-md border border-border bg-background p-2.5 text-[11px]">
-                  <div className="flex flex-wrap gap-x-5 gap-y-1">
-                    <span>Allocated <strong>{formatIndianCurrency(selectedHead.allocatedAmount)}</strong></span>
-                    <span>Committed <strong>{formatIndianCurrency(selectedHead.committedAmount)}</strong></span>
-                    <span>Spent <strong>{formatIndianCurrency(selectedHead.spentAmount)}</strong></span>
-                    <span className={selectedHead.availableAmount < totalAmount ? 'text-red-600' : ''}>
-                      Available <strong>{formatIndianCurrency(selectedHead.availableAmount)}</strong>
-                    </span>
-                  </div>
-                  {totalAmount > 0 && selectedHead.availableAmount < totalAmount && (
-                    <p className="mt-2 flex items-start gap-1.5 text-red-600">
-                      <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-px" />
-                      This WO value exceeds the head&apos;s available budget by{' '}
-                      {formatIndianCurrency(totalAmount - selectedHead.availableAmount)}. It can be saved as a
-                      draft, but issuing it will be blocked if it breaches the configured hard limit.
-                    </p>
-                  )}
-                </div>
-              )}
-
-              <label className="flex items-center gap-2 text-xs">
-                <input type="checkbox" checked={taxInclusive} onChange={(e) => setTaxInclusive(e.target.checked)} />
-                <span>
-                  Rates below <strong>already include GST</strong>
-                  <span className="text-muted-foreground"> — decides whether bills draw this WO down on their gross or net-of-tax value. Check your template&apos;s terms.</span>
-                </span>
-              </label>
-            </div>
 
             <div>
               <div className="flex items-center justify-between mb-2">

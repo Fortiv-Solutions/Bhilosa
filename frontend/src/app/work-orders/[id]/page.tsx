@@ -11,6 +11,7 @@ import {
   rejectWorkOrder,
   activateWorkOrder,
   closeWorkOrder,
+  updateWorkOrderStatus,
   type WorkOrderBudgetPosition,
 } from '@/lib/work-orders';
 import { getEntityAttachments, getAttachmentUrl, uploadEntityAttachment } from '@/lib/documents';
@@ -88,44 +89,49 @@ export default function WorkOrderDetailPage({ params }: { params: Promise<{ id: 
             <h1 className="font-heading mt-2 text-2xl font-semibold">{wo.work_order_number}</h1>
             <p className="mt-1 text-sm text-muted-foreground">{wo.scope_of_work}</p>
           </div>
-          <div className="flex gap-2">
-            {woStatus === 'draft' && wo.status === 'draft' && (
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs font-semibold shadow-2xs">
+              <span className="text-[10px] font-bold uppercase text-muted-foreground">Status:</span>
+              <select
+                value={woStatus}
+                disabled={actionLoading}
+                onChange={(e) => runAction(() => updateWorkOrderStatus(id, e.target.value))}
+                className="bg-transparent font-bold capitalize text-primary focus:outline-none cursor-pointer"
+              >
+                <option value="draft">Draft</option>
+                <option value="submitted">Submitted</option>
+                <option value="issued">Issued / Approved</option>
+                <option value="active">Active</option>
+                <option value="closed">Closed</option>
+              </select>
+            </div>
+
+            {(woStatus === 'draft' || woStatus === 'submitted') && (
               <button
                 disabled={actionLoading}
-                onClick={() => runAction(() => submitWorkOrderForApproval(id))}
-                className="rounded-md border border-border px-3 py-2 text-xs font-bold hover:bg-muted"
+                onClick={() => runAction(() => updateWorkOrderStatus(id, 'issued'))}
+                className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-100 cursor-pointer"
               >
-                Submit for Approval
+                <CheckCircle2 className="h-3.5 w-3.5" /> Approve &amp; Issue WO
               </button>
             )}
-            {wo.status === 'submitted' && (
-              <>
-                <button
-                  disabled={actionLoading}
-                  onClick={() => runAction(() => approveWorkOrder(id))}
-                  className="inline-flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-700 hover:bg-emerald-100"
-                >
-                  <CheckCircle2 className="h-3.5 w-3.5" /> Approve &amp; Issue
-                </button>
-                <button
-                  disabled={actionLoading}
-                  onClick={() => {
-                    const remarks = window.prompt('Reason for rejection:');
-                    if (remarks) runAction(() => rejectWorkOrder(id, remarks));
-                  }}
-                  className="inline-flex items-center gap-1 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700 hover:bg-red-100"
-                >
-                  <XCircle className="h-3.5 w-3.5" /> Reject
-                </button>
-              </>
-            )}
+
             {woStatus === 'issued' && (
-              <button disabled={actionLoading} onClick={() => runAction(() => activateWorkOrder(id))} className="rounded-md border border-border px-3 py-2 text-xs font-bold hover:bg-muted">
+              <button
+                disabled={actionLoading}
+                onClick={() => runAction(() => activateWorkOrder(id))}
+                className="rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-bold hover:bg-muted cursor-pointer"
+              >
                 Mark Active
               </button>
             )}
+
             {woStatus === 'active' && (
-              <button disabled={actionLoading} onClick={() => runAction(() => closeWorkOrder(id))} className="rounded-md border border-border px-3 py-2 text-xs font-bold hover:bg-muted">
+              <button
+                disabled={actionLoading}
+                onClick={() => runAction(() => closeWorkOrder(id))}
+                className="rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-bold hover:bg-muted cursor-pointer"
+              >
                 Close Work Order
               </button>
             )}

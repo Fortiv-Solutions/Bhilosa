@@ -39,6 +39,7 @@ export type MasterBudgetItem = {
 
   /** budget_variance_items.id — the row a variance save must target. */
   varianceItemId?: string;
+  isUnbudgeted?: boolean;
 
   // Committed (purchase orders)
   poQty?: number;

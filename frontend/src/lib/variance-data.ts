@@ -57,6 +57,7 @@ export interface VarianceItem {
   /** Signed percentage of baseline. */
   costVariancePercent: number;
   remark: string;
+  isUnbudgeted?: boolean;
 }
 
 export interface VarianceCategory {
@@ -106,6 +107,7 @@ export function generateVarianceCategoriesFromMaster(
         id: item.id || `var-${cIdx}-${iIdx}`,
         varianceItemId: item.varianceItemId,
         masterItemId: item.id,
+        isUnbudgeted: Boolean(item.isUnbudgeted),
         srNo: String(item.srNo),
         parentGroup: 'Construction Work',
         subGroup: cat.categoryName,

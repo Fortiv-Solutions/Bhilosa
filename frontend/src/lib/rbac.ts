@@ -43,6 +43,7 @@ export const ROLE_ALLOWED_PATHS: Record<Role, string[]> = {
     '/boq',
     '/budget',
     '/materials',
+    '/item-master',
     '/inventory',
     '/documents',
     '/communication',
@@ -53,6 +54,7 @@ export const ROLE_ALLOWED_PATHS: Record<Role, string[]> = {
   PR_TEAM: [
     '/dashboard',
     '/procurement',
+    '/item-master',
     '/vendors',
     '/budget',
     '/inventory',

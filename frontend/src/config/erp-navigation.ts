@@ -41,6 +41,7 @@ export const erpNavigationItems: ErpNavigationItem[] = [
   { label: 'Projects',     path: '/projects',     icon: Building2,         group: 'Projects & Execution', allowedRoles: ['UPPER_MANAGEMENT', 'PROJECT_MANAGER'] },
   { label: 'Execution',    path: '/activities',   icon: Construction,      allowedRoles: ['UPPER_MANAGEMENT', 'PROJECT_MANAGER'] },
   { label: 'Procurement',  path: '/procurement',  icon: ShoppingCart,      group: 'Supply Chain' },
+  { label: 'Item Master',  path: '/item-master',  icon: PackageOpen,       group: 'Supply Chain' },
   { label: 'Vendors',      path: '/vendors',      icon: Handshake,         allowedRoles: ['UPPER_MANAGEMENT', 'PR_TEAM'] },
   { label: 'Inventory',    path: '/inventory',    icon: Boxes },
   { label: 'Work Orders',  path: '/work-orders',  icon: ClipboardCheck,    group: 'Work Orders' },

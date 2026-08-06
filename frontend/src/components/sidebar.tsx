@@ -35,7 +35,7 @@ export default function Sidebar() {
       label: 'Supply Chain', 
       path: '/procurement', 
       icon: ShoppingCart,
-      groupPaths: ['/procurement', '/vendors', '/inventory']
+      groupPaths: ['/procurement', '/item-master', '/vendors', '/inventory']
     },
     {
       label: 'Work Orders',
