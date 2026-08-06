@@ -31,7 +31,7 @@ export function BillsTableView({ bills, onOpenBillForm }: BillsTableViewProps) {
           No Vendor Purchase Bills Found
         </p>
         <p className="mt-1 text-xs text-muted-foreground/70 font-medium">
-          When Goods Receipt Notes (GRN) are approved, auto-draft purchase bills will display here automatically.
+          Create a Purchase Bill (PB) from an approved Goods Receipt Note (GRN) to manage 3-way matching and payment clearance.
         </p>
       </div>
     );
@@ -65,9 +65,8 @@ export function BillsTableView({ bills, onOpenBillForm }: BillsTableViewProps) {
             </thead>
             <tbody className="divide-y divide-border/60">
               {bills.map((bill, index) => {
-                const isAutoDraft = bill.status === 'auto_draft_grn';
-                const isIssue = bill.status === 'issue';
                 const isApproved = bill.status === 'approved';
+                const isDraft = bill.status === 'draft' || bill.status === 'auto_draft_grn';
 
                 return (
                   <tr key={bill.id} className="group hover:bg-muted/30 transition-colors align-middle">
@@ -150,33 +149,29 @@ export function BillsTableView({ bills, onOpenBillForm }: BillsTableViewProps) {
 
                     {/* 15. Status */}
                     <td className="px-3.5 py-3 text-center">
-                      {isAutoDraft ? (
-                        <span className="inline-flex items-center gap-1 rounded-full border border-purple-500/30 bg-purple-500/15 px-2.5 py-1 text-[11px] font-extrabold text-purple-700 dark:text-purple-300">
-                          <Sparkles className="h-3.5 w-3.5" /> Auto Draft from GRN
-                        </span>
-                      ) : isIssue ? (
-                        <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/15 px-2.5 py-1 text-[11px] font-extrabold text-amber-700 dark:text-amber-300">
-                          <Clock className="h-3.5 w-3.5" /> Issue
-                        </span>
-                      ) : (
+                      {isApproved ? (
                         <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/15 px-2.5 py-1 text-[11px] font-extrabold text-emerald-700 dark:text-emerald-300">
                           <CheckCircle2 className="h-3.5 w-3.5" /> Approved
+                        </span>
+                      ) : isDraft ? (
+                        <span className="inline-flex items-center gap-1 rounded-full border border-slate-500/30 bg-slate-500/15 px-2.5 py-1 text-[11px] font-extrabold text-slate-700 dark:text-slate-300">
+                          <Clock className="h-3.5 w-3.5" /> Draft
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/15 px-2.5 py-1 text-[11px] font-extrabold text-amber-700 dark:text-amber-300">
+                          <Clock className="h-3.5 w-3.5" /> Issue
                         </span>
                       )}
                     </td>
 
-                    {/* Actions Column: [ Edit Form ] for Auto Draft, [ Open Form ] for Issue/Approved */}
+                    {/* Actions Column */}
                     <td className="px-3.5 py-3 text-right">
                       <button
                         onClick={() => onOpenBillForm(bill)}
-                        className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-bold transition-all shadow-2xs ${
-                          isAutoDraft
-                            ? 'border-purple-500/40 bg-purple-500/10 text-purple-700 dark:text-purple-300 hover:bg-purple-500/20'
-                            : 'border-border bg-background text-foreground hover:bg-primary hover:text-primary-foreground'
-                        }`}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-bold text-foreground hover:bg-primary hover:text-primary-foreground transition-all shadow-2xs cursor-pointer"
                       >
                         <Edit3 className="h-3.5 w-3.5" />
-                        <span>{isAutoDraft ? 'Edit Form' : 'Open Form'}</span>
+                        <span>Open Form</span>
                       </button>
                     </td>
                   </tr>

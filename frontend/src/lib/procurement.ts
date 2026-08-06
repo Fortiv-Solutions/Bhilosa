@@ -31,6 +31,22 @@ type MutationResult<T = unknown> = {
   error: Error | null;
 };
 
+export function cleanMaterialUnit(unit?: string | null, description?: string | null): string {
+  let trimmed = (unit || '').trim();
+  if (!trimmed || trimmed.toLowerCase() === 'nos' || trimmed.toLowerCase() === 'no') {
+    const desc = (description || '').toLowerCase();
+    if (desc.includes('cement')) return 'BAGS';
+    if (desc.includes('steel') || desc.includes('tmt') || desc.includes('rebar')) return 'MT';
+    if (desc.includes('sand') || desc.includes('aggregate') || desc.includes('metal')) return 'BRASS';
+    if (desc.includes('brick') || desc.includes('block')) return 'NOS';
+    if (desc.includes('pipe') || desc.includes('cable')) return 'RMT';
+    if (desc.includes('paint') || desc.includes('oil') || desc.includes('chemical')) return 'LTR';
+    if (trimmed) return trimmed.toUpperCase();
+    return 'BAGS';
+  }
+  return trimmed.toUpperCase();
+}
+
 export type ProcurementStatus = 'draft' | 'submitted' | 'in_review' | 'under_verification' | 'pending_approval' | 'approved' | 'rejected' | 'assigned' | 'rfq_sent' | 'vendor_selected' | 'po_issued' | 'delivered' | 'closed' | 'cancelled' | 'auto_draft_pr';
 
 export type MaterialRequestRow = {
@@ -1988,6 +2004,7 @@ export async function saveRfqFormDataToSupabase(input: {
         await supabase.from('rfqs').update({
           status: dbRfqStatus,
           due_date: formData.goal_delivery_date || null,
+          remarks: mergedRemarks,
           updated_at: new Date().toISOString(),
         }).eq('id', rfqId);
       }
@@ -2011,6 +2028,7 @@ export async function saveRfqFormDataToSupabase(input: {
             title: `${formData.company_name || pr.company_name || 'PR'} - ${pr.pr_number} RFQ`,
             status: dbRfqStatus,
             due_date: formData.goal_delivery_date || null,
+            remarks: mergedRemarks,
             project_id: dbProjectId,
             created_at: new Date().toISOString(),
           }])
@@ -3270,11 +3288,14 @@ export async function generatePurchaseOrdersFromRfqForm(input: {
       const vendorLinePayloads = formData.items
         .map((item) => {
           const itemKey = (item as any).key || item.item_id || '';
+          const itemDesc = item.item_description || item.specification || '';
 
           // Check cell allocation in matrix
           const cell =
             rawAllocations[`${itemKey}:${vendorId}`] ||
             rawAllocations[`${itemKey}:${supplierName}`] ||
+            (itemDesc ? rawAllocations[`${itemDesc}:${vendorId}`] : undefined) ||
+            (itemDesc ? rawAllocations[`${itemDesc}:${supplierName}`] : undefined) ||
             rawAllocations[`${item.item_id}:${vendorId}`] ||
             rawAllocations[`${item.item_id}:${supplierName}`];
 
@@ -5363,13 +5384,6 @@ export async function createFullGoodsReceiptNote(formData: {
   try {
     await requireProfile();
 
-    if (!formData.id && !formData.purchase_order_id && !formData.project_id) {
-      throw new Error('Select a purchase order, or choose a project, before saving the goods receipt.');
-    }
-    if (!formData.id && !formData.purchase_order_id && !formData.vendor_id) {
-      throw new Error('Select a supplier before saving the goods receipt.');
-    }
-
     const toDbGrnStatus = (st?: string): string => {
       const s = (st || '').toLowerCase().trim();
       if (s === 'approved' || s === 'posted') return 'posted';
@@ -5387,17 +5401,67 @@ export async function createFullGoodsReceiptNote(formData: {
     const profileId = await currentProfileId();
     grnNumber = formData.grn_number || (await nextDocumentNumber('GRN'));
 
+    // Auto-resolve project_id from project_name, selected PO lines, or default project
     let resolvedProjectId = formData.project_id || null;
+    if (!resolvedProjectId && (formData as any).project_name) {
+      const { data: proj } = await supabase
+        .from('projects')
+        .select('id')
+        .eq('name', (formData as any).project_name)
+        .maybeSingle();
+      if (proj?.id) resolvedProjectId = proj.id;
+    }
+    if (!resolvedProjectId && formData.lines && formData.lines.length > 0) {
+      const firstPoLineId = formData.lines.find((l) => l.purchase_order_line_id)?.purchase_order_line_id;
+      if (firstPoLineId) {
+        const { data: poLine } = await supabase
+          .from('purchase_order_lines')
+          .select('purchase_orders(project_id, vendor_id)')
+          .eq('id', firstPoLineId)
+          .maybeSingle();
+        const po = (poLine as any)?.purchase_orders;
+        if (po?.project_id) resolvedProjectId = po.project_id;
+        if (!formData.vendor_id && po?.vendor_id) formData.vendor_id = po.vendor_id;
+      }
+    }
     if (!resolvedProjectId) {
       const { data: defaultProject } = await supabase.from('projects').select('id').limit(1).maybeSingle();
       resolvedProjectId = defaultProject?.id || null;
     }
 
+    // Auto-resolve vendor_id from supplier_name or selected PO lines
+    let resolvedVendorId = formData.vendor_id || null;
+    if (!resolvedVendorId && (formData as any).supplier_name) {
+      const sName = (formData as any).supplier_name;
+      const { data: vend } = await supabase
+        .from('vendors')
+        .select('id')
+        .or(`display_name.eq.${sName},legal_name.eq.${sName}`)
+        .maybeSingle();
+      if (vend?.id) resolvedVendorId = vend.id;
+    }
+
+    let resolvedPoId = formData.purchase_order_id || null;
+    const poNoRef = (formData as any).from_pos;
+    if (!resolvedPoId && poNoRef && poNoRef !== 'Not Exist') {
+      const { data: poRow } = await supabase
+        .from('purchase_orders')
+        .select('id, vendor_id')
+        .eq('po_number', poNoRef)
+        .maybeSingle();
+      if (poRow?.id) {
+        resolvedPoId = poRow.id;
+        if (!resolvedVendorId && poRow.vendor_id) {
+          resolvedVendorId = poRow.vendor_id;
+        }
+      }
+    }
+
     const headerPayload = {
       project_id: resolvedProjectId,
       site_id: formData.site_id || null,
-      purchase_order_id: formData.purchase_order_id || null,
-      vendor_id: formData.vendor_id || null,
+      purchase_order_id: resolvedPoId,
+      vendor_id: resolvedVendorId,
       grn_number: grnNumber,
       receipt_date: formData.grn_date && String(formData.grn_date).trim() ? String(formData.grn_date).trim().slice(0, 10) : today(),
       challan_no: formData.challan_no || null,
@@ -6226,7 +6290,7 @@ export async function savePurchaseOrderForm(
         tax_code: line.tax_code || null,
         purchase_category: line.purchase_category || null,
         quantity: Number(line.quantity) || 0,
-        unit: line.unit || 'nos',
+        unit: cleanMaterialUnit(line.unit, line.item_description),
         unit_rate: Number(line.unit_rate) || 0,
         tax_rate: Number(line.tax_rate) || 0,
         estimated_rate: line.estimated_rate ?? null,
@@ -6324,7 +6388,7 @@ export async function savePurchaseOrderForm(
           item_id: uuidOrNull(l.item_id),
           item_description: (l.item_description ?? '').trim(),
           quantity: Number(l.quantity) || 0,
-          unit: l.unit || 'nos',
+          unit: cleanMaterialUnit(l.unit, l.item_description),
           unit_rate: Number(l.unit_rate) || 0,
           tax_rate: Number(l.tax_rate) || 0,
           amount: Number(l.quantity || 0) * Number(l.unit_rate || 0),
@@ -6570,18 +6634,6 @@ export async function fetchPurchaseOrderOptions(
 
     let { data, error } = await query;
 
-    // Fallback: If filtered by project_id and returned no results, retry without project_id filter
-    if (isRealProject && (!data || data.length === 0)) {
-      const fallbackRes = await supabase
-        .from('purchase_orders')
-        .select(selectFields)
-        .is('deleted_at', null)
-        .in('status', ['approved', 'sent_to_vendor', 'acknowledged', 'partially_delivered'])
-        .order('created_at', { ascending: false });
-      data = fallbackRes.data;
-      error = fallbackRes.error;
-    }
-
     if (error) {
       console.warn('[procurement] purchase_orders query error:', error);
       return [];
@@ -6630,6 +6682,8 @@ export type PoLineWithBalance = {
   id: string;
   po_id: string;
   po_line_id: string;
+  po_number?: string;
+  location?: string;
   item_id: string | null;
   unit_rate: number;
   item_group: string;
@@ -6725,6 +6779,8 @@ export async function fetchPoLinesWithBalances(poId: string): Promise<PoLineWith
       || prLine?.item_group
       || '';
 
+    const resolvedUnit = cleanMaterialUnit(line.unit, line.item_description);
+
     return {
       id: line.id,
       po_id: line.purchase_order_id,
@@ -6737,7 +6793,7 @@ export async function fetchPoLinesWithBalances(poId: string): Promise<PoLineWith
       item_brand: subActivityName,
       purchase_category: purchaseCategory,
       pr_no: prObj?.pr_number ?? '',
-      unit: line.unit ?? 'nos',
+      unit: resolvedUnit,
       approved_qty: balance.orderedQty,
       prev_received_qty: balance.cumulativeReceivedQty,
       prev_accepted_qty: balance.cumulativeAcceptedQty,
@@ -6746,8 +6802,22 @@ export async function fetchPoLinesWithBalances(poId: string): Promise<PoLineWith
       max_allowable_accept_qty: balance.maxAllowableAcceptQty,
       is_short_closed: balance.isShortClosed,
       line_status: balance.lineStatus,
+      po_number: poObj?.po_number ?? '',
+      location: poObj?.delivery_location ?? '',
     };
   });
+}
+
+/**
+ * Reads lines and live receipt balances across multiple Purchase Orders in parallel.
+ */
+export async function fetchMultiPoLinesWithBalances(poIds: string[]): Promise<PoLineWithBalance[]> {
+  if (!poIds || poIds.length === 0) return [];
+  const uniqueIds = Array.from(new Set(poIds.filter(Boolean)));
+  const results = await Promise.all(
+    uniqueIds.map((id) => fetchPoLinesWithBalances(id).catch(() => []))
+  );
+  return results.flat();
 }
 
 export type PoLineReceiptHistoryItem = {

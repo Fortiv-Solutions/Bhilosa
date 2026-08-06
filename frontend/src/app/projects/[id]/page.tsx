@@ -668,10 +668,10 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
     let active = true;
 
     Promise.all([
-      listProcurementDashboard(dbSiteId).catch(err => { console.error('Procurement fetch failed:', err); return null; }),
-      listBudgetDashboard(dbSiteId).catch(err => { console.error('Budget fetch failed:', err); return null; }),
-      getQCInspections(dbSiteId).catch(err => { console.error('QC fetch failed:', err); return null; }),
-      getSafetyIncidents(dbSiteId).catch(err => { console.error('Safety fetch failed:', err); return null; }),
+      listProcurementDashboard(dbSiteId).catch((err) => { console.warn('Procurement fetch:', err?.message || err); return null; }),
+      listBudgetDashboard(dbSiteId).catch((err) => { console.warn('Budget fetch:', err?.message || err); return null; }),
+      getQCInspections(dbSiteId).catch((err) => { console.warn('QC fetch:', err?.message || err); return []; }),
+      getSafetyIncidents(dbSiteId).catch((err) => { console.warn('Safety fetch:', err?.message || err); return []; }),
     ]).then(([procData, budgetData, qcData, safetyData]) => {
       if (!active) return;
       setLiveProcurement(procData);

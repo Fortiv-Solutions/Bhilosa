@@ -481,6 +481,7 @@ interface MasterItemRow {
   item_type: string | null;
   sort_order: number | null;
   version_number: number | null;
+  is_unbudgeted?: boolean | null;
 }
 
 interface VarianceRow {
@@ -526,7 +527,7 @@ export async function fetchMasterBudgetCategories(
       let q = supabase
         .from('master_budget_items')
         .select(
-          'id, project_id, category_id, category_name, sr_no, item_description, qty_rcc, qty_finishes, qty_infra, qty_total, unit, estimated_rate, budgeted_cost, cost_per_bua, scope_tag, item_type, sort_order, version_number',
+          'id, project_id, category_id, category_name, sr_no, item_description, qty_rcc, qty_finishes, qty_infra, qty_total, unit, estimated_rate, budgeted_cost, cost_per_bua, scope_tag, item_type, sort_order, version_number, is_unbudgeted',
         )
         .eq('is_active', true)
         .is('deleted_at', null)
@@ -600,6 +601,7 @@ export async function fetchMasterBudgetCategories(
         scopeTag: (itemRow.scope_tag as ScopeTag) || 'site_infra',
         itemType: (itemRow.item_type as MasterBudgetItem['itemType']) || 'material',
         varianceItemId: varRow?.id,
+        isUnbudgeted: Boolean(itemRow.is_unbudgeted),
         poQty: num(varRow?.po_qty),
         poRate: num(varRow?.po_rate),
         poAmount: num(varRow?.po_amount),
@@ -1084,6 +1086,40 @@ export async function updateBillSettlement(
   if (error) fail('Unable to save settlement details', error);
 }
 
+/** Link bill directly to master_budget_item_id and budget_allocation_id in Supabase */
+export async function linkBillToBudgetHead(
+  billSource: BillSource,
+  billId: string,
+  masterBudgetItemId: string,
+  categoryId?: string,
+): Promise<void> {
+  assertConfigured();
+  const table = billSource === 'service' ? 'service_bills' : 'vendor_bills';
+
+  let budgetAllocationId: string | null = null;
+  if (categoryId) {
+    const { data } = await supabase
+      .from('budget_allocations')
+      .select('id')
+      .eq('category_id', categoryId)
+      .limit(1)
+      .maybeSingle();
+    if (data?.id) {
+      budgetAllocationId = data.id as string;
+    }
+  }
+
+  const payload: Record<string, unknown> = {
+    master_budget_item_id: masterBudgetItemId,
+  };
+  if (budgetAllocationId) {
+    payload.budget_allocation_id = budgetAllocationId;
+  }
+
+  const { error } = await supabase.from(table).update(payload).eq('id', billId);
+  if (error) fail('Unable to link bill to budget head', error);
+}
+
 // ----------------------------------------------------------------------------
 // 6b. Budget change documents (Phase 7 — A + C combined)
 //
@@ -1483,6 +1519,38 @@ export interface VarianceItemPatch {
   actual_bill_qty: number;
   actual_bill_rate: number;
   remark: string;
+  /** Optional: bill tracking fields for booking audit + duplicate prevention */
+  bill_id?: string;
+  bill_source?: 'material' | 'service';
+  bill_number?: string;
+  booked_qty?: number;
+  booked_amount?: number;
+}
+
+/** A single variance-bill booking record. */
+export interface BillVarianceBooking {
+  id: string;
+  bill_source: string;
+  bill_number: string | null;
+  variance_item_id: string;
+  category_name: string | null;
+  sub_activity: string | null;
+  booked_qty: number;
+  booked_rate: number;
+  booked_amount: number;
+  booked_by_name: string | null;
+  booked_at: string;
+  remark: string | null;
+}
+
+/** Fetch all variance bookings for a specific bill (checks if already booked). */
+export async function getBillVarianceBookings(billId: string): Promise<BillVarianceBooking[]> {
+  assertConfigured();
+  const { data, error } = await supabase.rpc('rpc_get_bill_variance_bookings', {
+    p_bill_id: billId,
+  });
+  if (error) fail('Unable to fetch bill variance bookings', error);
+  return (data ?? []) as BillVarianceBooking[];
 }
 
 /** Save variance reconciliation actuals + audit trail in one transaction. */
@@ -1677,3 +1745,38 @@ export function downloadCsv(filename: string, csv: string): void {
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
 }
+
+export interface CreateSubCategoryParams {
+  projectId: string;
+  categoryId: string;
+  itemDescription: string;
+  unit?: string;
+  estimatedRate?: number;
+  scopeTag?: string;
+  source?: string;
+}
+
+export async function createDynamicSubCategory(params: CreateSubCategoryParams): Promise<{ id: string; item_description: string; category_id: string; [key: string]: any }> {
+  if (!isSupabaseConfigured) {
+    throw new Error('Supabase is not active. Dynamic sub-category creation requires live Supabase connection.');
+  }
+
+  const dbSiteId = getDbSiteId(params.projectId);
+
+  const { data, error } = await supabase.rpc('rpc_create_master_budget_item', {
+    p_project_id: dbSiteId,
+    p_category_id: params.categoryId,
+    p_item_description: params.itemDescription.trim(),
+    p_unit: params.unit || 'NOS',
+    p_estimated_rate: params.estimatedRate ?? 0,
+    p_scope_tag: params.scopeTag || 'General',
+    p_source: params.source || 'bill_booking',
+  });
+
+  if (error) {
+    throw new Error(error.message || 'Failed to create sub-category item.');
+  }
+
+  return data;
+}
+

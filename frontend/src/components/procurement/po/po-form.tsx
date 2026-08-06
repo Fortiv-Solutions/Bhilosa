@@ -42,6 +42,7 @@ import {
   listActiveVendorOptions,
   listActivePrOptions,
   listBudgetCategoryOptions,
+  cleanMaterialUnit,
 } from '@/lib/procurement';
 import {
   normalizePoStatus,
@@ -257,7 +258,7 @@ export function buildPurchaseOrderPayload(form: FullPoFormState): PurchaseOrderF
     tax_code: item.tax_code || null,
     purchase_category: item.purchase_category || null,
     quantity: Number(item.approved_qty) || 0,
-    unit: item.unit || 'nos',
+    unit: cleanMaterialUnit(item.unit, item.item_desc),
     unit_rate: Number(item.basic_rate) || 0,
     tax_rate: item.gst_applicable ? Number(item.gst_rate) || 0 : 0,
     estimated_rate: item.estimated_rate ?? null,
@@ -624,7 +625,7 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
         open_po: Boolean(l.is_open_po),
         open_till_date: l.open_till_date || '',
         approved_qty: qty,
-        unit: l.unit || 'nos',
+        unit: cleanMaterialUnit(l.unit, l.item_description),
         due_on: l.required_date || '',
         purchase_category: l.purchase_category || l.activity_name || '',
         estimated_rate: Number(l.estimated_rate ?? rate),
@@ -1572,8 +1573,12 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
                             type="number"
                             step="0.01"
                             title={`Qty: ${item.approved_qty}`}
-                            value={item.approved_qty}
-                            onChange={(e) => updateLineItem(index, 'approved_qty', Number(e.target.value))}
+                            value={item.approved_qty === 0 ? '' : item.approved_qty}
+                            placeholder="0"
+                            onChange={(e) => {
+                              const clean = e.target.value.replace(/^0+(?=\d)/, '');
+                              updateLineItem(index, 'approved_qty', clean === '' ? 0 : Number(clean));
+                            }}
                             className="w-14 focus:w-20 hover:w-20 transition-all duration-200 rounded border border-border bg-background px-1.5 py-1 text-right text-xs font-bold text-foreground relative z-10 hover:z-20 focus:z-20"
                           />
                         </td>
@@ -1607,8 +1612,12 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
                             type="number"
                             step="0.01"
                             title={`Unit Rate: ₹${item.basic_rate}`}
-                            value={item.basic_rate}
-                            onChange={(e) => updateLineItem(index, 'basic_rate', Number(e.target.value))}
+                            value={item.basic_rate === 0 ? '' : item.basic_rate}
+                            placeholder="0"
+                            onChange={(e) => {
+                              const clean = e.target.value.replace(/^0+(?=\d)/, '');
+                              updateLineItem(index, 'basic_rate', clean === '' ? 0 : Number(clean));
+                            }}
                             className="w-20 focus:w-28 hover:w-28 transition-all duration-200 rounded border-2 border-primary/50 bg-background px-1.5 py-1 text-right text-xs font-extrabold text-primary relative z-10 hover:z-20 focus:z-20"
                           />
                         </td>
@@ -1618,8 +1627,12 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
                             type="number"
                             step="0.01"
                             title={`Discount: ${item.discount_perc}%`}
-                            value={item.discount_perc}
-                            onChange={(e) => updateLineItem(index, 'discount_perc', Number(e.target.value))}
+                            value={item.discount_perc === 0 ? '' : item.discount_perc}
+                            placeholder="0"
+                            onChange={(e) => {
+                              const clean = e.target.value.replace(/^0+(?=\d)/, '');
+                              updateLineItem(index, 'discount_perc', clean === '' ? 0 : Number(clean));
+                            }}
                             className="w-12 focus:w-16 hover:w-16 transition-all duration-200 rounded border border-border bg-background px-1 py-1 text-right text-xs relative z-10 hover:z-20 focus:z-20"
                           />
                         </td>
@@ -1643,8 +1656,12 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
                             type="number"
                             step="0.01"
                             title={`Freight: ₹${item.freight_chgs}`}
-                            value={item.freight_chgs}
-                            onChange={(e) => updateLineItem(index, 'freight_chgs', Number(e.target.value))}
+                            value={item.freight_chgs === 0 ? '' : item.freight_chgs}
+                            placeholder="0"
+                            onChange={(e) => {
+                              const clean = e.target.value.replace(/^0+(?=\d)/, '');
+                              updateLineItem(index, 'freight_chgs', clean === '' ? 0 : Number(clean));
+                            }}
                             className="w-14 focus:w-20 hover:w-20 transition-all duration-200 rounded border border-border bg-background px-1 py-1 text-right text-xs relative z-10 hover:z-20 focus:z-20"
                           />
                         </td>
@@ -1654,8 +1671,12 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
                             type="number"
                             step="0.01"
                             title={`Handling: ₹${item.load_unload_chgs}`}
-                            value={item.load_unload_chgs}
-                            onChange={(e) => updateLineItem(index, 'load_unload_chgs', Number(e.target.value))}
+                            value={item.load_unload_chgs === 0 ? '' : item.load_unload_chgs}
+                            placeholder="0"
+                            onChange={(e) => {
+                              const clean = e.target.value.replace(/^0+(?=\d)/, '');
+                              updateLineItem(index, 'load_unload_chgs', clean === '' ? 0 : Number(clean));
+                            }}
                             className="w-14 focus:w-20 hover:w-20 transition-all duration-200 rounded border border-border bg-background px-1 py-1 text-right text-xs relative z-10 hover:z-20 focus:z-20"
                           />
                         </td>
@@ -1665,8 +1686,12 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
                             type="number"
                             step="0.01"
                             title={`Others: ₹${item.others_chgs}`}
-                            value={item.others_chgs}
-                            onChange={(e) => updateLineItem(index, 'others_chgs', Number(e.target.value))}
+                            value={item.others_chgs === 0 ? '' : item.others_chgs}
+                            placeholder="0"
+                            onChange={(e) => {
+                              const clean = e.target.value.replace(/^0+(?=\d)/, '');
+                              updateLineItem(index, 'others_chgs', clean === '' ? 0 : Number(clean));
+                            }}
                             className="w-14 focus:w-20 hover:w-20 transition-all duration-200 rounded border border-border bg-background px-1 py-1 text-right text-xs relative z-10 hover:z-20 focus:z-20"
                           />
                         </td>
@@ -1675,8 +1700,12 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
                           <input
                             type="number"
                             title={`GST Rate: ${item.gst_rate}%`}
-                            value={item.gst_rate}
-                            onChange={(e) => updateLineItem(index, 'gst_rate', Number(e.target.value))}
+                            value={item.gst_rate === 0 ? '' : item.gst_rate}
+                            placeholder="0"
+                            onChange={(e) => {
+                              const clean = e.target.value.replace(/^0+(?=\d)/, '');
+                              updateLineItem(index, 'gst_rate', clean === '' ? 0 : Number(clean));
+                            }}
                             className="w-12 focus:w-16 hover:w-16 transition-all duration-200 rounded border border-border bg-background px-1 py-1 text-right text-xs font-bold relative z-10 hover:z-20 focus:z-20"
                           />
                         </td>
@@ -1740,8 +1769,12 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
                     <input
                       type="number"
                       step="0.01"
-                      value={form.tax_on_transportation_principal_amount}
-                      onChange={(e) => updateHeader('tax_on_transportation_principal_amount', Number(e.target.value))}
+                      value={form.tax_on_transportation_principal_amount === 0 ? '' : form.tax_on_transportation_principal_amount}
+                      placeholder="0"
+                      onChange={(e) => {
+                        const clean = e.target.value.replace(/^0+(?=\d)/, '');
+                        updateHeader('tax_on_transportation_principal_amount', clean === '' ? 0 : Number(clean));
+                      }}
                       className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono font-bold text-foreground"
                     />
                   </div>
@@ -1760,20 +1793,6 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
                     />
                   </div>
 
-                  {/* Tax Code for Tax On Transportation* */}
-                  <div>
-                    <label className="block text-[11px] font-bold uppercase text-primary mb-1">
-                      Tax Code for Tax On Transportation*
-                    </label>
-                    <input
-                      type="text"
-                      value={form.tax_code_for_tax_on_transportation}
-                      onChange={(e) => updateHeader('tax_code_for_tax_on_transportation', e.target.value)}
-                      placeholder="e.g. GST 18%"
-                      className="w-full rounded-lg border border-border bg-background px-3 py-2 font-bold text-foreground"
-                    />
-                  </div>
-
                   {/* Tax Code Amount for Tax On Transportation */}
                   <div>
                     <label className="block text-[11px] font-bold uppercase text-muted-foreground mb-1">
@@ -1782,8 +1801,12 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
                     <input
                       type="number"
                       step="0.01"
-                      value={form.tax_code_amount_for_tax_on_transportation}
-                      onChange={(e) => updateHeader('tax_code_amount_for_tax_on_transportation', Number(e.target.value))}
+                      value={form.tax_code_amount_for_tax_on_transportation === 0 ? '' : form.tax_code_amount_for_tax_on_transportation}
+                      placeholder="0"
+                      onChange={(e) => {
+                        const clean = e.target.value.replace(/^0+(?=\d)/, '');
+                        updateHeader('tax_code_amount_for_tax_on_transportation', clean === '' ? 0 : Number(clean));
+                      }}
                       className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono font-bold text-foreground"
                     />
                   </div>

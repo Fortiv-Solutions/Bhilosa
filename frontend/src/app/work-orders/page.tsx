@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Briefcase, CalendarDays, ClipboardList, IndianRupee, Plus, AlertTriangle } from 'lucide-react';
-import { getWorkOrders } from '@/lib/work-orders';
+import { getWorkOrders, updateWorkOrderStatus } from '@/lib/work-orders';
 import { isLiveSupabase } from '@/lib/erp/supabase-modules';
 import { CreateWorkOrderModal } from '@/components/work-orders/create-work-order-modal';
 
@@ -128,7 +128,21 @@ export default function WorkOrdersPage() {
                   <td className="py-3 text-gray-500">{wo.startDate || '-'}</td>
                   <td className="py-3">
                     <div className="flex items-center gap-1.5">
-                      <span className={`rounded-full px-2 py-1 text-[9px] font-bold uppercase ${WO_STATUS_STYLES[wo.woStatus] || WO_STATUS_STYLES.draft}`}>{wo.woStatus}</span>
+                      <select
+                        value={wo.woStatus}
+                        onChange={async (e) => {
+                          const newStatus = e.target.value;
+                          await updateWorkOrderStatus(wo.id, newStatus);
+                          refresh();
+                        }}
+                        className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase cursor-pointer border-0 outline-none ${WO_STATUS_STYLES[wo.woStatus] || WO_STATUS_STYLES.draft}`}
+                      >
+                        <option value="draft">Draft</option>
+                        <option value="submitted">Submitted</option>
+                        <option value="issued">Issued</option>
+                        <option value="active">Active</option>
+                        <option value="closed">Closed</option>
+                      </select>
                       {wo.hasScopeVariance && (
                         <span title="Scope variance detected">
                           <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />

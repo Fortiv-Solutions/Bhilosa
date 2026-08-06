@@ -36,9 +36,10 @@ export default function SubNavBar() {
     },
     {
       name: 'Supply Chain',
-      paths: ['/procurement', '/vendors', '/inventory'],
+      paths: ['/procurement', '/item-master', '/vendors', '/inventory'],
       tabs: [
         { label: 'Procurement', path: '/procurement' },
+        { label: 'Item Master', path: '/item-master' },
         { label: 'Vendors', path: '/vendors' },
         { label: 'Inventory', path: '/inventory' }
       ]

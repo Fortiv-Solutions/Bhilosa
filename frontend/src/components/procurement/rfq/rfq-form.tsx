@@ -18,7 +18,7 @@
 // 6. Sticky Bottom Action Bar with status, Close, Print PDF, Activity Log, and Issue Multi-Vendor POs.
 // ============================================================================
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   FileText,
   Building2,
@@ -311,6 +311,24 @@ export function RfqForm({
           .maybeSingle();
 
         if (rfq) {
+          // Restore saved matrix allocations from awards_json or remarks tag
+          let savedAllocations: Record<string, EmbeddedAwardCellState> | null = null;
+          if (rfq.awards_json && typeof rfq.awards_json === 'object' && Object.keys(rfq.awards_json).length > 0) {
+            savedAllocations = rfq.awards_json;
+          } else if (rfq.remarks && rfq.remarks.includes('[AWARDS]:')) {
+            try {
+              const jsonStr = rfq.remarks.split('[AWARDS]:')[1];
+              const parsed = JSON.parse(jsonStr);
+              if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) {
+                savedAllocations = parsed;
+              }
+            } catch (e) {}
+          }
+
+          if (savedAllocations) {
+            setAllocations((prev) => ({ ...prev, ...savedAllocations }));
+          }
+
           setForm((prev) => {
             const savedSuppliers: RfqFormSupplierRow[] = (rfq.rfq_vendors || []).map((rv: any, idx: number) => {
               const vendorMatch = supplierMaster.find((v) => v.id === rv.vendor_id);
@@ -348,19 +366,6 @@ export function RfqForm({
 
             const cleanRemarks = (rfq.remarks || '').replace(/\n?\[AWARDS\]:.*/, '').trim();
 
-            // Restore saved matrix allocations from awards_json or remarks tag
-            if (rfq.awards_json && typeof rfq.awards_json === 'object' && Object.keys(rfq.awards_json).length > 0) {
-              setAllocations(rfq.awards_json);
-            } else if (rfq.remarks && rfq.remarks.includes('[AWARDS]:')) {
-              try {
-                const jsonStr = rfq.remarks.split('[AWARDS]:')[1];
-                const parsed = JSON.parse(jsonStr);
-                if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) {
-                  setAllocations(parsed);
-                }
-              } catch (e) {}
-            }
-
             return {
               ...prev,
               quotation_registration_no: rfq.rfq_number || prev.quotation_registration_no,
@@ -392,11 +397,10 @@ export function RfqForm({
 
   const isFormLocked =
     isReadOnly ||
-    st === 'Awarded' ||
     st === 'PO Issued' ||
     st === 'Cancelled' ||
-    approvedPr?.status === 'vendor_selected' ||
-    approvedPr?.status === 'po_issued';
+    approvedPr?.status === 'po_issued' ||
+    st === 'Awarded';
 
   // Section 1: Header — editable in Auto-Draft, Draft
   const isHeaderEditable = !isFormLocked && (st === 'Auto-Draft' || st === 'Draft');
@@ -433,24 +437,95 @@ export function RfqForm({
     return form.suppliers.filter((s) => s.supplier_id || s.supplier_name.trim());
   }, [form.suppliers]);
 
+  // Robust Cell Lookup & State Mutation Helpers (supports item.key, item.item_description, and supplier_id/name)
+  const getCellAllocation = useCallback(
+    (item: RfqFormItemRow, sup: RfqFormSupplierRow): EmbeddedAwardCellState => {
+      const supId = sup.supplier_id || sup.supplier_name || '';
+      const supName = sup.supplier_name || '';
+      const itemDesc = item.item_description || item.specification || '';
+      const defaultRate = Number(item.quoted_rate ?? item.previous_rate ?? 350);
+
+      const cell =
+        allocations[`${item.key}:${supId}`] ||
+        (supName ? allocations[`${item.key}:${supName}`] : undefined) ||
+        (itemDesc && supId ? allocations[`${itemDesc}:${supId}`] : undefined) ||
+        (itemDesc && supName ? allocations[`${itemDesc}:${supName}`] : undefined) ||
+        (item.item_id && supId ? allocations[`${item.item_id}:${supId}`] : undefined);
+
+      if (!cell) {
+        return {
+          awarded_qty: 0,
+          awarded_rate: defaultRate,
+          non_l1_justification: '',
+        };
+      }
+
+      return {
+        ...cell,
+        awarded_rate: Number(cell.awarded_rate || defaultRate),
+      };
+    },
+    [allocations]
+  );
+
+  const updateCellAllocation = (
+    item: RfqFormItemRow,
+    sup: RfqFormSupplierRow,
+    newCell: Partial<EmbeddedAwardCellState>
+  ) => {
+    const supId = sup.supplier_id || sup.supplier_name || '';
+    const supName = sup.supplier_name || '';
+    const itemDesc = item.item_description || item.specification || '';
+    const current = getCellAllocation(item, sup);
+    const updated: EmbeddedAwardCellState = {
+      ...current,
+      ...newCell,
+      awarded_rate: Number((newCell.awarded_rate !== undefined ? newCell.awarded_rate : current.awarded_rate) || 350),
+    };
+
+    setAllocations((prev) => {
+      const next = { ...prev };
+      const key1 = `${item.key}:${supId}`;
+      next[key1] = updated;
+      if (supName) next[`${item.key}:${supName}`] = updated;
+      if (itemDesc && supId) next[`${itemDesc}:${supId}`] = updated;
+      if (itemDesc && supName) next[`${itemDesc}:${supName}`] = updated;
+      return next;
+    });
+  };
+
   // Sync / Initialize Allocations when items or selected suppliers change
   useEffect(() => {
     setAllocations((prev) => {
       const next = { ...prev };
+      let changed = false;
+
       for (const item of form.items) {
         for (const sup of selectedSuppliers) {
-          const supId = sup.supplier_id || sup.supplier_name;
-          const key = `${item.key}:${supId}`;
-          if (!next[key]) {
-            next[key] = {
-              awarded_qty: 0,
-              awarded_rate: (item.quoted_rate ?? item.previous_rate) ?? 0,
-              non_l1_justification: '',
-            };
-          }
+          const supId = sup.supplier_id || sup.supplier_name || '';
+          const supName = sup.supplier_name || '';
+          const itemDesc = item.item_description || item.specification || '';
+          const key1 = `${item.key}:${supId}`;
+          const defaultRate = Number(item.quoted_rate ?? item.previous_rate ?? 350);
+
+          const existing =
+            prev[key1] ||
+            (supName ? prev[`${item.key}:${supName}`] : undefined) ||
+            (itemDesc && supId ? prev[`${itemDesc}:${supId}`] : undefined) ||
+            (itemDesc && supName ? prev[`${itemDesc}:${supName}`] : undefined) ||
+            (item.item_id && supId ? prev[`${item.item_id}:${supId}`] : undefined);
+
+          const cell: EmbeddedAwardCellState = existing
+            ? { ...existing, awarded_rate: Number(existing.awarded_rate || defaultRate) }
+            : { awarded_qty: 0, awarded_rate: defaultRate, non_l1_justification: '' };
+
+          if (!next[key1]) { next[key1] = cell; changed = true; }
+          if (supName && !next[`${item.key}:${supName}`]) { next[`${item.key}:${supName}`] = cell; changed = true; }
+          if (itemDesc && supId && !next[`${itemDesc}:${supId}`]) { next[`${itemDesc}:${supId}`] = cell; changed = true; }
+          if (itemDesc && supName && !next[`${itemDesc}:${supName}`]) { next[`${itemDesc}:${supName}`] = cell; changed = true; }
         }
       }
-      return next;
+      return changed ? next : prev;
     });
   }, [form.items, selectedSuppliers]);
 
@@ -654,47 +729,56 @@ export function RfqForm({
     onSubmit(updatedForm, shouldGeneratePo);
   };
 
+
+
   // Auto-Fill Lowest Rate Allocation (Auto L1) across matrix
   const handleAutoFillL1InForm = () => {
     if (selectedSuppliers.length === 0) return;
-    const next = { ...allocations };
-    for (const item of form.items) {
-      const firstSupId = selectedSuppliers[0].supplier_id || selectedSuppliers[0].supplier_name;
-      for (const sup of selectedSuppliers) {
-        const supId = sup.supplier_id || sup.supplier_name;
-        const key = `${item.key}:${supId}`;
-        const isFirst = supId === firstSupId;
-        next[key] = {
-          awarded_qty: isFirst ? item.quantity : 0,
-          awarded_rate: (item.quoted_rate ?? item.previous_rate) ?? 0,
-          non_l1_justification: '',
-        };
+    setAllocations((prev) => {
+      const next = { ...prev };
+      const firstSup = selectedSuppliers[0];
+      const firstSupId = firstSup.supplier_id || firstSup.supplier_name;
+
+      for (const item of form.items) {
+        for (const sup of selectedSuppliers) {
+          const supId = sup.supplier_id || sup.supplier_name;
+          const isFirst = supId === firstSupId || sup.supplier_name === firstSup.supplier_name;
+          const defaultRate = Number((item.quoted_rate ?? item.previous_rate) ?? 350);
+          const cell: EmbeddedAwardCellState = {
+            awarded_qty: isFirst ? item.quantity : 0,
+            awarded_rate: defaultRate,
+            non_l1_justification: '',
+          };
+
+          const key1 = `${item.key}:${supId}`;
+          next[key1] = cell;
+          if (sup.supplier_name) next[`${item.key}:${sup.supplier_name}`] = cell;
+          if (item.item_description) next[`${item.item_description}:${supId}`] = cell;
+          if (item.item_description && sup.supplier_name) next[`${item.item_description}:${sup.supplier_name}`] = cell;
+        }
       }
-    }
-    setAllocations(next);
+      return next;
+    });
   };
 
   // Matrix Helpers
   const getItemAllocatedQty = (itemKey: string) => {
+    const item = form.items.find((i) => i.key === itemKey || i.item_description === itemKey) || ({ key: itemKey, item_description: itemKey } as any);
     return selectedSuppliers.reduce((sum, sup) => {
-      const supId = sup.supplier_id || sup.supplier_name;
-      const key = `${itemKey}:${supId}`;
-      return sum + (allocations[key]?.awarded_qty || 0);
+      return sum + (getCellAllocation(item, sup).awarded_qty || 0);
     }, 0);
   };
 
   // Total RFQ Estimated Cost Value
   const totalRfqEstCostValue = form.items.reduce(
-    (sum, item) => sum + item.quantity * ((item.quoted_rate ?? item.previous_rate) ?? 0),
+    (sum, item) => sum + item.quantity * Number((item.quoted_rate ?? item.previous_rate) ?? 350),
     0
   );
 
   // Total Awarded Value across selected suppliers
   const totalAwardedGrandValue = form.items.reduce((sum, item) => {
     return sum + selectedSuppliers.reduce((sSum, sup) => {
-      const supId = sup.supplier_id || sup.supplier_name;
-      const key = `${item.key}:${supId}`;
-      const cell = allocations[key];
+      const cell = getCellAllocation(item, sup);
       if (cell && cell.awarded_qty > 0) {
         return sSum + cell.awarded_qty * cell.awarded_rate * 1.18; // 18% GST default estimate
       }
@@ -709,8 +793,7 @@ export function RfqForm({
     let awardedItems = 0;
 
     for (const item of form.items) {
-      const key = `${item.key}:${supId}`;
-      const cell = allocations[key];
+      const cell = getCellAllocation(item, sup);
       if (cell && cell.awarded_qty > 0) {
         totalVal += cell.awarded_qty * cell.awarded_rate * 1.18;
         awardedItems += 1;
@@ -999,9 +1082,13 @@ export function RfqForm({
                           type="number"
                           step="any"
                           min="0"
-                          value={item.quantity}
+                          value={item.quantity === 0 ? '' : item.quantity}
+                          placeholder="0"
                           disabled={viewModeActive}
-                          onChange={(e) => handleItemChange(idx, 'quantity', Number(e.target.value))}
+                          onChange={(e) => {
+                            const clean = e.target.value.replace(/^0+(?=\d)/, '');
+                            handleItemChange(idx, 'quantity', clean === '' ? 0 : Number(clean));
+                          }}
                           className="w-20 rounded-md border border-border bg-background px-1.5 py-1.5 text-right font-extrabold text-foreground focus:border-primary focus:outline-none disabled:opacity-75"
                           required
                         />
@@ -1024,9 +1111,13 @@ export function RfqForm({
                           type="number"
                           min="0"
                           step="0.01"
-                          value={item.previous_rate}
+                          value={item.previous_rate === 0 ? '' : item.previous_rate}
+                          placeholder="0"
                           disabled={!isItemsEditable}
-                          onChange={(e) => handleItemChange(idx, 'previous_rate', Number(e.target.value))}
+                          onChange={(e) => {
+                            const clean = e.target.value.replace(/^0+(?=\d)/, '');
+                            handleItemChange(idx, 'previous_rate', clean === '' ? 0 : Number(clean));
+                          }}
                           className="w-20 rounded-md border border-border bg-background px-1.5 py-1.5 text-right font-bold text-foreground focus:border-primary focus:outline-none disabled:opacity-75"
                           required
                         />
@@ -1038,9 +1129,13 @@ export function RfqForm({
                           type="number"
                           min="0"
                           step="0.01"
-                          value={(item.quoted_rate ?? item.previous_rate) ?? 0}
+                          value={((item.quoted_rate ?? item.previous_rate) ?? 0) === 0 ? '' : ((item.quoted_rate ?? item.previous_rate) ?? 0)}
+                          placeholder="0"
                           disabled={!isItemsEditable}
-                          onChange={(e) => handleItemChange(idx, 'quoted_rate', Number(e.target.value))}
+                          onChange={(e) => {
+                            const clean = e.target.value.replace(/^0+(?=\d)/, '');
+                            handleItemChange(idx, 'quoted_rate', clean === '' ? 0 : Number(clean));
+                          }}
                           className="w-24 rounded-md border-2 border-primary/40 bg-background px-1.5 py-1.5 text-right font-extrabold text-primary focus:border-primary focus:outline-none disabled:opacity-75"
                           required
                         />
@@ -1053,9 +1148,13 @@ export function RfqForm({
                           min="0"
                           max="100"
                           step="0.01"
-                          value={item.tax_rate ?? 18}
+                          value={(item.tax_rate ?? 18) === 0 ? '' : (item.tax_rate ?? 18)}
+                          placeholder="0"
                           disabled={!isItemsEditable}
-                          onChange={(e) => handleItemChange(idx, 'tax_rate', Number(e.target.value))}
+                          onChange={(e) => {
+                            const clean = e.target.value.replace(/^0+(?=\d)/, '');
+                            handleItemChange(idx, 'tax_rate', clean === '' ? 0 : Number(clean));
+                          }}
                           className="w-16 rounded-md border border-border bg-background px-1.5 py-1.5 text-center font-bold text-foreground focus:border-primary focus:outline-none disabled:opacity-75"
                         />
                       </td>
@@ -1341,13 +1440,7 @@ export function RfqForm({
 
                             {/* Supplier Allocation Cells */}
                             {selectedSuppliers.map((sup, vIdx) => {
-                              const supId = sup.supplier_id || sup.supplier_name;
-                              const key = `${item.key}:${supId}`;
-                              const cell = allocations[key] || {
-                                awarded_qty: 0,
-                                awarded_rate: (item.quoted_rate ?? item.previous_rate) ?? 0,
-                                non_l1_justification: '',
-                              };
+                              const cell = getCellAllocation(item, sup);
                               const isAwarded = cell.awarded_qty > 0;
                               const isFirstSup = vIdx === 0;
 
@@ -1379,15 +1472,13 @@ export function RfqForm({
                                         step="any"
                                         min="0"
                                         max={item.quantity}
-                                        value={cell.awarded_qty || ''}
+                                        value={cell.awarded_qty === 0 ? '' : cell.awarded_qty}
                                         placeholder="0"
                                         disabled={viewModeActive}
                                         onChange={(e) => {
-                                          const val = Math.max(0, Number(e.target.value || 0));
-                                          setAllocations((prev) => ({
-                                            ...prev,
-                                            [key]: { ...cell, awarded_qty: val },
-                                          }));
+                                          const clean = e.target.value.replace(/^0+(?=\d)/, '');
+                                          const val = clean === '' ? 0 : Math.max(0, Number(clean));
+                                          updateCellAllocation(item, sup, { awarded_qty: val });
                                         }}
                                         className={`w-full rounded-lg border p-1.5 text-right font-extrabold tabular-nums outline-none text-xs ${
                                           isAwarded
@@ -1397,28 +1488,25 @@ export function RfqForm({
                                       />
                                     </div>
 
-                                    {isAwarded && (
-                                      <div>
-                                        <label className="text-[9px] font-bold text-muted-foreground block mb-0.5">
-                                          Neg. Rate (₹)
-                                        </label>
-                                        <input
-                                          type="number"
-                                          step="any"
-                                          min="0"
-                                          value={cell.awarded_rate}
-                                          disabled={viewModeActive}
-                                          onChange={(e) => {
-                                            const val = Number(e.target.value || 0);
-                                            setAllocations((prev) => ({
-                                              ...prev,
-                                              [key]: { ...cell, awarded_rate: val },
-                                            }));
-                                          }}
-                                          className="w-full rounded border border-border bg-background p-1 text-right font-bold text-foreground text-xs"
-                                        />
-                                      </div>
-                                    )}
+                                    <div>
+                                      <label className="text-[9px] font-bold text-muted-foreground block mb-0.5">
+                                        Neg. Rate (₹)
+                                      </label>
+                                      <input
+                                        type="number"
+                                        step="any"
+                                        min="0"
+                                        value={cell.awarded_rate === 0 ? '' : cell.awarded_rate}
+                                        placeholder={String(cell.awarded_rate || 350)}
+                                        disabled={viewModeActive}
+                                        onChange={(e) => {
+                                          const clean = e.target.value.replace(/^0+(?=\d)/, '');
+                                          const val = clean === '' ? 0 : Number(clean);
+                                          updateCellAllocation(item, sup, { awarded_rate: val });
+                                        }}
+                                        className="w-full rounded border border-border bg-background p-1 text-right font-bold text-foreground text-xs"
+                                      />
+                                    </div>
                                   </div>
                                 </td>
                               );
@@ -1498,20 +1586,30 @@ export function RfqForm({
 
                     <div className="space-y-3">
                       {selectedSuppliers.map((sup, vIdx) => {
-                        const supId = sup.supplier_id || sup.supplier_name;
-                        const key = `${activeFocusItem.key}:${supId}`;
-                        const cell = allocations[key] || {
-                          awarded_qty: 0,
-                          awarded_rate: (activeFocusItem.quoted_rate ?? activeFocusItem.previous_rate) ?? 0,
-                          non_l1_justification: '',
-                        };
+                        const cell = getCellAllocation(activeFocusItem, sup);
                         const color = VENDOR_COLOR_PALETTE[vIdx % VENDOR_COLOR_PALETTE.length];
 
                         return (
                           <div key={sup.key} className={`p-3 rounded-xl border ${cell.awarded_qty > 0 ? color.bg : 'border-border bg-background'} space-y-2`}>
-                            <div className="flex items-center justify-between text-xs">
+                            <div className="flex items-center justify-between text-xs flex-wrap gap-2">
                               <span className={`font-extrabold ${color.text}`}>{sup.supplier_name || `Supplier #${vIdx + 1}`}</span>
-                              <span className="font-bold text-foreground">Rate: {formatCurrency(cell.awarded_rate)}</span>
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[10px] font-bold text-muted-foreground">Neg. Rate (₹):</span>
+                                <input
+                                  type="number"
+                                  step="any"
+                                  min="0"
+                                  value={cell.awarded_rate === 0 ? '' : cell.awarded_rate}
+                                  placeholder={String(cell.awarded_rate || 350)}
+                                  disabled={viewModeActive}
+                                  onChange={(e) => {
+                                    const clean = e.target.value.replace(/^0+(?=\d)/, '');
+                                    const val = clean === '' ? 0 : Number(clean);
+                                    updateCellAllocation(activeFocusItem, sup, { awarded_rate: val });
+                                  }}
+                                  className="w-24 rounded border border-border bg-background p-1 text-right font-bold text-foreground text-xs"
+                                />
+                              </div>
                             </div>
 
                             <div className="flex items-center gap-3">
@@ -1523,10 +1621,7 @@ export function RfqForm({
                                 disabled={viewModeActive}
                                 onChange={(e) => {
                                   const val = Number(e.target.value);
-                                  setAllocations((prev) => ({
-                                    ...prev,
-                                    [key]: { ...cell, awarded_qty: val },
-                                  }));
+                                  updateCellAllocation(activeFocusItem, sup, { awarded_qty: val });
                                 }}
                                 className="flex-1 h-2 accent-primary cursor-pointer"
                               />
@@ -1535,14 +1630,13 @@ export function RfqForm({
                                   type="number"
                                   min="0"
                                   max={activeFocusItem.quantity}
-                                  value={cell.awarded_qty || ''}
+                                  value={cell.awarded_qty === 0 ? '' : cell.awarded_qty}
+                                  placeholder="0"
                                   disabled={viewModeActive}
                                   onChange={(e) => {
-                                    const val = Math.max(0, Number(e.target.value || 0));
-                                    setAllocations((prev) => ({
-                                      ...prev,
-                                      [key]: { ...cell, awarded_qty: val },
-                                    }));
+                                    const clean = e.target.value.replace(/^0+(?=\d)/, '');
+                                    const val = clean === '' ? 0 : Math.max(0, Number(clean));
+                                    updateCellAllocation(activeFocusItem, sup, { awarded_qty: val });
                                   }}
                                   className="w-20 rounded border border-border bg-background p-1 text-right font-bold text-xs"
                                 />
@@ -1776,14 +1870,47 @@ export function RfqForm({
               </>
             )}
 
-            {/* Generate POs — shown when status is Awarded (both types) */}
+            {/* Actions when status is Awarded (both types) */}
             {st === 'Awarded' && (
+              <div className="flex items-center gap-2">
+                {!isReadOnly && (
+                  <button
+                    type="button"
+                    onClick={() => handleAction('Draft')}
+                    className="inline-flex items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-xs font-bold text-amber-700 dark:text-amber-300 hover:bg-amber-500/20 transition-all cursor-pointer font-heading"
+                    title="Revert RFQ status back to Draft state to modify awards or details"
+                  >
+                    <RotateCcw className="h-4 w-4" /> Back to Draft
+                  </button>
+                )}
+                {!isReadOnly && (
+                  <button
+                    type="button"
+                    onClick={() => handleAction('Cancelled')}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs font-bold text-red-600 hover:bg-red-500/20 transition-colors cursor-pointer"
+                  >
+                    <X className="h-3.5 w-3.5" /> Cancel RFQ
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => handleAction('PO Issued')}
+                  className="inline-flex items-center gap-2 rounded-lg bg-purple-600 px-5 py-2 text-xs font-bold text-white hover:bg-purple-700 shadow-md transition-all cursor-pointer font-heading"
+                >
+                  <ArrowRight className="h-4 w-4" /> Generate POs
+                </button>
+              </div>
+            )}
+
+            {/* Actions when status is Cancelled */}
+            {st === 'Cancelled' && !isReadOnly && (
               <button
                 type="button"
-                onClick={() => handleAction('PO Issued')}
-                className="inline-flex items-center gap-2 rounded-lg bg-purple-600 px-5 py-2 text-xs font-bold text-white hover:bg-purple-700 shadow-md transition-all cursor-pointer font-heading"
+                onClick={() => handleAction('Draft')}
+                className="inline-flex items-center gap-2 rounded-lg border border-sky-500/40 bg-sky-500/10 px-4 py-2 text-xs font-bold text-sky-700 dark:text-sky-300 hover:bg-sky-500/20 transition-all cursor-pointer font-heading"
+                title="Reset cancelled RFQ back to Draft state"
               >
-                <ArrowRight className="h-4 w-4" /> Generate POs
+                <RotateCcw className="h-4 w-4" /> Reset Cancelled RFQ to Draft
               </button>
             )}
           </div>

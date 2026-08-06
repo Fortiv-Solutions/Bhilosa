@@ -236,7 +236,6 @@ export function BillsWorkspace({
   };
 
   const filteredBills = displayBills.filter((b) => {
-    if (selectedTab === 'auto_draft') return b.status === 'auto_draft_grn';
     if (selectedTab === 'approved') return b.status === 'approved';
     return true;
   });
@@ -313,6 +312,7 @@ export function BillsWorkspace({
           {/* Operational Reminders Banner */}
           <BillsStatsBar
             bills={displayBills}
+            readyGrnCount={billableGrns.length}
             onSelectTab={(tab) => setSelectedTab(tab)}
           />
 

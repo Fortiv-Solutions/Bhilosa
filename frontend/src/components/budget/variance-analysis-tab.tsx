@@ -679,6 +679,11 @@ export default function VarianceAnalysisTab({ permissions }: { permissions: Budg
                                 title={item.subActivity}
                               >
                                 {item.subActivity}
+                                {item.isUnbudgeted && (
+                                  <span className="ml-1.5 inline-block rounded-sm bg-amber-100 px-1 py-0.5 text-[9px] font-bold uppercase text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
+                                    Unbudgeted
+                                  </span>
+                                )}
                               </td>
                               {showFullAuditCols && (
                                 <td className="border-r border-border px-3 py-2 text-center">

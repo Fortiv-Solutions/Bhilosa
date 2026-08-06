@@ -248,55 +248,60 @@ function BudgetPageBody({
         />
       </section>
 
-      {/* TAB NAVIGATION */}
-      <nav
-        className="flex gap-1.5 overflow-x-auto border-b border-border pb-2"
-        aria-label="Budget sections"
-      >
-        {TABS.map((tab) => {
-          const Icon = tab.icon;
-          const isActive = activeTab === tab.key;
-          return (
-            <button
-              key={tab.key}
-              type="button"
-              onClick={() => setActiveTab(tab.key)}
-              aria-current={isActive ? 'page' : undefined}
-              className={`inline-flex h-9 items-center gap-2 whitespace-nowrap rounded-lg px-3.5 text-xs font-bold uppercase transition-all ${
-                isActive
-                  ? 'bg-primary text-primary-foreground shadow-sm'
-                  : 'border border-border bg-card text-muted-foreground hover:bg-muted hover:text-foreground'
-              }`}
-            >
-              <Icon className="h-3.5 w-3.5" aria-hidden="true" />
-              {tab.label}
-            </button>
-          );
-        })}
-      </nav>
+      {/* SEGMENTED TAB NAVIGATION BAR */}
+      <div className="rounded-xl border border-border bg-card p-1.5 shadow-2xs">
+        <nav
+          className="flex items-center gap-1 overflow-x-auto scrollbar-none"
+          aria-label="Budget sections"
+        >
+          {TABS.map((tab) => {
+            const Icon = tab.icon;
+            const isActive = activeTab === tab.key;
+            return (
+              <button
+                key={tab.key}
+                type="button"
+                onClick={() => setActiveTab(tab.key)}
+                aria-current={isActive ? 'page' : undefined}
+                className={`relative inline-flex h-9 items-center gap-2 shrink-0 rounded-lg px-3.5 text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${
+                  isActive
+                    ? 'bg-primary text-primary-foreground shadow-sm ring-1 ring-primary/20'
+                    : 'text-muted-foreground hover:bg-muted/80 hover:text-foreground'
+                }`}
+              >
+                <Icon className={`h-3.5 w-3.5 ${isActive ? 'text-primary-foreground' : 'text-muted-foreground'}`} aria-hidden="true" />
+                <span>{tab.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+      </div>
 
-      {activeTab === 'dashboard' && <BudgetOverviewDashboard permissions={permissions} />}
+      {/* ACTIVE TAB CONTENT VIEW */}
+      <main className="space-y-6 pt-1">
+        {activeTab === 'dashboard' && <BudgetOverviewDashboard permissions={permissions} />}
 
-      {activeTab === 'master-sheet' && <MasterSheetTab permissions={permissions} />}
+        {activeTab === 'master-sheet' && <MasterSheetTab permissions={permissions} />}
 
-      {activeTab === 'movements' && <BudgetMovementsTab permissions={permissions} />}
+        {activeTab === 'movements' && <BudgetMovementsTab permissions={permissions} />}
 
-      {activeTab === 'variance' && <VarianceAnalysisTab permissions={permissions} />}
+        {activeTab === 'variance' && <VarianceAnalysisTab permissions={permissions} />}
 
-      {activeTab === 'ledger' && <BillWiseLedgerTab permissions={permissions} />}
+        {activeTab === 'ledger' && <BillWiseLedgerTab permissions={permissions} />}
 
-      {activeTab === 'cash-flow' && (
-        <section className="rounded-xl border border-border bg-card p-4 shadow-sm">
-          <SectionTitle icon={CircleDollarSign} title="Monthly Cash Outflow & S-Curve" />
-          <div className="mt-4">
-            <BudgetCashFlowChart permissions={permissions} />
-          </div>
-        </section>
-      )}
+        {activeTab === 'cash-flow' && (
+          <section className="rounded-xl border border-border bg-card p-4 shadow-sm">
+            <SectionTitle icon={CircleDollarSign} title="Monthly Cash Outflow & S-Curve" />
+            <div className="mt-4">
+              <BudgetCashFlowChart permissions={permissions} />
+            </div>
+          </section>
+        )}
 
-      {activeTab === 'settings' && (
-        <BudgetSettingsTab permissions={permissions} isPortfolio={isPortfolio} />
-      )}
+        {activeTab === 'settings' && (
+          <BudgetSettingsTab permissions={permissions} isPortfolio={isPortfolio} />
+        )}
+      </main>
     </div>
   );
 }

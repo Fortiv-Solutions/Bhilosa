@@ -385,16 +385,30 @@ export function GrnForm({
 
   useEffect(() => {
     let active = true;
-    const selectedProj = projectOptions.find((p) => p.name === form?.project_name);
-    fetchPurchaseOrderOptions(selectedProj?.id, form?.supplier_name).then((list) => {
+    const selectedProj = projectOptions.find(
+      (p) => p.name?.toLowerCase().trim() === form?.project_name?.toLowerCase().trim()
+    );
+
+    const supplierFilter = form?.supplier_name?.trim() ? form.supplier_name.trim() : undefined;
+
+    fetchPurchaseOrderOptions(selectedProj?.id, supplierFilter).then((list) => {
       if (active) {
         setPoOptions(list);
+
+        // Clear invalid primary PO reference if not present in new filtered PO list
+        if (form?.from_pos && form.from_pos !== 'Not Exist') {
+          const exists = list.some((p) => p.po_number === form.from_pos);
+          if (!exists) {
+            setForm((prev) => ({ ...prev, from_pos: '' }));
+          }
+        }
       }
     });
+
     return () => {
       active = false;
     };
-  }, [form?.project_name, form?.supplier_name, form?.po_exist, projectOptions]);
+  }, [form?.project_name, form?.supplier_name, projectOptions]);
 
   useEffect(() => {
     const total = (form.purchase_entries || []).reduce((sum, entry) => {
@@ -1006,9 +1020,11 @@ export function GrnForm({
           </h3>
 
           <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2 lg:grid-cols-4">
-            {/* 1. Select Purchase Order */}
+            {/* 1. Primary Purchase Order Reference (Optional) */}
             <div className="sm:col-span-2 lg:col-span-1">
-              <label className="block text-[11px] font-bold uppercase text-primary mb-1">Select Purchase Order*</label>
+              <label className="block text-[11px] font-bold uppercase text-muted-foreground mb-1">
+                Primary Purchase Order Reference (Optional)
+              </label>
               <select
                 value={form.from_pos === 'Not Exist' ? '' : form.from_pos}
                 onChange={async (e) => {
@@ -1035,9 +1051,9 @@ export function GrnForm({
                     }
                   }
                 }}
-                className="w-full rounded-lg border-2 border-primary/60 bg-background px-3 py-2 font-mono font-extrabold text-primary text-xs cursor-pointer focus:ring-2 focus:ring-primary shadow-2xs"
+                className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono font-bold text-foreground text-xs cursor-pointer focus:ring-2 focus:ring-primary shadow-2xs"
               >
-                <option value="">-- Select Purchase Order --</option>
+                <option value="">-- None / Multi-PO Consolidated Entry --</option>
                 {poOptions.map((po) => {
                   const desc = [po.material_details].filter(Boolean).join(' - ');
                   return (
@@ -1050,33 +1066,39 @@ export function GrnForm({
                   <option value={form.from_pos}>{form.from_pos}</option>
                 )}
               </select>
+              <p className="text-[10px] text-muted-foreground mt-1 font-medium">
+                Optional single PO reference. Leave blank to pick items from multiple Approved POs below.
+              </p>
             </div>
 
-            {/* 2. Select Items From PO */}
+            {/* 2. Select Items From PO* */}
             <div className="sm:col-span-2 lg:col-span-2">
-              <label className="block text-[11px] font-bold uppercase text-primary mb-1">Select Items From PO*</label>
+              <label className="block text-[11px] font-bold uppercase text-primary mb-1">
+                Select Items From PO*
+              </label>
               <button
                 type="button"
                 onClick={async () => {
-                  if (currentPoLinesWithBalance.length > 0) {
-                    setShowPoItemPicker(true);
-                  } else if (form.from_pos) {
+                  if (form.from_pos && form.from_pos !== 'Not Exist') {
                     const poObj = poOptions.find((p) => p.po_number === form.from_pos);
                     if (poObj?.id) {
                       const lines = await fetchPoLinesWithBalances(poObj.id);
                       setCurrentPoLinesWithBalance(lines);
-                      setShowPoItemPicker(true);
                     }
                   }
+                  setShowPoItemPicker(true);
                 }}
-                disabled={!form.from_pos || form.from_pos === 'Not Exist'}
-                className="w-full inline-flex items-center justify-between rounded-lg border-2 border-primary bg-primary/10 px-3 py-2 text-xs font-bold text-primary hover:bg-primary/20 transition-all cursor-pointer shadow-2xs disabled:opacity-50 disabled:cursor-not-allowed"
+                className="w-full inline-flex items-center justify-between rounded-lg border-2 border-primary bg-primary/10 px-3 py-2 text-xs font-extrabold text-primary hover:bg-primary/20 transition-all cursor-pointer shadow-2xs"
               >
                 <span className="flex items-center gap-2">
-                  <Layers className="h-4 w-4" />
-                  <span>{form.from_pos ? `Select / Filter Items from ${form.from_pos}` : 'Select a PO first'}</span>
+                  <Layers className="h-4 w-4 text-primary" />
+                  <span>
+                    {form.from_pos && form.from_pos !== 'Not Exist'
+                      ? `Select / Filter Items from ${form.from_pos}`
+                      : 'Select Line Items from Approved POs'}
+                  </span>
                 </span>
-                <span className="rounded bg-primary px-2 py-0.5 text-[10px] text-primary-foreground font-extrabold">
+                <span className="rounded bg-primary px-2 py-0.5 text-[10px] text-primary-foreground font-extrabold shadow-xs">
                   {form.purchase_entries.length} Item(s) Selected ➔
                 </span>
               </button>
@@ -1531,20 +1553,18 @@ export function GrnForm({
               <button
                 type="button"
                 onClick={async () => {
-                  if (currentPoLinesWithBalance.length > 0) {
-                    setShowPoItemPicker(true);
-                  } else if (form.from_pos) {
+                  if (form.from_pos && form.from_pos !== 'Not Exist') {
                     const poObj = poOptions.find((p) => p.po_number === form.from_pos);
                     if (poObj?.id) {
                       const lines = await fetchPoLinesWithBalances(poObj.id);
                       setCurrentPoLinesWithBalance(lines);
-                      setShowPoItemPicker(true);
                     }
                   }
+                  setShowPoItemPicker(true);
                 }}
                 className="inline-flex items-center gap-1.5 rounded-lg border border-primary bg-primary/10 px-3.5 py-1.5 text-xs font-bold text-primary hover:bg-primary/20 transition-all cursor-pointer shadow-xs"
               >
-                <Layers className="h-4 w-4" /> Select Items from PO ({form.purchase_entries.length})
+                <Layers className="h-4 w-4" /> Select Line Items from Purchase Orders ({form.purchase_entries.length})
               </button>
 
               <button
@@ -1747,17 +1767,15 @@ export function GrnForm({
                           <button
                             type="button"
                             onClick={() => {
-                              if (currentPoLinesWithBalance.length > 0) {
-                                setShowPoItemPicker(true);
-                              } else if (form.from_pos) {
+                              if (form.from_pos && form.from_pos !== 'Not Exist') {
                                 const poObj = poOptions.find((p) => p.po_number === form.from_pos);
                                 if (poObj?.id) {
                                   fetchPoLinesWithBalances(poObj.id).then((lines) => {
                                     setCurrentPoLinesWithBalance(lines);
-                                    setShowPoItemPicker(true);
                                   });
                                 }
                               }
+                              setShowPoItemPicker(true);
                             }}
                             className="inline-flex items-center gap-1 rounded border border-border bg-background px-2 py-1 text-[10px] font-bold text-primary hover:bg-primary/10 transition-all cursor-pointer"
                             title="Audit Receipt History"
@@ -2328,22 +2346,28 @@ export function GrnForm({
         </div>
       </form>
 
-      {/* Slide-over PO Item Picker & Multi-GRN Audit History Modal */}
+      {/* Slide-over Multi-PO Item Picker & Multi-GRN Audit History Modal */}
       {showPoItemPicker && (
         <GrnPoItemPickerModal
           poNumber={form.from_pos}
           poLines={currentPoLinesWithBalance}
+          availablePoOptions={poOptions}
+          initialSelectedPoIds={
+            form.from_pos && form.from_pos !== 'Not Exist'
+              ? [poOptions.find((p) => p.po_number === form.from_pos)?.id].filter(Boolean) as string[]
+              : poOptions.map((p) => p.id)
+          }
           alreadySelectedPoLineIds={form.purchase_entries.map((e) => e.purchase_order_line_id || '').filter(Boolean)}
           onConfirmSelection={(selectedItems) => {
             const mapped: GrnPurchaseEntry[] = selectedItems.map(({ line, receivingQty }) => ({
               item_id: line.item_id || null,
               purchase_order_line_id: line.po_line_id,
-              po_no: form.from_pos,
+              po_no: line.po_number || form.from_pos || '',
               item_group: line.item_group || '',
               item_description: line.item_description || '',
               item_code: line.item_code || '',
               item_brand: line.item_brand || '',
-              location: form.godown_name || form.project_name || '',
+              location: line.location || form.godown_name || form.project_name || '',
               unit: line.unit || 'nos',
               purchase_category: line.purchase_category || line.item_group || '',
               open: true,
