@@ -34,6 +34,7 @@ import {
   type MeasurementSheetRow,
   type WorkOrderLineBillingPosition,
 } from '@/lib/measurement-sheets';
+import { getBillingPosition, type BillingPosition } from '@/lib/wo-billable-items';
 import { getBillableWorkOrders } from '@/lib/work-orders';
 import {
   getServiceBillDefaults,
@@ -67,6 +68,8 @@ type BillableWorkOrder = {
 type DraftLine = {
   key: string;
   workOrderLineId?: string;
+  /** The unit of claim on the Work Order's schedule of values. */
+  billableItemId?: string;
   description: string;
   unit: string;
   /**
@@ -134,6 +137,8 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
   const [workOrders, setWorkOrders] = useState<BillableWorkOrder[]>([]);
   const [vendors, setVendors] = useState<BillableVendorOption[]>([]);
   const [positions, setPositions] = useState<WorkOrderLineBillingPosition[]>([]);
+  /** Items the contract currently blocks, shown so the reason is visible. */
+  const [blockedItems, setBlockedItems] = useState<BillingPosition[]>([]);
   const [measurementSheets, setMeasurementSheets] = useState<MeasurementSheetRow[]>([]);
   const [measurementSheetId, setMeasurementSheetId] = useState('');
   const [measurementRequired, setMeasurementRequired] = useState(true);
@@ -182,6 +187,7 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
     setTdsPercent(0);
     setIsInterstate(false);
     setPositions([]);
+    setBlockedItems([]);
     setMeasurementSheets([]);
     setMeasurementSheetId('');
     setError(null);
@@ -214,6 +220,7 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
   useEffect(() => {
     if (!workOrderId) {
       setPositions([]);
+      setBlockedItems([]);
       setMeasurementSheets([]);
       setLines([newLine()]);
       return;
@@ -227,10 +234,13 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
       listVerifiedMeasurementSheets(workOrderId).catch(() => [] as MeasurementSheetRow[]),
       // The commercial clauses are decided on the contract, not here.
       getServiceBillDefaults(workOrderId).catch(() => null),
-    ]).then(([positionRows, sheetRows, billDefaults]) => {
+      // The schedule of values, when the Work Order has one.
+      getBillingPosition(workOrderId).catch(() => [] as BillingPosition[]),
+    ]).then(([positionRows, sheetRows, billDefaults, billableRows]) => {
       if (cancelled) return;
       setPositions(positionRows);
       setMeasurementSheets(sheetRows);
+      setBlockedItems(billableRows.filter((row) => row.blocking_reason));
 
       if (billDefaults) {
         setDefaults(billDefaults);
@@ -242,6 +252,38 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
       // Default to the only verified sheet when there is exactly one, so the
       // common case needs no extra click.
       setMeasurementSheetId(sheetRows.length === 1 ? sheetRows[0].id : '');
+
+      // Where a schedule of values exists, the bill draws from the items the
+      // contract currently permits, with quantity and rate pre-computed. This
+      // is what replaces the blank grid: the source certificates hand-derived
+      // their stage rates (20% x 31,900 = 6,380) and typed the result.
+      const eligible = billableRows.filter(
+        (row) => !row.blocking_reason && row.claimable_quantity > 0,
+      );
+      const taxRate =
+        billDefaults && billDefaults.gstTreatment === 'exclusive' ? billDefaults.gstRate : 0;
+
+      if (eligible.length > 0) {
+        setLines(
+          eligible.map((row) => ({
+            key: row.billable_item_id,
+            billableItemId: row.billable_item_id,
+            workOrderLineId: row.work_order_line_id || undefined,
+            description: row.item_label,
+            unit: row.unit || '',
+            quantity: row.claimable_quantity,
+            previousQuantity: row.certified_quantity,
+            contractedQuantity: row.contracted_quantity ?? 0,
+            flatsCount: 1,
+            rate: row.rate ?? 0,
+            contractedRate: row.rate ?? 0,
+            rateVarianceReason: '',
+            taxRate,
+          })),
+        );
+        return;
+      }
+
       setLines(
         positionRows.length > 0
           ? positionRows.map((position) => ({
@@ -368,6 +410,7 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
               cumulativeQuantity: cumulativeAfter(l),
               previousQuantity: l.previousQuantity,
               workOrderLineId: l.workOrderLineId,
+              billableItemId: l.billableItemId,
             }))
         : [];
 
@@ -615,6 +658,33 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
                   Enter the quantity completed <strong>on this bill only</strong>. The cumulative
                   figure is derived and checked against the contracted quantity.
                 </p>
+
+                {/* Blocked scope stays visible with its reason. A gate whose
+                    reasoning is hidden is a gate people work around. */}
+                {blockedItems.length > 0 && (
+                  <div className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2.5">
+                    <p className="text-[11px] font-bold text-amber-900 dark:text-amber-300">
+                      {blockedItems.length} item{blockedItems.length > 1 ? 's' : ''} cannot be
+                      billed yet
+                    </p>
+                    <ul className="mt-1 space-y-0.5">
+                      {blockedItems.slice(0, 5).map((item) => (
+                        <li
+                          key={item.billable_item_id}
+                          className="text-[11px] text-amber-900/80 dark:text-amber-300/80"
+                        >
+                          <span className="font-medium">{item.item_label}</span> —{' '}
+                          {item.blocking_reason}
+                        </li>
+                      ))}
+                      {blockedItems.length > 5 && (
+                        <li className="text-[11px] text-amber-900/60 dark:text-amber-300/60">
+                          and {blockedItems.length - 5} more…
+                        </li>
+                      )}
+                    </ul>
+                  </div>
+                )}
 
                 {defaults?.valuation_structure === 'floor_lead' && (
                   <div className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2.5 flex items-center justify-between">

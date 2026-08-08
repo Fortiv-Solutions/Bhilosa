@@ -3,7 +3,15 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { Briefcase, CalendarDays, ClipboardList, IndianRupee, Plus, AlertTriangle } from 'lucide-react';
+import {
+  Briefcase,
+  CalendarDays,
+  ClipboardList,
+  IndianRupee,
+  Plus,
+  AlertTriangle,
+  ArrowRight,
+} from 'lucide-react';
 import { getWorkOrders, setWorkOrderStatus } from '@/lib/work-orders';
 import { isLiveSupabase } from '@/lib/erp/supabase-modules';
 import { CreateWorkOrderModal } from '@/components/work-orders/create-work-order-modal';
@@ -192,13 +200,23 @@ export default function WorkOrdersPage() {
                     </div>
                   </td>
                   <td className="py-3">
-                    <div className="flex justify-end">
+                    <div className="flex items-center justify-end gap-1.5">
                       <StatusActionBar<WorkOrderStatus>
                         size="sm"
                         busy={actioningId === wo.id}
                         actions={buildRowActions(wo.woStatus, permissions.canApproveWorkOrder)}
                         onAction={(next, reason) => runTransition(wo.id, next, reason)}
                       />
+                      {/* An explicit way in. The WO number is also a link, but a
+                          row whose status affords no transition was otherwise
+                          left with an empty Action cell and no visible way to
+                          reach progress, billing, measurement or variations. */}
+                      <Link
+                        href={`/work-orders/${wo.id}`}
+                        className="inline-flex items-center gap-1 whitespace-nowrap rounded-md border border-border px-2 py-1 text-[11px] font-semibold text-primary hover:bg-muted"
+                      >
+                        View <ArrowRight className="h-3 w-3" />
+                      </Link>
                     </div>
                   </td>
                 </tr>

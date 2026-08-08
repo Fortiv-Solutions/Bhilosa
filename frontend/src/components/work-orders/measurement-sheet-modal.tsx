@@ -63,6 +63,7 @@ export function MeasurementSheetModal({
   workOrderId,
   workOrderNumber,
   activityId,
+  billableItem,
 }: {
   isOpen: boolean;
   onClose: () => void;
@@ -71,6 +72,12 @@ export function MeasurementSheetModal({
   workOrderId: string;
   workOrderNumber?: string | null;
   activityId?: string | null;
+  /**
+   * Opened from a row of the schedule of values. Every item on the sheet is
+   * then stamped with that unit of claim, which is the only way a stage-billed
+   * line can tell which of its seven stages was measured.
+   */
+  billableItem?: { id: string; label: string; workOrderLineId: string | null } | null;
 }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -95,13 +102,20 @@ export function MeasurementSheetModal({
     setError(null);
   }, []);
 
+  const seededLineId = billableItem?.workOrderLineId ?? null;
+
   useEffect(() => {
     if (!isOpen || !workOrderId) return;
     reset();
+    // Opened from the schedule of values: start on the line that claim draws on
+    // rather than making the engineer find it again.
+    if (seededLineId) {
+      setItems([{ ...newItem(), workOrderLineId: seededLineId }]);
+    }
     getWorkOrderLineBillingPosition(workOrderId)
       .then(setPositions)
       .catch(() => setPositions([]));
-  }, [isOpen, workOrderId, reset]);
+  }, [isOpen, workOrderId, reset, seededLineId]);
 
   const total = useMemo(() => items.reduce((sum, item) => sum + itemQuantity(item), 0), [items]);
 
@@ -144,7 +158,8 @@ export function MeasurementSheetModal({
       width: item.width,
       heightDepth: item.heightDepth,
       deduction: item.deduction,
-      workOrderLineId: item.workOrderLineId || undefined,
+      workOrderLineId: item.workOrderLineId || billableItem?.workOrderLineId || undefined,
+      billableItemId: billableItem?.id,
       remarks: item.remarks || undefined,
     }));
 
@@ -182,6 +197,11 @@ export function MeasurementSheetModal({
               <h2 className="text-lg font-bold">Record Measurement Sheet</h2>
               {workOrderNumber && (
                 <p className="text-xs text-muted-foreground">Work Order {workOrderNumber}</p>
+              )}
+              {billableItem && (
+                <p className="mt-1 inline-block rounded bg-primary/10 px-2 py-0.5 text-[11px] font-semibold text-primary">
+                  Measuring: {billableItem.label}
+                </p>
               )}
             </div>
           </div>
