@@ -92,6 +92,8 @@ type DraftLine = {
   contractedRate: number;
   rateVarianceReason: string;
   taxRate: number;
+  selectedStage?: string;
+  floorLevel?: number;
 };
 
 function newLine(): DraftLine {
@@ -107,6 +109,8 @@ function newLine(): DraftLine {
     contractedRate: 0,
     rateVarianceReason: '',
     taxRate: 0,
+    selectedStage: '',
+    floorLevel: 0,
   };
 }
 
@@ -155,6 +159,9 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
   const [debitReason, setDebitReason] = useState('');
   const [tdsPercent, setTdsPercent] = useState(0);
   const [isInterstate, setIsInterstate] = useState(false);
+  const [poDeductionAmount, setPoDeductionAmount] = useState(0);
+  const [poDeductionNotes, setPoDeductionNotes] = useState('');
+  const [floorLevel, setFloorLevel] = useState(0);
 
   const resetForm = useCallback(() => {
     setBillMode('measured');
@@ -609,6 +616,36 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
                   figure is derived and checked against the contracted quantity.
                 </p>
 
+                {defaults?.valuation_structure === 'floor_lead' && (
+                  <div className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2.5 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-amber-900 dark:text-amber-300">Floor Lead Enabled (+{defaults.lead_percent_per_floor || 7}% / floor):</span>
+                      <select
+                        value={floorLevel}
+                        onChange={(e) => {
+                          const level = Number(e.target.value) || 0;
+                          setFloorLevel(level);
+                          const leadPct = defaults.lead_percent_per_floor || 7;
+                          setLines(prev => prev.map(l => {
+                            const baseRate = l.contractedRate || l.rate;
+                            const effectiveRate = baseRate * (1 + (level * leadPct / 100));
+                            return { ...l, floorLevel: level, rate: Number(effectiveRate.toFixed(2)) };
+                          }));
+                        }}
+                        className="rounded border border-amber-500/40 bg-background px-2 py-1 text-xs font-bold text-amber-900 dark:text-amber-100"
+                      >
+                        <option value={0}>Ground Floor (Base Rate)</option>
+                        <option value={1}>1st Floor (+{defaults.lead_percent_per_floor || 7}%)</option>
+                        <option value={2}>2nd Floor (+{(defaults.lead_percent_per_floor || 7) * 2}%)</option>
+                        <option value={3}>3rd Floor (+{(defaults.lead_percent_per_floor || 7) * 3}%)</option>
+                        <option value={4}>4th Floor (+{(defaults.lead_percent_per_floor || 7) * 4}%)</option>
+                        <option value={5}>5th Floor (+{(defaults.lead_percent_per_floor || 7) * 5}%)</option>
+                      </select>
+                    </div>
+                    <span className="text-[10px] text-amber-700 dark:text-amber-300">Auto-adjusts rates for vertical material carrying</span>
+                  </div>
+                )}
+
                 <div className="overflow-x-auto">
                   <table className="w-full min-w-[820px] text-left text-[11px]">
                     <thead className="border-b border-border text-muted-foreground">
@@ -640,6 +677,33 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
                                 onChange={(e) => updateLine(line.key, { description: e.target.value })}
                                 placeholder="Work description"
                               />
+                              {(defaults?.valuation_structure === 'stage_percentage' || (defaults?.stages && defaults.stages.length > 0)) && (
+                                <select
+                                  value={line.selectedStage || ''}
+                                  onChange={(e) => {
+                                    const stName = e.target.value;
+                                    const stObj = defaults?.stages?.find((s: any) => s.name === stName);
+                                    if (stObj && line.contractedRate > 0) {
+                                      const stageRate = line.contractedRate * (stObj.percent / 100);
+                                      updateLine(line.key, {
+                                        selectedStage: stName,
+                                        rate: Number(stageRate.toFixed(2)),
+                                        description: `${line.description.split(' [Stage:')[0]} [Stage: ${stName} (${stObj.percent}%)]`,
+                                      });
+                                    } else {
+                                      updateLine(line.key, { selectedStage: stName });
+                                    }
+                                  }}
+                                  className="mt-1 w-full rounded border border-primary/40 bg-primary/5 px-1 py-0.5 text-[10px] font-semibold text-primary"
+                                >
+                                  <option value="">-- Select Stage --</option>
+                                  {(defaults?.stages || []).map((s: any) => (
+                                    <option key={s.name} value={s.name}>
+                                      {s.name} ({s.percent}%)
+                                    </option>
+                                  ))}
+                                </select>
+                              )}
                             </td>
                             <td className="py-1 pr-2">
                               <input
@@ -787,6 +851,42 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
                 </div>
               </div>
             )}
+
+            {/* Turnkey PO Material Supply Deductions */}
+            <div className="rounded-lg border border-border p-3 bg-muted/20 space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-bold text-foreground">PO Material Supply Deductions (Turnkey / Supply & Install)</label>
+                <span className="text-[10px] text-muted-foreground">Deducted from gross certificate for materials issued by developer</span>
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                <div className="col-span-1 space-y-1">
+                  <label className="text-[10px] font-semibold text-muted-foreground">PO Material Supply Value (₹)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={poDeductionAmount}
+                    onChange={(e) => {
+                      const val = Number(e.target.value) || 0;
+                      setPoDeductionAmount(val);
+                      setOtherDeductions(val);
+                    }}
+                    placeholder="0"
+                    className="w-full rounded border border-input bg-background px-2 py-1 text-xs font-bold text-red-600 font-mono"
+                  />
+                </div>
+                <div className="col-span-2 space-y-1">
+                  <label className="text-[10px] font-semibold text-muted-foreground">PO Ref / Material Issue Notes</label>
+                  <input
+                    type="text"
+                    value={poDeductionNotes}
+                    onChange={(e) => setPoDeductionNotes(e.target.value)}
+                    placeholder="e.g. PO-2026-042 Issued Paint & Pipes to Contractor"
+                    className="w-full rounded border border-input bg-background px-2 py-1 text-xs"
+                  />
+                </div>
+              </div>
+            </div>
 
             <div className="border-t border-border pt-4">
               <h3 className="mb-3 text-sm font-semibold">Deductions &amp; Settlement</h3>

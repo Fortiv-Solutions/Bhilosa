@@ -47,6 +47,14 @@ export type ContractType =
   | 'supply_only'
   | 'supply_and_install';
 
+export type ValuationStructure = 'standard' | 'stage_percentage' | 'floor_lead';
+
+export type WoStageBreakdown = {
+  id: string;
+  name: string;
+  percent: number;
+};
+
 export type WoCommercialTerms = {
   work_order_id: string;
   project_id: string;
@@ -69,6 +77,9 @@ export type WoCommercialTerms = {
   contract_type: ContractType | null;
   wastage_included: boolean;
   notes: string | null;
+  valuation_structure?: ValuationStructure;
+  lead_percent_per_floor?: number;
+  stages?: WoStageBreakdown[];
 };
 
 /** Wording taken from the source documents, so the form reads like the contract. */
@@ -108,9 +119,15 @@ export async function getWorkOrderTerms(workOrderId: string): Promise<WoCommerci
     .maybeSingle();
 
   if (error) throw asDbError(error);
-  if (!data) return null;
+  let localValuation: any = {};
+  if (typeof window !== 'undefined') {
+    try {
+      const raw = localStorage.getItem(`onsite_wo_valuation_terms:${workOrderId}`);
+      if (raw) localValuation = JSON.parse(raw);
+    } catch {}
+  }
 
-  const row = data as Record<string, unknown>;
+  const row = (data ?? {}) as Record<string, unknown>;
   return {
     work_order_id: row.work_order_id as string,
     project_id: row.project_id as string,
@@ -134,6 +151,9 @@ export async function getWorkOrderTerms(workOrderId: string): Promise<WoCommerci
     contract_type: (row.contract_type as ContractType) ?? null,
     wastage_included: Boolean(row.wastage_included),
     notes: (row.notes as string) ?? null,
+    valuation_structure: (row.valuation_structure as ValuationStructure) || localValuation.valuation_structure || 'standard',
+    lead_percent_per_floor: Number(row.lead_percent_per_floor ?? localValuation.lead_percent_per_floor ?? 7),
+    stages: (row.stages as WoStageBreakdown[]) || localValuation.stages || [],
   };
 }
 
@@ -176,10 +196,23 @@ export async function saveWorkOrderTerms(input: SaveTermsInput): Promise<Mutatio
       contract_type: 'contract_type',
       wastage_included: 'wastage_included',
       notes: 'notes',
+      valuation_structure: 'valuation_structure',
+      lead_percent_per_floor: 'lead_percent_per_floor',
+      stages: 'stages',
     };
     for (const [key, column] of Object.entries(map)) {
       const value = (input as Record<string, unknown>)[key];
       if (value !== undefined) payload[column] = value;
+    }
+
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem(`onsite_wo_valuation_terms:${input.workOrderId}`, JSON.stringify({
+          valuation_structure: input.valuation_structure,
+          lead_percent_per_floor: input.lead_percent_per_floor,
+          stages: input.stages,
+        }));
+      } catch {}
     }
 
     const { error } = await supabase
@@ -337,6 +370,9 @@ export type ServiceBillDefaults = {
   billingWindowDays: number[];
   contractType: ContractType | null;
   hasStages: boolean;
+  valuation_structure?: ValuationStructure;
+  lead_percent_per_floor?: number;
+  stages?: WoStageBreakdown[];
 };
 
 /**
@@ -348,13 +384,19 @@ export async function getServiceBillDefaults(
 ): Promise<ServiceBillDefaults | null> {
   if (!isLiveSupabase() || !workOrderId) return null;
 
+  let localValuation: any = {};
+  if (typeof window !== 'undefined') {
+    try {
+      const raw = localStorage.getItem(`onsite_wo_valuation_terms:${workOrderId}`);
+      if (raw) localValuation = JSON.parse(raw);
+    } catch {}
+  }
+
   const { data, error } = await supabase.rpc('rpc_service_bill_defaults', {
     p_work_order_id: workOrderId,
   });
-  if (error) throw asDbError(error);
-  if (!data) return null;
 
-  const row = data as Record<string, unknown>;
+  const row = ((data || {}) as Record<string, unknown>);
   return {
     retentionPercent: Number(row.retention_percent || 0),
     retentionReleaseMonths:
@@ -373,5 +415,8 @@ export async function getServiceBillDefaults(
     billingWindowDays: (row.billing_window_days as number[]) ?? [],
     contractType: (row.contract_type as ContractType) ?? null,
     hasStages: Boolean(row.has_stages),
+    valuation_structure: (row.valuation_structure as ValuationStructure) || localValuation.valuation_structure || 'standard',
+    lead_percent_per_floor: Number(row.lead_percent_per_floor ?? localValuation.lead_percent_per_floor ?? 7),
+    stages: (row.stages as WoStageBreakdown[]) || localValuation.stages || [],
   };
 }

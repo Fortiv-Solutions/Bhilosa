@@ -71,6 +71,17 @@ export function CreateWorkOrderModal({ isOpen, onClose, onSuccess }: CreateWorkO
   const [ceilingAmount, setCeilingAmount] = useState(0);
   const [termsBaseline, setTermsBaseline] = useState('');
   const [termsCategory, setTermsCategory] = useState('');
+  const [valuationStructure, setValuationStructure] = useState<'standard' | 'stage_percentage' | 'floor_lead'>('standard');
+  const [leadPercentPerFloor, setLeadPercentPerFloor] = useState(7);
+  const [stages, setStages] = useState<Array<{ id: string; name: string; percent: number }>>([
+    { id: '1', name: 'Inlet Fitting Work', percent: 20 },
+    { id: '2', name: 'Internal Drainage Line Work', percent: 10 },
+    { id: '3', name: 'Water Proofing Work', percent: 25 },
+    { id: '4', name: 'External Vertical Line Work', percent: 20 },
+    { id: '5', name: 'Terrace Looping Work', percent: 10 },
+    { id: '6', name: 'CP Fitting Work', percent: 7.5 },
+    { id: '7', name: 'Sanitary Fitting Work', percent: 7.5 },
+  ]);
   const [lines, setLines] = useState<DraftLine[]>([emptyLine()]);
   const [attachments, setAttachments] = useState<File[]>([]);
 
@@ -81,11 +92,8 @@ export function CreateWorkOrderModal({ isOpen, onClose, onSuccess }: CreateWorkO
     getSiteActivities(projectId).then(setActivities).catch(() => setActivities([]));
     listBudgetHeads(projectId).then(setBudgetHeads).catch(() => setBudgetHeads([]));
     listMasterBudgetLines(projectId).then(setMasterLines).catch(() => setMasterLines([]));
-    // Mirrors budget_config.wo_unbudgeted_enforcement, so the form asks for the
-    // head up front rather than letting the DB reject the issue action later.
     isBudgetHeadRequiredForIssue(projectId).then(setBudgetHeadRequired).catch(() => setBudgetHeadRequired(true));
     
-    // Fetch active vendors list from Supabase
     supabase.from('vendors')
       .select('id, legal_name, display_name, address, gst_number')
       .eq('is_active', true)
@@ -115,6 +123,13 @@ export function CreateWorkOrderModal({ isOpen, onClose, onSuccess }: CreateWorkO
     setWoType(tpl.default_wo_type);
     setTermsBaseline(tpl.terms_baseline || '');
     setTermsCategory(tpl.terms_category || '');
+
+    const cat = tpl.trade_category.toLowerCase();
+    if (cat.includes('plumb') || cat.includes('sanit')) {
+      setValuationStructure('stage_percentage');
+    } else if (cat.includes('floor') || cat.includes('tile') || cat.includes('plaster') || cat.includes('mason')) {
+      setValuationStructure('floor_lead');
+    }
   }
 
   /**
@@ -171,6 +186,14 @@ export function CreateWorkOrderModal({ isOpen, onClose, onSuccess }: CreateWorkO
     }
 
 
+    if (valuationStructure === 'stage_percentage') {
+      const totalPct = stages.reduce((sum, s) => sum + (Number(s.percent) || 0), 0);
+      if (Math.abs(totalPct - 100) > 0.1) {
+        setError(`Stage percentages must sum to 100%. Currently total is ${totalPct.toFixed(1)}%.`);
+        return;
+      }
+    }
+
     setLoading(true);
     setError(null);
 
@@ -200,6 +223,9 @@ export function CreateWorkOrderModal({ isOpen, onClose, onSuccess }: CreateWorkO
         })),
         billingAddress: billingAddress || undefined,
         gstNumber: gstNumber || undefined,
+        valuationStructure,
+        leadPercentPerFloor: valuationStructure === 'floor_lead' ? leadPercentPerFloor : undefined,
+        stages: valuationStructure === 'stage_percentage' ? stages : undefined,
       });
 
       if (result.error) throw result.error;
@@ -398,6 +424,96 @@ export function CreateWorkOrderModal({ isOpen, onClose, onSuccess }: CreateWorkO
                   Rate-based (quantity at execution)
                 </label>
               </div>
+            </div>
+
+            {/* Valuation Structure */}
+            <div className="rounded-lg border border-border p-3 bg-muted/20 space-y-3">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-bold text-foreground">Trade Valuation & Billing Structure</label>
+                <span className="text-[10px] text-muted-foreground">Dictates how Service Bills calculate line amounts</span>
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                <button
+                  type="button"
+                  onClick={() => setValuationStructure('standard')}
+                  className={`p-2.5 rounded-lg border text-left text-xs font-semibold transition-all ${valuationStructure === 'standard' ? 'border-primary bg-primary/10 text-primary' : 'border-border bg-background text-muted-foreground'}`}
+                >
+                  <div>Standard Item Rate</div>
+                  <div className="text-[10px] font-normal opacity-80 mt-0.5">Fixed rate × measured Qty</div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setValuationStructure('stage_percentage')}
+                  className={`p-2.5 rounded-lg border text-left text-xs font-semibold transition-all ${valuationStructure === 'stage_percentage' ? 'border-primary bg-primary/10 text-primary' : 'border-border bg-background text-muted-foreground'}`}
+                >
+                  <div>Stage-Wise % (Plumbing/Electric)</div>
+                  <div className="text-[10px] font-normal opacity-80 mt-0.5">Milestone % of Flat/Unit Rate</div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setValuationStructure('floor_lead')}
+                  className={`p-2.5 rounded-lg border text-left text-xs font-semibold transition-all ${valuationStructure === 'floor_lead' ? 'border-primary bg-primary/10 text-primary' : 'border-border bg-background text-muted-foreground'}`}
+                >
+                  <div>Floor Lead % (Flooring/Tiles)</div>
+                  <div className="text-[10px] font-normal opacity-80 mt-0.5">Base Rate + % Lead per Floor</div>
+                </button>
+              </div>
+
+              {valuationStructure === 'floor_lead' && (
+                <div className="flex items-center gap-3 pt-1">
+                  <label className="text-xs font-medium text-foreground">Lead Increment per Floor (%):</label>
+                  <input
+                    type="number"
+                    step="0.5"
+                    value={leadPercentPerFloor}
+                    onChange={(e) => setLeadPercentPerFloor(Number(e.target.value) || 0)}
+                    className="w-20 rounded border border-input bg-background px-2 py-1 text-xs font-bold text-center"
+                  />
+                  <span className="text-[11px] text-muted-foreground">Added to base ground rate for each floor above ground</span>
+                </div>
+              )}
+
+              {valuationStructure === 'stage_percentage' && (
+                <div className="space-y-2 pt-1 border-t border-border/50">
+                  <div className="flex items-center justify-between text-xs font-bold text-foreground">
+                    <span>Payment Stages Breakdown</span>
+                    <span className={stages.reduce((s, x) => s + (Number(x.percent) || 0), 0) === 100 ? "text-emerald-600 font-bold" : "text-amber-600 font-bold"}>
+                      Total: {stages.reduce((s, x) => s + (Number(x.percent) || 0), 0)}% / 100%
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {stages.map((st, sIdx) => (
+                      <div key={st.id || sIdx} className="flex items-center gap-2 bg-background p-1.5 rounded border border-border">
+                        <input
+                          type="text"
+                          value={st.name}
+                          onChange={(e) => {
+                            const copy = [...stages];
+                            copy[sIdx].name = e.target.value;
+                            setStages(copy);
+                          }}
+                          className="flex-1 text-xs bg-transparent border-0 font-medium focus:outline-none"
+                          placeholder="Stage name"
+                        />
+                        <div className="flex items-center gap-1 shrink-0">
+                          <input
+                            type="number"
+                            step="0.5"
+                            value={st.percent}
+                            onChange={(e) => {
+                              const copy = [...stages];
+                              copy[sIdx].percent = Number(e.target.value) || 0;
+                              setStages(copy);
+                            }}
+                            className="w-14 text-xs font-bold text-right p-1 rounded border border-input"
+                          />
+                          <span className="text-xs text-muted-foreground">%</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
 
             <div>

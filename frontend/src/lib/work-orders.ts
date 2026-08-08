@@ -174,6 +174,7 @@ export type CreateWorkOrderLineInput = {
   unit?: string;
   rate: number;
   totalAmount?: number;
+  hasLead?: boolean;
 };
 
 export type CreateWorkOrderInput = {
@@ -207,6 +208,9 @@ export type CreateWorkOrderInput = {
    */
   ceilingAmount?: number;
   lines: CreateWorkOrderLineInput[];
+  valuationStructure?: 'standard' | 'stage_percentage' | 'floor_lead';
+  leadPercentPerFloor?: number;
+  stages?: Array<{ id: string; name: string; percent: number }>;
 };
 
 /** Creates a Work Order in Draft status with its item lines. Agency is mandatory (no WO without an agency on record). */
@@ -267,6 +271,17 @@ export async function createWorkOrder(input: CreateWorkOrderInput): Promise<Muta
 
     const { error: lineError } = await supabase.from('work_order_lines').insert(lineRows);
     if (lineError) throw new Error(lineError.message);
+
+    if (input.valuationStructure || input.leadPercentPerFloor || input.stages?.length) {
+      const { saveWorkOrderTerms } = await import('@/lib/wo-commercial-terms');
+      await saveWorkOrderTerms({
+        workOrderId,
+        projectId: input.projectId,
+        valuation_structure: input.valuationStructure,
+        lead_percent_per_floor: input.leadPercentPerFloor,
+        stages: input.stages,
+      });
+    }
 
     return { data: { id: workOrderId }, error: null };
   } catch (error) {
