@@ -25,6 +25,7 @@ import {
   Check,
   Printer,
   MapPin,
+  ClipboardList,
 } from 'lucide-react';
 import type { MaterialRequestRow, PurchaseRequisitionRow, Role } from '@/lib/erp/material-request/types';
 import type { ProcurementLineRow } from '@/lib/procurement';
@@ -115,10 +116,151 @@ export function MRInspectorPanel({
   const [loadingLines, setLoadingLines] = useState(false);
   const [dbPr, setDbPr] = useState<PurchaseRequisitionRow | undefined>(linkedPr);
   const [liveStatus, setLiveStatus] = useState<string>(mr.status);
+  const [historyTimeline, setHistoryTimeline] = useState<any[]>([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
 
   useEffect(() => {
     setLiveStatus(mr.status);
   }, [mr.id, mr.status]);
+
+  useEffect(() => {
+    async function fetchMRHistory() {
+      if (!mr.id) return;
+      setLoadingHistory(true);
+      try {
+        const events: any[] = [];
+
+        // 1. MR Creation (always first)
+        events.push({
+          title: 'Material Request Created',
+          description: `MR ${mr.mr_number || ''} was raised by ${mr.raised_by_name || 'Site Engineer'}`,
+          timestamp: mr.created_at,
+          status: 'completed',
+          icon: 'ClipboardList',
+        });
+
+        // If MR is cancelled
+        if (liveStatus === 'cancelled') {
+          events.push({
+            title: 'Material Request Cancelled',
+            description: `Request was cancelled and linked draft documents were withdrawn.`,
+            timestamp: mr.updated_at || new Date().toISOString(),
+            status: 'cancelled',
+            icon: 'CircleX',
+          });
+          setHistoryTimeline(events);
+          setLoadingHistory(false);
+          return;
+        }
+
+        // 2. MR Approval (in our system, submitted MRs are auto-approved)
+        if (liveStatus === 'approved' || liveStatus === 'closed' || liveStatus === 'partially_approved') {
+          events.push({
+            title: 'Material Request Approved',
+            description: `Auto-approved upon submission.`,
+            timestamp: mr.reviewed_at || mr.created_at,
+            status: 'completed',
+            icon: 'CheckCircle2',
+          });
+        }
+
+        // 3. Find PRs linked to this MR
+        const { data: prs } = await supabase
+          .from('purchase_requisitions')
+          .select('id, pr_number, status, created_at, created_by_name')
+          .eq('material_request_id', mr.id)
+          .is('deleted_at', null);
+
+        if (prs && prs.length > 0) {
+          const pr = prs[0];
+          events.push({
+            title: `PR Generated (${pr.pr_number})`,
+            description: `Purchase Requisition created in "${pr.status}" status by ${pr.created_by_name || 'PR Team'}`,
+            timestamp: pr.created_at,
+            status: pr.status === 'draft' ? 'current' : 'completed',
+            icon: 'ShoppingCart',
+          });
+
+          // 4. Find RFQs linked to this PR
+          const { data: rfqs } = await supabase
+            .from('rfqs')
+            .select('id, rfq_number, title, status, created_at')
+            .eq('purchase_requisition_id', pr.id)
+            .is('deleted_at', null);
+
+          if (rfqs && rfqs.length > 0) {
+            rfqs.forEach((rfq) => {
+              events.push({
+                title: `RFQ Issued (${rfq.rfq_number})`,
+                description: `Request for Quotation "${rfq.title}" is in "${rfq.status}" status`,
+                timestamp: rfq.created_at,
+                status: 'completed',
+                icon: 'FileText',
+              });
+            });
+          }
+
+          // 5. Find POs linked to this PR
+          const { data: pos } = await supabase
+            .from('purchase_orders')
+            .select('id, po_number, total_amount, status, created_at, supplier_name')
+            .eq('purchase_requisition_id', pr.id)
+            .is('deleted_at', null);
+
+          if (pos && pos.length > 0) {
+            for (const po of pos) {
+              events.push({
+                title: `PO Raised (${po.po_number})`,
+                description: `Purchase Order issued to ${po.supplier_name || 'Vendor'} for INR ${Number(po.total_amount || 0).toLocaleString('en-IN')} (Status: ${po.status})`,
+                timestamp: po.created_at,
+                status: po.status === 'approved' || po.status === 'sent_to_vendor' || po.status === 'acknowledged' ? 'completed' : 'current',
+                icon: 'FileText',
+              });
+
+              // 6. Find GRNs linked to this PO
+              const { data: grns } = await supabase
+                .from('goods_receipt_notes')
+                .select('id, grn_number, status, created_at, receipt_date')
+                .eq('purchase_order_id', po.id)
+                .is('deleted_at', null);
+
+              if (grns && grns.length > 0) {
+                grns.forEach((grn) => {
+                  events.push({
+                    title: `Goods Received (${grn.grn_number})`,
+                    description: `Materials received at site (GRN Status: ${grn.status})`,
+                    timestamp: grn.created_at,
+                    status: grn.status === 'posted' || grn.status === 'approved' ? 'completed' : 'current',
+                    icon: 'PackageCheck',
+                  });
+                });
+                
+                if (liveStatus === 'closed') {
+                  events.push({
+                    title: 'Material Request Fulfilled',
+                    description: 'All requested materials have been received and verified at the project site.',
+                    timestamp: grns[grns.length - 1].created_at,
+                    status: 'completed',
+                    icon: 'CheckCircle2',
+                  });
+                }
+              }
+            }
+          }
+        }
+
+        // Sort events by timestamp ascending
+        events.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+        setHistoryTimeline(events);
+      } catch (err) {
+        console.error('Error loading MR history timeline:', err);
+      } finally {
+        setLoadingHistory(false);
+      }
+    }
+
+    fetchMRHistory();
+  }, [mr.id, liveStatus, dbPr?.id]);
 
   // Real-time listener for this specific MR status & linked PR creation
   useEffect(() => {
@@ -422,13 +564,15 @@ export function MRInspectorPanel({
             </p>
           </div>
 
-          {/* Sourcing Split Progress & Vendor Allocation */}
-          <div className="rounded-xl border border-purple-500/20 bg-purple-500/5 p-4 space-y-2 shadow-2xs">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-purple-700 dark:text-purple-300 flex items-center gap-1.5 font-heading">
-              <PackageCheck className="h-4 w-4 text-purple-600" /> Procurement Sourcing Progress & Multi-Vendor Breakdown
-            </span>
-            <ProcurementSplitProgressBar mrId={mr.id} prId={linkedPr?.id} showDetails={true} />
-          </div>
+          {/* Sourcing Split Progress & Vendor Allocation (Hiding for view-only module) */}
+          {false && (
+            <div className="rounded-xl border border-purple-500/20 bg-purple-500/5 p-4 space-y-2 shadow-2xs">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-purple-700 dark:text-purple-300 flex items-center gap-1.5 font-heading">
+                <PackageCheck className="h-4 w-4 text-purple-600" /> Procurement Sourcing Progress & Multi-Vendor Breakdown
+              </span>
+              <ProcurementSplitProgressBar mrId={mr.id} prId={linkedPr?.id} showDetails={true} />
+            </div>
+          )}
 
           {/* STRUCTURED MATERIAL ITEMS TABLE */}
           <div className="rounded-xl border border-border bg-background overflow-hidden shadow-2xs space-y-0">
@@ -479,8 +623,62 @@ export function MRInspectorPanel({
             </div>
           </div>
 
-          {/* Rejection Reason Card (Shown after Item Tables) */}
-          {(mr.rejection_reason || (mr as any).reasons_for_rejection) && (
+          {/* PROCUREMENT LIFECYCLE HISTORY TIMELINE */}
+          <div className="space-y-3 pt-4 border-t border-border">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5 font-heading">
+              <Clock className="h-4 w-4 text-primary" /> Lifecycle History & Audit Trail
+            </span>
+            
+            {loadingHistory ? (
+              <div className="space-y-2.5 animate-pulse pl-4 py-2">
+                <div className="h-4 bg-muted rounded-md w-3/4" />
+                <div className="h-3 bg-muted rounded-md w-1/2" />
+              </div>
+            ) : historyTimeline.length === 0 ? (
+              <p className="text-xs text-muted-foreground italic pl-1">No history logs recorded.</p>
+            ) : (
+              <div className="relative pl-6 border-l border-border space-y-5 ml-3 pt-1">
+                {historyTimeline.map((evt, idx) => {
+                  const Icon = 
+                    evt.icon === 'ClipboardList' ? ClipboardList :
+                    evt.icon === 'CheckCircle2' ? CheckCircle2 :
+                    evt.icon === 'ShoppingCart' ? ShoppingCart :
+                    evt.icon === 'FileText' ? FileText :
+                    evt.icon === 'PackageCheck' ? PackageCheck :
+                    evt.icon === 'CircleX' ? CircleX : Clock;
+
+                  const isCancelled = evt.status === 'cancelled';
+                  const isCurrent = evt.status === 'current';
+
+                  return (
+                    <div key={idx} className="relative group">
+                      <span className={`absolute -left-[35px] top-0 h-[18px] w-[18px] rounded-full border-2 border-background flex items-center justify-center shadow-xs 
+                        ${isCancelled ? 'bg-red-500 text-white' : isCurrent ? 'bg-amber-500 text-white' : 'bg-primary text-primary-foreground'}`}>
+                        <Icon className="h-2.5 w-2.5" />
+                      </span>
+                      
+                      <div className="space-y-0.5">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5">
+                          <h5 className={`text-xs font-bold ${isCancelled ? 'text-red-600 dark:text-red-400' : 'text-foreground'}`}>
+                            {evt.title}
+                          </h5>
+                          <span className="text-[10px] text-muted-foreground font-semibold">
+                            {formatDate(evt.timestamp)} {new Date(evt.timestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-muted-foreground leading-relaxed">
+                          {evt.description}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Rejection Reason Card (Hiding for view-only module) */}
+          {false && (mr.rejection_reason || (mr as any).reasons_for_rejection) && (
             <div className="rounded-xl border border-red-200 bg-red-50/50 dark:bg-red-950/20 p-4 space-y-1.5 shadow-2xs">
               <span className="text-[11px] font-bold uppercase tracking-wider text-red-800 dark:text-red-300 flex items-center gap-1.5">
                 <ThumbsDown className="h-4 w-4 text-red-600" /> Rejection Reason & Decision
@@ -491,8 +689,8 @@ export function MRInspectorPanel({
             </div>
           )}
 
-          {/* Executive Management Remark Card (Shown after Item Tables) */}
-          {(mr.management_comment || (mr as any).remarks) && (
+          {/* Executive Management Remark Card (Hiding for view-only module) */}
+          {false && (mr.management_comment || (mr as any).remarks) && (
             <div className="rounded-xl border border-purple-200 bg-purple-50/50 dark:bg-purple-950/20 p-4 space-y-1.5 shadow-2xs">
               <span className="text-[11px] font-bold uppercase tracking-wider text-purple-800 dark:text-purple-300 flex items-center gap-1.5">
                 <MessageCircle className="h-4 w-4 text-purple-600" /> Executive Management Remark
@@ -560,8 +758,8 @@ export function MRInspectorPanel({
 
         </div>
 
-        {/* DRAWER FOOTER: WORKFLOW ACTIONS */}
-        {isPrTeam && canAct && (
+        {/* DRAWER FOOTER: WORKFLOW ACTIONS (Hiding for view-only module) */}
+        {false && isPrTeam && canAct && (
           <div className="border-t border-border bg-card px-6 py-4 space-y-3 sticky bottom-0 z-20 shadow-md">
             <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground block">Request Workflow Decision</span>
 

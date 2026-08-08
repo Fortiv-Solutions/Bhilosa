@@ -39,8 +39,15 @@ import { PRRequestsFilterBar, DEFAULT_PR_FILTERS, type PrFiltersState } from './
 import { PRPdfPreviewModal } from './pr-pdf-preview-modal';
 import { PRTableView } from './pr-table-view';
 import { Pagination } from '../pagination';
+import { BulkApprovalDrawer } from './bulk-approval-drawer';
+import { ShieldCheck } from 'lucide-react';
 
 interface PendingFile { file: File; category: string; }
+
+function formatCurrency(val: number | null | undefined): string {
+  if (val == null) return '₹0';
+  return `₹${val.toLocaleString('en-IN')}`;
+}
 
 interface PurchaseRequisitionWorkspaceProps {
   rows: PurchaseRequisitionRow[];
@@ -248,6 +255,15 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
   // LIST MODE DEFAULT ON LANDING PAGE
   const [mode, setMode] = useState<'list' | 'form'>('list');
   const [form, setForm] = useState<PrFormState | null>(() => blankForm(projectOptions[0]?.id ?? ''));
+  const [dbItems, setDbItems] = useState<any[]>([]);
+  const [itemGroups, setItemGroups] = useState<string[]>([]);
+  const [budgetData, setBudgetData] = useState<{
+    activities: string[];
+    subActivitiesByCategory: Record<string, string[]>;
+  }>({
+    activities: [],
+    subActivitiesByCategory: {},
+  });
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [previewPr, setPreviewPr] = useState<PurchaseRequisitionRow | null>(null);
   const [approvedMrs, setApprovedMrs] = useState<ApprovedMrRow[]>([]);
@@ -270,6 +286,8 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
   const [workflowBusy, setWorkflowBusy] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [linkedRfq, setLinkedRfq] = useState<RfqRow | null>(null);
+  const [selectedPrIds, setSelectedPrIds] = useState<Set<string>>(new Set());
+  const [bulkDrawerOpen, setBulkDrawerOpen] = useState(false);
 
   useEffect(() => {
     if (!form?.id) {
@@ -367,6 +385,51 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
 
   const totalPages = Math.ceil(filteredRows.length / PAGE_SIZE) || 1;
 
+  const canApprove = useMemo(() => {
+    const role = (props.activeRole || '').toLowerCase().trim();
+    return role === 'upper_management' || role === 'project_manager' || role === 'admin' || role === 'administrator';
+  }, [props.activeRole]);
+
+  const selectedPrRows = useMemo(() => {
+    return props.rows.filter((r) => selectedPrIds.has(r.id));
+  }, [props.rows, selectedPrIds]);
+
+  const selectedPrTotalAmt = useMemo(() => {
+    return selectedPrRows.reduce((sum, pr) => {
+      const lines = pr.purchase_requisition_lines || [];
+      const computedTotal = lines.reduce(
+        (s, l) => s + Number(l.line_total || (Number(l.quantity || 0) * Number(l.estimated_rate || 0))),
+        0
+      );
+      return sum + Number(pr.estimated_cost || pr.total_amount || pr.subtotal_amount || computedTotal);
+    }, 0);
+  }, [selectedPrRows]);
+
+  const handleToggleSelect = useCallback((id: string) => {
+    setSelectedPrIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const handleToggleSelectAll = useCallback(() => {
+    const selectableStatuses = ['pending_approval', 'under_verification', 'submitted', 'draft', 'returned_to_draft', 'revision_required', 'auto_draft_pr', 'auto_draft_from_mr'];
+    const approvableOnPage = pagedRows.filter((r) => selectableStatuses.includes(r.status));
+    const allSelected = approvableOnPage.length > 0 && approvableOnPage.every((r) => selectedPrIds.has(r.id));
+
+    setSelectedPrIds((prev) => {
+      const next = new Set(prev);
+      if (allSelected) {
+        approvableOnPage.forEach((r) => next.delete(r.id));
+      } else {
+        approvableOnPage.forEach((r) => next.add(r.id));
+      }
+      return next;
+    });
+  }, [pagedRows, selectedPrIds]);
+
   const loadApprovedMrs = useCallback(async () => {
     setLoadingApproved(true);
     try {
@@ -384,7 +447,133 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
     listCostCodes().then(setCostCodes).catch(() => {});
     listEligibleApprovers().then(setApprovers).catch(() => {});
     void loadApprovedMrs();
+
+    // Fetch items from the item master on mount
+    if (!isLiveSupabase()) return;
+    supabase
+      .from('items')
+      .select('id, item_code, item_description, tax_rate, lead_period_days, item_groups:item_group_id(name), units_of_measure:primary_uom_id(code)')
+      .eq('is_inactive', false)
+      .order('item_description', { ascending: true })
+      .then(({ data, error }) => {
+        if (error) console.error('Error fetching items list:', error);
+        if (data) setDbItems(data);
+      });
+
+    supabase
+      .from('item_groups')
+      .select('name')
+      .eq('is_active', true)
+      .order('name')
+      .then(({ data, error }) => {
+        if (error) console.error('Error fetching item groups:', error);
+        if (data) setItemGroups(data.map((g: any) => g.name).filter(Boolean));
+      });
   }, [loadApprovedMrs]);
+
+  // Fetch project budget activities when project changes
+  useEffect(() => {
+    const projectId = form?.project_id;
+    if (!projectId) return;
+
+    const loadProjectActivities = async () => {
+      const DEFAULT_ACTIVITIES = [
+        "Site Development/Pre-Construction Work",
+        "Civil Work - Substructure",
+        "Civil Work - Superstructure",
+        "Masonry / Brickwork",
+        "Plaster & Finishing",
+        "Plumbing & Sanitary",
+        "Electrical Work",
+        "Flooring & Tiling",
+      ];
+
+      const DEFAULT_SUB_ACTIVITIES: Record<string, string[]> = {
+        "Site Development/Pre-Construction Work": ["Site Clearance & Levelling", "Excavation", "Temporary Fencing & Gate", "Soil Testing & Survey"],
+        "Civil Work - Substructure": ["PCC 1:4:8 Bedding", "RCC Footings", "Plinth Beam Construction", "Anti-Termite Treatment"],
+        "Civil Work - Superstructure": ["RCC Columns", "RCC Beam & Slab Casting", "Staircase Casting"],
+        "Masonry / Brickwork": ["Brickwork 9 inch", "AAC Block Masonry 6 inch", "Parapet Wall Masonry"],
+        "Plaster & Finishing": ["Internal Gypsum Plaster", "External Double Coat Plaster", "Neeru Finish"],
+        "Plumbing & Sanitary": ["PVC Drainage Piping", "CPVC Water Supply Lines", "Sanitaryware Installation"],
+        "Electrical Work": ["Conduit Laying", "Wiring & DB Installation", "Switchboard & Fixture Fitting"],
+        "Flooring & Tiling": ["Vitrified Tile Flooring", "Granite Door Frame Moulding", "Dado Tiling"],
+      };
+
+      if (!isLiveSupabase()) {
+        setBudgetData({
+          activities: DEFAULT_ACTIVITIES,
+          subActivitiesByCategory: DEFAULT_SUB_ACTIVITIES,
+        });
+        return;
+      }
+
+      try {
+        const { data: categories } = await supabase
+          .from('budget_categories')
+          .select('id, category_name')
+          .eq('project_id', projectId)
+          .order('category_name', { ascending: true });
+
+        const { data: items } = await supabase
+          .from('master_budget_items')
+          .select('category_name, item_description')
+          .eq('project_id', projectId)
+          .eq('is_active', true)
+          .is('deleted_at', null)
+          .order('item_description', { ascending: true });
+
+        const activitiesSet = new Set<string>();
+        const subActivitiesByCategory: Record<string, Set<string>> = {};
+
+        if (categories && categories.length > 0) {
+          categories.forEach((c) => {
+            if (c.category_name?.trim()) {
+              const name = c.category_name.trim();
+              activitiesSet.add(name);
+              if (!subActivitiesByCategory[name]) {
+                 subActivitiesByCategory[name] = new Set();
+              }
+            }
+          });
+        }
+
+        if (items && items.length > 0) {
+          items.forEach((item) => {
+            const catName = item.category_name?.trim();
+            const subName = item.item_description?.trim();
+            if (catName) {
+              activitiesSet.add(catName);
+              if (!subActivitiesByCategory[catName]) {
+                 subActivitiesByCategory[catName] = new Set();
+              }
+              if (subName) {
+                subActivitiesByCategory[catName].add(subName);
+              }
+            }
+          });
+        }
+
+        const activities = Array.from(activitiesSet);
+        const subActivities: Record<string, string[]> = {};
+        Object.keys(subActivitiesByCategory).forEach((key) => {
+          subActivities[key] = Array.from(subActivitiesByCategory[key]);
+        });
+
+        setBudgetData({
+          activities: activities.length > 0 ? activities : DEFAULT_ACTIVITIES,
+          subActivitiesByCategory: Object.keys(subActivities).length > 0 ? subActivities : DEFAULT_SUB_ACTIVITIES,
+        });
+      } catch (err) {
+        console.error('Failed to load project activities:', err);
+        setBudgetData({
+          activities: DEFAULT_ACTIVITIES,
+          subActivitiesByCategory: DEFAULT_SUB_ACTIVITIES,
+        });
+      }
+    };
+
+    void loadProjectActivities();
+  }, [form?.project_id]);
 
   // Real-time subscription for MR and PR updates.
   //
@@ -809,7 +998,6 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
 
   // Roles like ADMIN / PROJECT_DIRECTOR are normalised to UPPER_MANAGEMENT upstream (see lib/roles.ts).
   const canManage = props.activeRole === 'UPPER_MANAGEMENT' || props.activeRole === 'PROJECT_MANAGER' || props.activeRole === 'PR_TEAM';
-  const canApprove = props.activeRole === 'UPPER_MANAGEMENT' || props.activeRole === 'PROJECT_MANAGER';
 
   const reviewComputed = useMemo(() => {
     if (!form) return { requireComment: false };
@@ -922,8 +1110,8 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
       prepared_by: form.prepared_by || dbRow?.prepared_by || null,
       general_remarks: form.general_remarks || dbRow?.general_remarks || '',
       unlocked_project: form.unlocked_project ?? (dbRow as any)?.unlocked_project ?? 1.00,
-      activity_name: form.activity_name || dbRow?.activity_name || 'Masonry / Brickwork',
-      work_activity: form.activity_name || dbRow?.activity_name || 'Masonry / Brickwork',
+      activity_name: form.activity_name || form.lines[0]?.activity_name || form.lines[0]?.work_activity || dbRow?.activity_name || 'Masonry / Brickwork',
+      work_activity: form.activity_name || form.lines[0]?.activity_name || form.lines[0]?.work_activity || dbRow?.activity_name || 'Masonry / Brickwork',
       cost_centre: form.cost_centre || dbRow?.cost_centre || '',
       contractor_name: form.contractor_name || dbRow?.contractor_name || '',
       delivery_address: form.delivery_address || dbRow?.delivery_address || 'Central Park Residential Project',
@@ -944,7 +1132,7 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
         lead_period: l.lead_period_days ?? null,
         lead_period_date: l.lead_period_date ?? null,
         required_date: l.required_date ?? form.required_date,
-        item_brand: l.preferred_brand || l.specification || '-',
+        item_brand: l.preferred_brand || '-',
       })),
       history: (dbRow as any)?.history || [],
     };
@@ -1042,6 +1230,9 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
           secondaryActions={renderSecondaryActions()}
           onCancel={() => { setMode('list'); }}
           onSendForVerification={() => void persist(true)}
+          dbItems={dbItems}
+          itemGroups={itemGroups}
+          budgetData={budgetData}
         />
 
         <AddFromApprovedMrDrawer
@@ -1126,6 +1317,10 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
         onEdit={editPr}
         onPdf={(pr) => setPreviewPr(pr)}
         onApprove={props.onApprove}
+        canApprove={canApprove}
+        selectedIds={selectedPrIds}
+        onToggleSelect={handleToggleSelect}
+        onToggleSelectAll={handleToggleSelectAll}
       />
 
       {/* Pagination Controls for 100+ requests/month */}
@@ -1137,6 +1332,36 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
           onPageChange={setPage}
         />
       )}
+
+      {/* Floating Bulk Actions Bar */}
+      {mode === 'list' && selectedPrIds.size > 0 && (
+        <div className="fixed bottom-6 left-1/2 z-40 -translate-x-1/2 flex items-center gap-4 rounded-full border border-border bg-card px-6 py-3.5 shadow-2xl animate-in slide-in-from-bottom-4 duration-300">
+          <span className="text-xs font-semibold text-foreground">
+            Selected <strong className="text-primary">{selectedPrIds.size}</strong> PR(s)
+          </span>
+          <button
+            onClick={() => setBulkDrawerOpen(true)}
+            className="inline-flex items-center gap-1.5 rounded-full bg-primary px-5 py-2 text-xs font-bold text-primary-foreground hover:bg-primary/95 hover:scale-[1.02] active:scale-[0.98] transition-all shadow-md cursor-pointer"
+          >
+            <ShieldCheck className="h-4 w-4" /> Bulk Approve
+          </button>
+          <button
+            onClick={() => setSelectedPrIds(new Set())}
+            className="text-xs font-bold text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+          >
+            Clear
+          </button>
+        </div>
+      )}
+
+      <BulkApprovalDrawer
+        open={bulkDrawerOpen}
+        selectedPrs={selectedPrRows}
+        projectOptions={projectOptions}
+        onClose={() => setBulkDrawerOpen(false)}
+        onRefresh={onRefresh}
+        onClearSelection={() => setSelectedPrIds(new Set())}
+      />
 
       {previewPr && (
         <PRPdfPreviewModal

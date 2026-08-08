@@ -241,7 +241,7 @@ export function RfqForm({
           specification: line.specification || (idx === 0 ? 'Dr. Fixit 101 LW+ Integral Liquid Waterproofing' : 'Polyurethane Elastomeric Sealant SikaFlex'),
           quantity: Number(line.quantity || 300),
           pr_balance_qty: Number(line.remaining_mr_qty || line.quantity || 300),
-          previous_rate: Number(line.estimated_rate || 350),
+          previous_rate: Number(line.estimated_rate || 0),
           unit: (line.unit || 'BAGS').toUpperCase(),
           required_date: line.required_date || defaultGoalDate,
           remarks: line.remarks || '',
@@ -257,7 +257,7 @@ export function RfqForm({
             specification: 'Dr. Fixit 101 LW+ Integral Liquid Waterproofing',
             quantity: 300.05,
             pr_balance_qty: 300,
-            previous_rate: 350,
+            previous_rate: 0,
             unit: 'BAGS',
             required_date: defaultGoalDate,
             remarks: '',
@@ -272,7 +272,7 @@ export function RfqForm({
             specification: 'Polyurethane Elastomeric Sealant SikaFlex',
             quantity: 300,
             pr_balance_qty: 300,
-            previous_rate: 350,
+            previous_rate: 0,
             unit: 'BAGS',
             required_date: defaultGoalDate,
             remarks: '',
@@ -344,7 +344,7 @@ export function RfqForm({
 
             const savedItems: RfqFormItemRow[] = (rfq.rfq_lines || []).map((rl: any, idx: number) => {
               const existingItem = prev.items[idx] || prev.items[0];
-              const prevRate = Number(rl.previous_rate ?? existingItem?.previous_rate ?? rl.estimated_rate ?? 350);
+              const prevRate = Number(rl.previous_rate ?? existingItem?.previous_rate ?? rl.estimated_rate ?? 0);
               const quotRate = Number(rl.quoted_rate ?? rl.estimated_rate ?? existingItem?.quoted_rate ?? prevRate);
               const taxRate = Number(rl.tax_rate ?? existingItem?.tax_rate ?? 18);
               return {
@@ -443,7 +443,7 @@ export function RfqForm({
       const supId = sup.supplier_id || sup.supplier_name || '';
       const supName = sup.supplier_name || '';
       const itemDesc = item.item_description || item.specification || '';
-      const defaultRate = Number(item.quoted_rate ?? item.previous_rate ?? 350);
+      const defaultRate = Number(item.quoted_rate ?? item.previous_rate ?? 0);
 
       const cell =
         allocations[`${item.key}:${supId}`] ||
@@ -480,7 +480,7 @@ export function RfqForm({
     const updated: EmbeddedAwardCellState = {
       ...current,
       ...newCell,
-      awarded_rate: Number((newCell.awarded_rate !== undefined ? newCell.awarded_rate : current.awarded_rate) || 350),
+      awarded_rate: Number((newCell.awarded_rate !== undefined ? newCell.awarded_rate : current.awarded_rate) || 0),
     };
 
     setAllocations((prev) => {
@@ -490,6 +490,33 @@ export function RfqForm({
       if (supName) next[`${item.key}:${supName}`] = updated;
       if (itemDesc && supId) next[`${itemDesc}:${supId}`] = updated;
       if (itemDesc && supName) next[`${itemDesc}:${supName}`] = updated;
+
+      // Two-supplier auto-fill remaining logic
+      if (selectedSuppliers.length === 2 && newCell.awarded_qty !== undefined) {
+        const otherSup = selectedSuppliers.find((s) => s.key !== sup.key);
+        if (otherSup) {
+          const remainingQty = Math.max(0, item.quantity - newCell.awarded_qty);
+          const otherSupId = otherSup.supplier_id || otherSup.supplier_name || '';
+          const otherSupName = otherSup.supplier_name || '';
+          
+          const otherKey = `${item.key}:${otherSupId}`;
+          const otherCurrent = prev[otherKey] || {
+            awarded_qty: 0,
+            awarded_rate: Number(item.quoted_rate ?? item.previous_rate ?? 0),
+            non_l1_justification: '',
+          };
+          const otherUpdated: EmbeddedAwardCellState = {
+            ...otherCurrent,
+            awarded_qty: remainingQty,
+          };
+
+          next[otherKey] = otherUpdated;
+          if (otherSupName) next[`${item.key}:${otherSupName}`] = otherUpdated;
+          if (itemDesc && otherSupId) next[`${itemDesc}:${otherSupId}`] = otherUpdated;
+          if (itemDesc && otherSupName) next[`${itemDesc}:${otherSupName}`] = otherUpdated;
+        }
+      }
+
       return next;
     });
   };
@@ -506,7 +533,7 @@ export function RfqForm({
           const supName = sup.supplier_name || '';
           const itemDesc = item.item_description || item.specification || '';
           const key1 = `${item.key}:${supId}`;
-          const defaultRate = Number(item.quoted_rate ?? item.previous_rate ?? 350);
+          const defaultRate = Number(item.quoted_rate ?? item.previous_rate ?? 0);
 
           const existing =
             prev[key1] ||
@@ -562,7 +589,7 @@ export function RfqForm({
           specification: 'New Material Specification',
           quantity: 100,
           pr_balance_qty: 100,
-          previous_rate: 350,
+          previous_rate: 0,
           unit: 'BAGS',
           required_date: form.goal_delivery_date,
           remarks: '',
@@ -608,6 +635,13 @@ export function RfqForm({
 
   const handleSupplierSelect = (index: number, supplierId: string) => {
     if (viewModeActive) return;
+    const isAlreadySelected = form.suppliers.some(
+      (s, sIdx) => sIdx !== index && s.supplier_id === supplierId
+    );
+    if (isAlreadySelected && supplierId !== '') {
+      alert("This supplier has already been selected.");
+      return;
+    }
     const found = supplierMaster.find((s) => s.id === supplierId);
     setForm((prev) => {
       const updated = [...prev.suppliers];
@@ -723,6 +757,13 @@ export function RfqForm({
 
   // Trigger Action Button with Target Status Transition
   const handleAction = (targetStatus: RfqStatusType) => {
+    if (targetStatus === 'PO Issued') {
+      const totalAwarded = Object.values(allocations || {}).reduce((sum, cell) => sum + (cell.awarded_qty || 0), 0);
+      if (totalAwarded <= 0) {
+        alert("Please allocate at least one item quantity to a vendor in the Award Matrix before generating Purchase Orders.");
+        return;
+      }
+    }
     const updatedForm: RfqFormState = { ...form, status: targetStatus, allocations };
     setForm(updatedForm);
     const shouldGeneratePo = targetStatus === 'PO Issued';
@@ -743,7 +784,7 @@ export function RfqForm({
         for (const sup of selectedSuppliers) {
           const supId = sup.supplier_id || sup.supplier_name;
           const isFirst = supId === firstSupId || sup.supplier_name === firstSup.supplier_name;
-          const defaultRate = Number((item.quoted_rate ?? item.previous_rate) ?? 350);
+          const defaultRate = Number((item.quoted_rate ?? item.previous_rate) ?? 0);
           const cell: EmbeddedAwardCellState = {
             awarded_qty: isFirst ? item.quantity : 0,
             awarded_rate: defaultRate,
@@ -771,7 +812,7 @@ export function RfqForm({
 
   // Total RFQ Estimated Cost Value
   const totalRfqEstCostValue = form.items.reduce(
-    (sum, item) => sum + item.quantity * Number((item.quoted_rate ?? item.previous_rate) ?? 350),
+    (sum, item) => sum + item.quantity * Number((item.quoted_rate ?? item.previous_rate) ?? 0),
     0
   );
 
@@ -801,6 +842,7 @@ export function RfqForm({
     }
     const color = VENDOR_COLOR_PALETTE[vIdx % VENDOR_COLOR_PALETTE.length];
     return {
+      key: sup.key,
       supId,
       name: sup.supplier_name || `Supplier #${vIdx + 1}`,
       totalVal,
@@ -857,7 +899,7 @@ export function RfqForm({
         {/* ============================================================================ */}
         <div className="rounded-xl border border-border/70 bg-muted/30 p-4 space-y-4">
           <h3 className="text-xs font-bold uppercase tracking-wider font-heading text-muted-foreground border-b border-border/50 pb-2">
-            Section 1: Header Details &amp; Process Type
+            Header Details &amp; Process Type
           </h3>
 
           <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2 lg:grid-cols-4 text-xs">
@@ -1004,7 +1046,7 @@ export function RfqForm({
             <div>
               <h3 className="text-xs font-bold uppercase tracking-wider font-heading text-foreground flex items-center gap-2">
                 <Layers className="h-4 w-4 text-primary" />
-                Section 2: Quotation Registration Entries Table (Carried Forward from Approved PR)
+                Quotation Registration Entries Table (Carried Forward from Approved PR)
               </h3>
               <p className="text-[11px] text-muted-foreground font-medium mt-0.5">
                 {form.items.length} Line Item(s) Carried Forward from PR • Items and quantities are locked from PR scope.
@@ -1200,7 +1242,7 @@ export function RfqForm({
                 <div className="flex items-center gap-2">
                   <h3 className="text-xs font-bold uppercase tracking-wider font-heading text-foreground flex items-center gap-2">
                     <Mail className="h-4 w-4 text-blue-500" />
-                    Section 3: Suppliers
+                    Suppliers
                   </h3>
                 </div>
                 <p className="text-[11px] text-muted-foreground font-medium mt-0.5">
@@ -1258,11 +1300,16 @@ export function RfqForm({
                               ? '-- No vendors registered --'
                               : '-- Select Supplier from Vendor Registry --'}
                           </option>
-                          {supplierMaster.map((m) => (
-                            <option key={m.id} value={m.id}>
-                              {m.name}
-                            </option>
-                          ))}
+                          {supplierMaster.map((m) => {
+                            const isAlreadySelected = form.suppliers.some(
+                              (s, sIdx) => sIdx !== idx && s.supplier_id === m.id
+                            );
+                            return (
+                              <option key={m.id} value={m.id} disabled={isAlreadySelected}>
+                                {m.name} {isAlreadySelected ? '(Already Selected)' : ''}
+                              </option>
+                            );
+                          })}
                         </select>
                       </td>
                       <td className="px-4 py-3">
@@ -1315,7 +1362,7 @@ export function RfqForm({
             <div className="flex items-center gap-2">
               <Split className="h-4 w-4 text-purple-600" />
               <h3 className="text-xs font-bold uppercase tracking-wider font-heading text-foreground">
-                Section 4: Award Matrix
+                Award Matrix
               </h3>
               <span className="text-[10px] text-muted-foreground font-medium">
                 {selectedSuppliers.length} vendor{selectedSuppliers.length === 1 ? '' : 's'}
@@ -1452,21 +1499,17 @@ export function RfqForm({
                                   }`}
                                 >
                                   <div className="space-y-1.5">
-                                    <div className="flex items-center justify-between text-[11px]">
-                                      <span className="font-bold text-foreground">
-                                        {formatCurrency(cell.awarded_rate)}
-                                      </span>
-                                      {isFirstSup && (
-                                        <span className="rounded bg-emerald-600 px-1 py-0.5 text-[8px] font-extrabold text-white leading-none">
-                                          L1
-                                        </span>
-                                      )}
-                                    </div>
-
                                     <div>
-                                      <label className="text-[9px] font-bold uppercase text-muted-foreground block mb-0.5">
-                                        Qty ({item.unit})
-                                      </label>
+                                      <div className="flex items-center justify-between gap-1 mb-0.5">
+                                        <label className="text-[9px] font-bold uppercase text-muted-foreground block">
+                                          Qty ({item.unit})
+                                        </label>
+                                        {isFirstSup && (
+                                          <span className="rounded bg-emerald-600 px-1 py-0.5 text-[8px] font-extrabold text-white leading-none">
+                                            L1
+                                          </span>
+                                        )}
+                                      </div>
                                       <input
                                         type="number"
                                         step="any"
@@ -1485,26 +1528,6 @@ export function RfqForm({
                                             ? 'border-purple-500 bg-purple-500/10 text-purple-900 dark:text-purple-200'
                                             : 'border-border bg-background text-foreground'
                                         }`}
-                                      />
-                                    </div>
-
-                                    <div>
-                                      <label className="text-[9px] font-bold text-muted-foreground block mb-0.5">
-                                        Neg. Rate (₹)
-                                      </label>
-                                      <input
-                                        type="number"
-                                        step="any"
-                                        min="0"
-                                        value={cell.awarded_rate === 0 ? '' : cell.awarded_rate}
-                                        placeholder={String(cell.awarded_rate || 350)}
-                                        disabled={viewModeActive}
-                                        onChange={(e) => {
-                                          const clean = e.target.value.replace(/^0+(?=\d)/, '');
-                                          const val = clean === '' ? 0 : Number(clean);
-                                          updateCellAllocation(item, sup, { awarded_rate: val });
-                                        }}
-                                        className="w-full rounded border border-border bg-background p-1 text-right font-bold text-foreground text-xs"
                                       />
                                     </div>
                                   </div>
@@ -1593,23 +1616,6 @@ export function RfqForm({
                           <div key={sup.key} className={`p-3 rounded-xl border ${cell.awarded_qty > 0 ? color.bg : 'border-border bg-background'} space-y-2`}>
                             <div className="flex items-center justify-between text-xs flex-wrap gap-2">
                               <span className={`font-extrabold ${color.text}`}>{sup.supplier_name || `Supplier #${vIdx + 1}`}</span>
-                              <div className="flex items-center gap-1.5">
-                                <span className="text-[10px] font-bold text-muted-foreground">Neg. Rate (₹):</span>
-                                <input
-                                  type="number"
-                                  step="any"
-                                  min="0"
-                                  value={cell.awarded_rate === 0 ? '' : cell.awarded_rate}
-                                  placeholder={String(cell.awarded_rate || 350)}
-                                  disabled={viewModeActive}
-                                  onChange={(e) => {
-                                    const clean = e.target.value.replace(/^0+(?=\d)/, '');
-                                    const val = clean === '' ? 0 : Number(clean);
-                                    updateCellAllocation(activeFocusItem, sup, { awarded_rate: val });
-                                  }}
-                                  className="w-24 rounded border border-border bg-background p-1 text-right font-bold text-foreground text-xs"
-                                />
-                              </div>
                             </div>
 
                             <div className="flex items-center gap-3">
@@ -1651,35 +1657,39 @@ export function RfqForm({
                 </div>
               )}
 
-              {/* AWARD SUMMARY BAR */}
+              {/* AWARD SUMMARY BAR - PO CREATION SUMMARY */}
               <div className="border-t border-purple-500/20 pt-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
                 <div className="flex items-center gap-3">
                   <span className="font-heading font-extrabold text-foreground flex items-center gap-1">
-                    <Coins className="h-3.5 w-3.5 text-purple-600" /> Summary
+                    <Building2 className="h-3.5 w-3.5 text-purple-600" /> Summary:
                   </span>
-                  <span className="text-muted-foreground font-medium">
-                    Total: <strong className="text-foreground">{formatCurrency(totalRfqEstCostValue)}</strong>
-                  </span>
-                  <span className="text-muted-foreground font-medium">
-                    Awarded: <strong className="text-purple-700 dark:text-purple-300 font-extrabold">{formatCurrency(totalAwardedGrandValue)}</strong>
-                  </span>
+                  {(() => {
+                    const activeVendorCount = vendorBreakdowns.filter((vb) => vb.awardedItems > 0).length;
+                    return (
+                      <span className="text-purple-700 dark:text-purple-300 font-extrabold bg-purple-500/10 border border-purple-500/20 px-2 py-0.5 rounded-md text-[11px]">
+                        {activeVendorCount === 0
+                          ? '0 POs will be created'
+                          : `${activeVendorCount} Purchase Order${activeVendorCount === 1 ? '' : 's'} (PO${activeVendorCount === 1 ? '' : 's'}) will be created`}
+                      </span>
+                    );
+                  })()}
                   {(() => {
                     const allocatedCount = form.items.filter((it) => Math.abs(it.quantity - getItemAllocatedQty(it.key)) < 0.0001).length;
                     const totalCount = form.items.length;
                     const allDone = allocatedCount === totalCount;
                     return (
                       <span className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-bold border ${allDone ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/30' : 'bg-amber-500/10 text-amber-700 dark:text-amber-300 border-amber-500/30'}`}>
-                        {allDone ? `${allocatedCount}/${totalCount} allocated` : `${allocatedCount}/${totalCount} pending`}
+                        {allDone ? `${allocatedCount}/${totalCount} items fully allocated` : `${allocatedCount}/${totalCount} items pending`}
                       </span>
                     );
                   })()}
                 </div>
 
-                <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-1.5 flex-wrap">
                   {vendorBreakdowns.map((vb) => (
-                    <div key={vb.supId} className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[10px] font-bold ${vb.color.bg}`}>
+                    <div key={vb.key} className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[10px] font-bold ${vb.color.bg}`}>
                       <span className={`font-extrabold ${vb.color.text}`}>{vb.name}:</span>
-                      <span className="text-foreground">{formatCurrency(vb.totalVal)}</span>
+                      <span className="text-foreground font-bold">{vb.awardedItems} item(s) awarded</span>
                     </div>
                   ))}
                 </div>
@@ -1694,7 +1704,7 @@ export function RfqForm({
           <div className="rounded-xl border border-border p-4 bg-muted/20 space-y-4">
             <h3 className="text-xs font-bold uppercase tracking-wider font-heading text-foreground flex items-center gap-2">
               <FileUp className="h-4 w-4 text-primary" />
-              Section 5: Multi-Vendor Quotation PDFs &amp; Selection Remarks
+              Multi-Vendor Quotation PDFs &amp; Selection Remarks
             </h3>
 
             {/* Per-Vendor PDF Upload Grid */}
@@ -1708,7 +1718,7 @@ export function RfqForm({
                     const color = VENDOR_COLOR_PALETTE[vIdx % VENDOR_COLOR_PALETTE.length];
                     const supKey = sup.key || sup.supplier_id || sup.supplier_name;
                     return (
-                      <div key={supKey} className={`rounded-xl border p-3 space-y-2 bg-background/80 ${color.bg}`}>
+                      <div key={sup.key} className={`rounded-xl border p-3 space-y-2 bg-background/80 ${color.bg}`}>
                         <div className="flex items-center justify-between">
                           <span className={`font-bold text-xs ${color.text} truncate max-w-[180px]`}>
                             {sup.supplier_name || `Supplier #${vIdx + 1}`}

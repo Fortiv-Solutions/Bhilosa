@@ -1,7 +1,7 @@
 // Live service bill desk for contractor/vendor bills raised against work orders.
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   CircleDollarSign,
@@ -14,15 +14,30 @@ import {
 } from 'lucide-react';
 import {
   listServiceBills,
-  approveServiceBill,
-  rejectServiceBill,
-  verifyServiceBill,
+  setServiceBillStatus,
   type ServiceBillRow,
 } from '@/lib/service-bills';
+import { currentProfileId } from '@/lib/work-orders';
 import { isLiveSupabase } from '@/lib/erp/supabase-modules';
 import { useAppStore } from '@/store/use-app-store';
 import { formatIndianCurrency } from '@/utils/format-currency';
 import { CreateServiceBillModal } from '@/components/service-bills/create-service-bill-modal';
+import { PaymentCertificateView } from '@/components/service-bills/payment-certificate-view';
+import { SettlementDrawer } from '@/components/service-bills/settlement-drawer';
+import { isServiceBillCertified } from '@/lib/erp/work-order/status';
+import { StatusActionBar, type StatusAction } from '@/components/work-orders/status-action-bar';
+import {
+  getWorkOrderPermissions,
+  serviceBillCertificationBlockedReason,
+} from '@/lib/work-order-permissions';
+import {
+  SERVICE_BILL_ACTION_LABELS,
+  SERVICE_BILL_STATUS_LABELS,
+  canonicalServiceBillStatus,
+  nextServiceBillStatuses,
+  serviceBillNeedsReason,
+  type ServiceBillStatus,
+} from '@/lib/erp/work-order/status';
 
 function statusLabel(value?: string | null) {
   return (value || 'pending').replaceAll('_', ' ');
@@ -36,14 +51,35 @@ function statusTone(status?: string | null) {
 
 export default function ServiceBillsPage() {
   const { projects, activeProjectId } = useAppStore();
+  const activeRole = useAppStore((state) => state.activeRole);
   const [bills, setBills] = useState<ServiceBillRow[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState(activeProjectId || projects[0]?.id || '');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [actioningId, setActioningId] = useState<string | null>(null);
+  const [profileId, setProfileId] = useState<string | null>(null);
+  const [certificateBillId, setCertificateBillId] = useState<string | null>(null);
+  const [settlementBill, setSettlementBill] = useState<ServiceBillRow | null>(null);
 
   const liveMode = isLiveSupabase();
+  const permissions = useMemo(() => getWorkOrderPermissions(activeRole), [activeRole]);
+
+  // Needed for the segregation-of-duties check: the certifier may be neither
+  // the preparer nor the verifier, and the database enforces exactly that.
+  useEffect(() => {
+    let cancelled = false;
+    currentProfileId()
+      .then((value) => {
+        if (!cancelled) setProfileId(value);
+      })
+      .catch(() => {
+        if (!cancelled) setProfileId(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const refresh = useCallback(async () => {
     if (!liveMode) return;
@@ -76,20 +112,45 @@ export default function ServiceBillsPage() {
     .reduce((total, bill) => total + Number(bill.retention_amount || 0), 0);
   const rejectedCount = bills.filter((bill) => bill.status === 'rejected').length;
 
-  async function runAction(billId: string, action: () => Promise<{ error: Error | null }>) {
+  /**
+   * All transitions go through set_service_bill_status(). Server-side rules —
+   * the QC gate, approval authority, segregation of duties, no-WO-no-bill —
+   * surface here verbatim, because they are written to be read by the user.
+   */
+  async function runTransition(billId: string, next: ServiceBillStatus, reason?: string) {
     setActioningId(billId);
     setError(null);
-    const result = await action();
+    const result = await setServiceBillStatus(billId, next, reason);
     setActioningId(null);
-    // Server-side rules (QC gate, no-WO-no-bill) surface here verbatim.
     if (result.error) setError(result.error.message);
     else refresh();
   }
 
-  async function handleReject(billId: string) {
-    const reason = window.prompt('Reason for rejection:');
-    if (!reason?.trim()) return;
-    await runAction(billId, () => rejectServiceBill(billId, reason));
+  /** Legal onward moves for one bill, filtered by role and segregation of duties. */
+  function billActions(bill: ServiceBillRow): StatusAction<ServiceBillStatus>[] {
+    const canApprove = permissions.canCertifyServiceBill || permissions.canRejectServiceBill;
+    const sodReason = serviceBillCertificationBlockedReason(bill, profileId);
+
+    return nextServiceBillStatuses(bill.status, canApprove)
+      .filter((next) => {
+        if (next === 'verified') return permissions.canVerifyServiceBill;
+        if (next === 'approved') return permissions.canCertifyServiceBill;
+        if (next === 'rejected') return permissions.canRejectServiceBill;
+        return true;
+      })
+      .map((next) => ({
+        status: next,
+        label: SERVICE_BILL_ACTION_LABELS[next],
+        needsReason: serviceBillNeedsReason(next),
+        tone: next === 'rejected' ? 'danger' : next === 'approved' ? 'primary' : 'neutral',
+        hint:
+          next === 'approved'
+            ? "Certifies the bill: posts cost to the budget and releases the Work Order's commitment"
+            : undefined,
+        // Surfaced as a disabled button with the reason, rather than letting the
+        // user click and receive a database error.
+        disabledReason: next === 'approved' ? sodReason : null,
+      }));
   }
 
   return (
@@ -124,12 +185,14 @@ export default function ServiceBillsPage() {
             <RefreshCcw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
             Refresh
           </button>
-          <button
-            onClick={() => setIsCreateModalOpen(true)}
-            className="inline-flex h-10 items-center gap-2 rounded-lg bg-primary px-4 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90 shadow-sm"
-          >
-            <Plus className="h-4 w-4" /> Record Service Bill
-          </button>
+          {permissions.canCreateServiceBill && (
+            <button
+              onClick={() => setIsCreateModalOpen(true)}
+              className="inline-flex h-10 items-center gap-2 rounded-lg bg-primary px-4 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90 shadow-sm"
+            >
+              <Plus className="h-4 w-4" /> Record Service Bill
+            </button>
+          )}
         </div>
       </header>
 
@@ -191,43 +254,41 @@ export default function ServiceBillsPage() {
                   <td className="py-3 text-gray-500">{bill.bill_date}</td>
                   <td className="py-3">
                     <span className={`inline-flex rounded-full border px-2 py-1 text-[10px] font-bold uppercase ${statusTone(bill.status)}`}>
-                      {statusLabel(bill.status)}
+                      {SERVICE_BILL_STATUS_LABELS[
+                        canonicalServiceBillStatus(bill.status) ?? 'draft'
+                      ] || statusLabel(bill.status)}
                     </span>
                   </td>
                   <td className="py-3">
-                    <div className="flex justify-end gap-2">
-                      {bill.status !== 'approved' && bill.status !== 'rejected' && bill.status !== 'paid' && (
-                        <>
-                          {/* Site verification of measured work, ahead of commercial certification. */}
-                          {bill.status === 'submitted' && (
-                            <button
-                              type="button"
-                              disabled={actioningId === bill.id}
-                              onClick={() => runAction(bill.id, () => verifyServiceBill(bill.id))}
-                              className="rounded-md border border-blue-200 bg-blue-50 px-3 py-1.5 font-bold text-blue-700 hover:bg-blue-100 shadow-sm transition-colors text-xs disabled:opacity-50"
-                            >
-                              Verify
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            disabled={actioningId === bill.id}
-                            onClick={() => runAction(bill.id, () => approveServiceBill(bill.id))}
-                            title="Certifies the bill: posts cost to the budget and releases the Work Order's commitment"
-                            className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1.5 font-bold text-emerald-700 hover:bg-emerald-100 shadow-sm transition-colors text-xs disabled:opacity-50"
-                          >
-                            Certify
-                          </button>
-                          <button
-                            type="button"
-                            disabled={actioningId === bill.id}
-                            onClick={() => handleReject(bill.id)}
-                            className="rounded-md border border-red-200 bg-red-50 px-3 py-1.5 font-bold text-red-700 hover:bg-red-100 shadow-sm transition-colors text-xs disabled:opacity-50"
-                          >
-                            Reject
-                          </button>
-                        </>
+                    <div className="flex items-center justify-end gap-2">
+                      {/* The certificate IS this bill — one document, per the
+                          29 workbooks in PC/. This prints it. */}
+                      <button
+                        type="button"
+                        onClick={() => setCertificateBillId(bill.id)}
+                        title="View / print the Payment Certificate"
+                        className="rounded-md border border-border bg-background px-2.5 py-1 text-[11px] font-bold text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                      >
+                        Certificate
+                      </button>
+                      {/* Cash only moves against a certified bill, so the
+                          drawer is offered only once cost is recognised. */}
+                      {isServiceBillCertified(bill.status) && (
+                        <button
+                          type="button"
+                          onClick={() => setSettlementBill(bill)}
+                          title="Record a payment or release retention"
+                          className="rounded-md border border-border bg-background px-2.5 py-1 text-[11px] font-bold text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                        >
+                          Settle
+                        </button>
                       )}
+                      <StatusActionBar<ServiceBillStatus>
+                        size="sm"
+                        busy={actioningId === bill.id}
+                        actions={billActions(bill)}
+                        onAction={(next, reason) => runTransition(bill.id, next, reason)}
+                      />
                     </div>
                   </td>
                 </tr>
@@ -247,6 +308,20 @@ export default function ServiceBillsPage() {
         isOpen={isCreateModalOpen}
         onClose={() => setIsCreateModalOpen(false)}
         onSuccess={() => { setIsCreateModalOpen(false); refresh(); }}
+      />
+
+      <PaymentCertificateView
+        billId={certificateBillId}
+        isOpen={certificateBillId !== null}
+        onClose={() => setCertificateBillId(null)}
+      />
+
+      <SettlementDrawer
+        bill={settlementBill}
+        isOpen={settlementBill !== null}
+        onClose={() => setSettlementBill(null)}
+        onChanged={refresh}
+        permissions={permissions}
       />
     </div>
   );

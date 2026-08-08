@@ -23,6 +23,10 @@ interface PRTableViewProps {
   /** Generates + downloads the report-format PR PDF. */
   onPdf?: (row: PurchaseRequisitionRow) => void;
   onApprove?: (row: PurchaseRequisitionRow) => void;
+  canApprove?: boolean;
+  selectedIds?: Set<string>;
+  onToggleSelect?: (id: string) => void;
+  onToggleSelectAll?: () => void;
 }
 
 function formatDate(dateStr: string | null | undefined): string {
@@ -35,7 +39,15 @@ function formatCurrency(val: number | null | undefined): string {
   return `₹${val.toLocaleString('en-IN')}`;
 }
 
-export function PRTableView({ rows, onEdit, onPdf }: PRTableViewProps) {
+export function PRTableView({
+  rows,
+  onEdit,
+  onPdf,
+  canApprove = false,
+  selectedIds = new Set(),
+  onToggleSelect,
+  onToggleSelectAll,
+}: PRTableViewProps) {
   if (rows.length === 0) {
     return (
       <div className="rounded-2xl border border-dashed border-border bg-card p-12 text-center shadow-xs">
@@ -50,6 +62,10 @@ export function PRTableView({ rows, onEdit, onPdf }: PRTableViewProps) {
     );
   }
 
+  const selectableStatuses = ['pending_approval', 'under_verification', 'submitted', 'draft', 'returned_to_draft', 'revision_required', 'auto_draft_pr', 'auto_draft_from_mr'];
+  const approvableRows = rows.filter((r) => selectableStatuses.includes(r.status));
+  const allSelected = approvableRows.length > 0 && approvableRows.every((r) => selectedIds.has(r.id));
+
   return (
     <div className="space-y-3">
       <div className="overflow-hidden rounded-xl border border-border bg-card shadow-2xs">
@@ -57,6 +73,16 @@ export function PRTableView({ rows, onEdit, onPdf }: PRTableViewProps) {
           <table className="w-full text-left text-xs whitespace-nowrap">
             <thead>
               <tr className="border-b border-border bg-muted/50 font-heading text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+                {canApprove && (
+                  <th className="px-4 py-3.5 w-10">
+                    <input
+                      type="checkbox"
+                      checked={allSelected}
+                      onChange={onToggleSelectAll}
+                      className="h-4 w-4 rounded border-border text-primary focus:ring-primary cursor-pointer"
+                    />
+                  </th>
+                )}
                 <th className="px-4 py-3.5">Sr No.</th>
                 <th className="px-4 py-3.5">Company &amp; Project</th>
                 <th className="px-4 py-3.5">Prepared By / Date</th>
@@ -93,7 +119,7 @@ export function PRTableView({ rows, onEdit, onPdf }: PRTableViewProps) {
                     ? 'Skyline Towers'
                     : 'Central Park';
 
-                const isUuidStr = (s?: string | null) => Boolean(s && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s.trim()));
+                const isUuidStr = (s?: string | null) => Boolean(s && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s.trim()));
                 const rawPrepared = row.profiles?.name || (firstLine?.raised_by && !isUuidStr(firstLine.raised_by) ? firstLine.raised_by : null) || row.created_by_name || row.department;
                 const preparedBy = rawPrepared && !isUuidStr(rawPrepared) ? rawPrepared : 'Rohan Mehta (Site Eng)';
                 const priorityVal = firstLine?.priority || row.priority || 'medium';
@@ -103,6 +129,19 @@ export function PRTableView({ rows, onEdit, onPdf }: PRTableViewProps) {
                     key={row.id}
                     className="group hover:bg-muted/30 transition-colors align-middle"
                   >
+                    {canApprove && (
+                      <td className="px-4 py-3 w-10">
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.has(row.id)}
+                          onChange={() => onToggleSelect?.(row.id)}
+                          disabled={!selectableStatuses.includes(row.status)}
+                          className={`h-4 w-4 rounded border-border text-primary focus:ring-primary cursor-pointer transition-opacity ${
+                            !selectableStatuses.includes(row.status) ? 'opacity-30 cursor-not-allowed' : ''
+                          }`}
+                        />
+                      </td>
+                    )}
                     {/* Column 1: Sr No. */}
                     <td className="px-4 py-3">
                       <span className="font-bold text-foreground text-xs">{rowIndex + 1}</span>

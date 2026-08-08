@@ -185,6 +185,55 @@ export function RfqAwardMatrixModal({
     }, 0);
   };
 
+  const updateModalCellAllocation = (
+    item: any,
+    vendor: any,
+    qty: number
+  ) => {
+    const key = `${item.rfq_line_id}:${vendor.vendor_id}`;
+    
+    setAllocations((prev) => {
+      const next = { ...prev };
+      
+      const currentCell = prev[key] || {
+        awarded_qty: 0,
+        awarded_rate: item.vendor_quotes[vendor.vendor_id]?.net_rate || 0,
+        non_l1_justification: '',
+      };
+      
+      next[key] = {
+        ...currentCell,
+        awarded_qty: qty,
+      };
+
+      // Two-vendor auto-fill remaining logic in modal
+      if (vendors.length === 2) {
+        const otherVendor = vendors.find((v) => v.vendor_id !== vendor.vendor_id);
+        if (otherVendor) {
+          const remainingQty = Math.max(0, item.rfq_quantity - qty);
+          const otherKey = `${item.rfq_line_id}:${otherVendor.vendor_id}`;
+          const otherQuote = item.vendor_quotes[otherVendor.vendor_id];
+          
+          if (otherQuote) {
+            const finalRemaining = Math.min(remainingQty, otherQuote.offered_qty);
+            const otherCurrent = prev[otherKey] || {
+              awarded_qty: 0,
+              awarded_rate: otherQuote.net_rate || 0,
+              non_l1_justification: '',
+            };
+            
+            next[otherKey] = {
+              ...otherCurrent,
+              awarded_qty: finalRemaining,
+            };
+          }
+        }
+      }
+
+      return next;
+    });
+  };
+
   // Auto-Fill L1 Allocations across all item lines
   const handleAutoFillL1 = () => {
     const next: Record<string, AwardCellState> = { ...allocations };
@@ -467,9 +516,6 @@ export function RfqAwardMatrixModal({
                           <div className="text-[10px] text-muted-foreground">
                             {v.quotation_number ? `Quote #${v.quotation_number}` : 'Invited Vendor'}
                           </div>
-                          <div className="text-[11px] font-black text-foreground mt-0.5">
-                            {v.total_amount > 0 ? formatCurrency(v.total_amount) : 'Base Rates'}
-                          </div>
                         </th>
                       );
                     })}
@@ -494,9 +540,6 @@ export function RfqAwardMatrixModal({
                             <div className="truncate">
                               <p className="font-bold text-xs text-foreground truncate" title={item.item_description}>
                                 {item.item_description}
-                              </p>
-                              <p className="text-[10px] text-muted-foreground mt-0.5">
-                                Est. Rate: {item.estimated_rate > 0 ? formatCurrency(item.estimated_rate) : '—'}
                               </p>
                             </div>
                           </div>
@@ -557,23 +600,18 @@ export function RfqAwardMatrixModal({
                               }`}
                             >
                               <div className="space-y-2">
-                                {/* Rate Display & Clean L1 Badge (Shown ONLY for actual rates > 0) */}
-                                <div className="flex items-center justify-between text-[11px]">
-                                  <span className="font-bold text-foreground">
-                                    {hasActualRate ? `Rate: ${formatCurrency(quote.net_rate)}` : 'Awaiting Quote'}
-                                  </span>
-                                  {hasActualRate && quote.is_l1 && (
-                                    <span className="rounded bg-emerald-600 px-1.5 py-0.2 text-[9px] font-extrabold text-white">
-                                      L1 🏆
-                                    </span>
-                                  )}
-                                </div>
-
                                 {/* Awarded Qty Input */}
                                 <div>
-                                  <label className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground block mb-0.5">
-                                    Award Qty ({item.unit})
-                                  </label>
+                                  <div className="flex items-center justify-between gap-1 mb-0.5">
+                                    <label className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground block">
+                                      Award Qty ({item.unit})
+                                    </label>
+                                    {hasActualRate && quote.is_l1 && (
+                                      <span className="rounded bg-emerald-600 px-1.5 py-0.2 text-[9px] font-extrabold text-white leading-none shrink-0">
+                                        L1 🏆
+                                      </span>
+                                    )}
+                                  </div>
                                   <input
                                     type="number"
                                     step="any"
@@ -583,10 +621,7 @@ export function RfqAwardMatrixModal({
                                     placeholder="0"
                                     onChange={(e) => {
                                       const val = Math.max(0, Number(e.target.value || 0));
-                                      setAllocations((prev) => ({
-                                        ...prev,
-                                        [key]: { ...cell, awarded_qty: val },
-                                      }));
+                                      updateModalCellAllocation(item, v, val);
                                     }}
                                     className={`w-full rounded-lg border p-1.5 text-right font-extrabold tabular-nums outline-none text-xs ${
                                       isAwarded
@@ -598,29 +633,6 @@ export function RfqAwardMatrixModal({
                                     Capacity: {quote.offered_qty} {item.unit}
                                   </span>
                                 </div>
-
-                                {/* Final Negotiated Rate Input */}
-                                {isAwarded && (
-                                  <div>
-                                    <label className="text-[9px] font-bold text-muted-foreground block mb-0.5">
-                                      Negotiated Rate (₹)
-                                    </label>
-                                    <input
-                                      type="number"
-                                      step="any"
-                                      min="0"
-                                      value={cell.awarded_rate}
-                                      onChange={(e) => {
-                                        const val = Number(e.target.value || 0);
-                                        setAllocations((prev) => ({
-                                          ...prev,
-                                          [key]: { ...cell, awarded_rate: val },
-                                        }));
-                                      }}
-                                      className="w-full rounded border border-border bg-background p-1 text-right font-bold text-foreground text-xs"
-                                    />
-                                  </div>
-                                )}
 
                                 {/* Non-L1 Justification Prompt */}
                                 {isNonL1Awarded && (
@@ -754,9 +766,6 @@ export function RfqAwardMatrixModal({
                             <span className="rounded bg-emerald-600 px-1.5 py-0.2 text-[9px] font-extrabold text-white">L1 🏆</span>
                           )}
                         </div>
-                        <div className="text-xs font-bold text-foreground">
-                          Rate: {quote.net_rate > 0 ? formatCurrency(quote.net_rate) : 'Awaiting Quote'}
-                        </div>
                       </div>
 
                       {/* Interactive Range Slider + Qty Input */}
@@ -768,10 +777,7 @@ export function RfqAwardMatrixModal({
                           value={cell.awarded_qty}
                           onChange={(e) => {
                             const val = Number(e.target.value);
-                            setAllocations((prev) => ({
-                              ...prev,
-                              [key]: { ...cell, awarded_qty: val },
-                            }));
+                            updateModalCellAllocation(activeItem, v, val);
                           }}
                           className="flex-1 h-2 accent-[color:var(--color-primary)] cursor-pointer"
                         />
@@ -783,10 +789,7 @@ export function RfqAwardMatrixModal({
                             value={cell.awarded_qty || ''}
                             onChange={(e) => {
                               const val = Math.max(0, Number(e.target.value || 0));
-                              setAllocations((prev) => ({
-                                ...prev,
-                                [key]: { ...cell, awarded_qty: val },
-                              }));
+                              updateModalCellAllocation(activeItem, v, val);
                             }}
                             className="w-20 rounded-lg border border-border bg-background p-1 text-right font-extrabold text-xs"
                           />
@@ -808,24 +811,28 @@ export function RfqAwardMatrixModal({
           <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
             <div className="flex items-center gap-3">
               <span className="font-heading font-extrabold text-foreground flex items-center gap-1.5">
-                <Coins className="h-4 w-4 text-purple-600" /> AWARD SUMMARY:
+                <PackageCheck className="h-4 w-4 text-purple-600" /> AWARD SUMMARY:
               </span>
-              <span className="text-muted-foreground font-medium">
-                Total Estimated RFQ Value: <strong className="text-foreground">{formatCurrency(totalRfqEstimatedValue)}</strong>
-              </span>
-              <span className="text-muted-foreground font-medium">
-                Awarded Value: <strong className="text-purple-700 dark:text-purple-300 font-extrabold">{formatCurrency(totalAwardedGrandValue)}</strong>
-              </span>
+              {(() => {
+                const activeVendorCount = vendorBreakdowns.filter((vb) => vb.awardedItemsCount > 0).length;
+                return (
+                  <span className="text-purple-700 dark:text-purple-300 font-extrabold bg-purple-500/10 border border-purple-500/20 px-2.5 py-1 rounded-lg text-xs">
+                    {activeVendorCount === 0
+                      ? '0 POs will be created'
+                      : `${activeVendorCount} Purchase Order${activeVendorCount === 1 ? '' : 's'} (PO${activeVendorCount === 1 ? '' : 's'}) will be created`}
+                  </span>
+                );
+              })()}
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               {vendorBreakdowns.map((vb) => (
                 <div
                   key={vb.vendor_id}
                   className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] font-bold ${vb.color.bg}`}
                 >
                   <span className={`font-extrabold ${vb.color.text}`}>{vb.vendor_name}:</span>
-                  <span className="text-foreground">{formatCurrency(vb.totalValue)}</span>
+                  <span className="text-foreground font-bold">{vb.awardedItemsCount} item(s) awarded</span>
                 </div>
               ))}
             </div>

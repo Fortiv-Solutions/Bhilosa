@@ -1,9 +1,10 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { ClipboardList, Plus, Trash2, X } from 'lucide-react';
 import type { MaterialRequestRow, ProcurementProjectOption } from '@/lib/erp/material-request/types';
 import type { MaterialRequestLineInput } from '@/lib/procurement';
+import { supabase } from '@/utils/supabase-client';
 
 interface CreateMRModalProps {
   projectOptions: ProcurementProjectOption[];
@@ -35,6 +36,18 @@ export function CreateMRModal({ projectOptions, onClose, onSubmit }: CreateMRMod
   const [requiredDate, setRequiredDate] = useState(new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0]);
   const [lines, setLines] = useState<MaterialRequestLineInput[]>([{ ...BLANK_LINE }]);
   const [submitting, setSubmitting] = useState(false);
+  const [itemGroups, setItemGroups] = useState<string[]>([]);
+
+  useEffect(() => {
+    supabase
+      .from('item_groups')
+      .select('name')
+      .eq('is_active', true)
+      .order('name')
+      .then(({ data }) => {
+        if (data) setItemGroups(data.map((g: any) => g.name).filter(Boolean));
+      });
+  }, []);
 
   const handleAddLine = () => {
     setLines([...lines, { ...BLANK_LINE }]);
@@ -186,12 +199,17 @@ export function CreateMRModal({ projectOptions, onClose, onSubmit }: CreateMRMod
                     className="rounded-md border border-border bg-background px-2 py-1.5 outline-none focus:border-primary"
                   />
                   <input
-                    type="text"
+                    list={`item-groups-list-${idx}`}
                     value={line.itemGroup ?? ''}
                     onChange={(e) => handleLineChange(idx, 'itemGroup', e.target.value)}
                     placeholder="Item group"
                     className="rounded-md border border-border bg-background px-2 py-1.5 outline-none focus:border-primary"
                   />
+                  <datalist id={`item-groups-list-${idx}`}>
+                    {itemGroups.map((g) => (
+                      <option key={g} value={g} />
+                    ))}
+                  </datalist>
                   <input
                     type="text"
                     value={line.itemBrand ?? ''}

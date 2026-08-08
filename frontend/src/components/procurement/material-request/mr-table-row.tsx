@@ -269,8 +269,8 @@ export function MRTableRow({ mr, linkedPr, activeRole, onAction, onConvertToPr }
         </div>
       </div>
 
-      {/* CLARIFICATION & REJECTION HISTORY */}
-      {(mr.clarification_text || mr.clarification_reply || mr.rejection_reason) && (
+      {/* CLARIFICATION & REJECTION HISTORY (Hiding for view-only module) */}
+      {false && (mr.clarification_text || mr.clarification_reply || mr.rejection_reason) && (
         <div className="space-y-2 pt-1 text-xs">
           {mr.clarification_text && (
             <div className="rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-950/30 p-2.5">
@@ -295,8 +295,8 @@ export function MRTableRow({ mr, linkedPr, activeRole, onAction, onConvertToPr }
         </div>
       )}
 
-      {/* ACTION TOOLBAR */}
-      {isPrTeam && canAct && (
+      {/* ACTION TOOLBAR (Hiding for view-only module) */}
+      {false && isPrTeam && canAct && (
         <div className="border-t border-border pt-3 flex flex-wrap items-center justify-between gap-2">
           <div className="flex flex-wrap gap-2">
             {mr.status === 'submitted' && (

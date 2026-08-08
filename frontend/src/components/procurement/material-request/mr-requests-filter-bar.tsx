@@ -20,16 +20,12 @@ export interface MrRequestFilters {
 }
 
 export const EMPTY_MR_FILTERS: MrRequestFilters = {
-  status: '', priority: '', projectId: '', reviewerId: '', dateFrom: '', dateTo: '', myRequests: false, pendingMyApproval: false,
+  status: 'active', priority: '', projectId: '', reviewerId: '', dateFrom: '', dateTo: '', myRequests: false, pendingMyApproval: false,
 };
 
 const STATUS_OPTIONS: { value: string; label: string }[] = [
-  { value: 'submitted', label: 'Submitted' },
-  { value: 'in_review', label: 'Under Review' },
-  { value: 'draft', label: 'Clarification Req.' },
-  { value: 'approved', label: 'MR Approved' },
+  { value: 'active', label: 'Active (Approved)' },
   { value: 'closed', label: 'Fulfilled' },
-  { value: 'rejected', label: 'Rejected' },
   { value: 'cancelled', label: 'Cancelled' },
 ];
 
@@ -75,7 +71,7 @@ export function MRRequestsFilterBar({
   const activeCount =
     (filters.status ? 1 : 0) + (filters.priority ? 1 : 0) + (filters.projectId && !lockedProjectId ? 1 : 0) +
     (filters.reviewerId ? 1 : 0) + (filters.dateFrom ? 1 : 0) + (filters.dateTo ? 1 : 0) +
-    (filters.myRequests ? 1 : 0) + (filters.pendingMyApproval ? 1 : 0) + (search.trim() ? 1 : 0);
+    (filters.myRequests ? 1 : 0) + (search.trim() ? 1 : 0);
 
   return (
     <div className="rounded-xl border border-border bg-card p-2.5 shadow-sm">
@@ -150,9 +146,7 @@ export function MRRequestsFilterBar({
         <button type="button" onClick={() => onChangeFilters({ myRequests: !filters.myRequests })} className={toggleCls(filters.myRequests)}>
           <Inbox className="h-3.5 w-3.5" /> My Requests
         </button>
-        <button type="button" onClick={() => onChangeFilters({ pendingMyApproval: !filters.pendingMyApproval })} className={toggleCls(filters.pendingMyApproval)}>
-          <UserCheck className="h-3.5 w-3.5" /> Pending My Approval
-        </button>
+
 
         {activeCount > 0 && (
           <button onClick={onReset} className="inline-flex h-8 items-center gap-1 rounded-md border border-red-200 bg-red-50 px-2 text-xs font-bold text-red-700 hover:bg-red-100 dark:border-red-800 dark:bg-red-950/30 dark:text-red-400">

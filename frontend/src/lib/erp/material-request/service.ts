@@ -126,7 +126,13 @@ export async function listMaterialRequestsPaged(params: MrPagedParams): Promise<
     query = query.eq('project_id', dbProjectId);
   }
   if (params.status && params.status !== 'all') {
-    query = query.eq('status', params.status);
+    if (params.status === 'active') {
+      query = query.in('status', ['submitted', 'in_review', 'approved', 'draft']);
+    } else if (params.status === 'archived') {
+      query = query.in('status', ['closed', 'rejected', 'cancelled']);
+    } else {
+      query = query.eq('status', params.status);
+    }
   }
   if (params.priority && params.priority !== 'all') {
     query = query.eq('priority', params.priority);

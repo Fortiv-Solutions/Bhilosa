@@ -176,26 +176,48 @@ export function RFQWorkspace(props: RFQWorkspaceProps) {
       'PO Issued': 'po_issued',
       'Cancelled': 'approved',
     };
-    const nextPrStatus = prStatusMap[formData.status] || 'approved';
 
-    // Persist RFQ header, selected suppliers, line item rates, and delivery address to Supabase
+    const targetStatus = shouldGeneratePo ? 'Awarded' : formData.status;
+    const tempPrStatus = shouldGeneratePo ? 'vendor_selected' : (prStatusMap[formData.status] || 'approved');
+    const finalPrStatus = prStatusMap[formData.status] || 'approved';
+
     try {
-      await saveRfqFormDataToSupabase({
+      // 1. Save RFQ form data with temporary status (Awarded) first
+      const saveRes = await saveRfqFormDataToSupabase({
         pr: activeFormPr,
-        formData,
-        nextPrStatus,
+        formData: {
+          ...formData,
+          status: targetStatus as any,
+        },
+        nextPrStatus: tempPrStatus,
       });
-      await onRefresh?.();
-    } catch (err) {
-      console.error('Error saving RFQ data to Supabase:', err);
-    }
 
-    if (shouldGeneratePo) {
-      try {
+      if (saveRes.error) {
+        throw saveRes.error;
+      }
+
+      if (shouldGeneratePo) {
+        // 2. Generate POs
         const res = await generatePurchaseOrdersFromRfqForm({
           pr: activeFormPr,
           formData,
         });
+
+        if (res.error) {
+          throw res.error;
+        }
+
+        // 3. POs generated successfully! Now update status to 'PO Issued' / 'po_issued'
+        const finalSaveRes = await saveRfqFormDataToSupabase({
+          pr: activeFormPr,
+          formData,
+          nextPrStatus: finalPrStatus,
+        });
+
+        if (finalSaveRes.error) {
+          throw finalSaveRes.error;
+        }
+
         await onRefresh?.();
         const poText = res.poNumbers.length > 0 ? res.poNumbers.join(', ') : 'Draft PO';
         setPoNotification(`Purchase Order ${poText} created successfully! Redirecting to Purchase Orders...`);
@@ -203,14 +225,17 @@ export function RFQWorkspace(props: RFQWorkspaceProps) {
           setPoNotification(null);
           onNavigateToPo?.();
         }, 1500);
-      } catch (err) {
-        console.error('Error generating POs from RFQ form:', err);
-      }
 
-      setViewMode('list');
-      setActiveFormPr(null);
-    } else {
-      activeFormPr.status = nextPrStatus as any;
+        setViewMode('list');
+        setActiveFormPr(null);
+      } else {
+        await onRefresh?.();
+        setViewMode('list');
+        setActiveFormPr(null);
+      }
+    } catch (err) {
+      console.error('Error in RFQ submission:', err);
+      alert(`Failed to complete action: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
 

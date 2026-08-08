@@ -82,6 +82,7 @@ export function PoTableView({
                 <th className="px-4 py-3.5 min-w-[140px]">Project</th>
                 <th className="px-4 py-3.5 min-w-[180px]">Supplier</th>
                 <th className="px-3 py-3.5 min-w-[150px]">Linked Source</th>
+                <th className="px-3 py-3.5 text-right">Discount (₹)</th>
                 <th className="px-3 py-3.5 text-right">Amount (₹)</th>
                 <th className="px-3 py-3.5 text-center">Status</th>
                 <th className="px-4 py-3.5 text-right">Action</th>
@@ -145,6 +146,11 @@ export function PoTableView({
                           <span className="text-muted-foreground">—</span>
                         ) : null}
                       </div>
+                    </td>
+
+                    {/* Discount Amount */}
+                    <td className="px-3 py-3 text-right font-mono font-bold text-foreground text-xs">
+                      {formatAmount(po.discount_amount)}
                     </td>
 
                     {/* Amount */}

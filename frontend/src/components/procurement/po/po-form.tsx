@@ -264,7 +264,7 @@ export function buildPurchaseOrderPayload(form: FullPoFormState): PurchaseOrderF
     estimated_rate: item.estimated_rate ?? null,
     previous_rate: item.previous_rate ?? null,
     discount_pct: Number(item.discount_perc) || 0,
-    discount_amount: Number(item.discount_amt) || 0,
+    discount_amount: (Number(item.discount_amt) * Number(item.approved_qty)) || 0,
     freight_charges: Number(item.freight_chgs) || 0,
     loading_unloading_charges: Number(item.load_unload_chgs) || 0,
     other_charges: Number(item.others_chgs) || 0,
@@ -608,7 +608,9 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
       const qty = Number(l.quantity ?? 0);
       const rate = Number(l.unit_rate ?? 0);
       const discountPct = Number(l.discount_pct ?? 0);
-      const discountAmt = Number(l.discount_amount ?? 0) || (rate * discountPct) / 100;
+      const discountAmt = discountPct > 0
+        ? (rate * discountPct) / 100
+        : (qty > 0 ? (Number(l.discount_amount ?? 0) / qty) : 0);
       const gstApplicable = l.is_gst_applicable !== false;
       const gstRate = gstApplicable ? Number(l.tax_rate ?? 0) : 0;
 
@@ -1510,6 +1512,8 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
                       <th className="px-2 py-2 font-bold text-primary min-w-[90px]">Due Date</th>
                       <th className="px-2 py-2 font-bold text-primary text-right min-w-[80px]">Unit Rate (₹)</th>
                       <th className="px-2 py-2 text-right min-w-[60px]">Discount (%)</th>
+                      <th className="px-2 py-2 text-right min-w-[80px]">Discount/Unit (₹)</th>
+                      <th className="px-2 py-2 text-right min-w-[80px]">Discount Amt (₹)</th>
                       <th className="px-2 py-2 min-w-[70px]">HSN Code</th>
                       <th className="px-2 py-2 text-right min-w-[80px]">Subtotal (₹)</th>
                       <th className="px-2 py-2 text-right min-w-[65px]">Freight (₹)</th>
@@ -1634,6 +1638,50 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
                               updateLineItem(index, 'discount_perc', clean === '' ? 0 : Number(clean));
                             }}
                             className="w-12 focus:w-16 hover:w-16 transition-all duration-200 rounded border border-border bg-background px-1 py-1 text-right text-xs relative z-10 hover:z-20 focus:z-20"
+                          />
+                        </td>
+                        {/* Discount/Unit (₹) */}
+                        <td className="px-2 py-1.5" title={`Discount/Unit: ₹${item.discount_amt.toFixed(2)}`}>
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={item.discount_amt === 0 ? '' : item.discount_amt.toFixed(2)}
+                            placeholder="0"
+                            onChange={(e) => {
+                              const clean = e.target.value.replace(/^0+(?=\d)/, '');
+                              const val = clean === '' ? 0 : Number(clean);
+                              const rate = Number(item.basic_rate || 0);
+                              if (rate > 0) {
+                                const newPct = (val / rate) * 100;
+                                updateLineItem(index, 'discount_perc', Number(newPct.toFixed(4)));
+                              } else {
+                                updateLineItem(index, 'discount_perc', 0);
+                              }
+                            }}
+                            className="w-16 focus:w-20 hover:w-20 transition-all duration-200 rounded border border-border bg-background px-1 py-1 text-right text-xs relative z-10 hover:z-20 focus:z-20 font-bold"
+                          />
+                        </td>
+                        {/* Discount Amt (₹) */}
+                        <td className="px-2 py-1.5" title={`Discount Amt: ₹${(item.discount_amt * item.approved_qty).toFixed(2)}`}>
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={item.discount_amt * item.approved_qty === 0 ? '' : (item.discount_amt * item.approved_qty).toFixed(2)}
+                            placeholder="0"
+                            onChange={(e) => {
+                              const clean = e.target.value.replace(/^0+(?=\d)/, '');
+                              const val = clean === '' ? 0 : Number(clean);
+                              const rate = Number(item.basic_rate || 0);
+                              const qty = Number(item.approved_qty || 0);
+                              if (rate > 0 && qty > 0) {
+                                const unitDiscAmt = val / qty;
+                                const newPct = (unitDiscAmt / rate) * 100;
+                                updateLineItem(index, 'discount_perc', Number(newPct.toFixed(4)));
+                              } else {
+                                updateLineItem(index, 'discount_perc', 0);
+                              }
+                            }}
+                            className="w-16 focus:w-20 hover:w-20 transition-all duration-200 rounded border border-border bg-background px-1 py-1 text-right text-xs relative z-10 hover:z-20 focus:z-20 font-bold text-foreground"
                           />
                         </td>
                         {/* HSN Code */}

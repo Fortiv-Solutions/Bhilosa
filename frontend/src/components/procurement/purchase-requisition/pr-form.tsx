@@ -64,6 +64,12 @@ interface PrFormProps {
   secondaryActions?: ReactNode;
   onCancel: () => void;
   onSendForVerification?: () => void;
+  dbItems?: any[];
+  itemGroups?: string[];
+  budgetData?: {
+    activities: string[];
+    subActivitiesByCategory: Record<string, string[]>;
+  };
 }
 
 const LABEL = 'mb-1 block text-[11px] font-bold uppercase tracking-wider text-muted-foreground';
@@ -375,6 +381,9 @@ export function PrForm(props: PrFormProps) {
               onAddManual={props.onAddManualLine}
               onBulkRequiredDate={props.onBulkRequiredDate}
               onBulkDeliveryLocation={props.onBulkDeliveryLocation}
+              dbItems={props.dbItems || []}
+              itemGroups={props.itemGroups || []}
+              budgetData={props.budgetData || { activities: [], subActivitiesByCategory: {} }}
             />
 
             {/* Cost Summary */}

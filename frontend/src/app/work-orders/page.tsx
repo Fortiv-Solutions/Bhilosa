@@ -1,19 +1,40 @@
 // Central registry for work orders issued to vendors/contractors across project sites.
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { Briefcase, CalendarDays, ClipboardList, IndianRupee, Plus, AlertTriangle } from 'lucide-react';
-import { getWorkOrders, updateWorkOrderStatus } from '@/lib/work-orders';
+import { getWorkOrders, setWorkOrderStatus } from '@/lib/work-orders';
 import { isLiveSupabase } from '@/lib/erp/supabase-modules';
 import { CreateWorkOrderModal } from '@/components/work-orders/create-work-order-modal';
+import { StatusActionBar, type StatusAction } from '@/components/work-orders/status-action-bar';
+import { getWorkOrderPermissions } from '@/lib/work-order-permissions';
+import { useAppStore } from '@/store/use-app-store';
+import {
+  WORK_ORDER_ACTION_LABELS,
+  WORK_ORDER_STATUS_LABELS,
+  canonicalWorkOrderStatus,
+  nextWorkOrderStatuses,
+  workOrderNeedsReason,
+  type WorkOrderStatus,
+} from '@/lib/erp/work-order/status';
 
 const WO_STATUS_STYLES: Record<string, string> = {
   draft: 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300',
+  submitted: 'bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-300',
   issued: 'bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-300',
   active: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300',
   closed: 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400',
+  rejected: 'bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-300',
   cancelled: 'bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-300',
+};
+
+/** Only the move that advances the document is offered inline; the rest live on the detail page. */
+const PRIMARY_NEXT: Partial<Record<WorkOrderStatus, WorkOrderStatus>> = {
+  draft: 'submitted',
+  submitted: 'issued',
+  issued: 'active',
+  active: 'closed',
 };
 
 function formatAmount(n: number) {
@@ -26,19 +47,38 @@ export default function WorkOrdersPage() {
   const [workOrders, setWorkOrders] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [actioningId, setActioningId] = useState<string | null>(null);
+
+  const activeRole = useAppStore((state) => state.activeRole);
+  const permissions = useMemo(() => getWorkOrderPermissions(activeRole), [activeRole]);
 
   const refresh = useCallback(() => {
     if (!isLiveSupabase()) return;
     setLoading(true);
     getWorkOrders()
       .then((data) => setWorkOrders(data || []))
-      .catch(console.error)
+      .catch((err) => setError(err instanceof Error ? err.message : 'Unable to load Work Orders.'))
       .finally(() => setLoading(false));
   }, []);
 
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  /**
+   * Every transition goes through the database RPC, which re-validates the
+   * move, the authority and the reason. A rejection here is a real business
+   * rule, so its message is shown verbatim.
+   */
+  async function runTransition(id: string, next: WorkOrderStatus, reason?: string) {
+    setActioningId(id);
+    setError(null);
+    const result = await setWorkOrderStatus(id, next, reason);
+    setActioningId(null);
+    if (result.error) setError(result.error.message);
+    else refresh();
+  }
 
   const orders = workOrders.map((wo) => ({
     id: wo.id,
@@ -68,13 +108,21 @@ export default function WorkOrdersPage() {
           <h1 className="font-heading mt-2 text-2xl font-semibold text-gray-950 dark:text-white">Work Orders</h1>
           <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">Every work order issued to an agency across all project sites, with scope, value, billed-to-date, and remaining balance.</p>
         </div>
-        <button
-          onClick={() => setIsCreateModalOpen(true)}
-          className="inline-flex h-10 items-center gap-2 rounded-lg bg-primary px-4 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90 shadow-sm"
-        >
-          <Plus className="h-4 w-4" /> New Work Order
-        </button>
+        {permissions.canCreateWorkOrder && (
+          <button
+            onClick={() => setIsCreateModalOpen(true)}
+            className="inline-flex h-10 items-center gap-2 rounded-lg bg-primary px-4 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90 shadow-sm"
+          >
+            <Plus className="h-4 w-4" /> New Work Order
+          </button>
+        )}
       </header>
+
+      {error && (
+        <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700 dark:border-red-900/40 dark:bg-red-950/20 dark:text-red-300">
+          {error}
+        </div>
+      )}
 
       <section className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         {[
@@ -109,6 +157,7 @@ export default function WorkOrdersPage() {
                 <th className="pb-3">Remaining</th>
                 <th className="pb-3">Issue Date</th>
                 <th className="pb-3">Status</th>
+                <th className="pb-3 text-right">Action</th>
               </tr>
             </thead>
             <tbody>
@@ -128,21 +177,13 @@ export default function WorkOrdersPage() {
                   <td className="py-3 text-gray-500">{wo.startDate || '-'}</td>
                   <td className="py-3">
                     <div className="flex items-center gap-1.5">
-                      <select
-                        value={wo.woStatus}
-                        onChange={async (e) => {
-                          const newStatus = e.target.value;
-                          await updateWorkOrderStatus(wo.id, newStatus);
-                          refresh();
-                        }}
-                        className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase cursor-pointer border-0 outline-none ${WO_STATUS_STYLES[wo.woStatus] || WO_STATUS_STYLES.draft}`}
+                      {/* Read-only. The status is changed by the actions in the
+                          next column, never by editing this control. */}
+                      <span
+                        className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${WO_STATUS_STYLES[wo.woStatus] || WO_STATUS_STYLES.draft}`}
                       >
-                        <option value="draft">Draft</option>
-                        <option value="submitted">Submitted</option>
-                        <option value="issued">Issued</option>
-                        <option value="active">Active</option>
-                        <option value="closed">Closed</option>
-                      </select>
+                        {WORK_ORDER_STATUS_LABELS[wo.woStatus as WorkOrderStatus] || wo.woStatus}
+                      </span>
                       {wo.hasScopeVariance && (
                         <span title="Scope variance detected">
                           <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
@@ -150,12 +191,22 @@ export default function WorkOrdersPage() {
                       )}
                     </div>
                   </td>
+                  <td className="py-3">
+                    <div className="flex justify-end">
+                      <StatusActionBar<WorkOrderStatus>
+                        size="sm"
+                        busy={actioningId === wo.id}
+                        actions={buildRowActions(wo.woStatus, permissions.canApproveWorkOrder)}
+                        onAction={(next, reason) => runTransition(wo.id, next, reason)}
+                      />
+                    </div>
+                  </td>
                 </tr>
               ))}
 
               {!loading && orders.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="py-12 text-center text-gray-400">
+                  <td colSpan={10} className="py-12 text-center text-gray-400">
                     No work orders issued yet.
                   </td>
                 </tr>
@@ -172,4 +223,35 @@ export default function WorkOrdersPage() {
       />
     </div>
   );
+}
+
+/**
+ * The single advancing move for a row, when it is legal from this state and the
+ * role holds it. Reject / cancel are deliberately NOT offered from the list:
+ * they are irreversible and belong on the detail page where the full contract
+ * position is visible.
+ */
+function buildRowActions(
+  woStatus: string,
+  canApprove: boolean,
+): StatusAction<WorkOrderStatus>[] {
+  const current = canonicalWorkOrderStatus(woStatus);
+  if (!current) return [];
+
+  const next = PRIMARY_NEXT[current];
+  if (!next) return [];
+  if (!nextWorkOrderStatuses(current, canApprove).includes(next)) return [];
+
+  return [
+    {
+      status: next,
+      label: WORK_ORDER_ACTION_LABELS[next],
+      needsReason: workOrderNeedsReason(next),
+      tone: next === 'closed' ? 'neutral' : 'primary',
+      hint:
+        next === 'issued'
+          ? 'Issues the contract and reserves its value against the budget head'
+          : undefined,
+    },
+  ];
 }

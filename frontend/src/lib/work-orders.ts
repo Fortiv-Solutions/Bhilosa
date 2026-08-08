@@ -1,5 +1,6 @@
 import { supabase, getDbSiteId } from '@/utils/supabase-client';
 import { isLiveSupabase } from '@/lib/erp/supabase-modules';
+import { isWorkOrderBillable, type WorkOrderStatus } from '@/lib/erp/work-order/status';
 
 type MutationResult<T = unknown> = {
   data: T | null;
@@ -8,6 +9,31 @@ type MutationResult<T = unknown> = {
 
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
+}
+
+/**
+ * Turns a PostgREST/Postgres error into something a site user can act on.
+ *
+ * The Stage 1 guard triggers raise deliberate, user-facing messages with
+ * specific SQLSTATEs, so those are surfaced verbatim. Anything else keeps its
+ * original text rather than being flattened into a generic failure.
+ */
+function asDbError(error: { message?: string; code?: string; hint?: string | null } | null): Error {
+  if (!error) return new Error('Unknown database error.');
+  const message = error.message || 'The database rejected this change.';
+  switch (error.code) {
+    // insufficient_privilege — role gating or segregation of duties.
+    case '42501':
+      return new Error(message);
+    // invalid_parameter_value — an illegal transition or a missing reason.
+    case '22023':
+      return new Error(error.hint ? `${message} ${error.hint}` : message);
+    // Row is invisible under RLS, or already deleted.
+    case 'P0002':
+      return new Error(message);
+    default:
+      return new Error(message);
+  }
 }
 
 export type WorkOrderLineRow = {
@@ -42,6 +68,12 @@ export type WorkOrderRow = {
   end_date: string | null;
   terms_and_conditions: string | null;
   total_amount: number;
+  /** Not-to-exceed value for a rate_based contract; copied into total_amount at issue. */
+  ceiling_amount: number | null;
+  /** Number of approved variations. 0 = the original contract. */
+  revision_no: number;
+  /** The value the contract was issued at, before any variation. */
+  original_amount: number | null;
   /** true when total_amount already includes GST — decides the bill drawdown basis. */
   tax_inclusive: boolean;
   /** Certified (approved/paid) billing only. */
@@ -52,10 +84,33 @@ export type WorkOrderRow = {
   has_scope_variance: boolean;
   has_billing_overrun: boolean;
   variance_notes: string | null;
+  /** Lifecycle audit, all stamped server-side by trg_guard_work_order_status. */
+  submitted_by: string | null;
+  submitted_at: string | null;
   approved_by: string | null;
   approved_at: string | null;
+  rejected_by: string | null;
+  rejected_at: string | null;
+  rejection_reason: string | null;
+  closed_by: string | null;
+  closed_at: string | null;
+  cancelled_by: string | null;
+  cancelled_at: string | null;
+  cancellation_reason: string | null;
   created_at: string;
   [key: string]: unknown;
+};
+
+/** One row of the append-only work_order_status_history trail. */
+export type WorkOrderStatusHistoryRow = {
+  id: string;
+  fromStatus: string | null;
+  toStatus: string;
+  reason: string | null;
+  changedAt: string;
+  changedBy: string | null;
+  changedByName: string | null;
+  totalAmountAtChange: number | null;
 };
 
 const WORK_ORDER_SELECT =
@@ -93,8 +148,12 @@ export async function getBillableWorkOrders(projectId?: string) {
   }
   const { data, error } = await query;
   if (error) throw error;
-  return ((data as unknown as Record<string, unknown>[]) || []).filter(
-    (wo) => wo.wo_status !== 'cancelled' && wo.status !== 'cancelled'
+  // "No WO, no bill" means issued/active only — the same predicate
+  // fn_service_bill_require_active_wo enforces. The previous filter merely
+  // excluded cancelled, so drafts and closed contracts were offered in the
+  // bill form and then rejected by the database on submit.
+  return ((data as unknown as Record<string, unknown>[]) || []).filter((wo) =>
+    isWorkOrderBillable(wo.wo_status as string),
   );
 }
 
@@ -129,6 +188,8 @@ export type CreateWorkOrderInput = {
   issueDate?: string;
   termsAndConditions?: string;
   vendorId?: string;
+  billingAddress?: string;
+  gstNumber?: string;
   /**
    * Budget head this contract draws against. Not required to save a draft, but
    * the database blocks the Draft -> Issued transition without a resolvable head
@@ -139,6 +200,12 @@ export type CreateWorkOrderInput = {
   masterBudgetItemId?: string;
   /** true when the line rates already include GST (the WO templates differ). */
   taxInclusive?: boolean;
+  /**
+   * Not-to-exceed value for a rate_based contract. Required before it can be
+   * issued: a rate-based WO has no quantities, so without a ceiling its
+   * total_amount is zero and it would encumber nothing.
+   */
+  ceilingAmount?: number;
   lines: CreateWorkOrderLineInput[];
 };
 
@@ -167,6 +234,10 @@ export async function createWorkOrder(input: CreateWorkOrderInput): Promise<Muta
         budget_allocation_id: toUuidOrNull(input.budgetAllocationId),
         master_budget_item_id: toUuidOrNull(input.masterBudgetItemId),
         tax_inclusive: input.taxInclusive ?? false,
+        ceiling_amount:
+          input.woType === 'rate_based' && (input.ceilingAmount ?? 0) > 0
+            ? input.ceilingAmount
+            : null,
         work_order_number: input.workOrderNumber,
         scope_of_work: input.scopeOfWork,
         wo_type: input.woType,
@@ -175,6 +246,8 @@ export async function createWorkOrder(input: CreateWorkOrderInput): Promise<Muta
         issue_date: input.issueDate || null,
         terms_and_conditions: input.termsAndConditions || null,
         total_amount: totalAmount,
+        billing_address: input.billingAddress || null,
+        gst_number: input.gstNumber || null,
       })
       .select('id')
       .single();
@@ -201,19 +274,8 @@ export async function createWorkOrder(input: CreateWorkOrderInput): Promise<Muta
   }
 }
 
-/** Draft -> submitted, awaiting the Draft->Issued approval step. */
-export async function submitWorkOrderForApproval(workOrderId: string): Promise<MutationResult> {
-  try {
-    const { error } = await supabase.from('work_orders').update({ status: 'submitted' }).eq('id', workOrderId);
-    if (error) throw new Error(error.message);
-    return { data: null, error: null };
-  } catch (error) {
-    return { data: null, error: asError(error) };
-  }
-}
-
 /** The signed-in user's profile id. profiles.id mirrors the auth user id. */
-async function currentProfileId(): Promise<string | null> {
+export async function currentProfileId(): Promise<string | null> {
   try {
     const { data } = await supabase.auth.getUser();
     return data.user?.id ?? null;
@@ -222,104 +284,118 @@ async function currentProfileId(): Promise<string | null> {
   }
 }
 
+/** What set_work_order_status() returns, so the caller can refresh from it. */
+export type WorkOrderTransitionResult = {
+  id: string;
+  workOrderNumber: string | null;
+  woStatus: WorkOrderStatus;
+  status: string;
+  approvedBy: string | null;
+  approvedAt: string | null;
+  totalAmount: number;
+  billedToDate: number;
+  remainingBalance: number;
+};
+
 /**
- * Approval step before a WO goes from Draft to Issued.
+ * The single entry point for every Work Order lifecycle transition.
  *
- * This is the moment the Work Order becomes an encumbrance: the database
- * resolves and freezes the budget head, enforces the configured hard limit, and
- * posts the 'commitment' ledger row. A failure here is a real business rule
- * (no budget head, or the head is over its limit) and its message is written to
- * be shown to the user verbatim.
+ * Routes through set_work_order_status(), which is the deliberate server-side
+ * door added by the Stage 1 governance migration. The database:
+ *   * rejects an illegal move (wo_transition_allowed),
+ *   * requires approval authority for issue/reject/close/cancel,
+ *   * requires a reason for reject/cancel,
+ *   * stamps approved_by / rejected_by / closed_by from the session, so the
+ *     actor cannot be forged by a client that simply posts the column,
+ *   * keeps work_orders.status derived from wo_status,
+ *   * writes an append-only work_order_status_history row.
  *
- * `approvedBy` is resolved from the session; it is a uuid FK to profiles, so a
- * placeholder string cannot be used.
+ * Issuing is also the moment the contract becomes an encumbrance: the Phase 2
+ * triggers resolve the budget head, enforce the configured hard limit and post
+ * the 'commitment' ledger row. Every failure here is a real business rule and
+ * its message is written to be shown to the user verbatim.
  */
-export async function approveWorkOrder(workOrderId: string, approvedBy?: string): Promise<MutationResult> {
+export async function setWorkOrderStatus(
+  workOrderId: string,
+  newStatus: WorkOrderStatus,
+  reason?: string,
+): Promise<MutationResult<WorkOrderTransitionResult>> {
   try {
-    const profileId = approvedBy ?? (await currentProfileId());
-    if (!profileId) {
-      throw new Error('You must be signed in to approve a Work Order.');
+    if (!isLiveSupabase()) throw new Error('Supabase is not configured.');
+    if (!workOrderId) throw new Error('No Work Order selected.');
+
+    if ((newStatus === 'rejected' || newStatus === 'cancelled') && !reason?.trim()) {
+      throw new Error(
+        newStatus === 'rejected'
+          ? 'A rejection reason is mandatory.'
+          : 'A cancellation reason is mandatory.',
+      );
     }
 
-    const { error } = await supabase
-      .from('work_orders')
-      .update({
-        status: 'approved',
-        wo_status: 'issued',
-        issue_date: new Date().toISOString().slice(0, 10),
-        approved_by: profileId,
-        approved_at: new Date().toISOString(),
-      })
-      .eq('id', workOrderId);
-    if (error) throw new Error(error.message);
-    return { data: null, error: null };
+    const { data, error } = await supabase.rpc('set_work_order_status', {
+      p_work_order_id: workOrderId,
+      p_status: newStatus,
+      p_reason: reason?.trim() || null,
+    });
+
+    if (error) throw asDbError(error);
+
+    const row = (data ?? {}) as Record<string, unknown>;
+    return {
+      data: {
+        id: (row.id as string) ?? workOrderId,
+        workOrderNumber: (row.work_order_number as string) ?? null,
+        woStatus: (row.wo_status as WorkOrderStatus) ?? newStatus,
+        status: (row.status as string) ?? '',
+        approvedBy: (row.approved_by as string) ?? null,
+        approvedAt: (row.approved_at as string) ?? null,
+        totalAmount: Number(row.total_amount || 0),
+        billedToDate: Number(row.billed_to_date || 0),
+        remainingBalance: Number(row.remaining_balance || 0),
+      },
+      error: null,
+    };
   } catch (error) {
     return { data: null, error: asError(error) };
   }
 }
 
-export async function rejectWorkOrder(workOrderId: string, remarks: string): Promise<MutationResult> {
-  try {
-    if (!remarks.trim()) throw new Error('Rejection reason is mandatory.');
-    const { error } = await supabase
-      .from('work_orders')
-      // The reason was previously demanded and then discarded — there was no
-      // column to hold it. work_orders.rejection_reason was added in
-      // 20260805100200_work_order_budget_integration.sql.
-      .update({ status: 'rejected', rejection_reason: remarks.trim() })
-      .eq('id', workOrderId);
-    if (error) throw new Error(error.message);
-    return { data: null, error: null };
-  } catch (error) {
-    return { data: null, error: asError(error) };
-  }
+/** Draft -> Submitted, awaiting the Draft->Issued approval step. */
+export async function submitWorkOrderForApproval(workOrderId: string) {
+  return setWorkOrderStatus(workOrderId, 'submitted');
+}
+
+/**
+ * Approve & issue. The moment the Work Order encumbers budget.
+ *
+ * The former `approvedBy` argument is gone: the actor is resolved server-side
+ * from the session, which is the whole point of the guard. Passing it from the
+ * client was the forgeable path.
+ */
+export async function approveWorkOrder(workOrderId: string) {
+  return setWorkOrderStatus(workOrderId, 'issued');
+}
+
+export async function rejectWorkOrder(workOrderId: string, remarks: string) {
+  return setWorkOrderStatus(workOrderId, 'rejected', remarks);
 }
 
 /** Issued -> Active, once execution actually starts against this WO. */
-export async function activateWorkOrder(workOrderId: string): Promise<MutationResult> {
-  try {
-    const { error } = await supabase.from('work_orders').update({ wo_status: 'active' }).eq('id', workOrderId);
-    if (error) throw new Error(error.message);
-    return { data: null, error: null };
-  } catch (error) {
-    return { data: null, error: asError(error) };
-  }
+export async function activateWorkOrder(workOrderId: string) {
+  return setWorkOrderStatus(workOrderId, 'active');
 }
 
-/** Active -> Closed. Callers should confirm remaining_balance is reconciled (zero, or a deliberate write-off) before closing. */
-export async function closeWorkOrder(workOrderId: string): Promise<MutationResult> {
-  try {
-    const { error } = await supabase.from('work_orders').update({ wo_status: 'closed' }).eq('id', workOrderId);
-    if (error) throw new Error(error.message);
-    return { data: null, error: null };
-  } catch (error) {
-    return { data: null, error: asError(error) };
-  }
+/**
+ * Active/Issued -> Closed. The Phase 2 trigger releases the residual
+ * commitment, so a finished contract stops reserving budget it will never use.
+ */
+export async function closeWorkOrder(workOrderId: string) {
+  return setWorkOrderStatus(workOrderId, 'closed');
 }
 
-/** Directly update Work Order status (e.g. draft -> active / issued / closed). */
-export async function updateWorkOrderStatus(
-  workOrderId: string,
-  newStatus: string
-): Promise<MutationResult> {
-  try {
-    const payload: Record<string, unknown> = {
-      wo_status: newStatus,
-      status: newStatus === 'draft' ? 'draft' : newStatus === 'submitted' ? 'submitted' : 'approved',
-    };
-    if (newStatus === 'issued' || newStatus === 'active') {
-      payload.issue_date = new Date().toISOString().slice(0, 10);
-    }
-    const { error } = await supabase
-      .from('work_orders')
-      .update(payload)
-      .eq('id', workOrderId);
-
-    if (error) throw new Error(error.message);
-    return { data: null, error: null };
-  } catch (error) {
-    return { data: null, error: asError(error) };
-  }
+/** Cancel a Work Order. Releases any residual commitment; reason is mandatory. */
+export async function cancelWorkOrder(workOrderId: string, reason: string) {
+  return setWorkOrderStatus(workOrderId, 'cancelled', reason);
 }
 
 export async function updateExecutedQuantity(lineId: string, executedQuantity: number): Promise<MutationResult> {
@@ -544,6 +620,41 @@ export async function isBudgetHeadRequiredForIssue(projectId: string): Promise<b
   // missing config row means no explicit opt-out has been made.
   if (error || !data) return true;
   return (data.wo_unbudgeted_enforcement ?? 'block') === 'block';
+}
+
+/**
+ * The append-only transition trail for one Work Order.
+ *
+ * Written by trg_wo_record_status_history; the table has no UPDATE or DELETE
+ * policy, so what is read here is what happened.
+ */
+export async function getWorkOrderStatusHistory(
+  workOrderId: string,
+): Promise<WorkOrderStatusHistoryRow[]> {
+  if (!isLiveSupabase() || !workOrderId) return [];
+
+  const { data, error } = await supabase
+    .from('work_order_status_history')
+    .select('id, from_status, to_status, reason, changed_at, changed_by, total_amount_at_change, profiles(name, email)')
+    .eq('work_order_id', workOrderId)
+    .order('changed_at', { ascending: false });
+
+  if (error) throw asDbError(error);
+
+  return (data ?? []).map((row) => {
+    const actor = (row as { profiles?: { name?: string | null; email?: string | null } }).profiles;
+    return {
+      id: row.id as string,
+      fromStatus: (row.from_status as string) ?? null,
+      toStatus: (row.to_status as string) ?? '',
+      reason: (row.reason as string) ?? null,
+      changedAt: row.changed_at as string,
+      changedBy: (row.changed_by as string) ?? null,
+      changedByName: actor?.name || actor?.email || null,
+      totalAmountAtChange:
+        row.total_amount_at_change == null ? null : Number(row.total_amount_at_change),
+    };
+  });
 }
 
 /** @deprecated use createWorkOrder for the full mandatory-fields flow. Kept for callers that only need a raw insert. */

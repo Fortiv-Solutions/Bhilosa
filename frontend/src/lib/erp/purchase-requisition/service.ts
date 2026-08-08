@@ -905,8 +905,11 @@ export function validatePrForm(form: PrFormState, _isOverBudget?: boolean): stri
   if (!form.project_id) errs.push('Project is required.');
   if (!form.required_date) errs.push('Required-by date is required.');
   if (!form.delivery_address.trim()) errs.push('Delivery address is required.');
-  if (!form.activity_name.trim()) errs.push('Activity is required.');
   for (const l of form.lines) {
+    if (!(l.activity_name || l.work_activity || '').trim()) {
+      errs.push(`Activity is required for "${l.item_description || 'Item'}".`);
+      break;
+    }
     if (l.pr_quantity <= 0) { errs.push(`"${l.item_description || 'Item'}" quantity must be greater than zero.`); break; }
     if (!l.is_non_mr_item && l.remaining_mr_qty != null && l.pr_quantity > l.remaining_mr_qty + 1e-6) { errs.push(`"${l.item_description}" exceeds remaining approved MR quantity.`); break; }
     if (l.is_non_mr_item && !(l.non_mr_justification ?? '').trim()) { errs.push('Non-MR items require a justification.'); break; }
