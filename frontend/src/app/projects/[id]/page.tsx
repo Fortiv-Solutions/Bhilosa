@@ -3791,7 +3791,7 @@ Rules:
       {/* Left Sidebar - matching main ERP sidebar style & spacing */}
       <aside className="hidden md:flex flex-col w-20 border-r border-border bg-card h-full shrink-0 z-40 justify-between select-none overflow-y-auto scrollbar-none">
         {/* Top Logo Container (h-14 matching HeaderNavbar) */}
-        <div className="flex items-center justify-center h-14 flex-shrink-0 border-b border-border">
+        <div className="flex items-center justify-center h-14 flex-shrink-0 border-b border-border bg-card">
           <Link href="/projects" title="Back to Projects" className="flex items-center justify-center w-full h-full hover:bg-muted/30 transition-colors group">
             <svg className="w-6.5 h-6.5 text-[#b68d40] drop-shadow-md flex-shrink-0" viewBox="30 1 36 29" fill="none" xmlns="http://www.w3.org/2000/svg">
               <path className="fill-[#b68d40]" d="M52.13,17.62v2.6s7.81,1.18,9,9.31h4.34a4.39,4.39,0,0,1-1.9-2.21C63,25.74,60.25,18.65,52.13,17.62ZM34.47,3.9H44.72V14.23C37.23,14.15,34.62,13.2,34.47,3.9ZM30,1.38A5.14,5.14,0,0,1,32,5.24v.63c.71,9.31,4.65,10.57,12.7,10.65V27.16h-.08s-.4,2.21-1.58,2.37h4.18V1.38H30ZM43.53,17.62v2.6s-7.8,1.18-8.91,9.31H30.29a4.07,4.07,0,0,0,1.81-2.21C32.65,25.74,35.49,18.65,43.53,17.62ZM51,14.23V3.9H61.28C61,13.2,58.44,14.15,51,14.23ZM63.8,1.38H48.5V29.53h4.1C51.5,29.37,51,27.16,51,27.16h0V16.52c8-0.08,12-1.34,12.61-10.65a1.71,1.71,0,0,0,.08-.63,4.93,4.93,0,0,1,2-3.86Z"/>
@@ -3800,7 +3800,7 @@ Rules:
         </div>
 
         {/* Nav Items */}
-        <nav className="flex flex-col flex-1 pt-0 pb-4 gap-1.5">
+        <nav className="flex flex-col flex-1 pt-1 pb-4 gap-1">
           {[
             { id: 'project-management', label: 'Overview',       Icon: Building2       },
             { id: 'inbox',              label: 'Inbox',           Icon: MessageSquare   },
@@ -3817,7 +3817,7 @@ Rules:
               <button
                 key={id}
                 onClick={() => setActiveTab(id as ProjectTab)}
-                className={`flex flex-col items-center justify-center gap-1.5 w-full py-3.5 transition-all duration-150 border-l-[3px] ${
+                className={`flex flex-col items-center justify-center gap-1.5 w-full py-3 transition-all duration-150 border-l-[3px] ${
                   isActive
                     ? 'bg-[#b68d40]/10 text-[#b68d40] border-[#b68d40]'
                     : 'text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-white border-transparent'
