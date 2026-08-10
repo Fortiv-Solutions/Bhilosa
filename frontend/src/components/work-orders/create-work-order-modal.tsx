@@ -18,6 +18,7 @@ import { uploadEntityAttachment } from '@/lib/documents';
 import { useAppStore } from '@/store/use-app-store';
 import { formatIndianCurrency } from '@/utils/format-currency';
 import { supabase } from '@/utils/supabase-client';
+import { isLiveSupabase } from '@/lib/erp/supabase-modules';
 
 export type CreateWorkOrderModalProps = {
   isOpen: boolean;
@@ -51,6 +52,10 @@ export function CreateWorkOrderModal({ isOpen, onClose, onSuccess }: CreateWorkO
   const [billingAddress, setBillingAddress] = useState('');
   const [gstNumber, setGstNumber] = useState('');
   const [vendors, setVendors] = useState<any[]>([]);
+  /** The vendor master load was silently swallowing its error, so a failed or
+      empty read looked identical to a control that simply would not open. */
+  const [vendorsLoading, setVendorsLoading] = useState(false);
+  const [vendorsError, setVendorsError] = useState<string | null>(null);
   const [showVendorDropdown, setShowVendorDropdown] = useState(false);
   const [isAutoWoNumber, setIsAutoWoNumber] = useState(true);
   
@@ -94,11 +99,40 @@ export function CreateWorkOrderModal({ isOpen, onClose, onSuccess }: CreateWorkO
     listMasterBudgetLines(projectId).then(setMasterLines).catch(() => setMasterLines([]));
     isBudgetHeadRequiredForIssue(projectId).then(setBudgetHeadRequired).catch(() => setBudgetHeadRequired(true));
     
-    supabase.from('vendors')
-      .select('id, legal_name, display_name, address, gst_number')
-      .eq('is_active', true)
-      .order('legal_name')
-      .then(({ data }) => setVendors(data || []));
+    // Vendor master. Mirrors listBillableVendors(): active, not soft-deleted,
+    // contractors first — and it reports failure instead of hiding it.
+    setVendorsLoading(true);
+    setVendorsError(null);
+    if (!isLiveSupabase()) {
+      setVendors([]);
+      setVendorsLoading(false);
+      setVendorsError('Supabase is not configured, so the vendor master cannot be read.');
+    } else {
+      supabase
+        .from('vendors')
+        .select('id, legal_name, display_name, address, gst_number, vendor_code, vendor_type')
+        .eq('is_active', true)
+        .is('deleted_at', null)
+        .order('legal_name')
+        .then(({ data, error }) => {
+          setVendorsLoading(false);
+          if (error) {
+            setVendors([]);
+            setVendorsError(error.message);
+            return;
+          }
+          const rank = (t: string) => (t === 'contractor' ? 0 : t === 'both' ? 1 : 2);
+          setVendors(
+            [...(data || [])].sort(
+              (a: any, b: any) =>
+                rank(a.vendor_type) - rank(b.vendor_type) ||
+                String(a.display_name || a.legal_name || '').localeCompare(
+                  String(b.display_name || b.legal_name || ''),
+                ),
+            ),
+          );
+        });
+    }
   }, [isOpen, projectId]);
 
   const filteredVendors = useMemo(() => {
@@ -300,14 +334,48 @@ export function CreateWorkOrderModal({ isOpen, onClose, onSuccess }: CreateWorkO
                   placeholder="Search agency from Vendor Master or type name"
                   className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                 />
-                {showVendorDropdown && filteredVendors.length > 0 && (
+                {/* Always opens on focus. Rendering nothing when the list was
+                    empty made a working control look broken — there was no way
+                    to tell "no vendors in the master" from "this does not open". */}
+                {showVendorDropdown && (
                   <div className="absolute left-0 right-0 z-50 mt-1 max-h-48 overflow-y-auto rounded-md border border-border bg-popover shadow-lg">
+                    {vendorsLoading && (
+                      <div className="px-3 py-2 text-xs text-muted-foreground">
+                        Loading vendor master…
+                      </div>
+                    )}
+
+                    {!vendorsLoading && vendorsError && (
+                      <div className="px-3 py-2 text-xs text-red-600">
+                        Vendor master could not be read: {vendorsError}
+                      </div>
+                    )}
+
+                    {!vendorsLoading && !vendorsError && vendors.length === 0 && (
+                      <div className="px-3 py-2 text-xs text-muted-foreground">
+                        No active vendors in the master. Add one under Vendors, or type a name to
+                        create the agency inline.
+                      </div>
+                    )}
+
+                    {!vendorsLoading &&
+                      !vendorsError &&
+                      vendors.length > 0 &&
+                      filteredVendors.length === 0 && (
+                        <div className="px-3 py-2 text-xs text-muted-foreground">
+                          No vendor matches “{agencyName}”. It will be created as a new agency.
+                        </div>
+                      )}
+
                     {filteredVendors.map((v) => {
                       const vName = v.display_name || v.legal_name || 'Unnamed Vendor';
                       return (
                         <button
                           key={v.id}
                           type="button"
+                          /* onMouseDown fires before the input's blur, so the
+                             click is not lost to the 200ms close timer. */
+                          onMouseDown={(e) => e.preventDefault()}
                           onClick={() => {
                             setAgencyName(vName);
                             setVendorId(v.id);
@@ -318,12 +386,29 @@ export function CreateWorkOrderModal({ isOpen, onClose, onSuccess }: CreateWorkO
                           className="w-full px-3 py-2 text-left text-xs hover:bg-accent hover:text-accent-foreground border-b border-border last:border-0 flex flex-col gap-0.5"
                         >
                           <span className="font-bold text-foreground">{vName}</span>
-                          {v.gst_number && <span className="text-[10px] text-muted-foreground">GST: {v.gst_number}</span>}
+                          <span className="text-[10px] text-muted-foreground">
+                            {v.vendor_type === 'contractor'
+                              ? 'Contractor'
+                              : v.vendor_type === 'both'
+                                ? 'Contractor / Supplier'
+                                : 'Supplier'}
+                            {v.gst_number ? ` · GST ${v.gst_number}` : ''}
+                          </span>
                         </button>
                       );
                     })}
                   </div>
                 )}
+
+                {vendorId ? (
+                  <p className="text-[10px] font-semibold text-emerald-700 dark:text-emerald-400">
+                    Linked to vendor master
+                  </p>
+                ) : agencyName.trim() ? (
+                  <p className="text-[10px] text-amber-700 dark:text-amber-400">
+                    Not linked to the vendor master — a new agency will be created.
+                  </p>
+                ) : null}
               </div>
               <div className="space-y-1">
                 <label className="text-xs font-semibold text-muted-foreground">Trade / Scope of Work <span className="text-red-500">*</span></label>

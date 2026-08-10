@@ -26,6 +26,8 @@ import { MeasurementSheetModal } from '@/components/work-orders/measurement-shee
 import { FinancialPositionPanel } from '@/components/work-orders/financial-position-panel';
 import { VariationsPanel } from '@/components/work-orders/variations-panel';
 import { ContractTermsPanel } from '@/components/work-orders/contract-terms-panel';
+import { BillingProgressPanel } from '@/components/work-orders/billing-progress-panel';
+import type { BillingPosition } from '@/lib/wo-billable-items';
 import { formatIndianCurrency } from '@/utils/format-currency';
 import { StatusActionBar, type StatusAction } from '@/components/work-orders/status-action-bar';
 import { getWorkOrderPermissions } from '@/lib/work-order-permissions';
@@ -48,6 +50,8 @@ export default function WorkOrderDetailPage({ params }: { params: Promise<{ id: 
   const [history, setHistory] = useState<WorkOrderStatusHistoryRow[]>([]);
   const [sheets, setSheets] = useState<MeasurementSheetRow[]>([]);
   const [isMeasurementModalOpen, setIsMeasurementModalOpen] = useState(false);
+  /** Set when the measurement modal is opened from a schedule-of-values row. */
+  const [measuringItem, setMeasuringItem] = useState<BillingPosition | null>(null);
   /** Bumped after any change that moves money, so the panel re-reads. */
   const [financialRefresh, setFinancialRefresh] = useState(0);
   /** For the variation segregation-of-duties check. */
@@ -271,6 +275,23 @@ export default function WorkOrderDetailPage({ params }: { params: Promise<{ id: 
           </div>
         </div>
       )}
+
+      {/* The schedule of values: what is done, what is certified, and what may
+          be billed today. Progress on measured scope is derived from verified
+          measurement sheets — never typed, because the source certificates
+          already prove what a free-typed progress field becomes. */}
+      <BillingProgressPanel
+        workOrderId={id}
+        permissions={permissions}
+        isDraft={['draft', 'submitted', 'rejected'].includes(
+          canonicalWorkOrderStatus(wo.wo_status) ?? '',
+        )}
+        refreshToken={financialRefresh}
+        onRecordMeasurement={(row) => {
+          setMeasuringItem(row);
+          setIsMeasurementModalOpen(true);
+        }}
+      />
 
       {/* Budget position. Commitment figures are read from budget_ledger via
           work_order_budget_view, so they always agree with the journal. */}
@@ -596,12 +617,24 @@ export default function WorkOrderDetailPage({ params }: { params: Promise<{ id: 
 
       <MeasurementSheetModal
         isOpen={isMeasurementModalOpen}
-        onClose={() => setIsMeasurementModalOpen(false)}
+        onClose={() => {
+          setIsMeasurementModalOpen(false);
+          setMeasuringItem(null);
+        }}
         onSuccess={refresh}
         projectId={wo.project_id}
         workOrderId={id}
         workOrderNumber={wo.work_order_number}
         activityId={wo.activity_id}
+        billableItem={
+          measuringItem
+            ? {
+                id: measuringItem.billable_item_id,
+                label: measuringItem.item_label,
+                workOrderLineId: measuringItem.work_order_line_id,
+              }
+            : null
+        }
       />
     </div>
   );

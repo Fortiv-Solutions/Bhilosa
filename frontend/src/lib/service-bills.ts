@@ -294,6 +294,13 @@ export type CreateServiceBillLineInput = {
   cumulativeQuantity?: number;
   previousQuantity?: number;
   workOrderLineId?: string;
+  /**
+   * The unit of claim on the Work Order's schedule of values. Once a Work Order
+   * has one, trg_sb_eligibility_gate refuses to certify a bill whose lines do
+   * not say what they draw on — none of the 149 source certificates carried any
+   * contract reference at all.
+   */
+  billableItemId?: string;
   measurementSheetItemId?: string;
   masterBudgetItemId?: string;
   /**
@@ -428,6 +435,7 @@ export async function createServiceBill(input: CreateServiceBillInput): Promise<
         service_bill_id: billId,
         project_id: dbProjectId,
         work_order_line_id: l.workOrderLineId || null,
+        billable_item_id: l.billableItemId || null,
         master_budget_item_id: l.masterBudgetItemId || input.masterBudgetItemId || null,
         description: l.description.trim(),
         unit: l.unit || null,

@@ -168,6 +168,12 @@ export type CreateMeasurementItemInput = {
   heightDepth?: number;
   deduction?: number;
   workOrderLineId?: string;
+  /**
+   * The unit of claim being measured. A line with one claim resolves through
+   * work_order_line_id, but a stage-billed line has one claim per stage and an
+   * unattributed sheet cannot be apportioned between them.
+   */
+  billableItemId?: string;
   remarks?: string;
 };
 
@@ -227,6 +233,7 @@ export async function createMeasurementSheet(
       measurement_sheet_id: sheetId,
       project_id: dbProjectId,
       work_order_line_id: item.workOrderLineId || null,
+      billable_item_id: item.billableItemId || null,
       description: item.description.trim(),
       unit: item.unit || null,
       nos: item.nos ?? 1,
