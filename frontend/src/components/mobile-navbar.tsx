@@ -20,6 +20,7 @@ import {
   LogOut,
   Bell,
   UserCog,
+  HelpCircle,
 } from 'lucide-react';
 import { ROLE_LABELS } from '@/lib/rbac';
 import { useAppStore } from '@/store/use-app-store';
@@ -91,6 +92,11 @@ export default function MobileNavbar() {
       title: 'Settings',
       icon: Settings2,
       items: [{ label: 'Settings', path: '/settings' }],
+    },
+    {
+      title: 'Support',
+      icon: HelpCircle,
+      items: [{ label: 'Help & Support', path: '/support' }],
     },
   ];
 

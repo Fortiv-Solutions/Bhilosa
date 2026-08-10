@@ -62,9 +62,9 @@ export default function HeaderNavbar() {
   return (
     <header className="hidden lg:flex items-center justify-between h-14 bg-card border-b border-border transition-all duration-300 w-full flex-shrink-0">
       {/* Left side: Logo, Title & Search */}
-      <div className="flex items-center h-full gap-5">
+      <div className="flex items-center h-full">
         {/* Logo Icon Container (Matches sidebar width: 80px) */}
-        <Link href="/dashboard" className="w-20 h-full flex items-center justify-center border-r border-border hover:bg-muted/30 transition-colors flex-shrink-0">
+        <Link href="/dashboard" className="w-20 shrink-0 h-full flex items-center justify-center border-r border-border hover:bg-muted/30 transition-colors">
           <svg
             className="w-6.5 h-6.5 text-[#b68d40] drop-shadow-md flex-shrink-0"
             viewBox="30 1 36 29"
@@ -79,7 +79,7 @@ export default function HeaderNavbar() {
         </Link>
 
         {/* Brand Text and Page Title */}
-        <div className="flex items-center gap-2 select-none">
+        <div className="flex items-center gap-2 px-6 select-none">
           <span className="text-[14px] font-heading font-black tracking-wider text-[#b68d40] leading-none uppercase">
             PRAGATI
           </span>
@@ -259,8 +259,8 @@ export default function HeaderNavbar() {
                   Access is assigned by upper management and enforced by database policies.
                 </div>
                 <div className="mt-1.5 border-t border-border pt-1.5 flex flex-col gap-0.5">
-                  <a
-                    href="tel:+919876543210"
+                  <Link
+                    href="/support"
                     onClick={() => setIsProfileOpen(false)}
                     className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs font-semibold text-muted-foreground transition-colors hover:bg-muted cursor-pointer"
                   >
@@ -268,10 +268,10 @@ export default function HeaderNavbar() {
                       <Phone className="h-3.5 w-3.5" strokeWidth={1.8} />
                     </span>
                     <div className="flex flex-col min-w-0">
-                      <span className="text-[9px] text-muted-foreground leading-none">Support Hotline</span>
+                      <span className="text-[9px] text-muted-foreground leading-none">Help & Support Desk</span>
                       <span className="text-[11px] font-bold text-foreground mt-0.5 leading-none">+91 98765 43210</span>
                     </div>
-                  </a>
+                  </Link>
 
                   <button
                     type="button"

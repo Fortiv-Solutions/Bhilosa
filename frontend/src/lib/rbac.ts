@@ -50,6 +50,7 @@ export const ROLE_ALLOWED_PATHS: Record<Role, string[]> = {
     '/inbox',
     '/reports',
     '/notifications',
+    '/support',
   ],
   PR_TEAM: [
     '/dashboard',
@@ -63,6 +64,7 @@ export const ROLE_ALLOWED_PATHS: Record<Role, string[]> = {
     '/inbox',
     '/reports',
     '/notifications',
+    '/support',
   ],
 };
 

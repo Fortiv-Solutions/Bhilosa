@@ -11,6 +11,7 @@ import {
   CircleDollarSign,
   FileText,
   Settings2,
+  HelpCircle,
 } from 'lucide-react';
 import { useAppStore } from '@/store/use-app-store';
 
@@ -61,6 +62,12 @@ export default function Sidebar() {
       icon: Settings2,
       groupPaths: ['/settings']
     },
+    { 
+      label: 'Support', 
+      path: '/support', 
+      icon: HelpCircle,
+      groupPaths: ['/support']
+    },
   ];
 
   // Helper to determine if an item group is active
@@ -69,7 +76,7 @@ export default function Sidebar() {
   };
 
   return (
-    <aside className="relative hidden lg:flex flex-col bg-white dark:bg-gray-900 border-r border-gray-200 dark:border-gray-800 flex-shrink-0 h-[calc(100vh-3.5rem)] sticky top-14 w-20 select-none overflow-hidden">
+    <aside className="hidden lg:flex flex-col bg-card border-r border-border w-20 shrink-0 h-full select-none overflow-hidden">
       {/* Navigation menu items stacked vertically (Zoho format) */}
       <nav className="flex flex-col flex-1 pt-0 pb-4 gap-1.5">
         {slimNavItems.map((item) => {

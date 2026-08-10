@@ -513,37 +513,39 @@ export function TaskModule({ project, overviewData }: { project: any, overviewDa
   return (
     <div className="space-y-6">
       {/* Header Controls Bar */}
-      <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white dark:bg-gray-900 p-4 rounded-2xl border border-gray-100 dark:border-gray-800 shadow-sm">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#b68d40]/10 text-[#b68d40]">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#b68d40]/10 text-[#b68d40] border border-[#b68d40]/20">
             <ListTodo className="h-5 w-5" />
           </div>
           <div>
-            <h2 className="font-heading text-xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
-              ERP Task Management System
-              <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-[#b68d40]/10 text-[#b68d40] border border-[#b68d40]/20">
+            <div className="flex items-center gap-2">
+              <h2 className="font-heading text-lg font-bold text-gray-900 dark:text-white">
+                ERP Task Management System
+              </h2>
+              <span className="text-[11px] font-extrabold px-2.5 py-0.5 rounded-full bg-[#b68d40]/10 text-[#b68d40] border border-[#b68d40]/25">
                 {filteredTasks.length} Tasks
               </span>
-            </h2>
-            <p className="text-xs text-gray-500 dark:text-gray-400">High-capacity operations engine & site engineer workflow</p>
+            </div>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">High-capacity operations engine & site engineer workflow</p>
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2 w-full lg:w-auto">
+        <div className="flex items-center gap-2.5 flex-wrap sm:flex-nowrap shrink-0">
           {/* View Mode Switcher (Board | Table) */}
-          <div className="flex items-center rounded-xl bg-gray-100 dark:bg-gray-800/80 p-1 border border-gray-200 dark:border-gray-700">
+          <div className="flex items-center h-9.5 rounded-xl bg-gray-100 dark:bg-gray-800/80 p-1 border border-gray-200 dark:border-gray-700">
             <button
               onClick={() => setViewMode('board')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
-                viewMode === 'board' ? 'bg-white dark:bg-gray-900 text-gray-900 dark:text-white shadow-sm' : 'text-gray-500 hover:text-gray-900 dark:hover:text-white'
+              className={`flex items-center gap-1.5 px-3 h-7 rounded-lg text-xs font-bold transition cursor-pointer ${
+                viewMode === 'board' ? 'bg-white dark:bg-gray-900 text-gray-900 dark:text-white shadow-xs' : 'text-gray-500 hover:text-gray-900 dark:hover:text-white'
               }`}
             >
               <LayoutGrid className="w-3.5 h-3.5" /> Board
             </button>
             <button
               onClick={() => setViewMode('table')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
-                viewMode === 'table' ? 'bg-white dark:bg-gray-900 text-gray-900 dark:text-white shadow-sm' : 'text-gray-500 hover:text-gray-900 dark:hover:text-white'
+              className={`flex items-center gap-1.5 px-3 h-7 rounded-lg text-xs font-bold transition cursor-pointer ${
+                viewMode === 'table' ? 'bg-white dark:bg-gray-900 text-gray-900 dark:text-white shadow-xs' : 'text-gray-500 hover:text-gray-900 dark:hover:text-white'
               }`}
             >
               <TableIcon className="w-3.5 h-3.5" /> Table
@@ -555,7 +557,7 @@ export function TaskModule({ project, overviewData }: { project: any, overviewDa
             <select
               value={grouping}
               onChange={(e) => setGrouping(e.target.value as any)}
-              className="appearance-none rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 pl-3 pr-8 py-2 text-xs font-bold text-gray-700 dark:text-gray-300 outline-none cursor-pointer hover:border-[#b68d40]"
+              className="h-9.5 appearance-none rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 pl-3.5 pr-8 text-xs font-bold text-gray-700 dark:text-gray-300 outline-none cursor-pointer hover:border-[#b68d40] focus:ring-1 focus:ring-[#b68d40]"
             >
               <option value="phase">Group by Phase</option>
               <option value="tower">Group by Building Tower</option>
@@ -566,26 +568,26 @@ export function TaskModule({ project, overviewData }: { project: any, overviewDa
           
           <button
             onClick={() => setIsAddFormOpen(!isAddFormOpen)}
-            className="flex items-center gap-2 rounded-xl bg-[#b68d40] px-4 py-2 text-xs font-bold text-white shadow-lg shadow-[#b68d40]/20 transition-all hover:scale-[1.02] active:scale-95 cursor-pointer"
+            className="flex items-center gap-2 h-9.5 rounded-xl bg-[#b68d40] px-4 text-xs font-bold text-white shadow-sm hover:bg-[#967332] active:scale-95 transition-all cursor-pointer"
           >
             {isAddFormOpen ? <X className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />}
-            {isAddFormOpen ? 'Close Form' : 'New Task'}
+            {isAddFormOpen ? 'Close Form' : '+ New Task'}
           </button>
         </div>
       </div>
 
       {/* Search & Multi-Filter Control Bar */}
-      <div className="rounded-2xl border border-gray-100 dark:border-gray-800 bg-white/70 dark:bg-gray-900/70 p-3.5 backdrop-blur-md shadow-sm space-y-3">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-3 items-center">
+      <div className="rounded-2xl border border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-900 p-4 shadow-sm space-y-3">
+        <div className="flex flex-col lg:flex-row items-stretch lg:items-center gap-3">
           {/* Search Input */}
-          <div className="relative md:col-span-2">
+          <div className="relative flex-1">
             <Search className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
             <input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search 1,000+ tasks by title, scope, engineer, or phase..."
-              className="w-full rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/50 pl-10 pr-4 py-2 text-xs text-gray-900 dark:text-white outline-none focus:border-[#b68d40]"
+              className="w-full h-9.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 pl-10 pr-8 text-xs text-gray-900 dark:text-white outline-none focus:border-[#b68d40] focus:ring-1 focus:ring-[#b68d40]"
             />
             {searchQuery && (
               <button onClick={() => setSearchQuery('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
@@ -595,11 +597,11 @@ export function TaskModule({ project, overviewData }: { project: any, overviewDa
           </div>
 
           {/* Engineer Filter Dropdown */}
-          <div className="relative">
+          <div className="relative lg:w-60 shrink-0">
             <select
               value={filterEngineer}
               onChange={(e) => setFilterEngineer(e.target.value)}
-              className="w-full appearance-none rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/50 pl-3 pr-8 py-2 text-xs text-gray-700 dark:text-gray-300 outline-none cursor-pointer focus:border-[#b68d40]"
+              className="w-full h-9.5 appearance-none rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 pl-3.5 pr-8 text-xs font-medium text-gray-700 dark:text-gray-300 outline-none cursor-pointer focus:border-[#b68d40]"
             >
               <option value="">Filter by Site Engineer (All)</option>
               {renderEngineerOptions(filterEngineer)}
@@ -608,11 +610,11 @@ export function TaskModule({ project, overviewData }: { project: any, overviewDa
           </div>
 
           {/* Phase Filter Dropdown */}
-          <div className="relative">
+          <div className="relative lg:w-56 shrink-0">
             <select
               value={filterPhase}
               onChange={(e) => setFilterPhase(e.target.value)}
-              className="w-full appearance-none rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/50 pl-3 pr-8 py-2 text-xs text-gray-700 dark:text-gray-300 outline-none cursor-pointer focus:border-[#b68d40]"
+              className="w-full h-9.5 appearance-none rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 pl-3.5 pr-8 text-xs font-medium text-gray-700 dark:text-gray-300 outline-none cursor-pointer focus:border-[#b68d40]"
             >
               <option value="">Filter by Phase (All)</option>
               {phaseList.map((p) => (
@@ -624,17 +626,17 @@ export function TaskModule({ project, overviewData }: { project: any, overviewDa
         </div>
 
         {/* Exception Filter Chips */}
-        <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-gray-100 dark:border-gray-800/60">
-          <span className="text-[10px] font-extrabold uppercase text-gray-400 flex items-center gap-1 mr-1">
+        <div className="flex flex-wrap items-center gap-2 pt-3 border-t border-gray-100 dark:border-gray-800">
+          <span className="text-[10px] font-extrabold uppercase tracking-wider text-gray-400 flex items-center gap-1.5 mr-1 select-none">
             <Filter className="w-3 h-3 text-[#b68d40]" /> Quick Exception Filters:
           </span>
 
           <button
             onClick={() => setFilterChip('ALL')}
-            className={`px-3 py-1 rounded-xl text-xs font-bold transition cursor-pointer border ${
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer border ${
               filterChip === 'ALL'
-                ? 'bg-gray-900 text-white dark:bg-white dark:text-gray-900 border-transparent shadow-sm'
-                : 'bg-gray-50 dark:bg-gray-800 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-gray-700 hover:bg-gray-100'
+                ? 'bg-gray-900 text-white dark:bg-white dark:text-gray-900 border-transparent shadow-xs'
+                : 'bg-gray-50 dark:bg-gray-800/60 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-gray-700 hover:bg-gray-100'
             }`}
           >
             All Tasks ({tasks.length})
@@ -642,9 +644,9 @@ export function TaskModule({ project, overviewData }: { project: any, overviewDa
 
           <button
             onClick={() => setFilterChip('ISSUES')}
-            className={`px-3 py-1 rounded-xl text-xs font-bold transition cursor-pointer border flex items-center gap-1.5 ${
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer border flex items-center gap-1.5 ${
               filterChip === 'ISSUES'
-                ? 'bg-amber-500 text-white border-amber-500 shadow-sm'
+                ? 'bg-amber-500 text-white border-amber-500 shadow-xs'
                 : 'bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-300 border-amber-200 dark:border-amber-800 hover:bg-amber-100'
             }`}
           >
@@ -653,9 +655,9 @@ export function TaskModule({ project, overviewData }: { project: any, overviewDa
 
           <button
             onClick={() => setFilterChip('DELAYED')}
-            className={`px-3 py-1 rounded-xl text-xs font-bold transition cursor-pointer border flex items-center gap-1.5 ${
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer border flex items-center gap-1.5 ${
               filterChip === 'DELAYED'
-                ? 'bg-rose-600 text-white border-rose-600 shadow-sm'
+                ? 'bg-rose-600 text-white border-rose-600 shadow-xs'
                 : 'bg-rose-50 text-rose-700 dark:bg-rose-950/30 dark:text-rose-300 border-rose-200 dark:border-rose-800 hover:bg-rose-100'
             }`}
           >
@@ -664,14 +666,28 @@ export function TaskModule({ project, overviewData }: { project: any, overviewDa
 
           <button
             onClick={() => setFilterChip('AWAITING_APPROVAL')}
-            className={`px-3 py-1 rounded-xl text-xs font-bold transition cursor-pointer border flex items-center gap-1.5 ${
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer border flex items-center gap-1.5 ${
               filterChip === 'AWAITING_APPROVAL'
-                ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
                 : 'bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-300 border-blue-200 dark:border-blue-800 hover:bg-blue-100'
             }`}
           >
             ⏳ Awaiting Approval ({awaitingCount})
           </button>
+
+          {(searchQuery || filterEngineer || filterPhase || filterChip !== 'ALL') && (
+            <button
+              onClick={() => {
+                setSearchQuery('');
+                setFilterEngineer('');
+                setFilterPhase('');
+                setFilterChip('ALL');
+              }}
+              className="ml-auto text-xs font-bold text-gray-500 hover:text-red-500 transition-colors flex items-center gap-1 cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" /> Reset Filters
+            </button>
+          )}
         </div>
       </div>
 
