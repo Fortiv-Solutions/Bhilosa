@@ -208,9 +208,8 @@ export default function WorkOrderDetailPage({ params }: { params: Promise<{ id: 
           </div>
         )}
 
-        <dl className="mt-5 grid grid-cols-2 gap-4 md:grid-cols-4 text-xs">
+        <dl className="mt-5 grid grid-cols-2 gap-4 md:grid-cols-3 text-xs">
           <div><dt className="text-muted-foreground uppercase font-bold text-[10px]">Agency</dt><dd className="mt-1 font-semibold">{agencyName}</dd></div>
-          <div><dt className="text-muted-foreground uppercase font-bold text-[10px]">Site / Activity</dt><dd className="mt-1 font-semibold">{wo.construction_activities?.title || wo.project_sites?.name || '-'}</dd></div>
           <div><dt className="text-muted-foreground uppercase font-bold text-[10px]">Issue Date</dt><dd className="mt-1 font-semibold">{wo.issue_date || '-'}</dd></div>
           <div><dt className="text-muted-foreground uppercase font-bold text-[10px]">Format</dt><dd className="mt-1 font-semibold">{wo.wo_templates?.name || 'Custom'}</dd></div>
         </dl>

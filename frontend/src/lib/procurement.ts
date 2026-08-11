@@ -1,5 +1,6 @@
 import { supabase, getDbSiteId, getSupabaseJsonHeaders } from '@/utils/supabase-client';
 import { isLiveSupabase } from '@/lib/erp/supabase-modules';
+import { calculateLandedCostAllocation } from '@/lib/bill-allocation';
 import { normalizeDatabaseRole, type Role } from '@/lib/roles';
 import {
   normalizePoStatus,
@@ -6242,8 +6243,35 @@ export async function savePurchaseBill(payload: {
       // Save line items in fallback path
       if (vendorBillId && lines.length > 0) {
         await supabase.from('vendor_bill_lines').delete().eq('vendor_bill_id', vendorBillId);
+
+        const allocationResult = calculateLandedCostAllocation(
+          lines.map((l) => ({
+            id: (l.item_code as string) || (l.item_id as string),
+            item_desc: (l.item_desc as string) || (l.description as string) || 'Billed item',
+            item_code: (l.item_code as string) || '',
+            approved_qty: Math.max(toFallbackNum(l.received_qty), 0),
+            unit_rate: Math.max(toFallbackNum(l.bill_rate), 0),
+            net_amt: toFallbackNum(l.gross_amount),
+            activity_name: (l.activity_name as string) || undefined,
+            sub_activity_name: (l.sub_activity_name as string) || undefined,
+          })),
+          {
+            lumpsum_freight_charges: toFallbackNum(payload.lumpsum_freight_charges),
+            lumpsum_loading_unloading_charges: toFallbackNum(payload.lumpsum_loading_unloading_charges),
+            lumpsum_other_charges: toFallbackNum(payload.lumpsum_other_charges),
+            lumpsum_discount_amount: toFallbackNum(payload.lumpsum_discount_amount),
+          },
+        );
+
         let srCounter = 0;
         for (const l of lines) {
+          const alloc = allocationResult.lines[srCounter] ?? {
+            allocated_freight: 0,
+            allocated_handling: 0,
+            allocated_others: 0,
+            allocated_discount: 0,
+            landed_net_amount: toFallbackNum(l.net_amount),
+          };
           srCounter++;
           await supabase.from('vendor_bill_lines').insert({
             vendor_bill_id: vendorBillId,
@@ -6259,10 +6287,6 @@ export async function savePurchaseBill(payload: {
             item_brand: (l.item_brand as string) || null,
             purchase_category:
               (l.purchase_category as string) || (l.activity_name as string) || null,
-            /* The identity and the activity axis, carried from the GRN line.
-               Without activity_name the certified bill cannot name a budget
-               row, which is why fn_post_vendor_bill_to_budget could only post
-               one header-level allocation for the whole bill. */
             item_code: (l.item_code as string) || null,
             item_specification: (l.item_specification as string) || null,
             item_description: (l.item_desc as string) || (l.description as string) || null,
@@ -6285,17 +6309,17 @@ export async function savePurchaseBill(payload: {
             bill_discount_amt: toFallbackNum(l.bill_discount_amt),
             gross_amount: toFallbackNum(l.gross_amount),
             po_excise_duty_rate: toFallbackNum(l.po_excise_duty_rate),
-            loading_unloading_chgs: toFallbackNum(l.loading_unloading_chgs),
-            freight_chgs: toFallbackNum(l.freight_chgs),
-            others_chgs: toFallbackNum(l.others_chgs),
+            loading_unloading_chgs: alloc.allocated_handling || toFallbackNum(l.loading_unloading_chgs),
+            freight_chgs: alloc.allocated_freight || toFallbackNum(l.freight_chgs),
+            others_chgs: alloc.allocated_others || toFallbackNum(l.others_chgs),
             vat_type: (l.vat_type as string) || null,
             vat_on_all: !!l.vat_on_all,
             po_vat_rate: toFallbackNum(l.po_vat_rate),
             vat_amt: toFallbackNum(l.vat_amt),
             po_lbt_rate: toFallbackNum(l.po_lbt_rate),
             tax_rate: toFallbackNum(l.po_vat_rate),
-            net_amount: toFallbackNum(l.net_amount),
-            line_total: toFallbackNum(l.net_amount),
+            net_amount: alloc.landed_net_amount || toFallbackNum(l.net_amount),
+            line_total: alloc.landed_net_amount || toFallbackNum(l.net_amount),
             pr_no: (l.pr_no as string) || null,
             ...(profileId ? { created_by: profileId, updated_by: profileId } : {}),
           });
@@ -6395,6 +6419,8 @@ export type PurchaseOrderFormPayload = {
   terms_and_conditions?: string | string[] | null;
 
   company_name?: string | null;
+  prepared_by?: string | null;
+  prepared_by_name?: string | null;
   po_in_the_name_of?: string | null;
   supplier_name?: string | null;
   vendor_name?: string | null;
@@ -6536,6 +6562,7 @@ export async function savePurchaseOrderForm(
       terms_and_conditions: termsString,
 
       company_name: payload.company_name || null,
+      prepared_by: payload.prepared_by || payload.prepared_by_name || null,
       po_in_the_name_of: payload.po_in_the_name_of || null,
       supplier_name: payload.supplier_name || null,
       vendor_name: payload.vendor_name || payload.supplier_name || null,

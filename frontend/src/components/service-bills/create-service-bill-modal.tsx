@@ -2,25 +2,23 @@
 
 // ============================================================================
 // RECORD SERVICE BILL (contractor RA bill = Payment Certificate)
-//
-// Raises a bill against an issued/active Work Order. Two shapes are supported:
-//   * MEASURED — lines drawn from the Work Order's scope. The user enters the
-//     quantity completed ON THIS BILL ONLY. All 153 Payment Certificate sheets
-//     in PC/ bill sequentially at 100% of newly completed scope and carry no
-//     "previous quantity" column, matching the Work Order term "RA shall be
-//     raised only for activity which is 100% Complete". The cumulative is
-//     DERIVED from rpc_wo_line_billing_position and enforced against the
-//     contracted quantity by trg_sb_over_measurement_guard — the same control a
-//     cumulative-entry grid would give, without changing how anyone bills.
-//   * LUMP SUM — a header amount, for trades billed as a single figure.
-//
-// Header totals for a measured bill are rolled up by a database trigger, so the
-// figures shown here are a preview of what the server will compute, never an
-// independent calculation that could disagree with it.
+// Raises a bill against an issued/active Work Order.
 // ============================================================================
 
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
-import { X, FileText, CheckCircle2, AlertTriangle, Plus, Trash2, Ruler, Wallet, ChevronDown } from 'lucide-react';
+import {
+  X,
+  FileText,
+  CheckCircle2,
+  AlertTriangle,
+  Plus,
+  Trash2,
+  Layers,
+  GitBranch,
+  Search,
+  Check,
+  ChevronDown,
+} from 'lucide-react';
 import {
   createServiceBill,
   listBillableVendors,
@@ -29,9 +27,7 @@ import {
 } from '@/lib/service-bills';
 import {
   getWorkOrderLineBillingPosition,
-  type WorkOrderLineBillingPosition,
 } from '@/lib/measurement-sheets';
-import { getBillingPosition, type BillingPosition } from '@/lib/wo-billable-items';
 import {
   getBillableWorkOrders,
   listBudgetHeads,
@@ -71,68 +67,419 @@ type BillableWorkOrder = {
 type DraftLine = {
   key: string;
   workOrderLineId?: string;
-  /** The unit of claim on the Work Order's schedule of values. */
   billableItemId?: string;
   description: string;
-  unit: string;
-  /**
-   * Quantity certified on THIS bill — entered directly.
-   *
-   * SEQUENTIAL, not cumulative. All 153 Payment Certificate sheets in PC/
-   * invoice newly completed scope at 100% and carry no "previous quantity"
-   * column; the Work Order terms say "RA shall be raised only for activity
-   * which is 100% Complete". The cumulative is derived (contracted, certified
-   * and remaining come from rpc_wo_line_billing_position) and enforced by
-   * trg_sb_over_measurement_guard, so the control survives without asking
-   * anyone to change how they bill.
-   */
+  percentCompleted: number; // % of Work Completed (0 - 100%)
   quantity: number;
-  /** Certified on earlier bills — read-only, from the database. */
-  previousQuantity: number;
-  /** Contracted quantity on the Work Order line, for the remaining figure. */
-  contractedQuantity: number;
-  /** Repetition multiplier, the "No. of Flats" column on some certificates. */
-  flatsCount: number;
+  unit: string;
   rate: number;
-  /** The contracted rate, for comparison. Departing from it needs a reason. */
   contractedRate: number;
-  rateVarianceReason: string;
   taxRate: number;
-  selectedStage?: string;
-  floorLevel?: number;
-  /** 1 + floor x lead%/100. Declared, so the rate variance guard accepts it. */
-  rateFactorApplied?: number;
 };
 
 function newLine(): DraftLine {
   return {
     key: Math.random().toString(36).slice(2),
     description: '',
+    percentCompleted: 100,
+    quantity: 1,
     unit: '',
-    quantity: 0,
-    previousQuantity: 0,
-    contractedQuantity: 0,
-    flatsCount: 1,
     rate: 0,
     contractedRate: 0,
-    rateVarianceReason: '',
-    taxRate: 0,
-    selectedStage: '',
-    floorLevel: 0,
+    taxRate: 18,
   };
 }
 
-/** Value of one line: quantity x flats x rate, matching the line_total trigger. */
 function lineValue(line: DraftLine): number {
-  return (line.quantity || 0) * (line.flatsCount || 1) * (line.rate || 0);
+  const qty = line.quantity && line.quantity > 0 ? line.quantity : 1;
+  const baseVal = qty * (line.rate || 0);
+  const pct = line.percentCompleted !== undefined && line.percentCompleted !== null ? line.percentCompleted : 100;
+  return baseVal * (pct / 100);
 }
 
-/** Derived, never typed: what this bill takes the line to in total. */
-function cumulativeAfter(line: DraftLine): number {
-  return (line.previousQuantity || 0) + (line.quantity || 0) * (line.flatsCount || 1);
+/* ─── Typo-Tolerant & Partial Text Fuzzy Matching Helper ───────────────── */
+function fuzzyMatch(text: string, query: string): boolean {
+  if (!query) return true;
+  const normText = text.toLowerCase().trim();
+  const normQuery = query.toLowerCase().trim();
+
+  if (normText.includes(normQuery)) return true;
+
+  const queryTokens = normQuery.split(/\s+/).filter(Boolean);
+  const textTokens = normText.split(/\s+/).filter(Boolean);
+  const allTokensMatch = queryTokens.every((qt) =>
+    textTokens.some((tt) => tt.includes(qt) || LevenshteinDistance(tt, qt) <= 1),
+  );
+  if (allTokensMatch) return true;
+
+  let qIdx = 0;
+  for (let i = 0; i < normText.length && qIdx < normQuery.length; i++) {
+    if (normText[i] === normQuery[qIdx]) qIdx++;
+  }
+  return qIdx === normQuery.length;
 }
 
-export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateServiceBillModalProps) {
+function LevenshteinDistance(a: string, b: string): number {
+  if (Math.abs(a.length - b.length) > 2) return 99;
+  const matrix: number[][] = [];
+  for (let i = 0; i <= b.length; i++) matrix[i] = [i];
+  for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
+
+  for (let i = 1; i <= b.length; i++) {
+    for (let j = 1; j <= a.length; j++) {
+      if (b.charAt(i - 1) === a.charAt(j - 1)) {
+        matrix[i][j] = matrix[i - 1][j - 1];
+      } else {
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j - 1] + 1,
+          matrix[i][j - 1] + 1,
+          matrix[i - 1][j] + 1,
+        );
+      }
+    }
+  }
+  return matrix[b.length][a.length];
+}
+
+/* ─── Searchable Combobox: Activity (Budget Head) ───────────────────────── */
+function BudgetHeadCombobox({
+  budgetHeads,
+  value,
+  onChange,
+}: {
+  budgetHeads: BudgetHeadOption[];
+  value: string;
+  onChange: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const selected = budgetHeads.find((b) => b.id === value);
+  const [displayQuery, setDisplayQuery] = useState(
+    selected?.allocationName || selected?.categoryName || '',
+  );
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const sel = budgetHeads.find((b) => b.id === value);
+    setDisplayQuery(sel ? sel.allocationName || sel.categoryName || '' : '');
+  }, [value, budgetHeads]);
+
+  const filtered = useMemo(() => {
+    if (
+      !displayQuery.trim() ||
+      (selected &&
+        (selected.allocationName === displayQuery ||
+          selected.categoryName === displayQuery))
+    ) {
+      return budgetHeads;
+    }
+    return budgetHeads.filter((b) => {
+      const name = b.allocationName || b.categoryName || '';
+      return fuzzyMatch(name, displayQuery);
+    });
+  }, [budgetHeads, displayQuery, selected]);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+        const sel = budgetHeads.find((b) => b.id === value);
+        setDisplayQuery(sel ? sel.allocationName || sel.categoryName || '' : '');
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [value, budgetHeads]);
+
+  return (
+    <div className="space-y-1 relative" ref={ref}>
+      <label className="text-xs font-semibold text-muted-foreground">
+        Activity (Budget Head)
+      </label>
+      <div
+        className={`flex items-center justify-between gap-2 px-3 py-2 text-xs bg-background border rounded-xl transition-all ${
+          open
+            ? 'border-primary ring-2 ring-primary/20 shadow-md'
+            : 'border-input hover:border-muted-foreground/40'
+        }`}
+      >
+        <Layers className="w-4 h-4 text-primary shrink-0" />
+        <input
+          type="text"
+          value={displayQuery}
+          onChange={(e) => {
+            setDisplayQuery(e.target.value);
+            setOpen(true);
+            if (!e.target.value.trim()) onChange('');
+          }}
+          onFocus={() => setOpen(true)}
+          placeholder="Type to search activity budget heads…"
+          className="w-full bg-transparent text-xs text-foreground placeholder:text-muted-foreground font-medium outline-none"
+        />
+        {displayQuery && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onChange('');
+              setDisplayQuery('');
+            }}
+            className="p-0.5 hover:bg-muted rounded-full text-muted-foreground"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        )}
+        <ChevronDown
+          onClick={() => setOpen(!open)}
+          className={`w-3.5 h-3.5 text-muted-foreground cursor-pointer transition-transform duration-200 ${
+            open ? 'rotate-180' : ''
+          }`}
+        />
+      </div>
+
+      {open && (
+        <div className="absolute z-50 left-0 min-w-full w-max max-w-[90vw] sm:max-w-xl mt-1.5 bg-popover border border-border rounded-2xl shadow-xl overflow-hidden flex flex-col max-h-[280px] animate-in fade-in-50 zoom-in-95 duration-100">
+          <div className="overflow-y-auto flex-1 divide-y divide-border/30">
+            <button
+              type="button"
+              onClick={() => {
+                onChange('');
+                setDisplayQuery('');
+                setOpen(false);
+              }}
+              className={`w-full px-3.5 py-2.5 text-left text-xs hover:bg-primary/10 hover:text-primary transition-colors flex items-center justify-between ${
+                !value ? 'bg-primary/10 font-bold text-primary' : 'text-muted-foreground'
+              }`}
+            >
+              <span>All Activities (Unset)</span>
+              {!value && <Check className="w-4 h-4 text-primary shrink-0" />}
+            </button>
+
+            {filtered.length === 0 && (
+              <div className="p-4 text-center text-xs text-muted-foreground">
+                No matching activities for &ldquo;{displayQuery}&rdquo;
+              </div>
+            )}
+
+            {filtered.map((b) => {
+              const isSelected = value === b.id;
+              const name = b.allocationName || b.categoryName || '';
+              return (
+                <button
+                  key={b.id}
+                  type="button"
+                  onClick={() => {
+                    onChange(b.id);
+                    setDisplayQuery(name);
+                    setOpen(false);
+                  }}
+                  className={`w-full px-3.5 py-2.5 text-left text-xs hover:bg-primary/10 hover:text-primary transition-colors flex items-start justify-between gap-3 border-b border-border/30 last:border-0 ${
+                    isSelected ? 'bg-primary/10 text-primary font-bold' : 'text-foreground'
+                  }`}
+                >
+                  <span className="whitespace-normal break-words leading-snug flex-1 font-medium">
+                    {name}
+                  </span>
+                  <div className="flex items-center gap-2 shrink-0 pt-0.5">
+                    {b.availableAmount !== undefined && (
+                      <span className="text-[10px] font-mono text-emerald-600 dark:text-emerald-400 font-semibold bg-emerald-50 dark:bg-emerald-950/40 px-1.5 py-0.5 rounded border border-emerald-200 dark:border-emerald-900/40">
+                        ₹{b.availableAmount.toLocaleString()}
+                      </span>
+                    )}
+                    {isSelected && <Check className="w-4 h-4 text-primary shrink-0" />}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─── Searchable Combobox: Sub-Activity (Budget Head Sub-Category) ────────── */
+function SubActivityCombobox({
+  masterLines,
+  selectedHead,
+  value,
+  onChange,
+}: {
+  masterLines: MasterBudgetLineOption[];
+  selectedHead?: BudgetHeadOption;
+  value: string;
+  onChange: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const selected = masterLines.find((m) => m.id === value);
+  const [displayQuery, setDisplayQuery] = useState(selected?.description || '');
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const sel = masterLines.find((m) => m.id === value);
+    setDisplayQuery(sel?.description || '');
+  }, [value, masterLines]);
+
+  const filteredByHead = useMemo(() => {
+    if (!selectedHead) return masterLines;
+    return masterLines.filter((m) => {
+      if (selectedHead.categoryId && m.categoryId) {
+        return m.categoryId === selectedHead.categoryId;
+      }
+      if (selectedHead.categoryName && m.categoryName) {
+        return (
+          m.categoryName.toLowerCase() === selectedHead.categoryName.toLowerCase()
+        );
+      }
+      if (selectedHead.allocationName && m.categoryName) {
+        return (
+          m.categoryName.toLowerCase() ===
+          selectedHead.allocationName.toLowerCase()
+        );
+      }
+      return true;
+    });
+  }, [masterLines, selectedHead]);
+
+  const filtered = useMemo(() => {
+    if (!displayQuery.trim() || (selected && selected.description === displayQuery)) {
+      return filteredByHead;
+    }
+    return filteredByHead.filter((m) => {
+      const desc = `${m.srNo ? `[${m.srNo}] ` : ''}${m.description || ''}`;
+      return fuzzyMatch(desc, displayQuery);
+    });
+  }, [filteredByHead, displayQuery, selected]);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+        const sel = masterLines.find((m) => m.id === value);
+        setDisplayQuery(sel?.description || '');
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [value, masterLines]);
+
+  return (
+    <div className="space-y-1 relative" ref={ref}>
+      <label className="text-xs font-semibold text-muted-foreground">Sub-Activity</label>
+      <div
+        className={`flex items-center justify-between gap-2 px-3 py-2 text-xs bg-background border rounded-xl transition-all ${
+          open
+            ? 'border-primary ring-2 ring-primary/20 shadow-md'
+            : 'border-input hover:border-muted-foreground/40'
+        }`}
+      >
+        <GitBranch className="w-4 h-4 text-primary shrink-0" />
+        <input
+          type="text"
+          value={displayQuery}
+          onChange={(e) => {
+            setDisplayQuery(e.target.value);
+            setOpen(true);
+            if (!e.target.value.trim()) onChange('');
+          }}
+          onFocus={() => setOpen(true)}
+          placeholder={
+            selectedHead ? 'Type to search sub-activities…' : 'Select Activity first…'
+          }
+          className="w-full bg-transparent text-xs text-foreground placeholder:text-muted-foreground font-medium outline-none"
+        />
+        {displayQuery && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onChange('');
+              setDisplayQuery('');
+            }}
+            className="p-0.5 hover:bg-muted rounded-full text-muted-foreground"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        )}
+        <ChevronDown
+          onClick={() => setOpen(!open)}
+          className={`w-3.5 h-3.5 text-muted-foreground cursor-pointer transition-transform duration-200 ${
+            open ? 'rotate-180' : ''
+          }`}
+        />
+      </div>
+
+      {open && (
+        <div className="absolute z-50 left-0 min-w-full w-max max-w-[90vw] sm:max-w-xl mt-1.5 bg-popover border border-border rounded-2xl shadow-xl overflow-hidden flex flex-col max-h-[280px] animate-in fade-in-50 zoom-in-95 duration-100">
+          <div className="overflow-y-auto flex-1 divide-y divide-border/30">
+            <button
+              type="button"
+              onClick={() => {
+                onChange('');
+                setDisplayQuery('');
+                setOpen(false);
+              }}
+              className={`w-full px-3.5 py-2.5 text-left text-xs hover:bg-primary/10 hover:text-primary transition-colors flex items-center justify-between ${
+                !value ? 'bg-primary/10 font-bold text-primary' : 'text-muted-foreground'
+              }`}
+            >
+              <span>None (Unset)</span>
+              {!value && <Check className="w-4 h-4 text-primary shrink-0" />}
+            </button>
+
+            {filtered.length === 0 && (
+              <div className="p-4 text-center text-xs text-muted-foreground">
+                {selectedHead
+                  ? `No matching sub-activities under "${selectedHead.allocationName || selectedHead.categoryName}"`
+                  : `No sub-activities match "${displayQuery}"`}
+              </div>
+            )}
+
+            {filtered.map((m) => {
+              const isSelected = value === m.id;
+              return (
+                <button
+                  key={m.id}
+                  type="button"
+                  onClick={() => {
+                    onChange(m.id);
+                    setDisplayQuery(m.description);
+                    setOpen(false);
+                  }}
+                  className={`w-full px-3.5 py-2.5 text-left text-xs hover:bg-primary/10 hover:text-primary transition-colors flex items-start justify-between gap-3 border-b border-border/30 last:border-0 ${
+                    isSelected ? 'bg-primary/10 text-primary font-bold' : 'text-foreground'
+                  }`}
+                >
+                  <div className="whitespace-normal break-words leading-snug flex-1 font-medium">
+                    {m.srNo && (
+                      <span className="font-mono text-[10px] text-muted-foreground bg-muted px-1 py-0.5 rounded border border-border mr-1.5 inline-block">
+                        [{m.srNo}]
+                      </span>
+                    )}
+                    <span>{m.description}</span>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0 pt-0.5">
+                    {m.budgetedCost > 0 && (
+                      <span className="text-[10px] font-mono text-muted-foreground bg-muted px-1.5 py-0.5 rounded border border-border">
+                        ₹{m.budgetedCost.toLocaleString()}
+                      </span>
+                    )}
+                    {isSelected && <Check className="w-4 h-4 text-primary shrink-0" />}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function CreateServiceBillModal({
+  isOpen,
+  onClose,
+  onSuccess,
+}: CreateServiceBillModalProps) {
   const { activeProjectId, projects } = useAppStore();
   const projectId = activeProjectId || projects[0]?.id;
 
@@ -141,24 +488,13 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
 
   const [workOrders, setWorkOrders] = useState<BillableWorkOrder[]>([]);
   const [vendors, setVendors] = useState<BillableVendorOption[]>([]);
-  const [positions, setPositions] = useState<WorkOrderLineBillingPosition[]>([]);
-  /** Items the contract currently blocks, shown so the reason is visible. */
-  const [blockedItems, setBlockedItems] = useState<BillingPosition[]>([]);
-  /** How many activities may be billed today — drives the empty-state warning. */
-  const [eligibleCount, setEligibleCount] = useState(0);
-
-  /**
-   * Where the cost lands. Chosen on the BILL, because a Work Order may be
-   * awarded before anyone has decided which head it draws on.
-   */
   const [budgetHeads, setBudgetHeads] = useState<BudgetHeadOption[]>([]);
   const [masterLines, setMasterLines] = useState<MasterBudgetLineOption[]>([]);
+
   const [budgetAllocationId, setBudgetAllocationId] = useState('');
   const [masterBudgetItemId, setMasterBudgetItemId] = useState('');
-  /** Commercial clauses inherited from the Work Order's contract terms. */
   const [defaults, setDefaults] = useState<ServiceBillDefaults | null>(null);
 
-  const [billMode, setBillMode] = useState<'measured' | 'lumpsum'>('measured');
   const [vendorId, setVendorId] = useState('');
   const [workOrderId, setWorkOrderId] = useState('');
   const [serviceDescription, setServiceDescription] = useState('');
@@ -167,8 +503,6 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
   const [supplierBillNo, setSupplierBillNo] = useState('');
 
   const [lines, setLines] = useState<DraftLine[]>([newLine()]);
-  const [lumpSubtotal, setLumpSubtotal] = useState(0);
-  const [lumpTax, setLumpTax] = useState(0);
 
   const [retentionPercent, setRetentionPercent] = useState(0);
   const [advanceAdjusted, setAdvanceAdjusted] = useState(0);
@@ -177,87 +511,8 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
   const [debitReason, setDebitReason] = useState('');
   const [tdsPercent, setTdsPercent] = useState(0);
   const [isInterstate, setIsInterstate] = useState(false);
-  const [poDeductionAmount, setPoDeductionAmount] = useState(0);
-  const [poDeductionNotes, setPoDeductionNotes] = useState('');
-  const [floorLevel, setFloorLevel] = useState(0);
-
-  // Search and dropdown state for Master Budget Line Combobox
-  const [isMasterLineOpen, setIsMasterLineOpen] = useState(false);
-  const [masterLineQuery, setMasterLineQuery] = useState('');
-  const masterLineRef = useRef<HTMLDivElement>(null);
-  
-  // Search and dropdown state for Budget Head Combobox
-  const [isBudgetHeadOpen, setIsBudgetHeadOpen] = useState(false);
-  const [budgetHeadQuery, setBudgetHeadQuery] = useState('');
-  const budgetHeadRef = useRef<HTMLDivElement>(null);
-
-  // Close dropdowns on outside click
-  useEffect(() => {
-    function handleClickOutside(e: MouseEvent) {
-      if (masterLineRef.current && !masterLineRef.current.contains(e.target as Node)) {
-        setIsMasterLineOpen(false);
-      }
-      if (budgetHeadRef.current && !budgetHeadRef.current.contains(e.target as Node)) {
-        setIsBudgetHeadOpen(false);
-      }
-    }
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-
-  // Current selections
-  const selectedMasterLine = useMemo(() => {
-    return masterLines.find(line => line.id === masterBudgetItemId);
-  }, [masterLines, masterBudgetItemId]);
-
-  const selectedBudgetHead = useMemo(() => {
-    return budgetHeads.find(head => head.id === budgetAllocationId);
-  }, [budgetHeads, budgetAllocationId]);
-
-  // Filtered lists
-  const filteredMasterLines = useMemo(() => {
-    let list = masterLines;
-    if (budgetAllocationId) {
-      const head = budgetHeads.find((h) => h.id === budgetAllocationId);
-      if (head?.categoryId) {
-        list = masterLines.filter((line) => line.categoryId === head.categoryId);
-      }
-    }
-    
-    const q = masterLineQuery.toLowerCase().trim();
-    if (!q) return list;
-    return list.filter(line => 
-      line.description.toLowerCase().includes(q) || 
-      (line.srNo && line.srNo.toLowerCase().includes(q))
-    );
-  }, [masterLines, masterLineQuery, budgetAllocationId, budgetHeads]);
-
-  // When budgetAllocationId changes, if the selected master budget line does not belong
-  // to this budget head's category, clear it.
-  useEffect(() => {
-    if (!budgetAllocationId) return;
-    const head = budgetHeads.find((h) => h.id === budgetAllocationId);
-    if (!head?.categoryId) return;
-    
-    if (masterBudgetItemId) {
-      const line = masterLines.find((l) => l.id === masterBudgetItemId);
-      if (line && line.categoryId !== head.categoryId) {
-        setMasterBudgetItemId('');
-      }
-    }
-  }, [budgetAllocationId, masterBudgetItemId, budgetHeads, masterLines]);
-
-  const filteredBudgetHeads = useMemo(() => {
-    const q = budgetHeadQuery.toLowerCase().trim();
-    if (!q) return budgetHeads;
-    return budgetHeads.filter(head => {
-      const name = (head.categoryName || head.allocationName || '').toLowerCase();
-      return name.includes(q);
-    });
-  }, [budgetHeads, budgetHeadQuery]);
 
   const resetForm = useCallback(() => {
-    setBillMode('measured');
     setVendorId('');
     setWorkOrderId('');
     setServiceDescription('');
@@ -265,8 +520,6 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
     setBillDate(new Date().toISOString().split('T')[0]);
     setSupplierBillNo('');
     setLines([newLine()]);
-    setLumpSubtotal(0);
-    setLumpTax(0);
     setRetentionPercent(0);
     setAdvanceAdjusted(0);
     setOtherDeductions(0);
@@ -274,15 +527,8 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
     setDebitReason('');
     setTdsPercent(0);
     setIsInterstate(false);
-    setPositions([]);
-    setBlockedItems([]);
-    setEligibleCount(0);
     setBudgetAllocationId('');
     setMasterBudgetItemId('');
-    setIsMasterLineOpen(false);
-    setMasterLineQuery('');
-    setIsBudgetHeadOpen(false);
-    setBudgetHeadQuery('');
     setError(null);
   }, []);
 
@@ -303,153 +549,90 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
       .catch(() => setMasterLines([]));
   }, [isOpen, projectId, resetForm]);
 
-  /**
-   * Picking a Master Budget line implies its head — the database resolves it the
-   * same way, so pre-filling keeps the form honest about which head is charged.
-   */
-  function applyMasterLine(id: string) {
-    setMasterBudgetItemId(id);
-    if (!id) return;
-    const line = masterLines.find((l) => l.id === id);
-    if (!line?.categoryId) return;
-    const head = budgetHeads.find((h) => h.categoryId === line.categoryId);
-    if (head) setBudgetAllocationId(head.id);
-  }
+  // Requirement 1: If contractor/vendor is selected first, show ONLY connected Work Orders
+  const filteredWorkOrders = useMemo(() => {
+    if (!vendorId) return workOrders;
+    return workOrders.filter((wo) => {
+      const woVendor = wo.contractor_id || wo.vendor_id;
+      return woVendor === vendorId;
+    });
+  }, [workOrders, vendorId]);
 
   const selectedWorkOrder = useMemo(
     () => workOrders.find((wo) => wo.id === workOrderId) || null,
     [workOrders, workOrderId],
   );
 
-  // Selecting a Work Order pulls the per-line billing position: contracted,
-  // already-certified and remaining. The grid opens with this bill's quantity
-  // at zero — the user enters only what this RA covers.
+  // When a Work Order is selected:
+  // 1. Auto-select connected contractor/vendor
+  // 2. Auto-fetch Activity & Sub-Activity from connected Work Order
   useEffect(() => {
-    if (!workOrderId) {
-      setPositions([]);
-      setBlockedItems([]);
-      setEligibleCount(0);
-      setLines([newLine()]);
-      return;
+    if (!workOrderId || !selectedWorkOrder) return;
+
+    // Auto-select vendor
+    const woVendor = selectedWorkOrder.contractor_id || selectedWorkOrder.vendor_id;
+    if (woVendor && vendors.some((v) => v.id === woVendor)) {
+      setVendorId(woVendor);
     }
 
-    let cancelled = false;
+    // Auto-fetch Activity & Sub-Activity from Work Order
+    if (selectedWorkOrder.activity_id) {
+      setBudgetAllocationId(selectedWorkOrder.activity_id);
+    }
+    if (selectedWorkOrder.master_budget_item_id) {
+      setMasterBudgetItemId(selectedWorkOrder.master_budget_item_id);
+    }
+
+    // Fetch commercial defaults and populate initial line items
     Promise.all([
-      getWorkOrderLineBillingPosition(workOrderId).catch(
-        () => [] as WorkOrderLineBillingPosition[],
-      ),
-      // The commercial clauses are decided on the contract, not here.
+      getWorkOrderLineBillingPosition(workOrderId).catch(() => []),
       getServiceBillDefaults(workOrderId).catch(() => null),
-      // The activity list and its billing position.
-      getBillingPosition(workOrderId).catch(() => [] as BillingPosition[]),
-    ]).then(([positionRows, billDefaults, billableRows]) => {
-      if (cancelled) return;
-      setPositions(positionRows);
-      setBlockedItems(billableRows.filter((row) => row.blocking_reason));
-
-      // Inherit the Work Order's head where it has one, so contracts that WERE
-      // budgeted up front keep behaving as before. Otherwise the user chooses.
-      const wo = workOrders.find((w) => w.id === workOrderId);
-      if (wo?.master_budget_item_id) applyMasterLine(wo.master_budget_item_id);
-
+    ]).then(([positionRows, billDefaults]) => {
       if (billDefaults) {
         setDefaults(billDefaults);
-        // Inherit rather than ask: retention is printed on all 149 source
-        // certificates but valued on 7 — it is a contract decision.
         setRetentionPercent(billDefaults.retentionPercent);
         setTdsPercent(billDefaults.tdsPercent);
       }
 
-      // Where an activity list exists, the bill draws from the items the
-      // contract currently permits, with quantity and rate pre-computed. This
-      // is what replaces the blank grid: the source certificates hand-derived
-      // their stage rates (20% x 31,900 = 6,380) and typed the result.
-      const eligible = billableRows.filter(
-        (row) => !row.blocking_reason && row.claimable_quantity > 0,
-      );
-      setEligibleCount(eligible.length);
-      const taxRate =
-        billDefaults && billDefaults.gstTreatment === 'exclusive' ? billDefaults.gstRate : 0;
-
-      if (eligible.length > 0) {
+      if (positionRows.length > 0) {
         setLines(
-          eligible.map((row) => ({
-            key: row.billable_item_id,
-            billableItemId: row.billable_item_id,
-            workOrderLineId: row.work_order_line_id || undefined,
-            description: row.item_label,
-            unit: row.unit || '',
-            quantity: row.claimable_quantity,
-            previousQuantity: row.certified_quantity,
-            contractedQuantity: row.contracted_quantity ?? 0,
-            flatsCount: 1,
-            rate: row.rate ?? 0,
-            contractedRate: row.rate ?? 0,
-            rateVarianceReason: '',
-            taxRate,
+          positionRows.map((pos) => ({
+            key: pos.workOrderLineId || Math.random().toString(36).slice(2),
+            workOrderLineId: pos.workOrderLineId,
+            description: pos.description,
+            percentCompleted: 100,
+            quantity: pos.contractedQuantity || 1,
+            unit: pos.unit || '',
+            rate: pos.rate || 0,
+            contractedRate: pos.rate || 0,
+            taxRate: billDefaults?.gstTreatment === 'exclusive' ? billDefaults.gstRate : 18,
           })),
         );
-        return;
       }
-
-      setLines(
-        positionRows.length > 0
-          ? positionRows.map((position) => ({
-              key: position.workOrderLineId,
-              workOrderLineId: position.workOrderLineId,
-              description: position.description,
-              unit: position.unit || '',
-              quantity: 0,
-              previousQuantity: position.certifiedQuantity,
-              contractedQuantity: position.contractedQuantity,
-              flatsCount: 1,
-              // The contracted rate. Departing from it needs a stated reason
-              // (trg_sb_rate_variance_guard) — the source certificates show
-              // three different flat rates billed against one contract.
-              rate: position.rate,
-              contractedRate: position.rate,
-              rateVarianceReason: '',
-              // GST is a contract decision: "extra as applicable" carries the
-              // rate, "included" and "not applicable" carry none.
-              taxRate:
-                billDefaults && billDefaults.gstTreatment === 'exclusive'
-                  ? billDefaults.gstRate
-                  : 0,
-            }))
-          : [newLine()],
-      );
     });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [workOrderId]);
-
-  // Default the vendor to whoever holds the Work Order.
-  useEffect(() => {
-    if (!selectedWorkOrder || vendorId) return;
-    const woVendor = selectedWorkOrder.contractor_id || selectedWorkOrder.vendor_id;
-    if (woVendor && vendors.some((v) => v.id === woVendor)) setVendorId(woVendor);
-  }, [selectedWorkOrder, vendors, vendorId]);
+  }, [workOrderId, selectedWorkOrder, vendors]);
 
   function updateLine(key: string, patch: Partial<DraftLine>) {
     setLines((prev) => prev.map((l) => (l.key === key ? { ...l, ...patch } : l)));
   }
 
+  function addLine() {
+    setLines((prev) => [...prev, newLine()]);
+  }
+
+  function removeLine(key: string) {
+    setLines((prev) => (prev.length > 1 ? prev.filter((l) => l.key !== key) : prev));
+  }
+
   const subtotal = useMemo(() => {
-    if (billMode === 'lumpsum') return lumpSubtotal;
     return lines.reduce((sum, l) => sum + lineValue(l), 0);
-  }, [billMode, lines, lumpSubtotal]);
+  }, [lines]);
 
   const taxAmount = useMemo(() => {
-    if (billMode === 'lumpsum') return lumpTax;
     return lines.reduce((sum, l) => sum + (lineValue(l) * (l.taxRate || 0)) / 100, 0);
-  }, [billMode, lines, lumpTax]);
+  }, [lines]);
 
   const totalAmount = subtotal + taxAmount;
-  // Matches fn_compute_service_bill_net exactly: retention and TDS are charged
-  // on the ex-tax base, ROUND(subtotal * pct / 100, 2), and every deduction
-  // comes off the gross.
   const retentionAmount = Math.round(((subtotal * (retentionPercent || 0)) / 100) * 100) / 100;
   const tdsAmount = Math.round(((subtotal * (tdsPercent || 0)) / 100) * 100) / 100;
   const netPayable = Math.max(
@@ -457,19 +640,9 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
     totalAmount - retentionAmount - advanceAdjusted - otherDeductions - debitAmount - tdsAmount,
   );
 
-  // The Work Order draws down on the basis its value was entered on.
   const drawdownValue = selectedWorkOrder?.tax_inclusive ? totalAmount : subtotal;
   const exceedsWorkOrder =
     selectedWorkOrder != null && drawdownValue > Number(selectedWorkOrder.remaining_balance || 0);
-
-  // Derived cumulative vs contracted. The database blocks this at certification
-  // (trg_sb_over_measurement_guard); flagging it here avoids the surprise.
-  const overMeasuredLines = lines.filter(
-    (line) =>
-      line.workOrderLineId != null &&
-      line.contractedQuantity > 0 &&
-      cumulativeAfter(line) > line.contractedQuantity,
-  );
 
   if (!isOpen) return null;
 
@@ -482,53 +655,21 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
     if (debitAmount > 0 && !debitReason.trim()) {
       return setError('A debit needs a reason — it is a contractual penalty and must be auditable.');
     }
-    if (overMeasuredLines.length > 0) {
-      return setError(
-        `Over-measurement on "${overMeasuredLines[0].description}": this bill would take it past the contracted quantity. Correct it or raise a variation.`,
-      );
-    }
-    // The database refuses certification without this; catching it here avoids
-    // a bill that can be raised but never certified.
-    const unexplained = lines.find(
-      (l) =>
-        l.quantity > 0 &&
-        l.contractedRate > 0 &&
-        Math.abs(l.rate - l.contractedRate) > 0.01 &&
-        !l.rateVarianceReason.trim(),
-    );
-    if (billMode === 'measured' && unexplained) {
-      return setError(
-        `"${unexplained.description}" is billed at ${unexplained.rate} against a contracted ${unexplained.contractedRate}. State why, or use the contracted rate.`,
-      );
-    }
 
-    const billableLines: CreateServiceBillLineInput[] =
-      billMode === 'measured'
-        ? lines
-            .filter((l) => l.description.trim() && l.quantity > 0)
-            .map((l) => ({
-              description: l.description,
-              unit: l.unit || undefined,
-              quantity: l.quantity,
-              rate: l.rate,
-              taxRate: l.taxRate,
-              flatsCount: l.flatsCount,
-              rateVarianceReason: l.rateVarianceReason || undefined,
-              // Sent as context for the certificate; the guard recomputes them.
-              cumulativeQuantity: cumulativeAfter(l),
-              previousQuantity: l.previousQuantity,
-              workOrderLineId: l.workOrderLineId,
-              billableItemId: l.billableItemId,
-              rateFactorApplied: l.rateFactorApplied,
-              floorLevel: l.floorLevel,
-            }))
-        : [];
+    const billableLines: CreateServiceBillLineInput[] = lines
+      .filter((l) => l.description.trim())
+      .map((l) => ({
+        description: l.description,
+        unit: l.unit || undefined,
+        quantity: l.quantity,
+        rate: l.rate * ((l.percentCompleted ?? 100) / 100),
+        taxRate: l.taxRate,
+        workOrderLineId: l.workOrderLineId,
+        billableItemId: l.billableItemId,
+      }));
 
-    if (billMode === 'measured' && billableLines.length === 0) {
-      return setError('Enter a quantity on at least one line.');
-    }
-    if (billMode === 'lumpsum' && totalAmount <= 0) {
-      return setError('Enter the bill amount.');
+    if (billableLines.length === 0) {
+      return setError('Please enter at least one line item.');
     }
 
     setLoading(true);
@@ -538,14 +679,10 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
       projectId,
       vendorId,
       workOrderId,
-      activityId: selectedWorkOrder?.activity_id || undefined,
-      // Chosen on the bill; falls back to the Work Order's own link when the
-      // contract was budgeted up front.
+      activityId: budgetAllocationId || selectedWorkOrder?.activity_id || undefined,
       budgetAllocationId: budgetAllocationId || undefined,
       masterBudgetItemId:
         masterBudgetItemId || selectedWorkOrder?.master_budget_item_id || undefined,
-      // No sheet is named: evidence is verified activity progress, which
-      // fn_sb_measurement_present resolves from the billed activities.
       billNumber,
       billDate,
       supplierBillNo: supplierBillNo || undefined,
@@ -557,9 +694,7 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
       debitReason: debitReason || undefined,
       tdsPercent,
       isInterstate,
-      ...(billMode === 'lumpsum'
-        ? { subtotalAmount: lumpSubtotal, taxAmount: lumpTax, totalAmount: lumpSubtotal + lumpTax }
-        : { lines: billableLines }),
+      lines: billableLines,
     });
 
     setLoading(false);
@@ -579,7 +714,10 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
             <FileText className="h-5 w-5 text-primary" />
             <h2 className="text-lg font-bold">Record Service Bill</h2>
           </div>
-          <button onClick={onClose} className="rounded-full p-1 hover:bg-muted text-muted-foreground transition-colors">
+          <button
+            onClick={onClose}
+            className="rounded-full p-1 hover:bg-muted text-muted-foreground transition-colors"
+          >
             <X className="h-5 w-5" />
           </button>
         </div>
@@ -595,40 +733,25 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-1">
                 <label className="text-xs font-semibold text-muted-foreground">
-                  Work Order <span className="text-red-500">*</span>
-                </label>
-                <select
-                  required
-                  value={workOrderId}
-                  onChange={(e) => setWorkOrderId(e.target.value)}
-                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                >
-                  <option value="">Select an issued/active Work Order…</option>
-                  {workOrders.map((wo) => (
-                    <option key={wo.id} value={wo.id}>
-                      {wo.work_order_number} — {wo.site_agencies?.agency_name || 'Agency'} (
-                      {formatIndianCurrency(wo.remaining_balance)} left)
-                    </option>
-                  ))}
-                </select>
-                {workOrders.length === 0 && (
-                  <p className="text-[11px] text-amber-600">
-                    No issued/active Work Orders for this project — no WO, no bill.
-                  </p>
-                )}
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-xs font-semibold text-muted-foreground">
                   Vendor / Contractor <span className="text-red-500">*</span>
                 </label>
                 <select
                   required
                   value={vendorId}
-                  onChange={(e) => setVendorId(e.target.value)}
+                  onChange={(e) => {
+                    const newVendorId = e.target.value;
+                    setVendorId(newVendorId);
+                    if (workOrderId) {
+                      const wo = workOrders.find((w) => w.id === workOrderId);
+                      const woVendor = wo?.contractor_id || wo?.vendor_id;
+                      if (woVendor && woVendor !== newVendorId) {
+                        setWorkOrderId('');
+                      }
+                    }
+                  }}
                   className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                 >
-                  <option value="">Select a vendor…</option>
+                  <option value="">Select a vendor / contractor…</option>
                   {vendors.map((v) => (
                     <option key={v.id} value={v.id}>
                       {v.name}
@@ -638,18 +761,55 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
                   ))}
                 </select>
                 {vendors.length === 0 && (
-                  <p className="text-[11px] text-amber-600">No active vendors on record. Add one under Vendors first.</p>
+                  <p className="text-[11px] text-amber-600">
+                    No active vendors on record. Add one under Vendors first.
+                  </p>
+                )}
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-muted-foreground">
+                  Work Order <span className="text-red-500">*</span>
+                </label>
+                <select
+                  required
+                  value={workOrderId}
+                  onChange={(e) => setWorkOrderId(e.target.value)}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                >
+                  <option value="">Select an issued/active Work Order…</option>
+                  {filteredWorkOrders.map((wo) => (
+                    <option key={wo.id} value={wo.id}>
+                      {wo.work_order_number} — {wo.site_agencies?.agency_name || 'Agency'} (
+                      {formatIndianCurrency(wo.remaining_balance)} left)
+                    </option>
+                  ))}
+                </select>
+                {filteredWorkOrders.length === 0 && (
+                  <p className="text-[11px] text-amber-600">
+                    {vendorId
+                      ? 'No active Work Orders for this contractor.'
+                      : 'No issued/active Work Orders for this project.'}
+                  </p>
                 )}
               </div>
             </div>
 
             {selectedWorkOrder && (
               <div className="rounded-lg border border-border bg-muted/30 p-3 text-xs">
-                <span className="font-semibold text-muted-foreground">{selectedWorkOrder.scope_of_work}</span>
+                <span className="font-semibold text-muted-foreground">
+                  {selectedWorkOrder.scope_of_work}
+                </span>
                 <div className="mt-1.5 flex flex-wrap gap-x-5 gap-y-1">
-                  <span>WO Value <strong>{formatIndianCurrency(selectedWorkOrder.total_amount)}</strong></span>
-                  <span>Certified <strong>{formatIndianCurrency(selectedWorkOrder.billed_to_date)}</strong></span>
-                  <span>Remaining <strong>{formatIndianCurrency(selectedWorkOrder.remaining_balance)}</strong></span>
+                  <span>
+                    WO Value <strong>{formatIndianCurrency(selectedWorkOrder.total_amount)}</strong>
+                  </span>
+                  <span>
+                    Certified <strong>{formatIndianCurrency(selectedWorkOrder.billed_to_date)}</strong>
+                  </span>
+                  <span>
+                    Remaining <strong>{formatIndianCurrency(selectedWorkOrder.remaining_balance)}</strong>
+                  </span>
                   <span className="text-muted-foreground">
                     Draws down on {selectedWorkOrder.tax_inclusive ? 'gross (GST incl.)' : 'net-of-tax'} value
                   </span>
@@ -657,180 +817,40 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
               </div>
             )}
 
-            {/* Where this bill's cost lands. Decided here rather than on the
-                Work Order, because a contract is awarded before anyone has
-                classified it. Without a head the bill still certifies, but
-                fn_post_service_bill_to_budget posts nothing — so the absence is
-                stated rather than left to be discovered in the budget report. */}
-            {workOrderId && (
-              <div className="rounded-lg border border-border bg-muted/20 p-3">
-                <div className="flex items-center gap-1.5">
-                  <Wallet className="h-3.5 w-3.5 text-primary" />
-                  <h3 className="text-xs font-bold">Budget Classification</h3>
-                </div>
-
-                <div className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  <div className="space-y-1">
-                    <label className="text-xs font-semibold text-muted-foreground">
-                      Master Budget Line
-                    </label>
-                    <div ref={masterLineRef} className="relative">
-                      <div
-                        onClick={() => setIsMasterLineOpen(!isMasterLineOpen)}
-                        className="flex w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm cursor-pointer select-none"
-                      >
-                        <span className="truncate">
-                          {selectedMasterLine
-                            ? `${selectedMasterLine.srNo ? `${selectedMasterLine.srNo}. ` : ''}${selectedMasterLine.description}`
-                            : '— not linked —'}
-                        </span>
-                        <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                      </div>
-                      
-                      {isMasterLineOpen && (
-                        <div className="absolute z-50 mt-1 max-h-60 w-full overflow-y-auto rounded-md border border-border bg-popover p-1.5 shadow-lg">
-                          <input
-                            type="text"
-                            placeholder="Search budget line..."
-                            value={masterLineQuery}
-                            onChange={(e) => setMasterLineQuery(e.target.value)}
-                            className="mb-1.5 w-full rounded border border-input bg-background px-2 py-1 text-xs outline-none focus:border-primary"
-                          />
-                          <div
-                            onClick={() => {
-                              applyMasterLine('');
-                              setIsMasterLineOpen(false);
-                              setMasterLineQuery('');
-                            }}
-                            className="cursor-pointer rounded px-2 py-1 text-xs hover:bg-muted font-semibold text-muted-foreground"
-                          >
-                            — not linked —
-                          </div>
-                          {filteredMasterLines.map((line) => (
-                            <div
-                              key={line.id}
-                              onClick={() => {
-                                applyMasterLine(line.id);
-                                setIsMasterLineOpen(false);
-                                setMasterLineQuery('');
-                              }}
-                              className={`cursor-pointer rounded px-2 py-1.5 text-xs hover:bg-muted ${
-                                masterBudgetItemId === line.id ? 'bg-primary/10 text-primary font-bold' : ''
-                              }`}
-                            >
-                              {line.srNo ? `${line.srNo}. ` : ''}
-                              {line.description}
-                            </div>
-                          ))}
-                          {filteredMasterLines.length === 0 && (
-                            <div className="px-2 py-1 text-xs text-muted-foreground text-center">
-                              No matching lines found.
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-xs font-semibold text-muted-foreground">
-                      Budget Head <span className="text-red-500">*</span>
-                    </label>
-                    <div ref={budgetHeadRef} className="relative">
-                      <div
-                        onClick={() => setIsBudgetHeadOpen(!isBudgetHeadOpen)}
-                        className="flex w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm cursor-pointer select-none"
-                      >
-                        <span className="truncate">
-                          {selectedBudgetHead
-                            ? `${selectedBudgetHead.categoryName || selectedBudgetHead.allocationName}${
-                                selectedBudgetHead.availableAmount != null
-                                  ? ` · ${formatIndianCurrency(selectedBudgetHead.availableAmount)} left`
-                                  : ''
-                              }`
-                            : '— select a budget head —'}
-                        </span>
-                        <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                      </div>
-
-                      {isBudgetHeadOpen && (
-                        <div className="absolute z-50 mt-1 max-h-60 w-full overflow-y-auto rounded-md border border-border bg-popover p-1.5 shadow-lg">
-                          <input
-                            type="text"
-                            placeholder="Search budget head..."
-                            value={budgetHeadQuery}
-                            onChange={(e) => setBudgetHeadQuery(e.target.value)}
-                            className="mb-1.5 w-full rounded border border-input bg-background px-2 py-1 text-xs outline-none focus:border-primary"
-                          />
-                          <div
-                            onClick={() => {
-                              setBudgetAllocationId('');
-                              setIsBudgetHeadOpen(false);
-                              setBudgetHeadQuery('');
-                            }}
-                            className="cursor-pointer rounded px-2 py-1 text-xs hover:bg-muted font-semibold text-muted-foreground"
-                          >
-                            — select a budget head —
-                          </div>
-                          {filteredBudgetHeads.map((head) => (
-                            <div
-                              key={head.id}
-                              onClick={() => {
-                                setBudgetAllocationId(head.id);
-                                setIsBudgetHeadOpen(false);
-                                setBudgetHeadQuery('');
-                              }}
-                              className={`cursor-pointer rounded px-2 py-1.5 text-xs hover:bg-muted ${
-                                budgetAllocationId === head.id ? 'bg-primary/10 text-primary font-bold' : ''
-                              }`}
-                            >
-                              {head.categoryName || head.allocationName}
-                              {head.availableAmount != null
-                                ? ` · ${formatIndianCurrency(head.availableAmount)} left`
-                                : ''}
-                            </div>
-                          ))}
-                          {filteredBudgetHeads.length === 0 && (
-                            <div className="px-2 py-1 text-xs text-muted-foreground text-center">
-                              No matching budget heads found.
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                {!budgetAllocationId && !masterBudgetItemId && (
-                  <p className="mt-2 flex items-start gap-1.5 text-[11px] font-semibold text-amber-700 dark:text-amber-400">
-                    <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
-                    No budget head selected. The bill can still be certified, but its cost will not
-                    appear against any budget line.
-                  </p>
-                )}
-                {budgetHeads.length === 0 && (
-                  <p className="mt-2 text-[11px] text-muted-foreground">
-                    No budget heads on this project yet — create the budget first if this bill
-                    should draw on one.
-                  </p>
-                )}
-              </div>
-            )}
-
-            {/* Evidence is verified activity progress, recorded on the Work
-                Order. The Measurement Sheet picker that stood here is gone with
-                the Measurement Book: the sheet was the old carrier of the
-                second-person check, and progress verification carries it now.
-                A legacy sheet still satisfies the gate server-side, so nothing
-                already recorded stops working. */}
-            {workOrderId && eligibleCount === 0 && (
-              <p className="flex items-start gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 p-2.5 text-[11px] font-semibold text-amber-800 dark:text-amber-300">
-                <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
-                Nothing on this Work Order is billable yet. Record progress against the activities
-                and have it verified — a bill can be raised now, but it cannot be certified until
-                verified progress backs it.
-              </p>
-            )}
+            {/* Requirement 2: Auto-fetched Activity & Sub-Activity Comboboxes in Work Order Style */}
+            <div className="grid grid-cols-2 gap-4">
+              <BudgetHeadCombobox
+                budgetHeads={budgetHeads}
+                value={budgetAllocationId}
+                onChange={(newHeadId) => {
+                  setBudgetAllocationId(newHeadId);
+                  setMasterBudgetItemId('');
+                }}
+              />
+              <SubActivityCombobox
+                masterLines={masterLines}
+                selectedHead={budgetHeads.find((b) => b.id === budgetAllocationId)}
+                value={masterBudgetItemId}
+                onChange={(newSubId) => {
+                  setMasterBudgetItemId(newSubId);
+                  if (newSubId) {
+                    const line = masterLines.find((m) => m.id === newSubId);
+                    if (line) {
+                      const matchingHead = budgetHeads.find(
+                        (h) =>
+                          (line.categoryId && h.categoryId === line.categoryId) ||
+                          (line.categoryName &&
+                            (h.allocationName?.toLowerCase() === line.categoryName.toLowerCase() ||
+                              h.categoryName?.toLowerCase() === line.categoryName.toLowerCase())),
+                      );
+                      if (matchingHead && matchingHead.id !== budgetAllocationId) {
+                        setBudgetAllocationId(matchingHead.id);
+                      }
+                    }
+                  }
+                }}
+              />
+            </div>
 
             <div className="grid grid-cols-3 gap-4">
               <div className="space-y-1">
@@ -847,7 +867,9 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
                 />
               </div>
               <div className="space-y-1">
-                <label className="text-xs font-semibold text-muted-foreground">Contractor&apos;s Bill No.</label>
+                <label className="text-xs font-semibold text-muted-foreground">
+                  Contractor&apos;s Bill No.
+                </label>
                 <input
                   type="text"
                   value={supplierBillNo}
@@ -871,7 +893,9 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
             </div>
 
             <div className="space-y-1">
-              <label className="text-xs font-semibold text-muted-foreground">Service Description</label>
+              <label className="text-xs font-semibold text-muted-foreground">
+                Service Description
+              </label>
               <input
                 type="text"
                 value={serviceDescription}
@@ -881,387 +905,124 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
               />
             </div>
 
-            <div className="flex gap-4 border-t border-border pt-4">
-              <label className="flex items-center gap-2 text-sm">
-                <input type="radio" checked={billMode === 'measured'} onChange={() => setBillMode('measured')} />
-                Measured (RA bill)
-              </label>
-              <label className="flex items-center gap-2 text-sm">
-                <input type="radio" checked={billMode === 'lumpsum'} onChange={() => setBillMode('lumpsum')} />
-                Lump sum
-              </label>
-            </div>
+            {/* Requirement 3: Streamlined Line Items Table */}
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-sm font-bold text-foreground">Service Bill Items</h3>
+                <button
+                  type="button"
+                  onClick={addLine}
+                  className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:underline"
+                >
+                  <Plus className="h-3.5 w-3.5" /> Add line
+                </button>
+              </div>
 
-            {billMode === 'measured' ? (
-              <div>
-                <div className="mb-2 flex items-center justify-between">
-                  <h3 className="flex items-center gap-1.5 text-sm font-semibold">
-                    <Ruler className="h-3.5 w-3.5 text-primary" /> Measurement
-                  </h3>
-                  <button
-                    type="button"
-                    onClick={() => setLines((prev) => [...prev, newLine()])}
-                    className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:underline"
-                  >
-                    <Plus className="h-3.5 w-3.5" /> Add line
-                  </button>
-                </div>
-
-                {positions.length === 0 && workOrderId && (
-                  <p className="mb-2 text-[11px] text-muted-foreground">
-                    This Work Order has no scope lines — add measurement lines manually.
-                  </p>
-                )}
-
-                <p className="mb-2 text-[11px] text-muted-foreground">
-                  Enter the quantity completed <strong>on this bill only</strong>. The cumulative
-                  figure is derived and checked against the contracted quantity.
-                </p>
-
-                {/* Blocked scope stays visible with its reason. A gate whose
-                    reasoning is hidden is a gate people work around. */}
-                {blockedItems.length > 0 && (
-                  <div className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2.5">
-                    <p className="text-[11px] font-bold text-amber-900 dark:text-amber-300">
-                      {blockedItems.length} item{blockedItems.length > 1 ? 's' : ''} cannot be
-                      billed yet
-                    </p>
-                    <ul className="mt-1 space-y-0.5">
-                      {blockedItems.slice(0, 5).map((item) => (
-                        <li
-                          key={item.billable_item_id}
-                          className="text-[11px] text-amber-900/80 dark:text-amber-300/80"
-                        >
-                          <span className="font-medium">{item.item_label}</span> —{' '}
-                          {item.blocking_reason}
-                        </li>
-                      ))}
-                      {blockedItems.length > 5 && (
-                        <li className="text-[11px] text-amber-900/60 dark:text-amber-300/60">
-                          and {blockedItems.length - 5} more…
-                        </li>
-                      )}
-                    </ul>
-                  </div>
-                )}
-
-                {defaults?.valuation_structure === 'floor_lead' && (
-                  <div className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2.5 flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-bold text-amber-900 dark:text-amber-300">Floor Lead Enabled (+{defaults.lead_percent_per_floor || 7}% / floor):</span>
-                      <select
-                        value={floorLevel}
-                        onChange={(e) => {
-                          const level = Number(e.target.value) || 0;
-                          setFloorLevel(level);
-                          const leadPct = defaults.lead_percent_per_floor || 7;
-                          /* Record the FACTOR, not just the inflated rate.
-                             trg_sb_rate_variance_guard expects
-                             contracted_rate x rate_factor_applied; multiplying
-                             the rate without declaring the factor made every
-                             floor-lead bill fail certification as an
-                             unexplained variance. */
-                          const factor = 1 + (level * leadPct) / 100;
-                          setLines(prev => prev.map(l => {
-                            const baseRate = l.contractedRate || l.rate;
-                            const effectiveRate = baseRate * factor;
-                            return {
-                              ...l,
-                              floorLevel: level,
-                              rateFactorApplied: factor,
-                              rate: Number(effectiveRate.toFixed(2)),
-                            };
-                          }));
-                        }}
-                        className="rounded border border-amber-500/40 bg-background px-2 py-1 text-xs font-bold text-amber-900 dark:text-amber-100"
-                      >
-                        {/* Was hardcoded to 5 floors. The towers in this corpus
-                            run to 12+ (48-52 flats each across towers A-P), so
-                            the list is generated from the building instead. */}
-                        <option value={0}>Ground Floor (Base Rate)</option>
-                        {Array.from({ length: 40 }, (_, i) => i + 1).map((floor) => (
-                          <option key={floor} value={floor}>
-                            Floor {floor} (+
-                            {((defaults.lead_percent_per_floor || 7) * floor).toFixed(1)}%)
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <span className="text-[10px] text-amber-700 dark:text-amber-300">Auto-adjusts rates for vertical material carrying</span>
-                  </div>
-                )}
-
-                <div className="overflow-x-auto">
-                  <table className="w-full min-w-[820px] text-left text-[11px]">
-                    <thead className="border-b border-border text-muted-foreground">
-                      <tr>
-                        <th className="pb-1.5">Description</th>
-                        <th className="pb-1.5">Unit</th>
-                        <th className="pb-1.5 text-right">Contracted</th>
-                        <th className="pb-1.5 text-right">Prev. certified</th>
-                        <th className="pb-1.5 text-right">This bill</th>
-                        <th className="pb-1.5 text-right">× Units</th>
-                        <th className="pb-1.5 text-right">Cumulative</th>
-                        <th className="pb-1.5 text-right">Rate</th>
-                        <th className="pb-1.5 text-right">GST %</th>
-                        <th className="pb-1.5 text-right">Amount</th>
-                        <th className="pb-1.5" />
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {lines.map((line) => {
-                        const cumulative = cumulativeAfter(line);
-                        const over =
-                          line.contractedQuantity > 0 && cumulative > line.contractedQuantity;
-                        return (
-                          <tr key={line.key} className="border-b border-border/50">
-                            <td className="py-1 pr-2">
+              <div className="overflow-x-auto rounded-lg border border-border">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead className="bg-muted/50 font-heading font-bold text-muted-foreground uppercase border-b border-border text-[10px]">
+                    <tr>
+                      <th className="px-3 py-2 min-w-[200px]">Items</th>
+                      <th className="px-3 py-2 text-right w-[140px]">% of Work Completed</th>
+                      <th className="px-3 py-2 text-right w-[90px]">Qty</th>
+                      <th className="px-3 py-2 w-[90px]">Unit</th>
+                      <th className="px-3 py-2 text-right w-[110px]">Rate/Flat</th>
+                      <th className="px-3 py-2 text-right w-[120px]">Amount</th>
+                      <th className="px-3 py-2 text-center w-[40px]"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {lines.map((line) => {
+                      const val = lineValue(line);
+                      return (
+                        <tr key={line.key} className="border-b border-border last:border-0 hover:bg-muted/10">
+                          <td className="px-2 py-1.5">
+                            <input
+                              required
+                              type="text"
+                              placeholder="Item description"
+                              value={line.description}
+                              onChange={(e) => updateLine(line.key, { description: e.target.value })}
+                              className="w-full rounded border border-input bg-background px-2 py-1 text-xs font-medium"
+                            />
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <div className="flex items-center justify-end gap-1">
                               <input
-                                className="w-full min-w-[140px] rounded border border-input bg-background px-1.5 py-1"
-                                value={line.description}
-                                onChange={(e) => updateLine(line.key, { description: e.target.value })}
-                                placeholder="Work description"
-                              />
-                              {(defaults?.valuation_structure === 'stage_percentage' || (defaults?.stages && defaults.stages.length > 0)) && (
-                                <select
-                                  value={line.selectedStage || ''}
-                                  onChange={(e) => {
-                                    const stName = e.target.value;
-                                    const stObj = defaults?.stages?.find((s: any) => s.name === stName);
-                                    if (stObj && line.contractedRate > 0) {
-                                      const stageRate = line.contractedRate * (stObj.percent / 100);
-                                      updateLine(line.key, {
-                                        selectedStage: stName,
-                                        rate: Number(stageRate.toFixed(2)),
-                                        description: `${line.description.split(' [Stage:')[0]} [Stage: ${stName} (${stObj.percent}%)]`,
-                                      });
-                                    } else {
-                                      updateLine(line.key, { selectedStage: stName });
-                                    }
-                                  }}
-                                  className="mt-1 w-full rounded border border-primary/40 bg-primary/5 px-1 py-0.5 text-[10px] font-semibold text-primary"
-                                >
-                                  <option value="">-- Select Stage --</option>
-                                  {(defaults?.stages || []).map((s: any) => (
-                                    <option key={s.name} value={s.name}>
-                                      {s.name} ({s.percent}%)
-                                    </option>
-                                  ))}
-                                </select>
-                              )}
-                            </td>
-                            <td className="py-1 pr-2">
-                              <input
-                                className="w-14 rounded border border-input bg-background px-1.5 py-1"
-                                value={line.unit}
-                                onChange={(e) => updateLine(line.key, { unit: e.target.value })}
-                              />
-                            </td>
-                            <td className="py-1 pr-2 text-right text-muted-foreground">
-                              {line.contractedQuantity > 0
-                                ? line.contractedQuantity.toLocaleString('en-IN')
-                                : '—'}
-                            </td>
-                            <td className="py-1 pr-2 text-right text-muted-foreground">
-                              {line.previousQuantity.toLocaleString('en-IN')}
-                            </td>
-                            {/* The only quantity anyone types. */}
-                            <td className="py-1 pr-2">
-                              <input
-                                type="number"
-                                min={0}
-                                step="0.01"
-                                className="w-20 rounded border border-input bg-background px-1.5 py-1 text-right font-semibold"
-                                value={line.quantity}
-                                onChange={(e) => updateLine(line.key, { quantity: Number(e.target.value) })}
-                              />
-                            </td>
-                            <td className="py-1 pr-2">
-                              <input
-                                type="number"
-                                min={1}
-                                step="1"
-                                title="Repetition multiplier — the No. of Flats column on some certificates"
-                                className="w-14 rounded border border-input bg-background px-1.5 py-1 text-right"
-                                value={line.flatsCount}
-                                onChange={(e) =>
-                                  updateLine(line.key, { flatsCount: Number(e.target.value) || 1 })
-                                }
-                              />
-                            </td>
-                            <td
-                              className={`py-1 pr-2 text-right font-bold ${over ? 'text-red-600' : 'text-muted-foreground'}`}
-                              title={over ? 'Exceeds the contracted quantity' : undefined}
-                            >
-                              {cumulative.toLocaleString('en-IN')}
-                            </td>
-                            <td className="py-1 pr-2">
-                              <input
-                                type="number"
-                                min="0"
-                                step="0.01"
-                                title={
-                                  line.contractedRate > 0
-                                    ? `Contracted rate ${line.contractedRate}`
-                                    : undefined
-                                }
-                                className={`w-20 rounded border bg-background px-1.5 py-1 text-right ${
-                                  line.contractedRate > 0 &&
-                                  Math.abs(line.rate - line.contractedRate) > 0.01
-                                    ? 'border-amber-400 font-bold text-amber-700'
-                                    : 'border-input'
-                                }`}
-                                value={line.rate}
-                                onChange={(e) => updateLine(line.key, { rate: Number(e.target.value) })}
-                              />
-                              {/* The database refuses certification of an
-                                  unexplained rate departure. */}
-                              {line.contractedRate > 0 &&
-                                Math.abs(line.rate - line.contractedRate) > 0.01 && (
-                                  <input
-                                    value={line.rateVarianceReason}
-                                    onChange={(e) =>
-                                      updateLine(line.key, { rateVarianceReason: e.target.value })
-                                    }
-                                    placeholder={`Why not ${line.contractedRate}?`}
-                                    className="mt-1 w-32 rounded border border-amber-400 bg-background px-1.5 py-1 text-[10px]"
-                                  />
-                                )}
-                            </td>
-                            <td className="py-1 pr-2">
-                              <input
+                                required
                                 type="number"
                                 min="0"
                                 max="100"
-                                step="0.01"
-                                className="w-14 rounded border border-input bg-background px-1.5 py-1 text-right"
-                                value={line.taxRate}
-                                onChange={(e) => updateLine(line.key, { taxRate: Number(e.target.value) })}
+                                step="0.5"
+                                placeholder="100"
+                                value={line.percentCompleted === 0 ? '' : line.percentCompleted}
+                                onChange={(e) => updateLine(line.key, { percentCompleted: Number(e.target.value) })}
+                                className="w-16 rounded border border-input bg-background px-2 py-1 text-xs text-right font-semibold"
                               />
-                            </td>
-                            <td className="py-1 pr-2 text-right font-bold">
-                              {formatIndianCurrency(lineValue(line))}
-                            </td>
-                            <td className="py-1">
-                              <button
-                                type="button"
-                                onClick={() => setLines((prev) => (prev.length > 1 ? prev.filter((l) => l.key !== line.key) : prev))}
-                                className="text-red-500 hover:text-red-700"
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-
-                {overMeasuredLines.length > 0 && (
-                  <div className="mt-2 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 p-2 text-[11px] font-semibold text-red-700 dark:border-red-900/40 dark:bg-red-950/20 dark:text-red-300">
-                    <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                    Over-measurement on {overMeasuredLines.length} line
-                    {overMeasuredLines.length > 1 ? 's' : ''}: the cumulative quantity would exceed
-                    the contracted scope. Correct it or raise a variation.
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1">
-                  <label className="text-xs font-semibold text-muted-foreground">
-                    Subtotal (ex-GST) <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    required
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={lumpSubtotal}
-                    onChange={(e) => setLumpSubtotal(Number(e.target.value))}
-                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-semibold text-muted-foreground">GST Amount</label>
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={lumpTax}
-                    onChange={(e) => setLumpTax(Number(e.target.value))}
-                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
-                  />
-                </div>
-              </div>
-            )}
-
-            {/* Turnkey PO Material Supply Deductions */}
-            <div className="rounded-lg border border-border p-3 bg-muted/20 space-y-2">
-              <div className="flex items-center justify-between">
-                <label className="text-xs font-bold text-foreground">PO Material Supply Deductions (Turnkey / Supply & Install)</label>
-                <span className="text-[10px] text-muted-foreground">Deducted from gross certificate for materials issued by developer</span>
-              </div>
-              <div className="grid grid-cols-3 gap-3">
-                <div className="col-span-1 space-y-1">
-                  <label className="text-[10px] font-semibold text-muted-foreground">PO Material Supply Value (₹)</label>
-                  <input
-                    type="number"
-                    min="0"
-                    step="1"
-                    value={poDeductionAmount}
-                    onChange={(e) => {
-                      const val = Number(e.target.value) || 0;
-                      setPoDeductionAmount(val);
-                      setOtherDeductions(val);
-                    }}
-                    placeholder="0"
-                    className="w-full rounded border border-input bg-background px-2 py-1 text-xs font-bold text-red-600 font-mono"
-                  />
-                </div>
-                <div className="col-span-2 space-y-1">
-                  <label className="text-[10px] font-semibold text-muted-foreground">PO Ref / Material Issue Notes</label>
-                  <input
-                    type="text"
-                    value={poDeductionNotes}
-                    onChange={(e) => setPoDeductionNotes(e.target.value)}
-                    placeholder="e.g. PO-2026-042 Issued Paint & Pipes to Contractor"
-                    className="w-full rounded border border-input bg-background px-2 py-1 text-xs"
-                  />
-                </div>
+                              <span className="text-xs text-muted-foreground">%</span>
+                            </div>
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <input
+                              required
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              placeholder="Qty"
+                              value={line.quantity === 0 ? '' : line.quantity}
+                              onChange={(e) => updateLine(line.key, { quantity: Number(e.target.value) })}
+                              className="w-full rounded border border-input bg-background px-2 py-1 text-xs text-right"
+                            />
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <input
+                              type="text"
+                              placeholder="Unit"
+                              value={line.unit}
+                              onChange={(e) => updateLine(line.key, { unit: e.target.value })}
+                              className="w-full rounded border border-input bg-background px-2 py-1 text-xs"
+                            />
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <input
+                              required
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              placeholder="Rate"
+                              value={line.rate === 0 ? '' : line.rate}
+                              onChange={(e) => updateLine(line.key, { rate: Number(e.target.value) })}
+                              className="w-full rounded border border-input bg-background px-2 py-1 text-xs text-right"
+                            />
+                          </td>
+                          <td className="px-3 py-2 text-right font-bold text-foreground">
+                            {formatIndianCurrency(val)}
+                          </td>
+                          <td className="px-2 py-1.5 text-center">
+                            <button
+                              type="button"
+                              disabled={lines.length === 1}
+                              onClick={() => removeLine(line.key)}
+                              className="text-red-500 hover:text-red-700 disabled:opacity-30"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
             </div>
 
             <div className="border-t border-border pt-4">
               <h3 className="mb-3 text-sm font-semibold">Deductions &amp; Settlement</h3>
-              {/* Where the numbers came from, so a changed figure is a
-                  deliberate departure rather than an accident. */}
               {defaults && (
                 <p className="mb-3 rounded-lg border border-dashed border-border bg-muted/20 p-2 text-[11px] text-muted-foreground">
-                  Inherited from the Work Order: retention{' '}
+                  Inherited from Work Order: retention{' '}
                   <strong className="text-foreground">{defaults.retentionPercent}%</strong>
-                  {defaults.retentionReleaseMonths
-                    ? ` (released after ${defaults.retentionReleaseMonths} months)`
-                    : ''}
                   {' · '}TDS <strong className="text-foreground">{defaults.tdsPercent}%</strong>
-                  {' · '}GST{' '}
-                  <strong className="text-foreground">
-                    {defaults.gstTreatment === 'inclusive'
-                      ? 'included in rates'
-                      : defaults.gstTreatment === 'not_applicable'
-                        ? 'not applicable'
-                        : `extra @ ${defaults.gstRate}%`}
-                  </strong>
-                  {defaults.variationTolerancePercent > 0 && (
-                    <>
-                      {' · '}measurement tolerance{' '}
-                      <strong className="text-foreground">
-                        {defaults.variationTolerancePercent}%
-                      </strong>
-                    </>
-                  )}
-                  . Changing them here overrides the contract for this bill only.
                 </p>
               )}
               <div className="grid grid-cols-3 gap-4">
@@ -1311,8 +1072,6 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
                     className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
                   />
                 </div>
-                {/* Contractual penalty. Kept apart from Other Deductions because
-                    the Work Order T&Cs make it disputable and auditable. */}
                 <div className="space-y-1">
                   <label className="text-xs font-semibold text-muted-foreground">Debit (penalty)</label>
                   <input
@@ -1358,11 +1117,6 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
                   {debitAmount > 0 && <span>Debit <strong>−{formatIndianCurrency(debitAmount)}</strong></span>}
                   <span className="text-primary">Net payable <strong>{formatIndianCurrency(netPayable)}</strong></span>
                 </div>
-                <p className="mt-2 text-[11px] text-muted-foreground">
-                  Budget cost is recorded at the <strong>gross</strong> value on certification.
-                  Retention, TDS and debits are payment withholdings, tracked separately — they do
-                  not reduce project cost.
-                </p>
               </div>
             </div>
 
@@ -1371,9 +1125,7 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
                 <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
                 <div className="text-xs text-amber-800">
                   This bill exceeds the Work Order&apos;s remaining balance by{' '}
-                  {formatIndianCurrency(drawdownValue - Number(selectedWorkOrder?.remaining_balance || 0))}. It can
-                  still be raised — over-billing is flagged for approval rather than blocked — but it needs an approved
-                  variation.
+                  {formatIndianCurrency(drawdownValue - Number(selectedWorkOrder?.remaining_balance || 0))}.
                 </div>
               </div>
             )}
@@ -1381,8 +1133,7 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
             <div className="flex items-start gap-3 rounded-lg border border-orange-200 bg-orange-50 p-3">
               <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-orange-600" />
               <div className="text-xs text-orange-800">
-                Submitting records a claim. Cost hits the budget only on <strong>approval</strong>, which also releases
-                the Work Order&apos;s commitment and cannot happen until QC on the linked activity has passed.
+                Submitting records a claim. Cost hits the budget only on <strong>approval</strong>.
               </div>
             </div>
           </form>

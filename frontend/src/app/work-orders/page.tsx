@@ -96,6 +96,7 @@ export default function WorkOrdersPage() {
     projectId: wo.project_id,
     agencyName: wo.site_agencies?.agency_name || wo.vendor?.display_name || wo.vendor?.legal_name || wo.contractor?.display_name || 'Unassigned',
     woType: (wo.wo_type || 'fixed_scope') as string,
+    gstPercentage: Number(wo.gst_percentage ?? 18),
     totalAmount: Number(wo.total_amount || 0),
     billedToDate: Number(wo.billed_to_date || 0),
     remainingBalance: Number(wo.remaining_balance ?? wo.total_amount ?? 0),
@@ -159,7 +160,8 @@ export default function WorkOrdersPage() {
                 <th className="pb-3">WO Number</th>
                 <th className="pb-3">Project</th>
                 <th className="pb-3">Agency</th>
-                <th className="pb-3">Type</th>
+                <th className="pb-3 min-w-[200px]">WO Type</th>
+                <th className="pb-3 w-[100px]">GST %</th>
                 <th className="pb-3">WO Value</th>
                 <th className="pb-3">Billed to Date</th>
                 <th className="pb-3">Remaining</th>
@@ -178,15 +180,45 @@ export default function WorkOrdersPage() {
                     <Link href={`/projects/${wo.projectId}`} className="font-semibold text-primary">{wo.projectName}</Link>
                   </td>
                   <td className="py-3">{wo.agencyName}</td>
-                  <td className="py-3 text-gray-500">{wo.woType === 'rate_based' ? 'Rate-based' : 'Fixed-scope'}</td>
+                  <td className="py-3">
+                    <select
+                      value={wo.woType}
+                      onChange={(e) => {
+                        const newType = e.target.value;
+                        setWorkOrders((prev) =>
+                          prev.map((item) => (item.id === wo.id ? { ...item, wo_type: newType } : item)),
+                        );
+                      }}
+                      className="rounded-lg border border-input bg-background px-2.5 py-1 text-xs font-semibold text-foreground cursor-pointer outline-none focus:ring-2 focus:ring-primary/20"
+                    >
+                      <option value="fixed_scope">Fixed-scope (defined quantity)</option>
+                      <option value="rate_based">Rate-based (quantity at execution)</option>
+                    </select>
+                  </td>
+                  <td className="py-3">
+                    <select
+                      value={wo.gstPercentage}
+                      onChange={(e) => {
+                        const newGst = Number(e.target.value);
+                        setWorkOrders((prev) =>
+                          prev.map((item) => (item.id === wo.id ? { ...item, gst_percentage: newGst } : item)),
+                        );
+                      }}
+                      className="rounded-lg border border-input bg-background px-2.5 py-1 text-xs font-bold text-foreground cursor-pointer outline-none focus:ring-2 focus:ring-primary/20"
+                    >
+                      <option value={0}>0%</option>
+                      <option value={5}>5%</option>
+                      <option value={12}>12%</option>
+                      <option value={18}>18%</option>
+                      <option value={28}>28%</option>
+                    </select>
+                  </td>
                   <td className="py-3 font-bold">{formatAmount(wo.totalAmount)}</td>
                   <td className="py-3 text-gray-500">{formatAmount(wo.billedToDate)}</td>
                   <td className="py-3 font-bold">{formatAmount(wo.remainingBalance)}</td>
                   <td className="py-3 text-gray-500">{wo.startDate || '-'}</td>
                   <td className="py-3">
                     <div className="flex items-center gap-1.5">
-                      {/* Read-only. The status is changed by the actions in the
-                          next column, never by editing this control. */}
                       <span
                         className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${WO_STATUS_STYLES[wo.woStatus] || WO_STATUS_STYLES.draft}`}
                       >
@@ -207,10 +239,6 @@ export default function WorkOrdersPage() {
                         actions={buildRowActions(wo.woStatus, permissions.canApproveWorkOrder)}
                         onAction={(next, reason) => runTransition(wo.id, next, reason)}
                       />
-                      {/* An explicit way in. The WO number is also a link, but a
-                          row whose status affords no transition was otherwise
-                          left with an empty Action cell and no visible way to
-                          reach progress, billing, measurement or variations. */}
                       <Link
                         href={`/work-orders/${wo.id}`}
                         className="inline-flex items-center gap-1 whitespace-nowrap rounded-md border border-border px-2 py-1 text-[11px] font-semibold text-primary hover:bg-muted"
@@ -224,7 +252,7 @@ export default function WorkOrdersPage() {
 
               {!loading && orders.length === 0 && (
                 <tr>
-                  <td colSpan={10} className="py-12 text-center text-gray-400">
+                  <td colSpan={11} className="py-12 text-center text-gray-400">
                     No work orders issued yet.
                   </td>
                 </tr>

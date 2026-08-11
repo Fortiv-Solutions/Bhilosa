@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { X, ClipboardCheck, Plus, Trash2, Paperclip, ChevronDown, Search } from 'lucide-react';
+import { X, ClipboardCheck, Plus, Trash2, Paperclip, ChevronDown, Search, Check, Layers, GitBranch, FileText, Building2 } from 'lucide-react';
 import {
   createWorkOrder,
   listBudgetHeads,
@@ -26,10 +26,10 @@ export type CreateWorkOrderModalProps = {
   onSuccess: () => void;
 };
 
-type DraftLine = CreateWorkOrderLineInput & { key: string; itemName?: string };
+type DraftLine = CreateWorkOrderLineInput & { key: string; itemName?: string; gstPercentage?: number };
 
 function emptyLine(): DraftLine {
-  return { key: Math.random().toString(36).slice(2), itemName: '', description: '', quantity: 0, unit: '', rate: 0 };
+  return { key: Math.random().toString(36).slice(2), itemName: '', description: '', quantity: 0, unit: '', rate: 0, gstPercentage: 18 };
 }
 
 /* ─── Searchable Combobox: Format / Template ─────────────────────────── */
@@ -45,6 +45,7 @@ function TemplateCombobox({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const ref = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   const selected = templates.find((t) => t.id === value);
   const filtered = useMemo(() => {
@@ -70,51 +71,105 @@ function TemplateCombobox({
       <label className="text-xs font-semibold text-muted-foreground">
         Format / Template (one of the {templates.length})
       </label>
-      <button
-        type="button"
-        onClick={() => { setOpen(!open); setQuery(''); }}
-        className="w-full flex items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm hover:bg-muted/40 transition-colors"
+      <div
+        onClick={() => {
+          setOpen(!open);
+          if (!open) setTimeout(() => inputRef.current?.focus(), 50);
+        }}
+        className={`flex items-center justify-between gap-2 px-3 py-2 text-xs bg-background border rounded-xl cursor-pointer transition-all ${
+          open
+            ? 'border-primary ring-2 ring-primary/20 shadow-md'
+            : 'border-input hover:border-muted-foreground/40'
+        }`}
       >
-        <span className={selected ? 'text-foreground font-medium' : 'text-muted-foreground'}>
-          {selected ? `${selected.trade_category} — ${selected.name}` : 'Start blank…'}
-        </span>
-        <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${open ? 'rotate-180' : ''}`} />
-      </button>
+        <div className="flex items-center gap-2 min-w-0 flex-1">
+          <FileText className="w-4 h-4 text-primary shrink-0" />
+          {selected ? (
+            <div className="truncate">
+              <span className="font-bold text-foreground mr-2">[{selected.trade_category}]</span>
+              <span className="text-foreground font-medium">{selected.name}</span>
+            </div>
+          ) : (
+            <span className="text-muted-foreground font-normal truncate">Start blank…</span>
+          )}
+        </div>
+
+        <ChevronDown
+          className={`w-3.5 h-3.5 text-muted-foreground transition-transform duration-200 ${
+            open ? 'rotate-180' : ''
+          }`}
+        />
+      </div>
+
       {open && (
-        <div className="absolute left-0 right-0 z-50 mt-1 rounded-md border border-border bg-popover shadow-lg">
-          <div className="flex items-center gap-2 border-b border-border px-3 py-2">
-            <Search className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+        <div className="absolute z-50 left-0 right-0 mt-1.5 bg-popover border border-border rounded-2xl shadow-xl overflow-hidden flex flex-col max-h-[320px] animate-in fade-in-50 zoom-in-95 duration-100">
+          <div className="p-2.5 border-b border-border bg-muted/40 flex items-center gap-2">
+            <Search className="w-4 h-4 text-muted-foreground ml-1 shrink-0" />
             <input
-              autoFocus
+              ref={inputRef}
               type="text"
+              placeholder="Search templates…"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search templates…"
-              className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+              className="w-full bg-transparent text-xs text-foreground placeholder:text-muted-foreground outline-none font-medium"
             />
+            {query && (
+              <button
+                type="button"
+                onClick={() => setQuery('')}
+                className="p-1 hover:bg-muted rounded-full text-muted-foreground"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            )}
           </div>
-          <div className="max-h-52 overflow-y-auto">
+
+          <div className="overflow-y-auto flex-1 divide-y divide-border/30">
             <button
               type="button"
-              onClick={() => { onChange(''); setOpen(false); }}
-              className={`w-full px-3 py-2 text-left text-sm hover:bg-accent hover:text-accent-foreground border-b border-border/50 ${!value ? 'bg-primary/5 font-semibold text-primary' : ''}`}
+              onClick={() => {
+                onChange('');
+                setOpen(false);
+              }}
+              className={`w-full px-3.5 py-2.5 text-left text-xs hover:bg-primary/10 hover:text-primary transition-colors flex items-center justify-between ${
+                !value ? 'bg-primary/10 font-bold text-primary' : 'text-muted-foreground'
+              }`}
             >
-              Start blank…
+              <span>Start blank…</span>
+              {!value && <Check className="w-4 h-4 text-primary shrink-0" />}
             </button>
             {filtered.length === 0 && (
-              <div className="px-3 py-3 text-xs text-muted-foreground text-center">No templates match &ldquo;{query}&rdquo;</div>
+              <div className="p-4 text-center text-xs text-muted-foreground">
+                No templates match &ldquo;{query}&rdquo;
+              </div>
             )}
-            {filtered.map((t) => (
-              <button
-                key={t.id}
-                type="button"
-                onClick={() => { onChange(t.id); setOpen(false); }}
-                className={`w-full px-3 py-2 text-left text-sm hover:bg-accent hover:text-accent-foreground border-b border-border/50 last:border-0 flex flex-col gap-0.5 ${value === t.id ? 'bg-primary/5 font-semibold text-primary' : ''}`}
-              >
-                <span className="font-bold">{t.trade_category} — {t.name}</span>
-                {t.terms_category && <span className="text-[10px] text-muted-foreground truncate">{t.terms_category}</span>}
-              </button>
-            ))}
+            {filtered.map((t) => {
+              const isSelected = value === t.id;
+              return (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => {
+                    onChange(t.id);
+                    setOpen(false);
+                  }}
+                  className={`w-full px-3.5 py-2.5 text-left text-xs hover:bg-primary/10 hover:text-primary transition-colors flex items-center justify-between gap-2 ${
+                    isSelected ? 'bg-primary/10 text-primary font-bold' : 'text-foreground'
+                  }`}
+                >
+                  <div className="truncate">
+                    <span className="font-bold mr-1.5">[{t.trade_category}]</span>
+                    <span>{t.name}</span>
+                    {t.terms_category && (
+                      <span className="block text-[10px] text-muted-foreground truncate font-normal">
+                        {t.terms_category}
+                      </span>
+                    )}
+                  </div>
+                  {isSelected && <Check className="w-4 h-4 text-primary shrink-0" />}
+                </button>
+              );
+            })}
           </div>
         </div>
       )}
@@ -122,82 +177,362 @@ function TemplateCombobox({
   );
 }
 
-/* ─── Searchable Combobox: Site / Tower / Activity ───────────────────── */
-function ActivityCombobox({
-  activities,
+/* ─── Typo-Tolerant & Partial Text Fuzzy Matching Helper ───────────────── */
+function fuzzyMatch(text: string, query: string): boolean {
+  if (!query) return true;
+  const normText = text.toLowerCase().trim();
+  const normQuery = query.toLowerCase().trim();
+
+  // 1. Direct substring match (exact partial match)
+  if (normText.includes(normQuery)) return true;
+
+  // 2. Tokenized match (all query words present in text)
+  const queryTokens = normQuery.split(/\s+/).filter(Boolean);
+  const textTokens = normText.split(/\s+/).filter(Boolean);
+  const allTokensMatch = queryTokens.every((qt) =>
+    textTokens.some((tt) => tt.includes(qt) || LevenshteinDistance(tt, qt) <= 1),
+  );
+  if (allTokensMatch) return true;
+
+  // 3. Subsequence match (handles minor typos)
+  let qIdx = 0;
+  for (let i = 0; i < normText.length && qIdx < normQuery.length; i++) {
+    if (normText[i] === normQuery[qIdx]) qIdx++;
+  }
+  return qIdx === normQuery.length;
+}
+
+function LevenshteinDistance(a: string, b: string): number {
+  if (Math.abs(a.length - b.length) > 2) return 99;
+  const matrix: number[][] = [];
+  for (let i = 0; i <= b.length; i++) matrix[i] = [i];
+  for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
+
+  for (let i = 1; i <= b.length; i++) {
+    for (let j = 1; j <= a.length; j++) {
+      if (b.charAt(i - 1) === a.charAt(j - 1)) {
+        matrix[i][j] = matrix[i - 1][j - 1];
+      } else {
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j - 1] + 1,
+          matrix[i][j - 1] + 1,
+          matrix[i - 1][j] + 1,
+        );
+      }
+    }
+  }
+  return matrix[b.length][a.length];
+}
+
+/* ─── Searchable Combobox: Budget Head Activity (Type-to-Search) ────────── */
+function BudgetHeadCombobox({
+  budgetHeads,
   value,
   onChange,
 }: {
-  activities: any[];
+  budgetHeads: BudgetHeadOption[];
   value: string;
   onChange: (id: string) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState('');
+  const selected = budgetHeads.find((b) => b.id === value);
+  const [displayQuery, setDisplayQuery] = useState(selected?.allocationName || selected?.categoryName || '');
   const ref = useRef<HTMLDivElement>(null);
 
-  const selected = activities.find((a) => a.id === value);
+  useEffect(() => {
+    const sel = budgetHeads.find((b) => b.id === value);
+    setDisplayQuery(sel ? sel.allocationName || sel.categoryName || '' : '');
+  }, [value, budgetHeads]);
+
   const filtered = useMemo(() => {
-    if (!query.trim()) return activities;
-    const q = query.toLowerCase();
-    return activities.filter((a) => (a.title || '').toLowerCase().includes(q));
-  }, [activities, query]);
+    if (!displayQuery.trim() || (selected && (selected.allocationName === displayQuery || selected.categoryName === displayQuery))) {
+      return budgetHeads;
+    }
+    return budgetHeads.filter((b) => {
+      const name = b.allocationName || b.categoryName || '';
+      return fuzzyMatch(name, displayQuery);
+    });
+  }, [budgetHeads, displayQuery, selected]);
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+        const sel = budgetHeads.find((b) => b.id === value);
+        setDisplayQuery(sel ? sel.allocationName || sel.categoryName || '' : '');
+      }
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
-  }, []);
+  }, [value, budgetHeads]);
 
   return (
     <div className="space-y-1 relative" ref={ref}>
-      <label className="text-xs font-semibold text-muted-foreground">Site / Tower / Activity</label>
-      <button
-        type="button"
-        onClick={() => { setOpen(!open); setQuery(''); }}
-        className="w-full flex items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm hover:bg-muted/40 transition-colors"
+      <label className="text-xs font-semibold text-muted-foreground">Activity (Budget Head)</label>
+      <div
+        className={`flex items-center justify-between gap-2 px-3 py-2 text-xs bg-background border rounded-xl transition-all ${
+          open
+            ? 'border-primary ring-2 ring-primary/20 shadow-md'
+            : 'border-input hover:border-muted-foreground/40'
+        }`}
       >
-        <span className={selected ? 'text-foreground font-medium truncate' : 'text-muted-foreground'}>
-          {selected ? selected.title : 'Unassigned'}
-        </span>
-        <ChevronDown className={`h-4 w-4 text-muted-foreground shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
-      </button>
+        <Layers className="w-4 h-4 text-primary shrink-0" />
+        <input
+          type="text"
+          value={displayQuery}
+          onChange={(e) => {
+            setDisplayQuery(e.target.value);
+            setOpen(true);
+            if (!e.target.value.trim()) onChange('');
+          }}
+          onFocus={() => setOpen(true)}
+          placeholder="Type to search activity budget heads…"
+          className="w-full bg-transparent text-xs text-foreground placeholder:text-muted-foreground font-medium outline-none"
+        />
+        {displayQuery && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onChange('');
+              setDisplayQuery('');
+            }}
+            className="p-0.5 hover:bg-muted rounded-full text-muted-foreground"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        )}
+        <ChevronDown
+          onClick={() => setOpen(!open)}
+          className={`w-3.5 h-3.5 text-muted-foreground cursor-pointer transition-transform duration-200 ${
+            open ? 'rotate-180' : ''
+          }`}
+        />
+      </div>
+
       {open && (
-        <div className="absolute left-0 right-0 z-50 mt-1 rounded-md border border-border bg-popover shadow-lg">
-          <div className="flex items-center gap-2 border-b border-border px-3 py-2">
-            <Search className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-            <input
-              autoFocus
-              type="text"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search activities…"
-              className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
-            />
-          </div>
-          <div className="max-h-52 overflow-y-auto">
+        <div className="absolute z-50 left-0 min-w-full w-max max-w-[90vw] sm:max-w-xl mt-1.5 bg-popover border border-border rounded-2xl shadow-xl overflow-hidden flex flex-col max-h-[280px] animate-in fade-in-50 zoom-in-95 duration-100">
+          <div className="overflow-y-auto flex-1 divide-y divide-border/30">
             <button
               type="button"
-              onClick={() => { onChange(''); setOpen(false); }}
-              className={`w-full px-3 py-2 text-left text-sm hover:bg-accent hover:text-accent-foreground border-b border-border/50 ${!value ? 'bg-primary/5 font-semibold text-primary' : ''}`}
+              onClick={() => {
+                onChange('');
+                setDisplayQuery('');
+                setOpen(false);
+              }}
+              className={`w-full px-3.5 py-2.5 text-left text-xs hover:bg-primary/10 hover:text-primary transition-colors flex items-center justify-between ${
+                !value ? 'bg-primary/10 font-bold text-primary' : 'text-muted-foreground'
+              }`}
             >
-              Unassigned
+              <span>All Activities (Unset)</span>
+              {!value && <Check className="w-4 h-4 text-primary shrink-0" />}
             </button>
+
             {filtered.length === 0 && (
-              <div className="px-3 py-3 text-xs text-muted-foreground text-center">No activities match &ldquo;{query}&rdquo;</div>
+              <div className="p-4 text-center text-xs text-muted-foreground">
+                No matching activities for &ldquo;{displayQuery}&rdquo;
+              </div>
             )}
-            {filtered.map((a) => (
-              <button
-                key={a.id}
-                type="button"
-                onClick={() => { onChange(a.id); setOpen(false); }}
-                className={`w-full px-3 py-2 text-left text-sm hover:bg-accent hover:text-accent-foreground border-b border-border/50 last:border-0 ${value === a.id ? 'bg-primary/5 font-semibold text-primary' : ''}`}
-              >
-                {a.title}
-              </button>
-            ))}
+
+            {filtered.map((b) => {
+              const isSelected = value === b.id;
+              const name = b.allocationName || b.categoryName || '';
+              return (
+                <button
+                  key={b.id}
+                  type="button"
+                  onClick={() => {
+                    onChange(b.id);
+                    setDisplayQuery(name);
+                    setOpen(false);
+                  }}
+                  className={`w-full px-3.5 py-2.5 text-left text-xs hover:bg-primary/10 hover:text-primary transition-colors flex items-start justify-between gap-3 border-b border-border/30 last:border-0 ${
+                    isSelected ? 'bg-primary/10 text-primary font-bold' : 'text-foreground'
+                  }`}
+                >
+                  <span className="whitespace-normal break-words leading-snug flex-1 font-medium">{name}</span>
+                  <div className="flex items-center gap-2 shrink-0 pt-0.5">
+                    {b.availableAmount !== undefined && (
+                      <span className="text-[10px] font-mono text-emerald-600 dark:text-emerald-400 font-semibold bg-emerald-50 dark:bg-emerald-950/40 px-1.5 py-0.5 rounded border border-emerald-200 dark:border-emerald-900/40">
+                        ₹{b.availableAmount.toLocaleString()}
+                      </span>
+                    )}
+                    {isSelected && <Check className="w-4 h-4 text-primary shrink-0" />}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─── Searchable Combobox: Sub-Activity (Type-to-Search) ──────────────── */
+function SubActivityCombobox({
+  masterLines,
+  selectedHead,
+  value,
+  onChange,
+}: {
+  masterLines: MasterBudgetLineOption[];
+  selectedHead?: BudgetHeadOption;
+  value: string;
+  onChange: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const selected = masterLines.find((m) => m.id === value);
+  const [displayQuery, setDisplayQuery] = useState(selected?.description || '');
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const sel = masterLines.find((m) => m.id === value);
+    setDisplayQuery(sel?.description || '');
+  }, [value, masterLines]);
+
+  const filteredByHead = useMemo(() => {
+    if (!selectedHead) return masterLines;
+    return masterLines.filter((m) => {
+      if (selectedHead.categoryId && m.categoryId) {
+        return m.categoryId === selectedHead.categoryId;
+      }
+      if (selectedHead.categoryName && m.categoryName) {
+        return m.categoryName.toLowerCase() === selectedHead.categoryName.toLowerCase();
+      }
+      if (selectedHead.allocationName && m.categoryName) {
+        return m.categoryName.toLowerCase() === selectedHead.allocationName.toLowerCase();
+      }
+      return true;
+    });
+  }, [masterLines, selectedHead]);
+
+  const filtered = useMemo(() => {
+    if (!displayQuery.trim() || (selected && selected.description === displayQuery)) {
+      return filteredByHead;
+    }
+    return filteredByHead.filter((m) => {
+      const desc = `${m.srNo ? `[${m.srNo}] ` : ''}${m.description || ''}`;
+      return fuzzyMatch(desc, displayQuery);
+    });
+  }, [filteredByHead, displayQuery, selected]);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+        const sel = masterLines.find((m) => m.id === value);
+        setDisplayQuery(sel?.description || '');
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [value, masterLines]);
+
+  return (
+    <div className="space-y-1 relative" ref={ref}>
+      <label className="text-xs font-semibold text-muted-foreground">Sub-Activity</label>
+      <div
+        className={`flex items-center justify-between gap-2 px-3 py-2 text-xs bg-background border rounded-xl transition-all ${
+          open
+            ? 'border-primary ring-2 ring-primary/20 shadow-md'
+            : 'border-input hover:border-muted-foreground/40'
+        }`}
+      >
+        <GitBranch className="w-4 h-4 text-primary shrink-0" />
+        <input
+          type="text"
+          value={displayQuery}
+          onChange={(e) => {
+            setDisplayQuery(e.target.value);
+            setOpen(true);
+            if (!e.target.value.trim()) onChange('');
+          }}
+          onFocus={() => setOpen(true)}
+          placeholder={selectedHead ? 'Type to search sub-activities…' : 'Select Activity first…'}
+          className="w-full bg-transparent text-xs text-foreground placeholder:text-muted-foreground font-medium outline-none"
+        />
+        {displayQuery && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onChange('');
+              setDisplayQuery('');
+            }}
+            className="p-0.5 hover:bg-muted rounded-full text-muted-foreground"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        )}
+        <ChevronDown
+          onClick={() => setOpen(!open)}
+          className={`w-3.5 h-3.5 text-muted-foreground cursor-pointer transition-transform duration-200 ${
+            open ? 'rotate-180' : ''
+          }`}
+        />
+      </div>
+
+      {open && (
+        <div className="absolute z-50 left-0 min-w-full w-max max-w-[90vw] sm:max-w-xl mt-1.5 bg-popover border border-border rounded-2xl shadow-xl overflow-hidden flex flex-col max-h-[280px] animate-in fade-in-50 zoom-in-95 duration-100">
+          <div className="overflow-y-auto flex-1 divide-y divide-border/30">
+            <button
+              type="button"
+              onClick={() => {
+                onChange('');
+                setDisplayQuery('');
+                setOpen(false);
+              }}
+              className={`w-full px-3.5 py-2.5 text-left text-xs hover:bg-primary/10 hover:text-primary transition-colors flex items-center justify-between ${
+                !value ? 'bg-primary/10 font-bold text-primary' : 'text-muted-foreground'
+              }`}
+            >
+              <span>None (Unset)</span>
+              {!value && <Check className="w-4 h-4 text-primary shrink-0" />}
+            </button>
+
+            {filtered.length === 0 && (
+              <div className="p-4 text-center text-xs text-muted-foreground">
+                {selectedHead
+                  ? `No matching sub-activities under "${selectedHead.allocationName || selectedHead.categoryName}"`
+                  : `No sub-activities match "${displayQuery}"`}
+              </div>
+            )}
+
+            {filtered.map((m) => {
+              const isSelected = value === m.id;
+              return (
+                <button
+                  key={m.id}
+                  type="button"
+                  onClick={() => {
+                    onChange(m.id);
+                    setDisplayQuery(m.description);
+                    setOpen(false);
+                  }}
+                  className={`w-full px-3.5 py-2.5 text-left text-xs hover:bg-primary/10 hover:text-primary transition-colors flex items-start justify-between gap-3 border-b border-border/30 last:border-0 ${
+                    isSelected ? 'bg-primary/10 text-primary font-bold' : 'text-foreground'
+                  }`}
+                >
+                  <div className="whitespace-normal break-words leading-snug flex-1 font-medium">
+                    {m.srNo && (
+                      <span className="font-mono text-[10px] text-muted-foreground bg-muted px-1 py-0.5 rounded border border-border mr-1.5 inline-block">
+                        [{m.srNo}]
+                      </span>
+                    )}
+                    <span>{m.description}</span>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0 pt-0.5">
+                    {m.budgetedCost > 0 && (
+                      <span className="text-[10px] font-mono text-muted-foreground bg-muted px-1.5 py-0.5 rounded border border-border">
+                        ₹{m.budgetedCost.toLocaleString()}
+                      </span>
+                    )}
+                    {isSelected && <Check className="w-4 h-4 text-primary shrink-0" />}
+                  </div>
+                </button>
+              );
+            })}
           </div>
         </div>
       )}
@@ -665,12 +1000,42 @@ export function CreateWorkOrderModal({ isOpen, onClose, onSuccess }: CreateWorkO
               </div>
             </div>
 
-            <div className="grid grid-cols-3 gap-4">
-              <ActivityCombobox
-                activities={activities}
-                value={activityId}
-                onChange={setActivityId}
+            {/* Activity (Budget Head) & Sub-Activity (Sub-Category) */}
+            <div className="grid grid-cols-2 gap-4">
+              <BudgetHeadCombobox
+                budgetHeads={budgetHeads}
+                value={budgetAllocationId}
+                onChange={(newHeadId) => {
+                  setBudgetAllocationId(newHeadId);
+                  setMasterBudgetItemId(''); // Reset sub-activity when activity changes
+                }}
               />
+              <SubActivityCombobox
+                masterLines={masterLines}
+                selectedHead={budgetHeads.find((b) => b.id === budgetAllocationId)}
+                value={masterBudgetItemId}
+                onChange={(newSubId) => {
+                  setMasterBudgetItemId(newSubId);
+                  if (newSubId) {
+                    const line = masterLines.find((m) => m.id === newSubId);
+                    if (line) {
+                      const matchingHead = budgetHeads.find(
+                        (h) =>
+                          (line.categoryId && h.categoryId === line.categoryId) ||
+                          (line.categoryName &&
+                            (h.allocationName?.toLowerCase() === line.categoryName.toLowerCase() ||
+                              h.categoryName?.toLowerCase() === line.categoryName.toLowerCase())),
+                      );
+                      if (matchingHead && matchingHead.id !== budgetAllocationId) {
+                        setBudgetAllocationId(matchingHead.id);
+                      }
+                    }
+                  }
+                }}
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
               <div className="space-y-1">
                 <label className="text-xs font-semibold text-muted-foreground">WO Number <span className="text-red-500">*</span></label>
                 <div className="relative flex items-center">
@@ -833,6 +1198,7 @@ export function CreateWorkOrderModal({ isOpen, onClose, onSuccess }: CreateWorkO
                       {!isPlumbing && woType === 'fixed_scope' && <th className="px-3 py-2 text-right w-[80px]">Qty</th>}
                       <th className="px-3 py-2 w-[80px]">Unit</th>
                       <th className="px-3 py-2 text-right w-[110px]">Rate (₹)</th>
+                      <th className="px-3 py-2 w-[90px]">GST %</th>
                       {woType === 'fixed_scope' && <th className="px-3 py-2 text-right w-[110px]">Amount (₹)</th>}
                       <th className="px-3 py-2 text-center w-[40px]"></th>
                     </tr>
@@ -908,6 +1274,19 @@ export function CreateWorkOrderModal({ isOpen, onClose, onSuccess }: CreateWorkO
                             onChange={(e) => updateLine(line.key, { rate: Number(e.target.value) })}
                             className="w-full rounded border border-input bg-background px-2 py-1 text-xs text-right"
                           />
+                        </td>
+                        <td className="px-2 py-1.5">
+                          <select
+                            value={line.gstPercentage ?? gstPercentage ?? 18}
+                            onChange={(e) => updateLine(line.key, { gstPercentage: Number(e.target.value) })}
+                            className="w-full rounded border border-input bg-background px-2 py-1 text-xs font-bold text-foreground cursor-pointer"
+                          >
+                            <option value={0}>0%</option>
+                            <option value={5}>5%</option>
+                            <option value={12}>12%</option>
+                            <option value={18}>18%</option>
+                            <option value={28}>28%</option>
+                          </select>
                         </td>
                         {woType === 'fixed_scope' && (
                           <td className="px-3 py-2 text-right font-semibold">

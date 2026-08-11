@@ -30,7 +30,9 @@ import {
   ChevronDown,
   ChevronRight,
   ChevronsUpDown,
+  ShieldAlert,
 } from 'lucide-react';
+import { calculateLandedCostAllocation, comparePoAndPbCharges } from '@/lib/bill-allocation';
 import type { VendorBillRow } from './bills-stats-bar';
 import { supabase } from '@/utils/supabase-client';
 import {
@@ -288,6 +290,8 @@ function normalizeStatus(st?: string): FullBillsFormState['status'] {
 export function BillsForm({ bill, approvedGrns = [], vendorOptions = [], onSubmit, onPrint, onCancel }: BillsFormProps) {
   const todayStr = new Date().toISOString().slice(0, 10);
   const defaultDueDate = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
+  const [savingBill, setSavingBill] = useState(false);
+  const [showLandedCostPreview, setShowLandedCostPreview] = useState(false);
   const [selectedRole, setSelectedRole] = useState<string>('Purchase Manager');
 
   // Check if this is an existing bill or a clean new bill from scratch
@@ -562,6 +566,18 @@ export function BillsForm({ bill, approvedGrns = [], vendorOptions = [], onSubmi
     const matchedPoIds = selectedPoObjs.map((p) => p.id);
     const grns = await fetchApprovedGrnsForPos(matchedPoIds);
     setApprovedGrnOptions(grns);
+
+    // Auto-prefill PB header charges from PO item charges if PB charges are currently 0
+    const poFreight = selectedPoObjs.reduce((sum, p) => sum + Number((p as any).freight_charges ?? 0), 0);
+    const poHandling = selectedPoObjs.reduce((sum, p) => sum + Number((p as any).loading_unloading_charges ?? (p as any).load_unload_chgs ?? 0), 0);
+    const poOthers = selectedPoObjs.reduce((sum, p) => sum + Number((p as any).other_charges ?? (p as any).others_chgs ?? 0), 0);
+
+    setForm((prev) => ({
+      ...prev,
+      lumpsum_freight_charges: prev.lumpsum_freight_charges || poFreight,
+      lumpsum_loading_unloading_charges: prev.lumpsum_loading_unloading_charges || poHandling,
+      lumpsum_other_charges: prev.lumpsum_other_charges || poOthers,
+    }));
   };
 
   const handleAddBillEntryRow = () => {
@@ -835,6 +851,56 @@ export function BillsForm({ bill, approvedGrns = [], vendorOptions = [], onSubmi
   const totalNetBeforeRoundoff = totalGrossAmount + form.purchase_bill_entries.reduce((sum, i) => sum + i.vat_amt, 0) + form.lumpsum_freight_charges + form.lumpsum_loading_unloading_charges + form.lumpsum_other_charges - form.lumpsum_discount_amount;
   const totalAmountPb = Math.round(totalNetBeforeRoundoff);
   const roundoffAmount = Number((totalAmountPb - totalNetBeforeRoundoff).toFixed(2));
+
+  // Landed Cost & Charge Allocation Calculations
+  const poChargesEstimated = React.useMemo(() => {
+    const freight = form.po_details_all.reduce((sum, p) => sum + Number((p as any).freight_charges ?? 0), 0);
+    const handling = form.po_details_all.reduce((sum, p) => sum + Number((p as any).loading_unloading_charges ?? (p as any).load_unload_chgs ?? 0), 0);
+    const others = form.po_details_all.reduce((sum, p) => sum + Number((p as any).other_charges ?? (p as any).others_chgs ?? 0), 0);
+    return { freight, handling, others };
+  }, [form.po_details_all]);
+
+  const chargeVariance = React.useMemo(() => {
+    return comparePoAndPbCharges(poChargesEstimated, {
+      lumpsum_freight_charges: form.lumpsum_freight_charges,
+      lumpsum_loading_unloading_charges: form.lumpsum_loading_unloading_charges,
+      lumpsum_other_charges: form.lumpsum_other_charges,
+      lumpsum_discount_amount: form.lumpsum_discount_amount,
+    });
+  }, [
+    poChargesEstimated,
+    form.lumpsum_freight_charges,
+    form.lumpsum_loading_unloading_charges,
+    form.lumpsum_other_charges,
+    form.lumpsum_discount_amount,
+  ]);
+
+  const landedCostAllocation = React.useMemo(() => {
+    return calculateLandedCostAllocation(
+      form.purchase_bill_entries.map((e) => ({
+        id: (e as any).item_code || e.item_desc,
+        item_desc: e.item_desc,
+        item_code: (e as any).item_code || '',
+        approved_qty: Number(e.received_qty) || 0,
+        unit_rate: Number(e.bill_rate) || 0,
+        net_amt: Number(e.gross_amount) || 0,
+        activity_name: e.activity_name,
+        sub_activity_name: e.sub_activity_name,
+      })),
+      {
+        lumpsum_freight_charges: form.lumpsum_freight_charges,
+        lumpsum_loading_unloading_charges: form.lumpsum_loading_unloading_charges,
+        lumpsum_other_charges: form.lumpsum_other_charges,
+        lumpsum_discount_amount: form.lumpsum_discount_amount,
+      },
+    );
+  }, [
+    form.purchase_bill_entries,
+    form.lumpsum_freight_charges,
+    form.lumpsum_loading_unloading_charges,
+    form.lumpsum_other_charges,
+    form.lumpsum_discount_amount,
+  ]);
   const calculatedTotalAdjustedAmount = form.advance_payment_entries.reduce((sum, i) => sum + Number(i.adjust_amt || 0), 0);
   const finalBillAmount = Math.max(
     totalAmountPb -
@@ -1821,6 +1887,97 @@ export function BillsForm({ bill, approvedGrns = [], vendorOptions = [], onSubmi
                     onChange={(e) => updateHeader('lumpsum_discount_amount', Number(e.target.value))}
                     className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono font-bold text-foreground"
                   />
+                </div>
+
+                {/* Charge Variance & Landed Cost Allocation Preview Panel */}
+                <div className="sm:col-span-2 lg:col-span-4 mt-3 rounded-xl border border-border/80 bg-background/80 p-4 space-y-4 shadow-2xs">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-border/60 pb-3">
+                    <div className="flex items-center gap-2">
+                      <Calculator className="h-4 w-4 text-primary" />
+                      <h4 className="text-xs font-bold uppercase tracking-wider text-foreground">
+                        PO vs PB Charge Variance & Landed Cost Absorption
+                      </h4>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowLandedCostPreview(!showLandedCostPreview)}
+                      className="inline-flex items-center gap-1.5 text-xs font-bold text-primary hover:underline cursor-pointer"
+                    >
+                      {showLandedCostPreview ? 'Hide Landed Cost Preview' : 'Show Landed Cost Preview'}
+                      <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showLandedCostPreview ? 'rotate-180' : ''}`} />
+                    </button>
+                  </div>
+
+                  {/* Summary Comparison Cards */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                    <div className="rounded-lg border border-border bg-muted/30 p-2.5">
+                      <span className="text-[10px] font-bold uppercase text-muted-foreground block">PO Committed Charges</span>
+                      <span className="text-sm font-bold font-mono text-foreground">₹{chargeVariance.totalPoCharges.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                    </div>
+
+                    <div className="rounded-lg border border-border bg-muted/30 p-2.5">
+                      <span className="text-[10px] font-bold uppercase text-muted-foreground block">PB Billed Charges</span>
+                      <span className="text-sm font-bold font-mono text-foreground">₹{chargeVariance.totalPbCharges.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                    </div>
+
+                    <div className={`rounded-lg border p-2.5 ${chargeVariance.isOverTolerance ? 'border-amber-500/50 bg-amber-500/10' : 'border-border bg-muted/30'}`}>
+                      <span className="text-[10px] font-bold uppercase text-muted-foreground block">Charge Variance</span>
+                      <div className="flex items-center gap-1.5">
+                        <span className={`text-sm font-bold font-mono ${chargeVariance.totalVariance > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
+                          {chargeVariance.totalVariance >= 0 ? '+' : ''}₹{chargeVariance.totalVariance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                        </span>
+                        {chargeVariance.totalPoCharges > 0 && (
+                          <span className="text-[10px] font-bold text-muted-foreground">({chargeVariance.variancePercentage}%)</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Warning Banner if Over Tolerance */}
+                  {chargeVariance.warningMessage && (
+                    <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs font-bold text-amber-800 dark:text-amber-200 flex items-center gap-2">
+                      <ShieldAlert className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                      <span>{chargeVariance.warningMessage}</span>
+                    </div>
+                  )}
+
+                  {/* Landed Cost Breakdown Preview Table */}
+                  {showLandedCostPreview && (
+                    <div className="space-y-2 pt-2 border-t border-border/60">
+                      <div className="flex items-center justify-between text-[11px] font-bold uppercase text-muted-foreground">
+                        <span>Proportional Landed Cost Absorption per Item</span>
+                        <span>{landedCostAllocation.lines.length} Items</span>
+                      </div>
+                      <div className="rounded-lg border border-border/70 overflow-x-auto bg-card">
+                        <table className="w-full text-left text-xs border-collapse min-w-[650px]">
+                          <thead>
+                            <tr className="bg-muted/70 text-[10px] font-bold text-muted-foreground uppercase border-b border-border/60">
+                              <th className="py-2 px-3">Item Description</th>
+                              <th className="py-2 px-3 text-right">Billed Qty</th>
+                              <th className="py-2 px-3 text-right">Base Rate</th>
+                              <th className="py-2 px-3 text-right">Alloc. Freight</th>
+                              <th className="py-2 px-3 text-right">Alloc. Handling/Other</th>
+                              <th className="py-2 px-3 text-right">Landed Unit Rate</th>
+                              <th className="py-2 px-3 text-right">Landed Net Total</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-border/40 font-mono">
+                            {landedCostAllocation.lines.map((l, i) => (
+                              <tr key={i} className="hover:bg-muted/30">
+                                <td className="py-2 px-3 font-sans font-medium text-foreground">{l.item_desc}</td>
+                                <td className="py-2 px-3 text-right font-semibold">{l.approved_qty}</td>
+                                <td className="py-2 px-3 text-right">₹{l.unit_rate.toFixed(2)}</td>
+                                <td className="py-2 px-3 text-right text-muted-foreground">₹{l.allocated_freight.toFixed(2)}</td>
+                                <td className="py-2 px-3 text-right text-muted-foreground">₹{(l.allocated_handling + l.allocated_others - l.allocated_discount).toFixed(2)}</td>
+                                <td className="py-2 px-3 text-right font-bold text-primary">₹{l.effective_landed_unit_rate.toFixed(2)}</td>
+                                <td className="py-2 px-3 text-right font-bold text-foreground">₹{l.landed_net_amount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

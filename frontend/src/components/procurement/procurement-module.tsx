@@ -2,7 +2,6 @@
 
 import { FormEvent, useCallback, useEffect, useState } from 'react';
 import {
-  ClipboardList,
   PackageCheck,
   RefreshCcw,
   ReceiptIndianRupee,
@@ -18,7 +17,7 @@ import {
   assignPrToCurrentUser,
   approveAndSendPurchaseOrder,
   approvePurchaseRequisition,
-  convertMaterialRequestToPr,
+
   createGrnFromPo,
   createProcurementDocumentUrl,
   createRfqFromPr,
@@ -31,7 +30,7 @@ import {
   generatePurchaseRequisitionPdf,
   listActiveVendorOptions,
   listBillableGrnOptions,
-  printMaterialRequestReport,
+
   printGrnReport,
   printPurchaseBillReport,
   printPurchaseOrderReport,
@@ -41,14 +40,13 @@ import {
   listProcurementProjects,
   recordQuotation,
   recommendVendorSelection,
-  reviewMaterialRequestInventory,
-  issueMaterialFromStock,
+
   setPurchaseOrderStatus,
   savePurchaseBill,
   savePurchaseOrderForm,
   updateGrnStatus,
   updateVendorBillStatus,
-  type MaterialRequestRow,
+
   type ProcurementDashboardData,
   type ProcurementProjectOption,
   type PurchaseOrderRow,
@@ -70,7 +68,7 @@ import {
   validateBasket,
   type BasketSelection,
 } from '@/components/procurement/rfq/rfq-sourcing-basket';
-import MaterialRequestWorkQueue from '@/components/procurement/material-request-work-queue';
+
 import { POWorkspace } from '@/components/procurement/po/po-workspace';
 import {
   buildPurchaseOrderPayload,
@@ -81,10 +79,9 @@ import { GrnWorkspace } from '@/components/procurement/grn/grn-workspace';
 import { BillsWorkspace } from '@/components/procurement/bills/bills-workspace';
 import { useAppStore } from '@/store/use-app-store';
 
-type TabId = 'requests' | 'requisitions' | 'rfq' | 'orders' | 'grn' | 'billing';
+type TabId = 'requisitions' | 'rfq' | 'orders' | 'grn' | 'billing';
 
-const tabs: { id: TabId; label: string; icon: typeof ClipboardList }[] = [
-  { id: 'requests', label: 'MR', icon: ClipboardList },
+const tabs: { id: TabId; label: string; icon: typeof ShoppingCart }[] = [
   { id: 'requisitions', label: 'PR', icon: ShoppingCart },
   { id: 'rfq', label: 'RFQ', icon: UsersRound },
   { id: 'orders', label: 'PO', icon: Truck },
@@ -114,7 +111,7 @@ export interface ProcurementModuleProps {
 
 export function ProcurementModule({ initialProjectId, hideProjectSelector = false }: ProcurementModuleProps) {
   const { projects, activeProjectId, activeRole } = useAppStore();
-  const [activeTab, setActiveTab] = useState<TabId>('requests');
+  const [activeTab, setActiveTab] = useState<TabId>('requisitions');
   const [data, setData] = useState<ProcurementDashboardData>(emptyData);
   const [liveProjects, setLiveProjects] = useState<ProcurementProjectOption[]>([]);
   const [loading, setLoading] = useState(false);
@@ -124,7 +121,6 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
 
   // PR Generation Modal State
   const [prModalOpen, setPrModalOpen] = useState(false);
-  const [selectedMrForPr, setSelectedMrForPr] = useState<MaterialRequestRow | null>(null);
   const [prTitle, setPrTitle] = useState('');
   const [prRequiredDate, setPrRequiredDate] = useState('');
   const [prFinanceRequired, setPrFinanceRequired] = useState(false);
@@ -303,31 +299,7 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
     return () => window.clearTimeout(timer);
   }, [refresh]);
 
-  // Real-time subscription for mobile MR submissions & status changes
-  useEffect(() => {
-    if (!liveMode) return;
-    const channel = supabase
-      .channel('realtime-material-requests-erp')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'material_requests' },
-        () => {
-          void refresh();
-        }
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'material_request_lines' },
-        () => {
-          void refresh();
-        }
-      )
-      .subscribe();
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [liveMode, refresh]);
 
   /**
    * Realtime sync.
@@ -355,7 +327,6 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
       if (payload.eventType !== 'INSERT') return;
       const row = (payload.new || {}) as Record<string, string | undefined>;
       const notices: Record<string, string> = {
-        material_requests: `New material request ${row.mr_number || ''} submitted.`,
         purchase_requisitions: `Purchase requisition ${row.pr_number || ''} created.`,
         purchase_orders: `Purchase order ${row.po_number || ''} created.`,
         goods_receipt_notes: `Goods receipt note ${row.grn_number || ''} submitted.`,
@@ -365,7 +336,6 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
     };
 
     const tables = [
-      'material_requests',
       'purchase_requisitions',
       'purchase_orders',
       'goods_receipt_notes',
@@ -463,67 +433,7 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
 
 
 
-  async function handleReviewMr(mr: MaterialRequestRow) {
-    await runAction(`Inventory check for MR ${mr.mr_number}`, () => reviewMaterialRequestInventory(mr));
-  }
 
-  async function handleIssueMr(mr: MaterialRequestRow) {
-    await runAction(`Stock issue for MR ${mr.mr_number}`, () => issueMaterialFromStock(mr));
-  }
-
-  async function handleConvertMr(mr: MaterialRequestRow) {
-    const lines = mr.material_request_lines ?? [];
-    if (lines.length === 0) {
-      setError(
-        `MR ${mr.mr_number} has no material lines, so there is nothing to requisition. Add lines to the request first.`,
-      );
-      return;
-    }
-
-    const titleText = mr.title || mr.justification || `PR for ${mr.mr_number}`;
-    const requiredDateText = mr.required_date || new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0];
-
-    // Pass the WHOLE MR line through. Projecting it down to
-    // (description, qty, rate, item_id) -- as this did -- dropped the line id,
-    // so purchase_requisition_lines.material_request_line_id came out NULL and
-    // the PR had no link back to the MR line. Everything downstream then fell
-    // back to MR *header* values: both PR rows showed the same activity, and
-    // group / brand / unit rendered as blank.
-    const prLinesToSave = lines.map((l) => ({
-      // Identity — this is what makes the PR line traceable to its MR line.
-      id: l.id ?? null,
-      material_request_line_id: l.id ?? null,
-      line_number: (l as { line_number?: number | null }).line_number ?? null,
-
-      item_description: l.item_description,
-      quantity: Number(l.quantity) || 0,
-      estimated_rate: Number(l.estimated_rate) || 0,
-      item_id: l.item_id || undefined,
-
-      // Classification — copied 1:1 so the PR shows exactly what the MR defines.
-      unit: (l as { unit?: string | null }).unit ?? null,
-      item_code: (l as { item_code?: string | null }).item_code ?? null,
-      item_group: (l as { item_group?: string | null }).item_group ?? null,
-      item_brand: (l as { item_brand?: string | null }).item_brand ?? null,
-      specification: (l as { specification?: string | null }).specification ?? null,
-      activity_name: (l as { activity_name?: string | null }).activity_name ?? null,
-      sub_activity_name: (l as { sub_activity_name?: string | null }).sub_activity_name ?? null,
-      activity_code: (l as { activity_code?: string | null }).activity_code ?? null,
-    }));
-
-    await runAction(`Auto-draft PR for MR ${mr.mr_number}`, () =>
-      convertMaterialRequestToPr({
-        materialRequest: mr,
-        title: titleText,
-        requiredDate: requiredDateText,
-        financeRequired: false,
-        approvalStage: 'pr_team',
-        remarks: mr.justification || '',
-        lines: prLinesToSave,
-        attachments: [],
-      }),
-    );
-  }
 
   async function handleOpenRfqModal(pr: PurchaseRequisitionRow) {
     setSelectedPrForRfq(pr);
@@ -1216,14 +1126,14 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
         <header className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
             <span className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-primary">
-              <ClipboardList className="h-4 w-4" />
+              <ShoppingCart className="h-4 w-4" />
               Procurement Workflow
             </span>
             <h1 className="font-heading mt-2 text-2xl font-bold tracking-normal text-gray-950 dark:text-white sm:text-3xl">
               Request to GRN
             </h1>
             <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-              Raise material requests, convert them to PRs, collect quotations, finalize vendors, issue POs, and post GRNs into inventory.
+              Review purchase requisitions, collect quotations, finalize vendors, issue POs, and post GRNs into inventory.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -1256,11 +1166,11 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
         <div className="flex items-center justify-between border-b border-border pb-3">
           <div>
             <h2 className="text-lg font-bold text-foreground flex items-center gap-2">
-              <ClipboardList className="h-5 w-5 text-primary" />
+              <ShoppingCart className="h-5 w-5 text-primary" />
               Project Procurement & Supply Lifecycle
             </h2>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Project-level Material Requests, Purchase Requisitions, RFQs, POs, GRNs, and Vendor Bills
+              Purchase Requisitions, RFQs, POs, GRNs, and Vendor Bills
             </p>
           </div>
           <button
@@ -1281,13 +1191,12 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
       {/* Procurement Pipeline Dashboard */}
       <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
         <h4 className="text-sm font-bold uppercase text-foreground mb-4">Procurement Pipeline</h4>
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-          <Metric icon={ClipboardList} label="1. MR" value={data.materialRequests.length} />
-          <Metric icon={ShoppingCart} label="2. PR" value={data.purchaseRequisitions.length} />
-          <Metric icon={UsersRound} label="3. RFQ" value={data.rfqs.length} />
-          <Metric icon={Truck} label="4. PO" value={data.purchaseOrders.length} />
-          <Metric icon={PackageCheck} label="5. GRN" value={data.grns.length} />
-          <Metric icon={ReceiptIndianRupee} label="6. Bills" value={data.vendorBills.length} />
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
+          <Metric icon={ShoppingCart} label="1. PR" value={data.purchaseRequisitions.length} />
+          <Metric icon={UsersRound} label="2. RFQ" value={data.rfqs.length} />
+          <Metric icon={Truck} label="3. PO" value={data.purchaseOrders.length} />
+          <Metric icon={PackageCheck} label="4. GRN" value={data.grns.length} />
+          <Metric icon={ReceiptIndianRupee} label="5. Bills" value={data.vendorBills.length} />
         </div>
       </div>
 
@@ -1315,21 +1224,6 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
       </div>
 
       {/* Tab Panels */}
-      {activeTab === 'requests' && (
-        <MaterialRequestWorkQueue
-          materialRequests={data.materialRequests}
-          purchaseRequisitions={data.purchaseRequisitions}
-          inventorySnapshots={data.inventorySnapshots}
-          projectOptions={projectOptions as any}
-          lockedProjectId={selectedProjectId !== 'all' ? selectedProjectId : undefined}
-          activeRole={(activeRole as any) || 'PROJECT_MANAGER'}
-          onConvertToPr={handleConvertMr}
-          onPrintMr={printMaterialRequestReport}
-          onRefresh={refresh}
-          onMessage={setMessage}
-          onError={setError}
-        />
-      )}
 
       {activeTab === 'requisitions' && (
         <PurchaseRequisitionWorkspace
@@ -1889,7 +1783,7 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
   );
 }
 
-function Metric({ icon: Icon, label, value }: { icon: typeof ClipboardList; label: string; value: number }) {
+function Metric({ icon: Icon, label, value }: { icon: typeof ShoppingCart; label: string; value: number }) {
   return (
     <div className="rounded-lg border border-border bg-card p-3 shadow-sm">
       <div className="flex items-center justify-between gap-3">

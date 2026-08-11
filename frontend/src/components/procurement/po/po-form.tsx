@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { SearchableSelect, SearchableItemInput } from '../purchase-requisition/pr-item-table';
 import { supabase } from '@/utils/supabase-client';
+import { useAppStore } from '@/store/use-app-store';
 import {
   ShoppingBag,
   Building2,
@@ -130,6 +131,7 @@ export interface FullPoFormState {
   // Header Fields (in exact specified order)
   po_number: string;
   po_date: string;
+  prepared_by: string;
   company_name: string;
   pan_no: string;
   vat_no: string;
@@ -297,6 +299,8 @@ export function buildPurchaseOrderPayload(form: FullPoFormState): PurchaseOrderF
     terms_and_conditions: form.terms_and_conditions,
 
     company_name: form.company_name || null,
+    prepared_by: form.prepared_by || null,
+    prepared_by_name: form.prepared_by || null,
     po_in_the_name_of: form.po_in_the_name_of || null,
     supplier_name: form.supplier_name || null,
     vendor_name: form.supplier_name || null,
@@ -441,6 +445,8 @@ interface PoFormProps {
 }
 
 export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, canApprove = false }: PoFormProps) {
+  const { currentUser } = useAppStore();
+  const defaultPreparedBy = currentUser?.name || 'Rohan Mehta (Site Eng)';
   const todayStr = new Date().toISOString().slice(0, 10);
   const [submitting, setSubmitting] = useState(false);
   const [promptReasonTarget, setPromptReasonTarget] = useState<PoStatus | null>(null);
@@ -833,6 +839,7 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
       // 1. Header Fields
       po_number: po.po_number || '',
       po_date: po.po_date || `${todayStr}T00:00`,
+      prepared_by: (po as any).prepared_by_name || (po as any).prepared_by || (po as any).profiles?.name || defaultPreparedBy,
       company_name: (po as any).company_name || 'Pramukh Group Infrastructure Ltd.',
       pan_no: (po as any).pan_no || '',
       vat_no: (po as any).vat_no || '',
@@ -1220,6 +1227,18 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
                 onChange={(e) => updateHeader('company_name', e.target.value)}
                 className="w-full rounded-lg border border-border bg-background px-3 py-2 font-bold text-foreground"
                 required
+              />
+            </div>
+
+            {/* Prepared By */}
+            <div>
+              <label className="block text-[11px] font-bold uppercase text-primary mb-1">Prepared By</label>
+              <input
+                type="text"
+                value={form.prepared_by || ''}
+                onChange={(e) => updateHeader('prepared_by', e.target.value)}
+                className="w-full rounded-lg border border-border bg-background px-3 py-2 font-semibold text-foreground"
+                placeholder="Prepared By Name"
               />
             </div>
 
@@ -3302,6 +3321,21 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
         <PoCloseModal
           poId={po.id}
           poNumber={form.po_number || po.po_number || ''}
+          items={form.items.map((item) => {
+            const ordered = Number(item.approved_qty) || 0;
+            const bal = Number(item.grn_balance_qty ?? item.approved_qty) || 0;
+            const rcvd = Math.max(0, ordered - bal);
+            return {
+              item_code: item.item_code,
+              item_desc: item.item_desc,
+              unit: item.unit,
+              ordered_qty: ordered,
+              received_qty: rcvd,
+              balance_qty: Math.max(0, ordered - rcvd),
+              item_group: item.item_group,
+              activity_name: item.activity_name,
+            };
+          })}
           onSuccess={(newStatus) => {
             setShowCloseModal(false);
             setForm((prev) => ({ ...prev, status: (normalizePoStatus(newStatus) || 'short_closed') as PoStatus }));
