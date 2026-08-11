@@ -3788,46 +3788,44 @@ Rules:
 
   return (
     <div className="flex w-full h-screen overflow-hidden bg-gray-50 dark:bg-black/95">
-      {/* Left Sidebar - narrow icon style matching reference */}
-      <aside className="hidden md:flex flex-col w-[78px] border-r border-gray-200/50 dark:border-gray-800/50 bg-white dark:bg-gray-900 h-full shrink-0 z-40 justify-between select-none overflow-y-auto scrollbar-none">
-        {/* Top Logo */}
-        <div className="flex items-center justify-center h-16 flex-shrink-0 border-b border-gray-100 dark:border-gray-800/60">
-          <Link href="/projects" title="Back to Projects" className="flex items-center justify-center w-10 h-10 rounded-xl hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors group">
-            <svg className="w-7 h-7 text-[#b68d40] drop-shadow-sm" viewBox="30 1 36 29" fill="none" xmlns="http://www.w3.org/2000/svg">
+      {/* Left Sidebar - matching main ERP sidebar style & spacing */}
+      <aside className="hidden md:flex flex-col w-20 border-r border-border bg-card h-full shrink-0 z-40 justify-between select-none overflow-y-auto scrollbar-none">
+        {/* Top Logo Container (h-14 matching HeaderNavbar) */}
+        <div className="flex items-center justify-center h-14 flex-shrink-0 border-b border-border bg-card">
+          <Link href="/projects" title="Back to Projects" className="flex items-center justify-center w-full h-full hover:bg-muted/30 transition-colors group">
+            <svg className="w-6.5 h-6.5 text-[#b68d40] drop-shadow-md flex-shrink-0" viewBox="30 1 36 29" fill="none" xmlns="http://www.w3.org/2000/svg">
               <path className="fill-[#b68d40]" d="M52.13,17.62v2.6s7.81,1.18,9,9.31h4.34a4.39,4.39,0,0,1-1.9-2.21C63,25.74,60.25,18.65,52.13,17.62ZM34.47,3.9H44.72V14.23C37.23,14.15,34.62,13.2,34.47,3.9ZM30,1.38A5.14,5.14,0,0,1,32,5.24v.63c.71,9.31,4.65,10.57,12.7,10.65V27.16h-.08s-.4,2.21-1.58,2.37h4.18V1.38H30ZM43.53,17.62v2.6s-7.8,1.18-8.91,9.31H30.29a4.07,4.07,0,0,0,1.81-2.21C32.65,25.74,35.49,18.65,43.53,17.62ZM51,14.23V3.9H61.28C61,13.2,58.44,14.15,51,14.23ZM63.8,1.38H48.5V29.53h4.1C51.5,29.37,51,27.16,51,27.16h0V16.52c8-0.08,12-1.34,12.61-10.65a1.71,1.71,0,0,0,.08-.63,4.93,4.93,0,0,1,2-3.86Z"/>
             </svg>
           </Link>
         </div>
 
         {/* Nav Items */}
-        <nav className="flex flex-col items-center flex-1 pt-0 pb-3 gap-1">
+        <nav className="flex flex-col flex-1 pt-1 pb-4 gap-1">
           {[
             { id: 'project-management', label: 'Overview',       Icon: Building2       },
             { id: 'inbox',              label: 'Inbox',           Icon: MessageSquare   },
             { id: 'quality-control',    label: 'Quality',         Icon: ShieldCheck     },
             { id: 'site-operations',    label: 'Site Ops',        Icon: Wrench          },
             { id: 'tasks',              label: 'Tasks',           Icon: ListTodo        },
-            { id: 'equipment-tracking', label: 'Fleet',           Icon: Truck           },
             { id: 'procurement',        label: 'Procurement',     Icon: ShoppingCart    },
             { id: 'inventory',          label: 'Inventory',       Icon: PackageOpen     },
             { id: 'vendor-management',  label: 'Vendors',         Icon: Award           },
             { id: 'document-control',   label: 'Documents',       Icon: FileText        },
-            { id: 'budget',             label: 'Budget',          Icon: Coins           },
           ].map(({ id, label, Icon }) => {
             const isActive = activeTab === id;
             return (
               <button
                 key={id}
                 onClick={() => setActiveTab(id as ProjectTab)}
-                className={`relative flex flex-col items-center justify-center w-full py-2 gap-1 transition-all duration-150 border-l-[3px] ${
+                className={`flex flex-col items-center justify-center gap-1.5 w-full py-3 transition-all duration-150 border-l-[3px] ${
                   isActive
-                    ? 'border-[#b68d40] text-[#b68d40] bg-amber-50/70 dark:bg-amber-900/15'
-                    : 'border-transparent text-gray-500 dark:text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800/60'
+                    ? 'bg-[#b68d40]/10 text-[#b68d40] border-[#b68d40]'
+                    : 'text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-white border-transparent'
                 }`}
                 title={label}
               >
-                <Icon className="w-5 h-5 flex-shrink-0" strokeWidth={isActive ? 2.2 : 1.8} />
-                <span className={`text-[9px] font-bold uppercase tracking-wide leading-none ${isActive ? 'text-[#b68d40]' : 'text-gray-400 dark:text-gray-500'}`}>
+                <Icon className="w-5 h-5 flex-shrink-0" />
+                <span className="text-[9px] font-extrabold tracking-tight text-center leading-none uppercase truncate max-w-full px-1">
                   {label}
                 </span>
               </button>
@@ -6384,131 +6382,10 @@ Rules:
                                 style={{ width: `${Math.min(100, (mat.quantity / (mat.reorderLevel * 3)) * 100)}%` }}
                               />
                             </div>
-                            <p className="text-xs text-gray-400 mt-1">Reorder Level: {mat.reorderLevel} {mat.unit}</p>
                           </div>
                         </div>
                       );
                     })}
-                    {stockItems.length === 0 && (
-                      <div className="col-span-full py-3 text-center text-gray-400 bg-white dark:bg-gray-900 rounded-xl border border-gray-100 dark:border-gray-850">
-                        No active stock inventory.
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-                    {/* Stock Register Ledger */}
-                    <div className="lg:col-span-2 bg-white dark:bg-gray-900 p-3 rounded-xl border border-gray-100 dark:border-gray-850 shadow-sm space-y-4">
-                      <h3 className="font-heading font-semibold text-gray-900 dark:text-white text-[13px]">Material Stock Inventory</h3>
-                      
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-xs text-left">
-                          <thead>
-                            <tr className="border-b border-gray-200 dark:border-gray-850 text-gray-400">
-                              <th className="pb-3 font-semibold">Material Item</th>
-                              <th className="pb-3 font-semibold">Current Stock</th>
-                              <th className="pb-3 font-semibold">Stock Value</th>
-                              <th className="pb-3 font-semibold">Vendor Supplier</th>
-                              <th className="pb-3 font-semibold">Safety Level</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {stockItems.map((mat) => (
-                              <tr key={mat.id} className="border-b border-gray-50 dark:border-gray-50/50 hover:bg-gray-50/30 dark:hover:bg-gray-950/20">
-                                <td className="py-3 font-bold text-gray-800 dark:text-gray-200">{mat.itemName}</td>
-                                <td className="py-3 font-medium">{mat.quantity} {mat.unit}</td>
-                                <td className="py-3 font-medium">{formatCurrency(mat.stockValue)}</td>
-                                <td className="py-3 text-gray-400">{mat.supplierName || 'N/A'}</td>
-                                <td className="py-3">
-                                  <span className={`font-bold ${mat.quantity < mat.reorderLevel ? 'text-danger' : 'text-success'}`}>
-                                    {mat.quantity < mat.reorderLevel ? 'Reorder Urgent' : 'Healthy'}
-                                  </span>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-
-                    {/* Log Inward/Outward Slip */}
-                    <div className="bg-white dark:bg-gray-900 p-3 rounded-xl border border-gray-100 dark:border-gray-850 shadow-sm space-y-4">
-                      <h3 className="font-heading font-semibold text-gray-900 dark:text-white text-[13px]">Log Store Transaction</h3>
-                      
-                      <form onSubmit={handleMaterialTransactionSubmit} className="space-y-3">
-                        <div>
-                          <label className="text-xs font-bold text-gray-400 uppercase">Select Material</label>
-                          <select
-                            required
-                            value={selectedMatId}
-                            onChange={(e) => setSelectedMatId(e.target.value)}
-                            className="w-full text-xs mt-1 p-2.5 rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary"
-                          >
-                            <option value="">-- Choose Material Item --</option>
-                            {stockItems.map(m => (
-                              <option key={m.id} value={m.id}>{m.itemName} (Stock: {m.quantity})</option>
-                            ))}
-                          </select>
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-2">
-                          <div>
-                            <label className="text-xs font-bold text-gray-400 uppercase">Slip Type</label>
-                            <select
-                              value={txType}
-                              onChange={(e) => setTxType(e.target.value as typeof txType)}
-                              className="w-full text-xs mt-1 p-2.5 rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary"
-                            >
-                              <option value="INWARD">INWARD (Receipt)</option>
-                              <option value="OUTWARD">OUTWARD (Issue)</option>
-                            </select>
-                          </div>
-                          <div>
-                            <label className="text-xs font-bold text-gray-400 uppercase">Quantity</label>
-                            <input
-                              type="number"
-                              required
-                              min="1"
-                              value={txQty || ''}
-                              onChange={(e) => setTxQty(parseFloat(e.target.value))}
-                              placeholder="Amount"
-                              className="w-full text-xs mt-1 p-2.5 rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-white"
-                            />
-                          </div>
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-2">
-                          <div>
-                            <label className="text-xs font-bold text-gray-400 uppercase">Item Cost (INR)</label>
-                            <input
-                              type="number"
-                              value={txCost || ''}
-                              onChange={(e) => setTxCost(parseFloat(e.target.value))}
-                              placeholder="Unit/Total cost"
-                              className="w-full text-xs mt-1 p-2.5 rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-white"
-                            />
-                          </div>
-                          <div>
-                            <label className="text-xs font-bold text-gray-400 uppercase">Gate Pass Ref#</label>
-                            <input
-                              type="text"
-                              value={txRef}
-                              onChange={(e) => setTxRef(e.target.value)}
-                              placeholder="GP-99201"
-                              className="w-full text-xs mt-1 p-2.5 rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-white"
-                            />
-                          </div>
-                        </div>
-
-                        <button
-                          type="submit"
-                          disabled={currentUser.role === 'PR_TEAM'}
-                          className="w-full text-xs font-bold bg-[#b68d40] hover:bg-[#967332] text-white py-3 rounded-lg shadow-sm transition-colors disabled:opacity-50 cursor-pointer"
-                        >
-                          Confirm Gate Entry
-                        </button>
-                      </form>
-                    </div>
                   </div>
 
                   {/* Material Purchase Requests (PRs) Register */}

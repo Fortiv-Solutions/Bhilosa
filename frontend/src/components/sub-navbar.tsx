@@ -95,7 +95,7 @@ export default function SubNavBar() {
   if (allowedTabs.length <= 1) return null;
 
   return (
-    <div className="h-11 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 flex items-center px-6 gap-6 select-none flex-shrink-0 overflow-x-auto scrollbar-none whitespace-nowrap">
+    <div className="h-11 bg-card border-b border-border flex items-center px-6 gap-6 select-none flex-shrink-0 overflow-x-auto scrollbar-none whitespace-nowrap">
       {allowedTabs.map(tab => {
         const isActive = pathname === tab.path || pathname.startsWith(`${tab.path}/`);
         return (
