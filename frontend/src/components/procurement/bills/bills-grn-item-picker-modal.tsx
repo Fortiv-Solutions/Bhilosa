@@ -21,6 +21,9 @@ export interface SelectedGrnLineItem {
   billed_qty: number; // Qty being billed in this Purchase Bill
   unit_rate: number;
   purchase_category?: string;
+  activity_name?: string;
+  sub_activity_name?: string;
+  pr_no?: string;
 }
 
 interface BillsGrnItemPickerModalProps {
@@ -136,6 +139,9 @@ export function BillsGrnItemPickerModal({
           billed_qty: l.open_billing_qty > 0 ? l.open_billing_qty : l.accepted_qty,
           unit_rate: l.unit_rate,
           purchase_category: l.purchase_category,
+          activity_name: l.activity_name,
+          sub_activity_name: l.sub_activity_name,
+          pr_no: (l as any).pr_no || '',
         });
       });
     });

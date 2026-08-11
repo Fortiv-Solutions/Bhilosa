@@ -19,8 +19,8 @@
 // independent calculation that could disagree with it.
 // ============================================================================
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { X, FileText, CheckCircle2, AlertTriangle, Plus, Trash2, Ruler } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
+import { X, FileText, CheckCircle2, AlertTriangle, Plus, Trash2, Ruler, Wallet, ChevronDown } from 'lucide-react';
 import {
   createServiceBill,
   listBillableVendors,
@@ -29,13 +29,16 @@ import {
 } from '@/lib/service-bills';
 import {
   getWorkOrderLineBillingPosition,
-  listVerifiedMeasurementSheets,
-  isMeasurementRequiredForCertification,
-  type MeasurementSheetRow,
   type WorkOrderLineBillingPosition,
 } from '@/lib/measurement-sheets';
 import { getBillingPosition, type BillingPosition } from '@/lib/wo-billable-items';
-import { getBillableWorkOrders } from '@/lib/work-orders';
+import {
+  getBillableWorkOrders,
+  listBudgetHeads,
+  listMasterBudgetLines,
+  type BudgetHeadOption,
+  type MasterBudgetLineOption,
+} from '@/lib/work-orders';
 import {
   getServiceBillDefaults,
   type ServiceBillDefaults,
@@ -97,6 +100,8 @@ type DraftLine = {
   taxRate: number;
   selectedStage?: string;
   floorLevel?: number;
+  /** 1 + floor x lead%/100. Declared, so the rate variance guard accepts it. */
+  rateFactorApplied?: number;
 };
 
 function newLine(): DraftLine {
@@ -139,9 +144,17 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
   const [positions, setPositions] = useState<WorkOrderLineBillingPosition[]>([]);
   /** Items the contract currently blocks, shown so the reason is visible. */
   const [blockedItems, setBlockedItems] = useState<BillingPosition[]>([]);
-  const [measurementSheets, setMeasurementSheets] = useState<MeasurementSheetRow[]>([]);
-  const [measurementSheetId, setMeasurementSheetId] = useState('');
-  const [measurementRequired, setMeasurementRequired] = useState(true);
+  /** How many activities may be billed today — drives the empty-state warning. */
+  const [eligibleCount, setEligibleCount] = useState(0);
+
+  /**
+   * Where the cost lands. Chosen on the BILL, because a Work Order may be
+   * awarded before anyone has decided which head it draws on.
+   */
+  const [budgetHeads, setBudgetHeads] = useState<BudgetHeadOption[]>([]);
+  const [masterLines, setMasterLines] = useState<MasterBudgetLineOption[]>([]);
+  const [budgetAllocationId, setBudgetAllocationId] = useState('');
+  const [masterBudgetItemId, setMasterBudgetItemId] = useState('');
   /** Commercial clauses inherited from the Work Order's contract terms. */
   const [defaults, setDefaults] = useState<ServiceBillDefaults | null>(null);
 
@@ -168,6 +181,81 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
   const [poDeductionNotes, setPoDeductionNotes] = useState('');
   const [floorLevel, setFloorLevel] = useState(0);
 
+  // Search and dropdown state for Master Budget Line Combobox
+  const [isMasterLineOpen, setIsMasterLineOpen] = useState(false);
+  const [masterLineQuery, setMasterLineQuery] = useState('');
+  const masterLineRef = useRef<HTMLDivElement>(null);
+  
+  // Search and dropdown state for Budget Head Combobox
+  const [isBudgetHeadOpen, setIsBudgetHeadOpen] = useState(false);
+  const [budgetHeadQuery, setBudgetHeadQuery] = useState('');
+  const budgetHeadRef = useRef<HTMLDivElement>(null);
+
+  // Close dropdowns on outside click
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (masterLineRef.current && !masterLineRef.current.contains(e.target as Node)) {
+        setIsMasterLineOpen(false);
+      }
+      if (budgetHeadRef.current && !budgetHeadRef.current.contains(e.target as Node)) {
+        setIsBudgetHeadOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  // Current selections
+  const selectedMasterLine = useMemo(() => {
+    return masterLines.find(line => line.id === masterBudgetItemId);
+  }, [masterLines, masterBudgetItemId]);
+
+  const selectedBudgetHead = useMemo(() => {
+    return budgetHeads.find(head => head.id === budgetAllocationId);
+  }, [budgetHeads, budgetAllocationId]);
+
+  // Filtered lists
+  const filteredMasterLines = useMemo(() => {
+    let list = masterLines;
+    if (budgetAllocationId) {
+      const head = budgetHeads.find((h) => h.id === budgetAllocationId);
+      if (head?.categoryId) {
+        list = masterLines.filter((line) => line.categoryId === head.categoryId);
+      }
+    }
+    
+    const q = masterLineQuery.toLowerCase().trim();
+    if (!q) return list;
+    return list.filter(line => 
+      line.description.toLowerCase().includes(q) || 
+      (line.srNo && line.srNo.toLowerCase().includes(q))
+    );
+  }, [masterLines, masterLineQuery, budgetAllocationId, budgetHeads]);
+
+  // When budgetAllocationId changes, if the selected master budget line does not belong
+  // to this budget head's category, clear it.
+  useEffect(() => {
+    if (!budgetAllocationId) return;
+    const head = budgetHeads.find((h) => h.id === budgetAllocationId);
+    if (!head?.categoryId) return;
+    
+    if (masterBudgetItemId) {
+      const line = masterLines.find((l) => l.id === masterBudgetItemId);
+      if (line && line.categoryId !== head.categoryId) {
+        setMasterBudgetItemId('');
+      }
+    }
+  }, [budgetAllocationId, masterBudgetItemId, budgetHeads, masterLines]);
+
+  const filteredBudgetHeads = useMemo(() => {
+    const q = budgetHeadQuery.toLowerCase().trim();
+    if (!q) return budgetHeads;
+    return budgetHeads.filter(head => {
+      const name = (head.categoryName || head.allocationName || '').toLowerCase();
+      return name.includes(q);
+    });
+  }, [budgetHeads, budgetHeadQuery]);
+
   const resetForm = useCallback(() => {
     setBillMode('measured');
     setVendorId('');
@@ -188,8 +276,13 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
     setIsInterstate(false);
     setPositions([]);
     setBlockedItems([]);
-    setMeasurementSheets([]);
-    setMeasurementSheetId('');
+    setEligibleCount(0);
+    setBudgetAllocationId('');
+    setMasterBudgetItemId('');
+    setIsMasterLineOpen(false);
+    setMasterLineQuery('');
+    setIsBudgetHeadOpen(false);
+    setBudgetHeadQuery('');
     setError(null);
   }, []);
 
@@ -202,12 +295,26 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
     listBillableVendors()
       .then(setVendors)
       .catch(() => setVendors([]));
-    // Mirrors budget_config.sb_measurement_enforcement so the form can warn up
-    // front rather than letting certification fail later.
-    isMeasurementRequiredForCertification(projectId)
-      .then(setMeasurementRequired)
-      .catch(() => setMeasurementRequired(true));
+    listBudgetHeads(projectId)
+      .then(setBudgetHeads)
+      .catch(() => setBudgetHeads([]));
+    listMasterBudgetLines(projectId)
+      .then(setMasterLines)
+      .catch(() => setMasterLines([]));
   }, [isOpen, projectId, resetForm]);
+
+  /**
+   * Picking a Master Budget line implies its head — the database resolves it the
+   * same way, so pre-filling keeps the form honest about which head is charged.
+   */
+  function applyMasterLine(id: string) {
+    setMasterBudgetItemId(id);
+    if (!id) return;
+    const line = masterLines.find((l) => l.id === id);
+    if (!line?.categoryId) return;
+    const head = budgetHeads.find((h) => h.categoryId === line.categoryId);
+    if (head) setBudgetAllocationId(head.id);
+  }
 
   const selectedWorkOrder = useMemo(
     () => workOrders.find((wo) => wo.id === workOrderId) || null,
@@ -221,7 +328,7 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
     if (!workOrderId) {
       setPositions([]);
       setBlockedItems([]);
-      setMeasurementSheets([]);
+      setEligibleCount(0);
       setLines([newLine()]);
       return;
     }
@@ -231,16 +338,19 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
       getWorkOrderLineBillingPosition(workOrderId).catch(
         () => [] as WorkOrderLineBillingPosition[],
       ),
-      listVerifiedMeasurementSheets(workOrderId).catch(() => [] as MeasurementSheetRow[]),
       // The commercial clauses are decided on the contract, not here.
       getServiceBillDefaults(workOrderId).catch(() => null),
-      // The schedule of values, when the Work Order has one.
+      // The activity list and its billing position.
       getBillingPosition(workOrderId).catch(() => [] as BillingPosition[]),
-    ]).then(([positionRows, sheetRows, billDefaults, billableRows]) => {
+    ]).then(([positionRows, billDefaults, billableRows]) => {
       if (cancelled) return;
       setPositions(positionRows);
-      setMeasurementSheets(sheetRows);
       setBlockedItems(billableRows.filter((row) => row.blocking_reason));
+
+      // Inherit the Work Order's head where it has one, so contracts that WERE
+      // budgeted up front keep behaving as before. Otherwise the user chooses.
+      const wo = workOrders.find((w) => w.id === workOrderId);
+      if (wo?.master_budget_item_id) applyMasterLine(wo.master_budget_item_id);
 
       if (billDefaults) {
         setDefaults(billDefaults);
@@ -249,17 +359,15 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
         setRetentionPercent(billDefaults.retentionPercent);
         setTdsPercent(billDefaults.tdsPercent);
       }
-      // Default to the only verified sheet when there is exactly one, so the
-      // common case needs no extra click.
-      setMeasurementSheetId(sheetRows.length === 1 ? sheetRows[0].id : '');
 
-      // Where a schedule of values exists, the bill draws from the items the
+      // Where an activity list exists, the bill draws from the items the
       // contract currently permits, with quantity and rate pre-computed. This
       // is what replaces the blank grid: the source certificates hand-derived
       // their stage rates (20% x 31,900 = 6,380) and typed the result.
       const eligible = billableRows.filter(
         (row) => !row.blocking_reason && row.claimable_quantity > 0,
       );
+      setEligibleCount(eligible.length);
       const taxRate =
         billDefaults && billDefaults.gstTreatment === 'exclusive' ? billDefaults.gstRate : 0;
 
@@ -411,6 +519,8 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
               previousQuantity: l.previousQuantity,
               workOrderLineId: l.workOrderLineId,
               billableItemId: l.billableItemId,
+              rateFactorApplied: l.rateFactorApplied,
+              floorLevel: l.floorLevel,
             }))
         : [];
 
@@ -429,8 +539,13 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
       vendorId,
       workOrderId,
       activityId: selectedWorkOrder?.activity_id || undefined,
-      masterBudgetItemId: selectedWorkOrder?.master_budget_item_id || undefined,
-      measurementSheetId: measurementSheetId || undefined,
+      // Chosen on the bill; falls back to the Work Order's own link when the
+      // contract was budgeted up front.
+      budgetAllocationId: budgetAllocationId || undefined,
+      masterBudgetItemId:
+        masterBudgetItemId || selectedWorkOrder?.master_budget_item_id || undefined,
+      // No sheet is named: evidence is verified activity progress, which
+      // fn_sb_measurement_present resolves from the billed activities.
       billNumber,
       billDate,
       supplierBillNo: supplierBillNo || undefined,
@@ -542,35 +657,179 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
               </div>
             )}
 
-            {/* Measurement evidence. A verified sheet is what unlocks
-                certification (trg_service_bill_evidence_gate); the bill can
-                still be raised without one, it just cannot be certified. */}
+            {/* Where this bill's cost lands. Decided here rather than on the
+                Work Order, because a contract is awarded before anyone has
+                classified it. Without a head the bill still certifies, but
+                fn_post_service_bill_to_budget posts nothing — so the absence is
+                stated rather than left to be discovered in the budget report. */}
             {workOrderId && (
-              <div className="space-y-1">
-                <label className="text-xs font-semibold text-muted-foreground">
-                  Measurement Sheet {measurementRequired && <span className="text-red-500">*</span>}
-                </label>
-                <select
-                  value={measurementSheetId}
-                  onChange={(e) => setMeasurementSheetId(e.target.value)}
-                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                >
-                  <option value="">— none selected —</option>
-                  {measurementSheets.map((sheet) => (
-                    <option key={sheet.id} value={sheet.id}>
-                      {sheet.sheet_number} · {sheet.measurement_date} ·{' '}
-                      {Number(sheet.total_quantity || 0).toLocaleString('en-IN')} measured
-                    </option>
-                  ))}
-                </select>
-                {measurementSheets.length === 0 && measurementRequired && (
-                  <p className="flex items-start gap-1.5 text-[11px] font-semibold text-amber-700 dark:text-amber-400">
+              <div className="rounded-lg border border-border bg-muted/20 p-3">
+                <div className="flex items-center gap-1.5">
+                  <Wallet className="h-3.5 w-3.5 text-primary" />
+                  <h3 className="text-xs font-bold">Budget Classification</h3>
+                </div>
+
+                <div className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div className="space-y-1">
+                    <label className="text-xs font-semibold text-muted-foreground">
+                      Master Budget Line
+                    </label>
+                    <div ref={masterLineRef} className="relative">
+                      <div
+                        onClick={() => setIsMasterLineOpen(!isMasterLineOpen)}
+                        className="flex w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm cursor-pointer select-none"
+                      >
+                        <span className="truncate">
+                          {selectedMasterLine
+                            ? `${selectedMasterLine.srNo ? `${selectedMasterLine.srNo}. ` : ''}${selectedMasterLine.description}`
+                            : '— not linked —'}
+                        </span>
+                        <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                      </div>
+                      
+                      {isMasterLineOpen && (
+                        <div className="absolute z-50 mt-1 max-h-60 w-full overflow-y-auto rounded-md border border-border bg-popover p-1.5 shadow-lg">
+                          <input
+                            type="text"
+                            placeholder="Search budget line..."
+                            value={masterLineQuery}
+                            onChange={(e) => setMasterLineQuery(e.target.value)}
+                            className="mb-1.5 w-full rounded border border-input bg-background px-2 py-1 text-xs outline-none focus:border-primary"
+                          />
+                          <div
+                            onClick={() => {
+                              applyMasterLine('');
+                              setIsMasterLineOpen(false);
+                              setMasterLineQuery('');
+                            }}
+                            className="cursor-pointer rounded px-2 py-1 text-xs hover:bg-muted font-semibold text-muted-foreground"
+                          >
+                            — not linked —
+                          </div>
+                          {filteredMasterLines.map((line) => (
+                            <div
+                              key={line.id}
+                              onClick={() => {
+                                applyMasterLine(line.id);
+                                setIsMasterLineOpen(false);
+                                setMasterLineQuery('');
+                              }}
+                              className={`cursor-pointer rounded px-2 py-1.5 text-xs hover:bg-muted ${
+                                masterBudgetItemId === line.id ? 'bg-primary/10 text-primary font-bold' : ''
+                              }`}
+                            >
+                              {line.srNo ? `${line.srNo}. ` : ''}
+                              {line.description}
+                            </div>
+                          ))}
+                          {filteredMasterLines.length === 0 && (
+                            <div className="px-2 py-1 text-xs text-muted-foreground text-center">
+                              No matching lines found.
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs font-semibold text-muted-foreground">
+                      Budget Head <span className="text-red-500">*</span>
+                    </label>
+                    <div ref={budgetHeadRef} className="relative">
+                      <div
+                        onClick={() => setIsBudgetHeadOpen(!isBudgetHeadOpen)}
+                        className="flex w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm cursor-pointer select-none"
+                      >
+                        <span className="truncate">
+                          {selectedBudgetHead
+                            ? `${selectedBudgetHead.categoryName || selectedBudgetHead.allocationName}${
+                                selectedBudgetHead.availableAmount != null
+                                  ? ` · ${formatIndianCurrency(selectedBudgetHead.availableAmount)} left`
+                                  : ''
+                              }`
+                            : '— select a budget head —'}
+                        </span>
+                        <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                      </div>
+
+                      {isBudgetHeadOpen && (
+                        <div className="absolute z-50 mt-1 max-h-60 w-full overflow-y-auto rounded-md border border-border bg-popover p-1.5 shadow-lg">
+                          <input
+                            type="text"
+                            placeholder="Search budget head..."
+                            value={budgetHeadQuery}
+                            onChange={(e) => setBudgetHeadQuery(e.target.value)}
+                            className="mb-1.5 w-full rounded border border-input bg-background px-2 py-1 text-xs outline-none focus:border-primary"
+                          />
+                          <div
+                            onClick={() => {
+                              setBudgetAllocationId('');
+                              setIsBudgetHeadOpen(false);
+                              setBudgetHeadQuery('');
+                            }}
+                            className="cursor-pointer rounded px-2 py-1 text-xs hover:bg-muted font-semibold text-muted-foreground"
+                          >
+                            — select a budget head —
+                          </div>
+                          {filteredBudgetHeads.map((head) => (
+                            <div
+                              key={head.id}
+                              onClick={() => {
+                                setBudgetAllocationId(head.id);
+                                setIsBudgetHeadOpen(false);
+                                setBudgetHeadQuery('');
+                              }}
+                              className={`cursor-pointer rounded px-2 py-1.5 text-xs hover:bg-muted ${
+                                budgetAllocationId === head.id ? 'bg-primary/10 text-primary font-bold' : ''
+                              }`}
+                            >
+                              {head.categoryName || head.allocationName}
+                              {head.availableAmount != null
+                                ? ` · ${formatIndianCurrency(head.availableAmount)} left`
+                                : ''}
+                            </div>
+                          ))}
+                          {filteredBudgetHeads.length === 0 && (
+                            <div className="px-2 py-1 text-xs text-muted-foreground text-center">
+                              No matching budget heads found.
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {!budgetAllocationId && !masterBudgetItemId && (
+                  <p className="mt-2 flex items-start gap-1.5 text-[11px] font-semibold text-amber-700 dark:text-amber-400">
                     <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
-                    No verified measurement sheet on this Work Order. The bill can be raised, but it
-                    cannot be certified until one is recorded and verified.
+                    No budget head selected. The bill can still be certified, but its cost will not
+                    appear against any budget line.
+                  </p>
+                )}
+                {budgetHeads.length === 0 && (
+                  <p className="mt-2 text-[11px] text-muted-foreground">
+                    No budget heads on this project yet — create the budget first if this bill
+                    should draw on one.
                   </p>
                 )}
               </div>
+            )}
+
+            {/* Evidence is verified activity progress, recorded on the Work
+                Order. The Measurement Sheet picker that stood here is gone with
+                the Measurement Book: the sheet was the old carrier of the
+                second-person check, and progress verification carries it now.
+                A legacy sheet still satisfies the gate server-side, so nothing
+                already recorded stops working. */}
+            {workOrderId && eligibleCount === 0 && (
+              <p className="flex items-start gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 p-2.5 text-[11px] font-semibold text-amber-800 dark:text-amber-300">
+                <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+                Nothing on this Work Order is billable yet. Record progress against the activities
+                and have it verified — a bill can be raised now, but it cannot be certified until
+                verified progress backs it.
+              </p>
             )}
 
             <div className="grid grid-cols-3 gap-4">
@@ -696,20 +955,36 @@ export function CreateServiceBillModal({ isOpen, onClose, onSuccess }: CreateSer
                           const level = Number(e.target.value) || 0;
                           setFloorLevel(level);
                           const leadPct = defaults.lead_percent_per_floor || 7;
+                          /* Record the FACTOR, not just the inflated rate.
+                             trg_sb_rate_variance_guard expects
+                             contracted_rate x rate_factor_applied; multiplying
+                             the rate without declaring the factor made every
+                             floor-lead bill fail certification as an
+                             unexplained variance. */
+                          const factor = 1 + (level * leadPct) / 100;
                           setLines(prev => prev.map(l => {
                             const baseRate = l.contractedRate || l.rate;
-                            const effectiveRate = baseRate * (1 + (level * leadPct / 100));
-                            return { ...l, floorLevel: level, rate: Number(effectiveRate.toFixed(2)) };
+                            const effectiveRate = baseRate * factor;
+                            return {
+                              ...l,
+                              floorLevel: level,
+                              rateFactorApplied: factor,
+                              rate: Number(effectiveRate.toFixed(2)),
+                            };
                           }));
                         }}
                         className="rounded border border-amber-500/40 bg-background px-2 py-1 text-xs font-bold text-amber-900 dark:text-amber-100"
                       >
+                        {/* Was hardcoded to 5 floors. The towers in this corpus
+                            run to 12+ (48-52 flats each across towers A-P), so
+                            the list is generated from the building instead. */}
                         <option value={0}>Ground Floor (Base Rate)</option>
-                        <option value={1}>1st Floor (+{defaults.lead_percent_per_floor || 7}%)</option>
-                        <option value={2}>2nd Floor (+{(defaults.lead_percent_per_floor || 7) * 2}%)</option>
-                        <option value={3}>3rd Floor (+{(defaults.lead_percent_per_floor || 7) * 3}%)</option>
-                        <option value={4}>4th Floor (+{(defaults.lead_percent_per_floor || 7) * 4}%)</option>
-                        <option value={5}>5th Floor (+{(defaults.lead_percent_per_floor || 7) * 5}%)</option>
+                        {Array.from({ length: 40 }, (_, i) => i + 1).map((floor) => (
+                          <option key={floor} value={floor}>
+                            Floor {floor} (+
+                            {((defaults.lead_percent_per_floor || 7) * floor).toFixed(1)}%)
+                          </option>
+                        ))}
                       </select>
                     </div>
                     <span className="text-[10px] text-amber-700 dark:text-amber-300">Auto-adjusts rates for vertical material carrying</span>

@@ -4,7 +4,8 @@
 // Inspired by enterprise ERP form structures — all fields flow smoothly
 // inside a single document surface without separate card boxes.
 
-import { useMemo, useState, type ReactNode } from 'react';
+import { useMemo, useState, useEffect, type ReactNode } from 'react';
+import { supabase } from '@/utils/supabase-client';
 import {
   FileText, Wallet, Truck, Building2, X,
   AlertTriangle, Layers, Trash2, Search, CheckCircle2, SendHorizonal,
@@ -84,6 +85,81 @@ function Field({ label, children, required }: { label: string; children: ReactNo
         {required && <span className="ml-0.5 text-red-500 font-bold">*</span>}
       </label>
       {children}
+    </div>
+  );
+}
+
+function WorkOrderSearchableSelect({
+  value,
+  workOrders,
+  onChange,
+  disabled = false,
+}: {
+  value: string;
+  workOrders: any[];
+  onChange: (wo: any) => void;
+  disabled?: boolean;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [search, setSearch] = useState(value || '');
+
+  useEffect(() => {
+    setSearch(value || '');
+  }, [value]);
+
+  const filtered = workOrders.filter((wo) => {
+    const num = (wo.work_order_number || '').toLowerCase();
+    const vendor = (wo.vendors?.display_name || wo.vendors?.legal_name || '').toLowerCase();
+    return num.includes(search.toLowerCase()) || vendor.includes(search.toLowerCase());
+  });
+
+  return (
+    <div className="relative w-full">
+      <input
+        type="text"
+        value={search}
+        disabled={disabled}
+        onChange={(e) => {
+          setSearch(e.target.value);
+          setIsOpen(true);
+        }}
+        onFocus={() => {
+          if (!disabled) setIsOpen(true);
+        }}
+        placeholder="Search Work Order..."
+        className="w-full rounded-lg border border-border/80 bg-background px-3 py-2 text-xs font-semibold text-foreground outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 transition-all font-mono"
+      />
+      {isOpen && !disabled && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setIsOpen(false)} />
+          <div className="absolute left-0 mt-1 max-h-60 w-full overflow-y-auto rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-lg z-50">
+            {filtered.length > 0 ? (
+              filtered.map((wo) => {
+                const contractor = wo.vendors?.display_name || wo.vendors?.legal_name || 'No Contractor';
+                return (
+                  <button
+                    key={wo.id}
+                    type="button"
+                    onClick={() => {
+                      onChange(wo);
+                      setSearch(wo.work_order_number);
+                      setIsOpen(false);
+                    }}
+                    className="w-full text-left rounded-md px-2.5 py-2 text-xs font-medium hover:bg-accent hover:text-accent-foreground transition-colors flex flex-col gap-0.5"
+                  >
+                    <span className="font-mono text-primary font-bold">{wo.work_order_number}</span>
+                    <span className="text-[10px] text-muted-foreground font-normal">Contractor: {contractor}</span>
+                  </button>
+                );
+              })
+            ) : (
+              <div className="px-2.5 py-2 text-xs text-muted-foreground italic text-center">
+                No active work orders found
+              </div>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -193,6 +269,40 @@ export function PrForm(props: PrFormProps) {
   const { form, update, sourceChips, approvedMrs, onSelectMrFromDropdown, onOpenAddMr, onRemoveMr, budgetSnapshot, projectOptions } = props;
   const [showValidation, setShowValidation] = useState(false);
   const [isVarianceDrawerOpen, setIsVarianceDrawerOpen] = useState(false);
+
+  const [activeWorkOrders, setActiveWorkOrders] = useState<any[]>([]);
+  const [fetchingWorkOrders, setFetchingWorkOrders] = useState(false);
+
+  useEffect(() => {
+    async function loadWorkOrders() {
+      setFetchingWorkOrders(true);
+      try {
+        const { data, error } = await supabase
+          .from('work_orders')
+          .select(`
+            id,
+            work_order_number,
+            wo_status,
+            vendor_id,
+            vendors:vendor_id (
+              id,
+              display_name,
+              legal_name,
+              vendor_code
+            )
+          `)
+          .eq('wo_status', 'active');
+        if (!error && data) {
+          setActiveWorkOrders(data);
+        }
+      } catch (e) {
+        console.error('Error loading work orders:', e);
+      } finally {
+        setFetchingWorkOrders(false);
+      }
+    }
+    loadWorkOrders();
+  }, []);
 
   const summary = useMemo(() => computeCostSummary(form), [form]);
   const budgetAnalysis = useMemo(
@@ -344,11 +454,19 @@ export function PrForm(props: PrFormProps) {
                 />
               </Field>
               <Field label="Work Order No.">
-                <input
+                <WorkOrderSearchableSelect
                   value={form.contract_reference}
-                  onChange={(e) => update({ contract_reference: e.target.value })}
-                  placeholder="Work Order No."
-                  className={FIELD}
+                  workOrders={activeWorkOrders}
+                  onChange={(wo) => {
+                    const contractorName = wo.vendors?.display_name || wo.vendors?.legal_name || '';
+                    update({
+                      contract_reference: wo.work_order_number,
+                      contractor_name: contractorName,
+                      contractor_applicable: true,
+                      vendor_code: wo.vendors?.vendor_code || '',
+                    });
+                  }}
+                  disabled={readOnly}
                 />
               </Field>
 
@@ -385,14 +503,6 @@ export function PrForm(props: PrFormProps) {
               itemGroups={props.itemGroups || []}
               budgetData={props.budgetData || { activities: [], subActivitiesByCategory: {} }}
             />
-
-            {/* Cost Summary */}
-            <div className="flex justify-end pt-2">
-              <div className="flex items-center gap-3 rounded-xl border border-border bg-primary/5 px-4 py-2.5 text-sm font-bold shadow-2xs">
-                <span className="text-muted-foreground uppercase text-xs tracking-wider font-heading">Total Estimated Amount:</span>
-                <span className="text-primary text-base font-extrabold">{formatCurrency(summary.totalEstimatedCost)}</span>
-              </div>
-            </div>
           </div>
 
           {/* Section 3: Delivery & Additional Information */}
@@ -414,8 +524,8 @@ export function PrForm(props: PrFormProps) {
                 <input value={form.site_contact_number} onChange={(e) => update({ site_contact_number: e.target.value })} className={FIELD} />
               </Field>
               <div className="md:col-span-2">
-                <Field label="General Remarks">
-                  <textarea value={form.general_remarks} onChange={(e) => update({ general_remarks: e.target.value })} rows={2} className={FIELD} />
+                <Field label="General Remarks / MR Justification">
+                  <textarea value={form.general_remarks} onChange={(e) => update({ general_remarks: e.target.value })} rows={2} placeholder="Remarks / Justification from Material Request" className={FIELD} />
                 </Field>
               </div>
             </div>
@@ -479,7 +589,7 @@ export function PrForm(props: PrFormProps) {
                   className={FIELD}
                 >
                   <option value="draft">Draft</option>
-                  <option value="under_verification">Pending For verification</option>
+                  <option value="under_verification">Verified by Site Engineer</option>
                   <option value="awaiting_assignment">Awaiting Assignment</option>
                   <option value="pending_approval">Pending Approval</option>
                   <option value="approved">Approved</option>
@@ -507,23 +617,7 @@ export function PrForm(props: PrFormProps) {
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {props.actions}
-            {!readOnly && props.onSendForVerification && (
-              <button
-                type="button"
-                onClick={() => {
-                  if (validation.length > 0) {
-                    setShowValidation(true);
-                    window.scrollTo({ top: 0, behavior: 'smooth' });
-                    alert(`Cannot send PR for verification:\n• ${validation.join('\n• ')}`);
-                  } else {
-                    props.onSendForVerification?.();
-                  }
-                }}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-xs font-bold text-primary-foreground hover:bg-primary/90 shadow-sm transition-colors cursor-pointer font-heading"
-              >
-                <SendHorizonal className="h-4 w-4" /> Send for Verification
-              </button>
-            )}
+
           </div>
         </div>
       </div>

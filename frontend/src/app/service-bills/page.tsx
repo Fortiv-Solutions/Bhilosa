@@ -11,6 +11,7 @@ import {
   ReceiptIndianRupee,
   Wrench,
   Plus,
+  Eye,
 } from 'lucide-react';
 import {
   listServiceBills,
@@ -24,6 +25,7 @@ import { formatIndianCurrency } from '@/utils/format-currency';
 import { CreateServiceBillModal } from '@/components/service-bills/create-service-bill-modal';
 import { PaymentCertificateView } from '@/components/service-bills/payment-certificate-view';
 import { SettlementDrawer } from '@/components/service-bills/settlement-drawer';
+import { ServiceBillDetailDrawer } from '@/components/service-bills/service-bill-detail-drawer';
 import { isServiceBillCertified } from '@/lib/erp/work-order/status';
 import { StatusActionBar, type StatusAction } from '@/components/work-orders/status-action-bar';
 import {
@@ -61,6 +63,7 @@ export default function ServiceBillsPage() {
   const [profileId, setProfileId] = useState<string | null>(null);
   const [certificateBillId, setCertificateBillId] = useState<string | null>(null);
   const [settlementBill, setSettlementBill] = useState<ServiceBillRow | null>(null);
+  const [detailBillId, setDetailBillId] = useState<string | null>(null);
 
   const liveMode = isLiveSupabase();
   const permissions = useMemo(() => getWorkOrderPermissions(activeRole), [activeRole]);
@@ -126,12 +129,20 @@ export default function ServiceBillsPage() {
     else refresh();
   }
 
+const PREFERRED_ACTION_ORDER: Record<string, number> = {
+  approved: 1, // Certify
+  rejected: 2, // Reject
+  submitted: 3, // Submit
+  verified: 4, // Verify
+  draft: 5,
+};
+
   /** Legal onward moves for one bill, filtered by role and segregation of duties. */
   function billActions(bill: ServiceBillRow): StatusAction<ServiceBillStatus>[] {
     const canApprove = permissions.canCertifyServiceBill || permissions.canRejectServiceBill;
     const sodReason = serviceBillCertificationBlockedReason(bill, profileId);
 
-    return nextServiceBillStatuses(bill.status, canApprove)
+    const rawActions = nextServiceBillStatuses(bill.status, canApprove)
       .filter((next) => {
         if (next === 'verified') return permissions.canVerifyServiceBill;
         if (next === 'approved') return permissions.canCertifyServiceBill;
@@ -142,15 +153,19 @@ export default function ServiceBillsPage() {
         status: next,
         label: SERVICE_BILL_ACTION_LABELS[next],
         needsReason: serviceBillNeedsReason(next),
-        tone: next === 'rejected' ? 'danger' : next === 'approved' ? 'primary' : 'neutral',
+        tone: (next === 'rejected' ? 'danger' : next === 'approved' ? 'primary' : 'neutral') as 'danger' | 'primary' | 'neutral',
         hint:
           next === 'approved'
             ? "Certifies the bill: posts cost to the budget and releases the Work Order's commitment"
             : undefined,
-        // Surfaced as a disabled button with the reason, rather than letting the
-        // user click and receive a database error.
         disabledReason: next === 'approved' ? sodReason : null,
       }));
+
+    return rawActions.sort((a, b) => {
+      const orderA = PREFERRED_ACTION_ORDER[a.status] ?? 99;
+      const orderB = PREFERRED_ACTION_ORDER[b.status] ?? 99;
+      return orderA - orderB;
+    });
   }
 
   return (
@@ -235,7 +250,11 @@ export default function ServiceBillsPage() {
             <tbody>
               {bills.map((bill) => (
                 <tr key={bill.id} className="border-b border-gray-50 dark:border-gray-850 hover:bg-muted/30 transition-colors">
-                  <td className="py-3 font-bold">
+                  <td 
+                    className="py-3 font-bold text-primary hover:underline cursor-pointer"
+                    onClick={() => setDetailBillId(bill.id)}
+                    title="Click to view full details and attachments"
+                  >
                     {bill.bill_number}
                     {bill.supplier_bill_no && (
                       <span className="ml-1 font-normal text-gray-400">/ {bill.supplier_bill_no}</span>
@@ -261,6 +280,15 @@ export default function ServiceBillsPage() {
                   </td>
                   <td className="py-3">
                     <div className="flex items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setDetailBillId(bill.id)}
+                        title="View details, line items & attachments"
+                        className="rounded-md border border-primary/30 bg-primary/5 px-2.5 py-1 text-[11px] font-bold text-primary transition-colors hover:bg-primary/10 flex items-center gap-1"
+                      >
+                        <Eye className="h-3 w-3" />
+                        Details
+                      </button>
                       {/* The certificate IS this bill — one document, per the
                           29 workbooks in PC/. This prints it. */}
                       <button
@@ -322,6 +350,19 @@ export default function ServiceBillsPage() {
         onClose={() => setSettlementBill(null)}
         onChanged={refresh}
         permissions={permissions}
+      />
+
+      <ServiceBillDetailDrawer
+        billId={detailBillId}
+        isOpen={detailBillId !== null}
+        onClose={() => setDetailBillId(null)}
+        onChanged={refresh}
+        onOpenCertificate={(id) => {
+          setDetailBillId(null);
+          setCertificateBillId(id);
+        }}
+        permissions={permissions}
+        currentProfileId={profileId}
       />
     </div>
   );

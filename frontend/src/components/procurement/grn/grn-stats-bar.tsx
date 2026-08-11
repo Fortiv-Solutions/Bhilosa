@@ -32,7 +32,15 @@ export interface GrnRow {
   site_engineer_name?: string;
   qc_no?: string;
   uploaded_challan_url?: string;
+  uploaded_challan_path?: string;
+  uploaded_challan_name?: string;
   uploaded_invoice_url?: string;
+  uploaded_invoice_path?: string;
+  uploaded_invoice_name?: string;
+  remarks?: string | null;
+  in_weight?: string | null;
+  out_weight?: string | null;
+  net_weight?: string | null;
 }
 
 export function GrnStatsBar({ grns, onSelectTab }: { grns: GrnRow[]; onSelectTab?: (tab: string) => void }) {

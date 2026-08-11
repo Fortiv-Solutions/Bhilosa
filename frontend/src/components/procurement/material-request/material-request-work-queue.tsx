@@ -25,6 +25,11 @@ import { MRTableView } from './mr-table-view';
 import { MRInspectorPanel } from './mr-inspector-panel';
 import { MRPdfPreviewModal } from './mr-pdf-preview-modal';
 import { Pagination } from '../pagination';
+import { createClient } from '@supabase/supabase-js';
+
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 const PAGE_SIZE = 15;
 
@@ -131,6 +136,23 @@ export default function MaterialRequestWorkQueue({
       .catch(() => {});
   }, [lockedProjectId, filters.projectId, reloadKey]);
 
+  // Realtime subscription to refresh MR queue when status changes (e.g. Back to Draft)
+  useEffect(() => {
+    const channel = supabase
+      .channel('realtime-mr-work-queue')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'material_requests' }, () => {
+        setReloadKey((k) => k + 1);
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'purchase_requisitions' }, () => {
+        setReloadKey((k) => k + 1);
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
   const updateFilters = (next: Partial<MrRequestFilters>) => {
     setFilters((prev) => ({ ...prev, ...next }));
     setPage(1);
@@ -223,7 +245,7 @@ export default function MaterialRequestWorkQueue({
               activeRole={activeRole}
               onClose={() => setSelectedMrId(null)}
               onAction={runAction}
-              onConvertToPr={(mr, lines) => {
+              onConvertToPr={(mr: MaterialRequestRow, lines?: ProcurementLineRow[]) => {
                 onConvertToPr(mr, lines);
               }}
               onPrint={() => setPreviewMr(selectedMr)}

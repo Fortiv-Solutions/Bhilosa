@@ -173,6 +173,13 @@ export function GrnWorkspace({
       uploaded_invoice_url: formData.uploaded_invoice_url,
       uploaded_invoice_path: formData.uploaded_invoice_path,
       uploaded_invoice_name: formData.uploaded_invoice_name,
+      /* The challan triplet was missing here, so the file reached storage and
+         the reference was dropped on save — the GRN came back with no challan
+         attached and no error anywhere. save_goods_receipt_note has always
+         accepted these three keys. */
+      uploaded_challan_url: formData.uploaded_challan_url,
+      uploaded_challan_path: formData.uploaded_challan_path,
+      uploaded_challan_name: formData.uploaded_challan_name,
       lines: (formData.purchase_entries || [])
         .filter((entry) => (Number(entry.received_qty) || 0) > 0)
         .map((entry) => {
@@ -195,6 +202,17 @@ export function GrnWorkspace({
             item_code: entry.item_code || null,
             item_brand: entry.item_brand || null,
             item_description: entry.item_description || null,
+            /* Fall back to the PO line: a receipt whose entries were restored
+               from a saved draft carries the description but not always the
+               lineage, and the PO line is the authority for both. */
+            item_specification:
+              entry.item_specification
+              || poLine?.item_specification
+              // PO lines carry the spec under either name; the insert accepts both.
+              || poLine?.specification
+              || null,
+            activity_name: entry.activity_name || poLine?.activity_name || null,
+            sub_activity_name: entry.sub_activity_name || poLine?.sub_activity_name || null,
             location: entry.location || null,
             purchase_category: entry.purchase_category || null,
             unit: entry.unit || null,
@@ -303,6 +321,7 @@ export function GrnWorkspace({
 
           <GrnForm
             grn={activeGrn}
+            canApprove={canApprove}
             vendorOptions={vendorOptions}
             onPrint={() => {
               if (onDownloadReport && activeGrn.id) {

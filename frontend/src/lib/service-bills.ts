@@ -312,6 +312,13 @@ export type CreateServiceBillLineInput = {
   rateVarianceReason?: string;
   /** Set when a contractual rule reduced the rate (e.g. a half-rate clause). */
   rateFactorApplied?: number;
+  /**
+   * Floor this line was executed on, under a floor_lead contract. Paired with
+   * rateFactorApplied (1 + floor x lead%/100) so the inflated rate is a
+   * DECLARED factor — trg_sb_rate_variance_guard accepts that, whereas a rate
+   * silently multiplied on the client is refused as an unexplained variance.
+   */
+  floorLevel?: number;
   /** Location, so billing can be reported by tower/floor/unit. */
   tower?: string;
   floorRef?: string;
@@ -325,6 +332,18 @@ export type CreateServiceBillInput = {
   workOrderId: string;
   activityId?: string;
   qcInspectionId?: string;
+  /**
+   * Where this bill's cost lands in the budget.
+   *
+   * The Work Order is deliberately allowed to be unbudgeted — the head is a
+   * decision made when the bill is raised, not when the contract is awarded.
+   * fn_resolve_service_bill_allocation prefers the Work Order's head when it
+   * has one and falls back to these, so both models work.
+   *
+   * If neither resolves, fn_post_service_bill_to_budget returns without
+   * posting: the bill certifies but never becomes project cost.
+   */
+  budgetAllocationId?: string;
   masterBudgetItemId?: string;
   /**
    * The verified Measurement Book sheet backing this claim. Required to certify
@@ -388,6 +407,7 @@ export async function createServiceBill(input: CreateServiceBillInput): Promise<
       work_order_id: input.workOrderId,
       activity_id: input.activityId || null,
       qc_inspection_id: input.qcInspectionId || null,
+      budget_allocation_id: input.budgetAllocationId || null,
       master_budget_item_id: input.masterBudgetItemId || null,
       measurement_sheet_id: input.measurementSheetId || null,
       bill_number: input.billNumber.trim(),
@@ -446,6 +466,7 @@ export async function createServiceBill(input: CreateServiceBillInput): Promise<
         measurement_sheet_item_id: l.measurementSheetItemId || null,
         rate_variance_reason: l.rateVarianceReason?.trim() || null,
         rate_factor_applied: l.rateFactorApplied ?? null,
+        floor_level: l.floorLevel ?? null,
         tower: l.tower || null,
         floor_ref: l.floorRef || null,
         unit_ref: l.unitRef || null,

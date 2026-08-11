@@ -142,7 +142,7 @@ export interface PrFormLine {
   pr_quantity: number;
   unit: string;
   estimated_rate: number;
-  tax_rate: number;
+  tax_rate?: number | null;
   required_date: string | null;
   preferred_brand: string | null;
   suggested_vendor: string | null;

@@ -205,7 +205,7 @@ function SearchableUnitInput({
   );
 }
 
-function SearchableSelect({
+export function SearchableSelect({
   options,
   value,
   onChange,
@@ -257,20 +257,19 @@ function SearchableSelect({
 
   if (disabled) {
     return (
-      <input
-        type="text"
+      <textarea
         value=""
         disabled
         placeholder={disabledPlaceholder}
-        className="w-full rounded border border-border bg-muted/40 px-2.5 py-1 text-xs text-muted-foreground outline-none cursor-not-allowed"
+        rows={3}
+        className="w-full rounded border border-border bg-muted/40 px-2.5 py-1 text-xs text-muted-foreground outline-none cursor-not-allowed whitespace-normal break-words resize-none min-h-[58px]"
       />
     );
   }
 
   return (
     <div ref={containerRef} className={containerClassName}>
-      <input
-        type="text"
+      <textarea
         value={search}
         onChange={(e) => {
           setSearch(e.target.value);
@@ -280,8 +279,15 @@ function SearchableSelect({
         onFocus={() => {
           setIsOpen(true);
         }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            (e.target as HTMLTextAreaElement).blur();
+          }
+        }}
         placeholder={placeholder}
-        className="w-full rounded border border-border bg-background px-2.5 py-1 text-xs outline-none focus:border-primary font-medium"
+        rows={3}
+        className="w-full rounded border border-border bg-background px-2.5 py-1 text-xs outline-none focus:border-primary font-medium whitespace-normal break-words resize-none min-h-[58px]"
       />
       {mounted && isOpen && coords && createPortal(
         <div
@@ -327,7 +333,7 @@ function SearchableSelect({
   );
 }
 
-function SearchableItemInput({
+export function SearchableItemInput({
   value,
   items,
   onSelectItem,
@@ -381,8 +387,7 @@ function SearchableItemInput({
 
   return (
     <div ref={containerRef} className={containerClassName}>
-      <input
-        type="text"
+      <textarea
         value={search}
         onChange={(e) => {
           setSearch(e.target.value);
@@ -392,8 +397,15 @@ function SearchableItemInput({
         onFocus={() => {
           setIsOpen(true);
         }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            (e.target as HTMLTextAreaElement).blur();
+          }
+        }}
         placeholder={placeholder}
-        className={className}
+        rows={3}
+        className={`${className} whitespace-normal break-words resize-none min-h-[58px]`}
       />
       {mounted && isOpen && coords && createPortal(
         <div
@@ -496,7 +508,7 @@ export function PrItemTable({
 
       <div className="overflow-x-auto rounded-xl border border-border shadow-xs">
         <table className="w-full border-collapse text-left text-xs">
-          <thead className="bg-muted/90 text-muted-foreground">
+          <thead className="bg-muted/90 text-muted-foreground whitespace-nowrap">
             <tr>
               {/* 1. Sr No. */}
               <th className={`${TH} sticky left-0 z-20 bg-card shadow-sm border-r border-border font-bold text-foreground w-12 text-center`}>Sr No.</th>
@@ -505,21 +517,17 @@ export function PrItemTable({
               {/* 2. Item Description */}
               <th className={`${TH} font-bold text-foreground min-w-[280px] max-w-[380px]`}>Item Description</th>
               {/* 3. Activity Name */}
-              <th className={`${TH} w-64 min-w-[200px] max-w-[280px]`}>Activity Name</th>
+              <th className={`${TH} w-80 min-w-[280px] max-w-[400px]`}>Activity Name</th>
               {/* 4. Sub-Activity */}
-              <th className={`${TH} w-64 min-w-[200px] max-w-[280px]`}>Sub-Activity</th>
+              <th className={`${TH} w-80 min-w-[280px] max-w-[400px]`}>Sub-Activity</th>
               {/* 5. Item Group */}
-              <th className={`${TH} w-36 min-w-[130px]`}>Item Group</th>
+              <th className={`${TH} w-48 min-w-[180px] max-w-[250px]`}>Item Group</th>
               {/* 7. Item Specification */}
-              <th className={`${TH} w-56 min-w-[180px] max-w-[280px]`}>Item Specification</th>
+              <th className={`${TH} w-72 min-w-[240px] max-w-[350px]`}>Item Specification</th>
               {/* 8. Units (Mandatory) */}
               <th className={`${TH} text-center w-24`}>Units *</th>
               {/* 10. Quantity (Mandatory) (Highlighted in primary blue) */}
               <th className={`${TH} text-right text-primary bg-primary/10 font-bold border-primary/40 w-28`}>Quantity *</th>
-              {/* 11. PR Bal Qty */}
-              <th className={`${TH} text-right w-24`}>PR Bal Qty</th>
-              {/* 12. Required Date (Mandatory) */}
-              <th className={`${TH} text-center w-36`}>Required Date *</th>
               {/* 13. Lead Period */}
               <th className={`${TH} text-center w-24`}>Lead Period</th>
               {/* 14. Lead Date */}
@@ -529,7 +537,7 @@ export function PrItemTable({
           <tbody className="divide-y divide-border">
             {lines.length === 0 && (
               <tr>
-                <td colSpan={13} className="px-3 py-6 text-center text-sm font-medium text-red-500">
+                <td colSpan={11} className="px-3 py-6 text-center text-sm font-medium text-red-500">
                   No items yet. Select from an approved MR above.
                 </td>
               </tr>
@@ -559,7 +567,7 @@ export function PrItemTable({
                             item_description: item.item_description,
                             item_group: item.item_groups?.name || 'General',
                             unit: item.units_of_measure?.code || 'NOS',
-                            tax_rate: Number(item.tax_rate ?? 18),
+                            tax_rate: item.tax_rate != null ? Number(item.tax_rate) : null,
                             lead_period_days: leadDays,
                             lead_period_date: leadDate,
                           });
@@ -578,7 +586,7 @@ export function PrItemTable({
                               item_description: matched.item_description,
                               item_group: matched.item_groups?.name || 'General',
                               unit: matched.units_of_measure?.code || 'NOS',
-                              tax_rate: Number(matched.tax_rate ?? 18),
+                              tax_rate: matched.tax_rate != null ? Number(matched.tax_rate) : null,
                               lead_period_days: leadDays,
                               lead_period_date: leadDate,
                             });
@@ -611,7 +619,7 @@ export function PrItemTable({
                             item_description: item.item_description,
                             item_group: item.item_groups?.name || 'General',
                             unit: item.units_of_measure?.code || 'NOS',
-                            tax_rate: Number(item.tax_rate ?? 18),
+                            tax_rate: item.tax_rate != null ? Number(item.tax_rate) : null,
                             lead_period_days: leadDays,
                             lead_period_date: leadDate,
                           });
@@ -630,7 +638,7 @@ export function PrItemTable({
                               item_description: val,
                               item_group: matched.item_groups?.name || 'General',
                               unit: matched.units_of_measure?.code || 'NOS',
-                              tax_rate: Number(matched.tax_rate ?? 18),
+                              tax_rate: matched.tax_rate != null ? Number(matched.tax_rate) : null,
                               lead_period_days: leadDays,
                               lead_period_date: leadDate,
                             });
@@ -648,7 +656,7 @@ export function PrItemTable({
                   </td>
 
                   {/* 3. Activity Name */}
-                  <td className={`${TD_WRAP} w-64 min-w-[200px] max-w-[280px]`}>
+                  <td className={`${TD_WRAP} w-80 min-w-[280px] max-w-[400px]`}>
                     {!readOnly ? (
                       <SearchableSelect
                         options={budgetData.activities}
@@ -661,13 +669,13 @@ export function PrItemTable({
                           });
                         }}
                         placeholder="Select activity..."
-                        containerClassName="relative w-full min-w-[190px]"
+                        containerClassName="relative w-full min-w-[270px]"
                       />
                     ) : (line.activity_name || line.work_activity || '—')}
                   </td>
 
                   {/* 4. Sub-Activity */}
-                  <td className={`${TD_WRAP} w-64 min-w-[200px] max-w-[280px]`}>
+                  <td className={`${TD_WRAP} w-80 min-w-[280px] max-w-[400px]`}>
                     {!readOnly ? (
                       <SearchableSelect
                         options={line.activity_name ? (budgetData.subActivitiesByCategory[line.activity_name] || []) : []}
@@ -676,28 +684,34 @@ export function PrItemTable({
                         placeholder="Select sub-activity..."
                         disabled={!line.activity_name}
                         disabledPlaceholder="Select Activity first"
-                        containerClassName="relative w-full min-w-[190px]"
+                        containerClassName="relative w-full min-w-[270px]"
                       />
                     ) : (line.sub_activity_name || '—')}
                   </td>
 
                   {/* 5. Item Group */}
-                  <td className={`${TD_NOWRAP} w-36 min-w-[130px]`}>
+                  <td className={`${TD_WRAP} w-48 min-w-[180px] max-w-[250px]`}>
                     {!readOnly ? (
                       <SearchableSelect
                         options={itemGroups}
                         value={line.item_group || ''}
                         onChange={(val) => onChangeLine(line.key, { item_group: val })}
                         placeholder="Select group..."
-                        containerClassName="relative w-full min-w-[110px]"
+                        containerClassName="relative w-full min-w-[170px]"
                       />
                     ) : (line.item_group || '—')}
                   </td>
 
                   {/* 7. Item Specification */}
-                  <td className={`${TD_WRAP} w-56 min-w-[180px] max-w-[280px]`}>
+                  <td className={`${TD_WRAP} w-72 min-w-[240px] max-w-[350px]`}>
                     {!readOnly ? (
-                      <input value={line.specification || ''} onChange={(e) => onChangeLine(line.key, { specification: e.target.value })} placeholder="—" className={`${INPUT} w-48`} />
+                      <textarea
+                        value={line.specification || ''}
+                        onChange={(e) => onChangeLine(line.key, { specification: e.target.value })}
+                        placeholder="—"
+                        rows={3}
+                        className="w-full rounded border border-border bg-background px-2 py-1 text-xs outline-none focus:border-primary font-medium whitespace-normal break-words resize-none min-h-[58px]"
+                      />
                     ) : (line.specification || '—')}
                   </td>
 
@@ -725,39 +739,6 @@ export function PrItemTable({
                         />
                         {err && <span title={err} className="ml-1 inline-block align-middle text-red-500"><AlertTriangle className="inline h-3 w-3" /></span>}
                       </div>
-                    )}
-                  </td>
-
-                  {/* 11. PR Bal Qty */}
-                  <td className={`${TD_NOWRAP} text-right w-24`}>
-                    {(() => {
-                      if (line.remaining_mr_qty == null) return <span className="text-muted-foreground">—</span>;
-                      const bal = Math.max(Number(line.remaining_mr_qty) - Number(line.pr_quantity || 0), 0);
-                      return (
-                        <span className={`font-semibold tabular-nums ${bal > 0 ? 'text-amber-600 dark:text-amber-500' : 'text-muted-foreground'}`} title={`MR balance ${line.remaining_mr_qty} − PR qty ${line.pr_quantity || 0}`}>
-                          {bal.toLocaleString('en-IN')}
-                        </span>
-                      );
-                    })()}
-                  </td>
-
-                  {/* 12. Required Date (Mandatory) */}
-                  <td className={`${TD_NOWRAP} text-center w-36`}>
-                    {readOnly ? (line.required_date || '—') : (
-                      <input
-                        type="date"
-                        value={line.required_date ?? ''}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          const leadDays = Number(line.lead_period_days ?? 3);
-                          const leadDate = calculateLeadDate(val, leadDays);
-                          onChangeLine(line.key, {
-                            required_date: val,
-                            lead_period_date: leadDate,
-                          });
-                        }}
-                        className={`${INPUT} w-32`}
-                      />
                     )}
                   </td>
 

@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
-import { X, ClipboardCheck, Plus, Trash2, Paperclip } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { X, ClipboardCheck, Plus, Trash2, Paperclip, ChevronDown, Search } from 'lucide-react';
 import {
   createWorkOrder,
   listBudgetHeads,
@@ -30,6 +30,179 @@ type DraftLine = CreateWorkOrderLineInput & { key: string; itemName?: string };
 
 function emptyLine(): DraftLine {
   return { key: Math.random().toString(36).slice(2), itemName: '', description: '', quantity: 0, unit: '', rate: 0 };
+}
+
+/* ─── Searchable Combobox: Format / Template ─────────────────────────── */
+function TemplateCombobox({
+  templates,
+  value,
+  onChange,
+}: {
+  templates: WoTemplateRow[];
+  value: string;
+  onChange: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const ref = useRef<HTMLDivElement>(null);
+
+  const selected = templates.find((t) => t.id === value);
+  const filtered = useMemo(() => {
+    if (!query.trim()) return templates;
+    const q = query.toLowerCase();
+    return templates.filter(
+      (t) =>
+        t.name.toLowerCase().includes(q) ||
+        (t.trade_category || '').toLowerCase().includes(q),
+    );
+  }, [templates, query]);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  return (
+    <div className="space-y-1 relative" ref={ref}>
+      <label className="text-xs font-semibold text-muted-foreground">
+        Format / Template (one of the {templates.length})
+      </label>
+      <button
+        type="button"
+        onClick={() => { setOpen(!open); setQuery(''); }}
+        className="w-full flex items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm hover:bg-muted/40 transition-colors"
+      >
+        <span className={selected ? 'text-foreground font-medium' : 'text-muted-foreground'}>
+          {selected ? `${selected.trade_category} — ${selected.name}` : 'Start blank…'}
+        </span>
+        <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <div className="absolute left-0 right-0 z-50 mt-1 rounded-md border border-border bg-popover shadow-lg">
+          <div className="flex items-center gap-2 border-b border-border px-3 py-2">
+            <Search className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+            <input
+              autoFocus
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search templates…"
+              className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+            />
+          </div>
+          <div className="max-h-52 overflow-y-auto">
+            <button
+              type="button"
+              onClick={() => { onChange(''); setOpen(false); }}
+              className={`w-full px-3 py-2 text-left text-sm hover:bg-accent hover:text-accent-foreground border-b border-border/50 ${!value ? 'bg-primary/5 font-semibold text-primary' : ''}`}
+            >
+              Start blank…
+            </button>
+            {filtered.length === 0 && (
+              <div className="px-3 py-3 text-xs text-muted-foreground text-center">No templates match &ldquo;{query}&rdquo;</div>
+            )}
+            {filtered.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => { onChange(t.id); setOpen(false); }}
+                className={`w-full px-3 py-2 text-left text-sm hover:bg-accent hover:text-accent-foreground border-b border-border/50 last:border-0 flex flex-col gap-0.5 ${value === t.id ? 'bg-primary/5 font-semibold text-primary' : ''}`}
+              >
+                <span className="font-bold">{t.trade_category} — {t.name}</span>
+                {t.terms_category && <span className="text-[10px] text-muted-foreground truncate">{t.terms_category}</span>}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─── Searchable Combobox: Site / Tower / Activity ───────────────────── */
+function ActivityCombobox({
+  activities,
+  value,
+  onChange,
+}: {
+  activities: any[];
+  value: string;
+  onChange: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const ref = useRef<HTMLDivElement>(null);
+
+  const selected = activities.find((a) => a.id === value);
+  const filtered = useMemo(() => {
+    if (!query.trim()) return activities;
+    const q = query.toLowerCase();
+    return activities.filter((a) => (a.title || '').toLowerCase().includes(q));
+  }, [activities, query]);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  return (
+    <div className="space-y-1 relative" ref={ref}>
+      <label className="text-xs font-semibold text-muted-foreground">Site / Tower / Activity</label>
+      <button
+        type="button"
+        onClick={() => { setOpen(!open); setQuery(''); }}
+        className="w-full flex items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm hover:bg-muted/40 transition-colors"
+      >
+        <span className={selected ? 'text-foreground font-medium truncate' : 'text-muted-foreground'}>
+          {selected ? selected.title : 'Unassigned'}
+        </span>
+        <ChevronDown className={`h-4 w-4 text-muted-foreground shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <div className="absolute left-0 right-0 z-50 mt-1 rounded-md border border-border bg-popover shadow-lg">
+          <div className="flex items-center gap-2 border-b border-border px-3 py-2">
+            <Search className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+            <input
+              autoFocus
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search activities…"
+              className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+            />
+          </div>
+          <div className="max-h-52 overflow-y-auto">
+            <button
+              type="button"
+              onClick={() => { onChange(''); setOpen(false); }}
+              className={`w-full px-3 py-2 text-left text-sm hover:bg-accent hover:text-accent-foreground border-b border-border/50 ${!value ? 'bg-primary/5 font-semibold text-primary' : ''}`}
+            >
+              Unassigned
+            </button>
+            {filtered.length === 0 && (
+              <div className="px-3 py-3 text-xs text-muted-foreground text-center">No activities match &ldquo;{query}&rdquo;</div>
+            )}
+            {filtered.map((a) => (
+              <button
+                key={a.id}
+                type="button"
+                onClick={() => { onChange(a.id); setOpen(false); }}
+                className={`w-full px-3 py-2 text-left text-sm hover:bg-accent hover:text-accent-foreground border-b border-border/50 last:border-0 ${value === a.id ? 'bg-primary/5 font-semibold text-primary' : ''}`}
+              >
+                {a.title}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function CreateWorkOrderModal({ isOpen, onClose, onSuccess }: CreateWorkOrderModalProps) {
@@ -68,6 +241,7 @@ export function CreateWorkOrderModal({ isOpen, onClose, onSuccess }: CreateWorkO
   const [budgetAllocationId, setBudgetAllocationId] = useState('');
   const [masterBudgetItemId, setMasterBudgetItemId] = useState('');
   const [taxInclusive, setTaxInclusive] = useState(false);
+  const [gstPercentage, setGstPercentage] = useState<number>(18);
   /**
    * Not-to-exceed value for a rate-based contract. Summing bare rates (as the
    * total below does for fixed-scope) is meaningless when there are no
@@ -158,11 +332,31 @@ export function CreateWorkOrderModal({ isOpen, onClose, onSuccess }: CreateWorkO
     setTermsBaseline(tpl.terms_baseline || '');
     setTermsCategory(tpl.terms_category || '');
 
-    const cat = tpl.trade_category.toLowerCase();
-    if (cat.includes('plumb') || cat.includes('sanit')) {
-      setValuationStructure('stage_percentage');
-    } else if (cat.includes('floor') || cat.includes('tile') || cat.includes('plaster') || cat.includes('mason')) {
-      setValuationStructure('floor_lead');
+    /* The structure now comes off the template rather than being guessed from
+       substrings of the trade name. That guess never reset to standard when a
+       later template did not match, and it selected stage_percentage without
+       supplying any stages — so the form then failed its own sum-to-100 check
+       on a split the user had never been shown. Every branch assigns. */
+    const structure = tpl.default_valuation_structure ?? 'standard';
+    setValuationStructure(structure);
+
+    if (structure === 'floor_lead') {
+      setLeadPercentPerFloor(tpl.default_lead_percent_per_floor || 7);
+    }
+
+    if (structure === 'stage_percentage') {
+      const seeded = (tpl.default_stages ?? []).filter((s) => s.name && s.percent > 0);
+      setStages(
+        seeded.length > 0
+          ? seeded.map((s) => ({
+              id: `${s.name}-${s.percent}-${Math.random().toString(36).slice(2, 8)}`,
+              name: s.name,
+              percent: s.percent,
+            }))
+          : [],
+      );
+    } else {
+      setStages([]);
     }
   }
 
@@ -192,7 +386,35 @@ export function CreateWorkOrderModal({ isOpen, onClose, onSuccess }: CreateWorkO
     setLines((prev) => (prev.length > 1 ? prev.filter((l) => l.key !== key) : prev));
   }
 
-  const totalAmount = lines.reduce((sum, l) => sum + (woType === 'fixed_scope' ? (l.quantity ?? 0) * l.rate : l.rate), 0);
+  const isPlumbing = useMemo(() => {
+    const cat = (tradeCategory || '').toLowerCase();
+    const tCat = (selectedTemplate?.trade_category || '').toLowerCase();
+    const tName = (selectedTemplate?.name || '').toLowerCase();
+    return cat.includes('plumb') || tCat.includes('plumb') || tName.includes('plumb');
+  }, [tradeCategory, selectedTemplate]);
+
+  const subtotalAmount = useMemo(() => {
+    const linesSum = lines.reduce((sum, l) => {
+      const q = l.quantity && l.quantity > 0 ? l.quantity : 1;
+      const lineVal = (l.quantity === 0 && l.rate > 0) ? l.rate : q * (l.rate || 0);
+      return sum + lineVal;
+    }, 0);
+
+    if (woType === 'rate_based' && ceilingAmount > 0) {
+      return ceilingAmount;
+    }
+    return linesSum;
+  }, [lines, woType, ceilingAmount, isPlumbing]);
+
+  const gstAmount = useMemo(() => {
+    return (subtotalAmount * (gstPercentage || 0)) / 100;
+  }, [subtotalAmount, gstPercentage]);
+
+  const grossAmount = useMemo(() => {
+    return subtotalAmount + gstAmount;
+  }, [subtotalAmount, gstAmount]);
+
+  const totalAmount = subtotalAmount;
 
   if (!isOpen) return null;
 
@@ -219,7 +441,6 @@ export function CreateWorkOrderModal({ isOpen, onClose, onSuccess }: CreateWorkO
       return;
     }
 
-
     if (valuationStructure === 'stage_percentage') {
       const totalPct = stages.reduce((sum, s) => sum + (Number(s.percent) || 0), 0);
       if (Math.abs(totalPct - 100) > 0.1) {
@@ -233,6 +454,7 @@ export function CreateWorkOrderModal({ isOpen, onClose, onSuccess }: CreateWorkO
 
     try {
       const agency = await findOrCreateAgency({ projectId, agencyName, tradeCategory });
+      const gstSummary = gstPercentage > 0 ? `\n\nGST Rate: ${gstPercentage}%` : '';
 
       const result = await createWorkOrder({
         projectId,
@@ -244,14 +466,14 @@ export function CreateWorkOrderModal({ isOpen, onClose, onSuccess }: CreateWorkO
         scopeOfWork: scopeOfWork || tradeCategory,
         woType,
         issueDate,
-        termsAndConditions: [termsBaseline, termsCategory].filter(Boolean).join('\n\n'),
+        termsAndConditions: [termsBaseline, termsCategory, gstSummary].filter(Boolean).join('\n\n'),
         budgetAllocationId: budgetAllocationId || undefined,
         masterBudgetItemId: masterBudgetItemId || undefined,
-        taxInclusive,
-        ceilingAmount: woType === 'rate_based' ? ceilingAmount : undefined,
+        taxInclusive: taxInclusive || gstPercentage > 0,
+        ceilingAmount: woType === 'rate_based' ? (ceilingAmount > 0 ? ceilingAmount : subtotalAmount) : undefined,
         lines: lines.map((l) => ({
-          description: l.itemName ? `${l.itemName} - ${l.description}` : l.description,
-          quantity: l.quantity,
+          description: (!isPlumbing && l.itemName) ? `${l.itemName} - ${l.description}` : l.description,
+          quantity: isPlumbing ? 1 : l.quantity,
           unit: l.unit,
           rate: l.rate,
         })),
@@ -297,15 +519,11 @@ export function CreateWorkOrderModal({ isOpen, onClose, onSuccess }: CreateWorkO
           )}
 
           <form id="create-work-order-form" onSubmit={handleSubmit} className="space-y-5">
-            <div className="space-y-1">
-              <label className="text-xs font-semibold text-muted-foreground">Format / Template (one of the 15)</label>
-              <select value={templateId} onChange={(e) => applyTemplate(e.target.value)} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm">
-                <option value="">Start blank…</option>
-                {templates.map((t) => (
-                  <option key={t.id} value={t.id}>{t.trade_category} — {t.name}</option>
-                ))}
-              </select>
-            </div>
+            <TemplateCombobox
+              templates={templates}
+              value={templateId}
+              onChange={(id) => applyTemplate(id)}
+            />
 
             <div className="grid grid-cols-2 gap-4">
               {/* Searchable Agency ComboBox */}
@@ -448,15 +666,11 @@ export function CreateWorkOrderModal({ isOpen, onClose, onSuccess }: CreateWorkO
             </div>
 
             <div className="grid grid-cols-3 gap-4">
-              <div className="space-y-1">
-                <label className="text-xs font-semibold text-muted-foreground">Site / Tower / Activity</label>
-                <select value={activityId} onChange={(e) => setActivityId(e.target.value)} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm">
-                  <option value="">Unassigned</option>
-                  {activities.map((a) => (
-                    <option key={a.id} value={a.id}>{a.title}</option>
-                  ))}
-                </select>
-              </div>
+              <ActivityCombobox
+                activities={activities}
+                value={activityId}
+                onChange={setActivityId}
+              />
               <div className="space-y-1">
                 <label className="text-xs font-semibold text-muted-foreground">WO Number <span className="text-red-500">*</span></label>
                 <div className="relative flex items-center">
@@ -614,9 +828,9 @@ export function CreateWorkOrderModal({ isOpen, onClose, onSuccess }: CreateWorkO
                   <thead className="bg-muted/50 font-heading font-bold text-muted-foreground uppercase border-b border-border text-[10px]">
                     <tr>
                       <th className="px-3 py-2 text-center w-[40px]">Sr</th>
-                      <th className="px-3 py-2 min-w-[150px]">Item / Service Description</th>
+                      {!isPlumbing && <th className="px-3 py-2 min-w-[150px]">Item / Service Description</th>}
                       <th className="px-3 py-2 min-w-[240px]">Work Description & Specification</th>
-                      {woType === 'fixed_scope' && <th className="px-3 py-2 text-right w-[80px]">Qty</th>}
+                      {!isPlumbing && woType === 'fixed_scope' && <th className="px-3 py-2 text-right w-[80px]">Qty</th>}
                       <th className="px-3 py-2 w-[80px]">Unit</th>
                       <th className="px-3 py-2 text-right w-[110px]">Rate (₹)</th>
                       {woType === 'fixed_scope' && <th className="px-3 py-2 text-right w-[110px]">Amount (₹)</th>}
@@ -627,30 +841,42 @@ export function CreateWorkOrderModal({ isOpen, onClose, onSuccess }: CreateWorkO
                     {lines.map((line, idx) => (
                       <tr key={line.key} className="border-b border-border last:border-0 hover:bg-muted/10">
                         <td className="px-3 py-2 text-center font-semibold text-muted-foreground">{idx + 1}</td>
-                        <td className="px-2 py-1.5">
-                          <input
-                            required
-                            type="text"
-                            placeholder="e.g. Concrete, AC"
-                            value={line.itemName || ''}
-                            onChange={(e) => updateLine(line.key, { itemName: e.target.value })}
-                            className="w-full rounded border border-input bg-background px-2 py-1 text-xs"
-                          />
-                        </td>
+                        {!isPlumbing && (
+                          <td className="px-2 py-1.5">
+                            <input
+                              required={!isPlumbing}
+                              type="text"
+                              placeholder="e.g. Concrete, AC"
+                              value={line.itemName || ''}
+                              onChange={(e) => updateLine(line.key, { itemName: e.target.value })}
+                              className="w-full rounded border border-input bg-background px-2 py-1 text-xs"
+                            />
+                          </td>
+                        )}
                         <td className="px-2 py-1.5">
                           <textarea
                             required
                             rows={1}
                             placeholder="Detailed specifications"
                             value={line.description}
-                            onChange={(e) => updateLine(line.key, { description: e.target.value })}
-                            className="w-full rounded border border-input bg-background px-2 py-1 text-xs resize-y"
+                            onInput={(e) => {
+                              const target = e.currentTarget;
+                              target.style.height = 'auto';
+                              target.style.height = `${target.scrollHeight}px`;
+                            }}
+                            onChange={(e) => {
+                              updateLine(line.key, { description: e.target.value });
+                              const target = e.currentTarget;
+                              target.style.height = 'auto';
+                              target.style.height = `${target.scrollHeight}px`;
+                            }}
+                            className="w-full rounded border border-input bg-background px-2 py-1 text-xs resize-none overflow-hidden min-h-[34px]"
                           />
                         </td>
-                        {woType === 'fixed_scope' && (
+                        {!isPlumbing && woType === 'fixed_scope' && (
                           <td className="px-2 py-1.5">
                             <input
-                              required
+                              required={!isPlumbing}
                               type="number"
                               min="0"
                               step="0.01"
@@ -685,7 +911,7 @@ export function CreateWorkOrderModal({ isOpen, onClose, onSuccess }: CreateWorkO
                         </td>
                         {woType === 'fixed_scope' && (
                           <td className="px-3 py-2 text-right font-semibold">
-                            {formatIndianCurrency((line.quantity || 0) * line.rate)}
+                            {formatIndianCurrency(isPlumbing ? line.rate : (line.quantity || 0) * line.rate)}
                           </td>
                         )}
                         <td className="px-2 py-1.5 text-center">
@@ -706,17 +932,17 @@ export function CreateWorkOrderModal({ isOpen, onClose, onSuccess }: CreateWorkO
 
               {woType === 'fixed_scope' && (
                 <div className="mt-2 text-right text-sm font-bold bg-muted/30 p-2.5 rounded-lg border border-border">
-                  Total WO Value: <span className="text-primary text-base font-extrabold">{formatIndianCurrency(totalAmount)}</span>
+                  Subtotal (Net Value): <span className="text-primary text-base font-extrabold">{formatIndianCurrency(subtotalAmount)}</span>
                 </div>
               )}
               {woType === 'rate_based' && (
-                <div className="mt-2 space-y-1.5 bg-amber-50 dark:bg-amber-950/20 p-3 rounded-lg border border-amber-200/50">
+                <div className="mt-2 space-y-1.5 bg-muted/30 p-3 rounded-lg border border-border">
                   <p className="text-[11px] text-muted-foreground">
                     Rate-based WO — quantities are determined at execution against these rates.
                   </p>
                   <label className="block">
                     <span className="text-xs font-semibold text-muted-foreground">
-                      Ceiling (not-to-exceed) value <span className="text-red-500">*</span>
+                      Ceiling (not-to-exceed) value <span className="text-muted-foreground font-normal">(Optional)</span>
                     </span>
                     <input
                       type="number"
@@ -724,14 +950,76 @@ export function CreateWorkOrderModal({ isOpen, onClose, onSuccess }: CreateWorkO
                       step="0.01"
                       value={ceilingAmount}
                       onChange={(e) => setCeilingAmount(Number(e.target.value))}
+                      placeholder="0 (no cap)"
                       className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
                     />
                   </label>
-                  <p className="text-[11px] text-amber-700 dark:text-amber-400 font-semibold">
-                    Required to issue. This is the value the budget is encumbered at.
+                  <p className="text-[11px] text-muted-foreground font-medium">
+                    Optional. Leave 0 if not setting a hard budget ceiling.
                   </p>
                 </div>
               )}
+
+              {/* GST Percentage (%) Section */}
+              <div className="mt-3 p-3.5 rounded-xl border border-border bg-card shadow-sm space-y-3">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-foreground flex items-center gap-1.5">
+                    GST Percentage (%)
+                  </label>
+                  <div className="flex items-center gap-1">
+                    {[0, 5, 12, 18, 28].map((rate) => (
+                      <button
+                        key={rate}
+                        type="button"
+                        onClick={() => setGstPercentage(rate)}
+                        className={`px-2.5 py-1 text-xs font-extrabold rounded-md border transition-all ${
+                          gstPercentage === rate
+                            ? 'bg-primary text-primary-foreground border-primary shadow-sm'
+                            : 'bg-muted/40 text-muted-foreground border-border hover:bg-muted'
+                        }`}
+                      >
+                        {rate}%
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1 border-t border-border/50">
+                  <div className="space-y-1">
+                    <span className="text-[11px] font-semibold text-muted-foreground">Custom GST Rate</span>
+                    <div className="relative flex items-center">
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        step="0.1"
+                        value={gstPercentage}
+                        onChange={(e) => setGstPercentage(Math.max(0, Number(e.target.value) || 0))}
+                        placeholder="18"
+                        className="w-full rounded-md border border-input bg-background px-3 py-1.5 text-sm font-extrabold text-right pr-8"
+                      />
+                      <span className="absolute right-3 text-xs font-bold text-muted-foreground">%</span>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1 bg-muted/20 p-2.5 rounded-lg border border-border/60 text-xs">
+                    <div className="flex justify-between text-muted-foreground">
+                      <span>Base Subtotal:</span>
+                      <span className="font-semibold text-foreground">{formatIndianCurrency(subtotalAmount)}</span>
+                    </div>
+                    <div className="flex justify-between text-muted-foreground">
+                      <span>GST ({gstPercentage}%):</span>
+                      <span className="font-semibold text-amber-600 dark:text-amber-400">
+                        + {formatIndianCurrency(gstAmount)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between text-foreground font-bold border-t border-border/50 pt-1 mt-1">
+                      <span>Gross Total:</span>
+                      <span className="text-primary font-extrabold">{formatIndianCurrency(grossAmount)}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <div className="grid grid-cols-2 gap-4">

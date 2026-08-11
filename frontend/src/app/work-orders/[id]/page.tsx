@@ -2,7 +2,7 @@
 
 import { use, useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, ClipboardCheck, AlertTriangle, Paperclip, History, Wallet, Ruler, Plus } from 'lucide-react';
+import { ArrowLeft, ClipboardCheck, AlertTriangle, History, Wallet } from 'lucide-react';
 import {
   currentProfileId,
   getWorkOrder,
@@ -12,22 +12,11 @@ import {
   type WorkOrderBudgetPosition,
   type WorkOrderStatusHistoryRow,
 } from '@/lib/work-orders';
-import { getEntityAttachments, getAttachmentUrl, uploadEntityAttachment } from '@/lib/documents';
-import {
-  listMeasurementSheets,
-  setMeasurementSheetStatus,
-  nextMeasurementSheetStatuses,
-  MEASUREMENT_SHEET_ACTION_LABELS,
-  MEASUREMENT_SHEET_STATUS_LABELS,
-  type MeasurementSheetRow,
-  type MeasurementSheetStatus,
-} from '@/lib/measurement-sheets';
-import { MeasurementSheetModal } from '@/components/work-orders/measurement-sheet-modal';
 import { FinancialPositionPanel } from '@/components/work-orders/financial-position-panel';
 import { VariationsPanel } from '@/components/work-orders/variations-panel';
 import { ContractTermsPanel } from '@/components/work-orders/contract-terms-panel';
 import { BillingProgressPanel } from '@/components/work-orders/billing-progress-panel';
-import type { BillingPosition } from '@/lib/wo-billable-items';
+import { AttachmentsPanel } from '@/components/work-orders/attachments-panel';
 import { formatIndianCurrency } from '@/utils/format-currency';
 import { StatusActionBar, type StatusAction } from '@/components/work-orders/status-action-bar';
 import { getWorkOrderPermissions } from '@/lib/work-order-permissions';
@@ -46,15 +35,13 @@ export default function WorkOrderDetailPage({ params }: { params: Promise<{ id: 
   const { id } = use(params);
   const [wo, setWo] = useState<any>(null);
   const [budget, setBudget] = useState<WorkOrderBudgetPosition | null>(null);
-  const [attachments, setAttachments] = useState<any[]>([]);
   const [history, setHistory] = useState<WorkOrderStatusHistoryRow[]>([]);
-  const [sheets, setSheets] = useState<MeasurementSheetRow[]>([]);
-  const [isMeasurementModalOpen, setIsMeasurementModalOpen] = useState(false);
-  /** Set when the measurement modal is opened from a schedule-of-values row. */
-  const [measuringItem, setMeasuringItem] = useState<BillingPosition | null>(null);
-  /** Bumped after any change that moves money, so the panel re-reads. */
+  /** Bumped after any change that moves money, so the panels re-read. */
   const [financialRefresh, setFinancialRefresh] = useState(0);
-  /** For the variation segregation-of-duties check. */
+  /**
+   * For the segregation-of-duties checks on variations and on progress
+   * verification: the person who recorded progress may not verify it.
+   */
   const [profileId, setProfileId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -80,18 +67,14 @@ export default function WorkOrderDetailPage({ params }: { params: Promise<{ id: 
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [woData, budgetData, attachmentData, historyData, sheetData] = await Promise.all([
+      const [woData, budgetData, historyData] = await Promise.all([
         getWorkOrder(id),
         getWorkOrderBudget(id).catch(() => null),
-        getEntityAttachments('work_orders', id).catch(() => []),
         getWorkOrderStatusHistory(id).catch(() => [] as WorkOrderStatusHistoryRow[]),
-        listMeasurementSheets(id).catch(() => [] as MeasurementSheetRow[]),
       ]);
       setWo(woData);
       setBudget(budgetData);
-      setAttachments(attachmentData || []);
       setHistory(historyData || []);
-      setSheets(sheetData || []);
       setFinancialRefresh((token) => token + 1);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to load Work Order.');
@@ -118,24 +101,6 @@ export default function WorkOrderDetailPage({ params }: { params: Promise<{ id: 
     else refresh();
   }
 
-  /**
-   * Measurement Book transitions. Verification is what unlocks certification of
-   * a bill, so the database guards it: items must exist, and a sheet already
-   * supporting a certified bill cannot be un-verified.
-   */
-  async function runSheetTransition(
-    sheetId: string,
-    next: MeasurementSheetStatus,
-    reason?: string,
-  ) {
-    setActionLoading(true);
-    setError(null);
-    const result = await setMeasurementSheetStatus(sheetId, next, reason);
-    setActionLoading(false);
-    if (result.error) setError(result.error.message);
-    else refresh();
-  }
-
   if (loading && !wo) {
     return <div className="p-8 text-center text-sm text-muted-foreground">Loading Work Order…</div>;
   }
@@ -147,6 +112,7 @@ export default function WorkOrderDetailPage({ params }: { params: Promise<{ id: 
   const currentStageIndex = WORK_ORDER_STAGES.indexOf(woStatus);
   const lines = wo.work_order_lines || [];
   const bills = wo.service_bills || [];
+  const isDraftLike = woStatus === 'draft' || woStatus === 'submitted' || woStatus === 'rejected';
   const agencyName = wo.site_agencies?.agency_name || wo.vendor?.display_name || wo.vendor?.legal_name || 'Unassigned';
 
   // Every legal onward move the signed-in role holds. The database re-validates
@@ -276,21 +242,20 @@ export default function WorkOrderDetailPage({ params }: { params: Promise<{ id: 
         </div>
       )}
 
-      {/* The schedule of values: what is done, what is certified, and what may
-          be billed today. Progress on measured scope is derived from verified
-          measurement sheets — never typed, because the source certificates
-          already prove what a free-typed progress field becomes. */}
+      {/* Activity-by-activity progress and billing position: what is done, what
+          is pending, what has been certified and billed, and what may be billed
+          today. Progress is recorded here and confirmed by a second person —
+          the overall percentage is derived from these rows, never typed, because
+          the source certificates prove what a free-typed progress field
+          becomes. */}
       <BillingProgressPanel
         workOrderId={id}
         permissions={permissions}
-        isDraft={['draft', 'submitted', 'rejected'].includes(
-          canonicalWorkOrderStatus(wo.wo_status) ?? '',
-        )}
+        isDraft={isDraftLike}
+        isLive={woStatus === 'issued' || woStatus === 'active'}
         refreshToken={financialRefresh}
-        onRecordMeasurement={(row) => {
-          setMeasuringItem(row);
-          setIsMeasurementModalOpen(true);
-        }}
+        currentProfileId={profileId}
+        onChanged={refresh}
       />
 
       {/* Budget position. Commitment figures are read from budget_ledger via
@@ -327,9 +292,10 @@ export default function WorkOrderDetailPage({ params }: { params: Promise<{ id: 
             </p>
           </>
         ) : (
-          <div className="mt-3 rounded-lg border border-dashed border-amber-300 bg-amber-50 p-3 text-xs text-amber-800 dark:bg-amber-950/20">
-            No budget head is set on this Work Order. It reserves no budget and cannot be issued unless this
-            project explicitly permits unbudgeted Work Orders.
+          <div className="mt-3 rounded-lg border border-dashed border-border bg-muted/20 p-3 text-xs text-muted-foreground">
+            No budget head on this Work Order — it reserves no budget, which is expected when the
+            head is decided per bill. <strong>Choose the budget head when raising the Service Bill</strong>;
+            that is what puts the cost against a budget line.
           </div>
         )}
       </section>
@@ -379,7 +345,7 @@ export default function WorkOrderDetailPage({ params }: { params: Promise<{ id: 
         workOrderId={id}
         projectId={wo.project_id}
         permissions={permissions}
-        isDraft={woStatus === 'draft' || woStatus === 'submitted' || woStatus === 'rejected'}
+        isDraft={isDraftLike}
         onChanged={refresh}
       />
 
@@ -402,101 +368,6 @@ export default function WorkOrderDetailPage({ params }: { params: Promise<{ id: 
       <section className="rounded-3xl border border-gray-100 bg-white p-5 shadow-sm dark:border-gray-850 dark:bg-gray-900">
         <h2 className="font-heading text-base font-semibold">Terms &amp; Conditions</h2>
         <pre className="mt-3 whitespace-pre-wrap font-sans text-xs text-muted-foreground">{wo.terms_and_conditions || 'No terms recorded.'}</pre>
-      </section>
-
-      {/* Measurement Book. A verified sheet is a hard prerequisite for
-          certifying a bill against this Work Order. */}
-      <section className="rounded-3xl border border-gray-100 bg-white p-5 shadow-sm dark:border-gray-850 dark:bg-gray-900">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 className="font-heading text-base font-semibold flex items-center gap-2">
-            <Ruler className="h-4 w-4 text-primary" /> Measurement Book
-          </h2>
-          {permissions.canRecordExecution && woStatus !== 'closed' && woStatus !== 'cancelled' && (
-            <button
-              type="button"
-              onClick={() => setIsMeasurementModalOpen(true)}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-bold hover:bg-muted"
-            >
-              <Plus className="h-3.5 w-3.5" /> Record Measurement
-            </button>
-          )}
-        </div>
-
-        <div className="mt-3 overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead className="border-b border-gray-200 text-gray-400 dark:border-gray-800">
-              <tr>
-                <th className="pb-2">Sheet</th>
-                <th className="pb-2">Date</th>
-                <th className="pb-2">Location</th>
-                <th className="pb-2 text-right">Total Qty</th>
-                <th className="pb-2">Status</th>
-                <th className="pb-2 text-right">Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sheets.map((sheet) => {
-                const options = nextMeasurementSheetStatuses(
-                  sheet.status,
-                  permissions.canVerifyServiceBill,
-                );
-                return (
-                  <tr key={sheet.id} className="border-b border-gray-50 dark:border-gray-850">
-                    <td className="py-2 font-bold">{sheet.sheet_number}</td>
-                    <td className="py-2 text-gray-500">{sheet.measurement_date}</td>
-                    <td className="py-2 text-gray-500">{sheet.location_reference || '-'}</td>
-                    <td className="py-2 text-right font-semibold">
-                      {Number(sheet.total_quantity || 0).toLocaleString('en-IN', {
-                        maximumFractionDigits: 3,
-                      })}
-                    </td>
-                    <td className="py-2">
-                      <span
-                        className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${
-                          sheet.status === 'verified'
-                            ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300'
-                            : sheet.status === 'rejected'
-                              ? 'bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-300'
-                              : 'bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-300'
-                        }`}
-                      >
-                        {MEASUREMENT_SHEET_STATUS_LABELS[sheet.status]}
-                      </span>
-                    </td>
-                    <td className="py-2">
-                      <div className="flex justify-end">
-                        <StatusActionBar<MeasurementSheetStatus>
-                          size="sm"
-                          busy={actionLoading}
-                          actions={options.map((next) => ({
-                            status: next,
-                            label: MEASUREMENT_SHEET_ACTION_LABELS[next],
-                            needsReason: next === 'rejected',
-                            tone:
-                              next === 'rejected'
-                                ? 'danger'
-                                : next === 'verified'
-                                  ? 'primary'
-                                  : 'neutral',
-                          }))}
-                          onAction={(next, reason) => runSheetTransition(sheet.id, next, reason)}
-                        />
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-              {sheets.length === 0 && (
-                <tr>
-                  <td colSpan={6} className="py-6 text-center text-gray-400">
-                    No measurement recorded yet. A verified sheet is required before a bill against
-                    this Work Order can be certified.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
       </section>
 
       <section className="rounded-3xl border border-gray-100 bg-white p-5 shadow-sm dark:border-gray-850 dark:bg-gray-900">
@@ -579,62 +450,16 @@ export default function WorkOrderDetailPage({ params }: { params: Promise<{ id: 
         </section>
       )}
 
-      <section className="rounded-3xl border border-gray-100 bg-white p-5 shadow-sm dark:border-gray-850 dark:bg-gray-900">
-        <h2 className="font-heading text-base font-semibold flex items-center gap-2">
-          <Paperclip className="h-4 w-4 text-primary" /> Attachments
-        </h2>
-        <ul className="mt-3 space-y-2 text-xs">
-          {attachments.map((a: any) => (
-            <li key={a.id} className="flex items-center justify-between rounded-md border border-border px-3 py-2">
-              <span>{a.file_name}</span>
-              <button
-                className="font-semibold text-primary hover:underline"
-                onClick={async () => {
-                  const url = await getAttachmentUrl(a.storage_bucket, a.storage_path);
-                  window.open(url, '_blank');
-                }}
-              >
-                View
-              </button>
-            </li>
-          ))}
-          {attachments.length === 0 && <li className="text-gray-400">No attachments uploaded yet.</li>}
-        </ul>
-        <label className="mt-3 inline-block cursor-pointer text-xs font-semibold text-primary hover:underline">
-          + Add attachment
-          <input
-            type="file"
-            className="hidden"
-            onChange={async (e) => {
-              const file = e.target.files?.[0];
-              if (!file) return;
-              await uploadEntityAttachment(wo.project_id, 'work_orders', id, 'wo_supporting_document', file);
-              refresh();
-            }}
-          />
-        </label>
-      </section>
-
-      <MeasurementSheetModal
-        isOpen={isMeasurementModalOpen}
-        onClose={() => {
-          setIsMeasurementModalOpen(false);
-          setMeasuringItem(null);
-        }}
-        onSuccess={refresh}
+      {/* Supporting documents: contract, quotation/BOQ, measurement working,
+          progress photos, certificates. Deleting is restricted to the roles that
+          may change the contract — evidence behind a certified bill is not
+          working data, and the RLS policy refuses it outright at that point. */}
+      <AttachmentsPanel
         projectId={wo.project_id}
-        workOrderId={id}
-        workOrderNumber={wo.work_order_number}
-        activityId={wo.activity_id}
-        billableItem={
-          measuringItem
-            ? {
-                id: measuringItem.billable_item_id,
-                label: measuringItem.item_label,
-                workOrderLineId: measuringItem.work_order_line_id,
-              }
-            : null
-        }
+        entityTable="work_orders"
+        entityId={id}
+        canUpload={permissions.canRecordExecution || permissions.canCreateWorkOrder}
+        canDelete={permissions.canCreateWorkOrder && isDraftLike}
       />
     </div>
   );

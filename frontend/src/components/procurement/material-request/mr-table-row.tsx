@@ -46,7 +46,7 @@ const PRIORITY_CONFIG = {
 };
 
 const STATUS_CONFIG: Record<string, { label: string; className: string }> = {
-  draft: { label: 'Clarification Req.', className: 'bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-400' },
+  draft: { label: 'Draft', className: 'bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-400' },
   submitted: { label: 'Submitted', className: 'bg-blue-100 text-blue-800 dark:bg-blue-950/40 dark:text-blue-400' },
   in_review: { label: 'Under Review', className: 'bg-purple-100 text-purple-800 dark:bg-purple-950/40 dark:text-purple-400' },
   approved: { label: 'MR Approved', className: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-400' },
@@ -269,12 +269,12 @@ export function MRTableRow({ mr, linkedPr, activeRole, onAction, onConvertToPr }
         </div>
       </div>
 
-      {/* CLARIFICATION & REJECTION HISTORY (Hiding for view-only module) */}
-      {false && (mr.clarification_text || mr.clarification_reply || mr.rejection_reason) && (
+      {/* CLARIFICATION & REJECTION HISTORY */}
+      {(mr.clarification_text || mr.clarification_reply || mr.rejection_reason) && (
         <div className="space-y-2 pt-1 text-xs">
           {mr.clarification_text && (
             <div className="rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-950/30 p-2.5">
-              <span className="font-bold text-amber-800 dark:text-amber-400">PR Team Clarification Request ({formatDate(mr.clarification_at)}):</span>
+              <span className="font-bold text-amber-800 dark:text-amber-400">Back to Draft / Clarification Reason {mr.clarification_at ? `(${formatDate(mr.clarification_at)})` : ''}:</span>
               <p className="mt-0.5 text-foreground">{mr.clarification_text}</p>
             </div>
           )}

@@ -61,7 +61,7 @@ const PRIORITY_CONFIG = {
 };
 
 const STATUS_CONFIG: Record<string, { label: string; className: string }> = {
-  draft: { label: 'Clarification Req.', className: 'bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-400 border-amber-200' },
+  draft: { label: 'Draft', className: 'bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-400 border-amber-200' },
   submitted: { label: 'Submitted', className: 'bg-blue-100 text-blue-800 dark:bg-blue-950/40 dark:text-blue-400 border-blue-200' },
   in_review: { label: 'Under Review', className: 'bg-purple-100 text-purple-800 dark:bg-purple-950/40 dark:text-purple-400 border-purple-200' },
   approved: { label: 'MR Approved', className: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-400 border-emerald-200' },
@@ -282,7 +282,11 @@ export function MRInspectorPanel({
         (payload: any) => {
           if (payload.new) {
             setDbPr(payload.new as PurchaseRequisitionRow);
-            setLiveStatus('approved');
+            if (['draft', 'returned_to_draft'].includes(payload.new.status)) {
+              setLiveStatus('draft');
+            } else if (payload.new.status === 'approved') {
+              setLiveStatus('approved');
+            }
           }
         }
       )
@@ -495,7 +499,7 @@ export function MRInspectorPanel({
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
           
           {/* MR Approved & PR Created Card */}
-          {(liveStatus === 'approved' || !!dbPr) && (
+          {(liveStatus === 'approved' || (!!dbPr && !['draft', 'returned_to_draft'].includes(dbPr.status || ''))) && (
             <div className="flex items-start gap-3 rounded-xl border border-emerald-200 bg-emerald-50 dark:bg-emerald-950/30 p-4 text-xs text-emerald-900 dark:text-emerald-300 font-medium shadow-2xs">
               <Check className="h-5 w-5 text-emerald-600 shrink-0 mt-0.5" />
               <div>
@@ -505,6 +509,22 @@ export function MRInspectorPanel({
                 <p className="text-xs text-emerald-700 dark:text-emerald-400 mt-1 leading-relaxed">
                   Purchase Requisition {dbPr?.pr_number ? <span className="font-bold text-emerald-950 dark:text-emerald-200">({dbPr.pr_number})</span> : ''} has already been generated for this request. Duplicate PR creation has been prevented.
                 </p>
+              </div>
+            </div>
+          )}
+
+          {/* Back to Draft / Clarification Reason Banner */}
+          {mr.clarification_text && (
+            <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 dark:bg-amber-950/30 p-4 text-xs text-amber-900 dark:text-amber-300 font-medium shadow-2xs">
+              <AlertTriangle className="h-4.5 w-4.5 text-amber-600 shrink-0 mt-0.5" />
+              <div>
+                <strong className="font-bold text-amber-950 dark:text-amber-200">Back to Draft Reason / Clarification:</strong>
+                <p className="mt-1 text-foreground/90 leading-relaxed font-sans">{mr.clarification_text}</p>
+                {mr.clarification_at && (
+                  <span className="mt-1.5 block text-[10px] text-amber-700/80 dark:text-amber-400">
+                    Returned on: {formatDate(mr.clarification_at)}
+                  </span>
+                )}
               </div>
             </div>
           )}

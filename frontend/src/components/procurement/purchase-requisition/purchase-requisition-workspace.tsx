@@ -133,7 +133,7 @@ function mrRowToLines(row: ApprovedMrRow): PrFormLine[] {
       pr_quantity: l.pending_qty,
       unit: l.unit || 'nos',
       estimated_rate: l.estimated_rate,
-      tax_rate: 18,
+      tax_rate: null,
       required_date: row.required_date ? row.required_date.slice(0, 10) : new Date().toISOString().slice(0, 10),
       // Brand only. Falling back to specification put spec strings such as
       // "IS 12269 : 2013 Grade 53" in the Brand column.
@@ -229,7 +229,7 @@ function prRowToFormState(row: PurchaseRequisitionRow): PrFormState {
       pr_quantity: Number(l.quantity || 0),
       unit: l.unit || 'nos',
       estimated_rate: Number(l.estimated_rate || 0),
-      tax_rate: Number(l.tax_rate || 18),
+      tax_rate: l.tax_rate != null ? Number(l.tax_rate) : null,
       required_date: l.required_date || null,
       preferred_brand: l.preferred_brand || null,
       suggested_vendor: l.suggested_vendor || null,
@@ -470,6 +470,35 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
         if (data) setItemGroups(data.map((g: any) => g.name).filter(Boolean));
       });
   }, [loadApprovedMrs]);
+
+  // Automatically match item tax rate from Item Master dbItems when dbItems loads or lines change
+  useEffect(() => {
+    if (!dbItems || dbItems.length === 0 || !form || !form.lines || form.lines.length === 0) return;
+
+    let modified = false;
+    const updatedLines = form.lines.map((line) => {
+      // Find matching item in item master (dbItems)
+      const matched = dbItems.find(
+        (it: any) =>
+          (line.item_id && it.id === line.item_id) ||
+          (line.item_code && it.item_code?.toUpperCase() === line.item_code.toUpperCase()) ||
+          (line.item_description && it.item_description?.toUpperCase() === line.item_description.toUpperCase())
+      );
+
+      if (matched) {
+        const correctTaxRate = matched.tax_rate != null ? Number(matched.tax_rate) : null;
+        if (line.tax_rate !== correctTaxRate) {
+          modified = true;
+          return { ...line, tax_rate: correctTaxRate };
+        }
+      }
+      return line;
+    });
+
+    if (modified) {
+      setForm((prev) => prev ? { ...prev, lines: updatedLines } : prev);
+    }
+  }, [dbItems, form?.lines]);
 
   // Fetch project budget activities when project changes
   useEffect(() => {
@@ -804,7 +833,7 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
         resource_type: 'material', item_id: null, item_code: '', item_group: null,
         item_description: '', specification: null,
         approved_mr_qty: null, prev_pr_qty: 0, remaining_mr_qty: null,
-        pr_quantity: 1, unit: 'nos', estimated_rate: 0, tax_rate: 18,
+        pr_quantity: 1, unit: 'nos', estimated_rate: 0, tax_rate: null,
         required_date: f.required_date || null, preferred_brand: null, suggested_vendor: null,
         delivery_location: null, remarks: null,
         is_non_mr_item: true, non_mr_justification: justification.trim(), is_modified: true,
@@ -885,7 +914,7 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
       setLastSavedAt(new Date().toLocaleTimeString());
       const updatedStatus = res.data.status || (submit ? 'under_verification' : 'draft');
       setForm((f) => (f ? { ...f, id: res.data!.purchaseRequisitionId, pr_number: res.data!.prNumber, status: updatedStatus as any } : f));
-      onMessage(submit ? `PR ${res.data.prNumber} sent for verification — RFQ auto-drafted!` : `PR ${res.data.prNumber} status updated to Draft.`);
+      onMessage(submit ? `PR ${res.data.prNumber} submitted (Verified by Site Engineer).` : `PR ${res.data.prNumber} status updated to Draft.`);
       await onRefresh();
       if (submit) {
         setMode('list');
@@ -1036,16 +1065,11 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
   function renderReviewActions(status: string): ReactNode {
     switch (status) {
       case 'under_verification':
-        return (<>
-          <button className={OUTLINE} onClick={() => openConfirm({ title: 'Return to Draft', action: 'return this PR to draft', fromStatus: status, toStatus: 'returned_to_draft', reasonLabel: 'Reason for return', reasonRequired: true, confirmLabel: 'Return to Draft' }, 'Returned to draft', 'returned_to_draft')}><Undo2 className="h-4 w-4" /> Return to Draft</button>
-          {canManage && <button className={PRIMARY} onClick={() => setAssignOpen(true)}><UserCheck className="h-4 w-4" /> Assign for Approval</button>}
-        </>);
       case 'pending_approval':
+      case 'awaiting_assignment':
         return (<>
-          <button className={OUTLINE} onClick={() => openConfirm({ title: 'Return to Verification', action: 'send this PR back for verification', fromStatus: status, toStatus: 'under_verification', reasonLabel: 'Reason', reasonRequired: true, confirmLabel: 'Return' }, 'Returned for verification', 'under_verification')}><Undo2 className="h-4 w-4" /> Return to Verification</button>
-          {canManage && <button className={OUTLINE} onClick={() => setAssignOpen(true)}><Users className="h-4 w-4" /> Reassign</button>}
-          {canApprove && <button className={DANGER} onClick={() => openConfirm({ title: 'Reject PR', action: 'reject this PR', fromStatus: status, toStatus: 'rejected', danger: true, reasonLabel: 'Rejection reason', reasonRequired: true, confirmLabel: 'Reject' }, 'Rejected', 'rejected')}><XCircle className="h-4 w-4" /> Reject</button>}
-          {canApprove && <button className={SUCCESS} onClick={() => openConfirm({ title: 'Approve PR', action: 'approve this PR and move it to Pending Procurement', fromStatus: status, toStatus: 'approved', reasonLabel: 'Approval comment', reasonRequired: reviewComputed.requireComment, confirmLabel: 'Approve' }, 'Approved', 'approved')}><CheckCircle2 className="h-4 w-4" /> Approve &amp; Move to Pending Procurement</button>}
+          <button className={OUTLINE} onClick={() => openConfirm({ title: 'Back to Draft', action: 'return this PR back to draft (linked MR will also revert to draft)', fromStatus: status, toStatus: 'draft', reasonLabel: 'Reason for returning to draft', reasonRequired: true, confirmLabel: 'Back to Draft' }, 'Returned to draft', 'draft')}><Undo2 className="h-4 w-4" /> Back to Draft</button>
+          <button className={SUCCESS} onClick={() => openConfirm({ title: 'Approve PR', action: 'approve this PR and move it to Pending Procurement', fromStatus: status, toStatus: 'approved', reasonLabel: 'Approval comment', reasonRequired: reviewComputed.requireComment, confirmLabel: 'Approve' }, 'Approved', 'approved')}><CheckCircle2 className="h-4 w-4" /> Approve PR</button>
         </>);
       case 'approved': {
         return (<>
@@ -1170,8 +1194,14 @@ export function PurchaseRequisitionWorkspace(props: PurchaseRequisitionWorkspace
           <button onClick={handleDeleteDraft} className={DANGER}><Trash2 className="h-4 w-4" /> Delete Draft</button>
         )}
         <button onClick={() => void persist(false)} disabled={saving} className={OUTLINE}>
-          <Save className="h-4 w-4" /> {saving ? 'Saving…' : 'Save as Draft'}
+          <Save className="h-4 w-4" /> {saving ? 'Saving…' : ['draft', 'returned_to_draft'].includes(form.status) ? 'Save as Draft' : 'Save Changes'}
         </button>
+        {form.id && ['under_verification', 'pending_approval', 'awaiting_assignment'].includes(form.status) && (
+          <button className={OUTLINE} onClick={() => openConfirm({ title: 'Back to Draft', action: 'return this PR back to draft (linked MR will also revert to draft)', fromStatus: form.status, toStatus: 'draft', reasonLabel: 'Reason for returning to draft', reasonRequired: true, confirmLabel: 'Back to Draft' }, 'Returned to draft', 'draft')}><Undo2 className="h-4 w-4" /> Back to Draft</button>
+        )}
+        {form.id && (
+          <button className={SUCCESS} onClick={() => openConfirm({ title: 'Approve PR', action: 'approve this PR and move it to Pending Procurement', fromStatus: form.status, toStatus: 'approved', reasonLabel: 'Approval comment', reasonRequired: reviewComputed.requireComment, confirmLabel: 'Approve' }, 'Approved', 'approved')}><CheckCircle2 className="h-4 w-4" /> Approve PR</button>
+        )}
       </>
     );
     return (

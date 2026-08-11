@@ -41,7 +41,7 @@ const PRIORITY_CONFIG = {
 };
 
 const STATUS_CONFIG: Record<string, { label: string; className: string }> = {
-  draft: { label: 'Clarification Req.', className: 'bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-400 border-amber-200' },
+  draft: { label: 'Draft', className: 'bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-400 border-amber-200' },
   submitted: { label: 'Submitted', className: 'bg-blue-100 text-blue-800 dark:bg-blue-950/40 dark:text-blue-400 border-blue-200' },
   in_review: { label: 'Under Review', className: 'bg-purple-100 text-purple-800 dark:bg-purple-950/40 dark:text-purple-400 border-purple-200' },
   approved: { label: 'MR Approved', className: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-400 border-emerald-200' },
@@ -220,6 +220,11 @@ export function MRTableView({
                   <td className={`px-3.5 py-3 text-center ${cellBgClass}`}>
                     <div className="flex flex-col items-center justify-center gap-1 min-w-[150px]">
                       <StatusBadge status={mr.status} />
+                      {mr.clarification_text && (
+                        <span className="text-[10px] font-bold text-amber-800 dark:text-amber-300 bg-amber-100 dark:bg-amber-950/80 border border-amber-300 dark:border-amber-800 rounded px-1.5 py-0.5 max-w-[160px] truncate" title={`Back to Draft Reason: ${mr.clarification_text}`}>
+                          Reason: {mr.clarification_text}
+                        </span>
+                      )}
                       {(mr.status === 'approved' || mr.status === 'in_review') && (
                         <span className="text-[10px] text-muted-foreground font-medium truncate max-w-[130px]" title={(mr as any).reviewed_by_name || 'PR Team'}>
                           by {((mr as any).reviewed_by_name || (mr as any).reviewed_by_profile?.name || (mr as any).reviewed_by_profile?.full_name || 'PR Team').replace(/\s*\([^)]*\)/g, '').trim()}

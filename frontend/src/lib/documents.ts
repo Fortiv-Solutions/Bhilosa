@@ -24,13 +24,48 @@ import { supabase } from '@/utils/supabase-client';
 
 const BUCKET = 'project-documents';
 const MAX_FILE_BYTES = 25 * 1024 * 1024; // matches the bucket's file_size_limit
+
+/**
+ * Supporting evidence arrives in three shapes and all three must be accepted:
+ * scanned documents (PDF), site photographs, and the spreadsheets that carry
+ * measurement and BOQ working — every Work Order and Payment Certificate in the
+ * corpus is an .xlsx, so refusing spreadsheets would refuse the source records.
+ */
 const ALLOWED_MIME = [
   'application/pdf',
   'image/jpeg',
   'image/png',
   'image/webp',
   'image/heic',
+  // Spreadsheets. Excel reports several of these depending on version and OS.
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', // .xlsx
+  'application/vnd.ms-excel', // .xls
+  'application/vnd.oasis.opendocument.spreadsheet', // .ods
+  'text/csv',
+  'application/csv',
 ];
+
+/** Accept attribute for a file input that takes anything we can store. */
+export const ATTACHMENT_ACCEPT = '.pdf,.xlsx,.xls,.ods,.csv,image/*';
+
+/** Broad kind, for grouping and icon choice in the UI. */
+export type AttachmentKind = 'pdf' | 'spreadsheet' | 'image' | 'other';
+
+export function attachmentKind(mimeType: string | null, fileName: string): AttachmentKind {
+  const type = (mimeType || '').toLowerCase();
+  const name = fileName.toLowerCase();
+  if (type === 'application/pdf' || name.endsWith('.pdf')) return 'pdf';
+  if (type.startsWith('image/') || /\.(jpe?g|png|webp|heic|gif|bmp)$/.test(name)) return 'image';
+  if (
+    type.includes('spreadsheet') ||
+    type.includes('excel') ||
+    type.includes('csv') ||
+    /\.(xlsx?|ods|csv)$/.test(name)
+  ) {
+    return 'spreadsheet';
+  }
+  return 'other';
+}
 
 type MutationResult<T = unknown> = { data: T | null; error: Error | null };
 
@@ -58,7 +93,27 @@ export interface AttachmentRow {
   rejection_reason: string | null;
   verified_at: string | null;
   created_at: string;
+  uploaded_by: string | null;
+  /** Resolved from profiles by listEntityAttachments. Null when unknown. */
+  uploaded_by_name?: string | null;
 }
+
+/**
+ * Document taxonomy for a Work Order or Service Bill. Stored on the row so the
+ * list can be filtered and so "what evidence is missing" is answerable — which
+ * a free-text label never makes possible.
+ */
+export const WORK_ORDER_DOCUMENT_TYPES = [
+  { value: 'wo_supporting_document', label: 'Work Order / contract' },
+  { value: 'quotation', label: 'Quotation / BOQ' },
+  { value: 'measurement_working', label: 'Measurement working (sheet)' },
+  { value: 'progress_photo', label: 'Progress photo' },
+  { value: 'qc_certificate', label: 'QC / test certificate' },
+  { value: 'warranty_certificate', label: 'Warranty / guarantee' },
+  { value: 'invoice_pdf', label: 'Invoice / bill PDF' },
+  { value: 'signed_certificate', label: 'Signed certification' },
+  { value: 'other', label: 'Other' },
+] as const;
 
 /** Document taxonomy for bills. Free text elsewhere. */
 export const BILL_DOCUMENT_TYPES = [
@@ -92,12 +147,12 @@ function validateFile(file: File): string | null {
   if (file.size > MAX_FILE_BYTES) {
     return `"${file.name}" is ${(file.size / 1024 / 1024).toFixed(1)} MB — the limit is 25 MB.`;
   }
-  // Some browsers report an empty type for HEIC and similar; fall back to the
-  // extension rather than rejecting a legitimate photo.
+  // Some browsers report an empty type for HEIC, .xls and similar; fall back to
+  // the extension rather than rejecting a legitimate document.
   const type = file.type || '';
-  const byExtension = /\.(pdf|jpe?g|png|webp|heic)$/i.test(file.name);
+  const byExtension = /\.(pdf|jpe?g|png|webp|heic|gif|bmp|xlsx?|ods|csv)$/i.test(file.name);
   if (type && !ALLOWED_MIME.includes(type) && !byExtension) {
-    return `"${file.name}" is a ${type} file. Only PDF and images are accepted.`;
+    return `"${file.name}" is a ${type} file. PDF, spreadsheets and images are accepted.`;
   }
   return null;
 }
@@ -237,20 +292,35 @@ export async function uploadEntityAttachments(
   }
 }
 
+/**
+ * Attachments on one entity, newest first, with the uploader resolved.
+ *
+ * The uploader is joined rather than left as a bare uuid because traceability is
+ * the point of the record: a file with no name against it answers none of the
+ * questions an auditor asks. The join is nullable — a legacy row may carry no
+ * uploaded_by, and that must read as "unknown" rather than failing the query.
+ */
 export async function listEntityAttachments(
   entityTable: string,
   entityId: string,
 ): Promise<AttachmentRow[]> {
   const { data, error } = await supabase
     .from('entity_attachments')
-    .select('*')
+    .select('*, uploader:profiles!entity_attachments_uploaded_by_fkey(name, email)')
     .eq('entity_table', entityTable)
     .eq('entity_id', entityId)
     .is('deleted_at', null)
     .order('created_at', { ascending: false });
 
   if (error) throw new Error(error.message);
-  return (data ?? []) as AttachmentRow[];
+
+  return ((data ?? []) as Record<string, unknown>[]).map((row) => {
+    const uploader = row.uploader as { name?: string | null; email?: string | null } | null;
+    return {
+      ...(row as unknown as AttachmentRow),
+      uploaded_by_name: uploader?.name || uploader?.email || null,
+    };
+  });
 }
 
 /**

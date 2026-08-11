@@ -274,13 +274,22 @@ export async function createWorkOrder(input: CreateWorkOrderInput): Promise<Muta
 
     if (input.valuationStructure || input.leadPercentPerFloor || input.stages?.length) {
       const { saveWorkOrderTerms } = await import('@/lib/wo-commercial-terms');
-      await saveWorkOrderTerms({
+      const { error: termsError } = await saveWorkOrderTerms({
         workOrderId,
         projectId: input.projectId,
         valuation_structure: input.valuationStructure,
         lead_percent_per_floor: input.leadPercentPerFloor,
         stages: input.stages,
       });
+      /* This result used to be discarded. The upsert was failing on every Work
+         Order (the valuation columns did not exist) and creation still reported
+         success, so the structure survived only in localStorage. A contract
+         whose billing basis did not save is not a created contract. */
+      if (termsError) {
+        throw new Error(
+          `The Work Order was created but its billing structure did not save: ${termsError.message}`,
+        );
+      }
     }
 
     return { data: { id: workOrderId }, error: null };
@@ -345,6 +354,40 @@ export async function setWorkOrderStatus(
           ? 'A rejection reason is mandatory.'
           : 'A cancellation reason is mandatory.',
       );
+    }
+
+    // For rate-based contracts going live, ensure ceiling_amount is populated
+    if (newStatus === 'issued' || newStatus === 'active') {
+      const { data: woData } = await supabase
+        .from('work_orders')
+        .select('id, wo_type, ceiling_amount, total_amount, work_order_lines(rate, quantity, total_amount)')
+        .eq('id', workOrderId)
+        .maybeSingle();
+
+      if (
+        woData &&
+        woData.wo_type === 'rate_based' &&
+        (!woData.ceiling_amount || Number(woData.ceiling_amount) <= 0)
+      ) {
+        const lines = (woData.work_order_lines as any[]) || [];
+        const linesSum = lines.reduce(
+          (sum: number, l: any) =>
+            sum + Number(l.total_amount || Number(l.quantity || 1) * Number(l.rate || 0)),
+          0,
+        );
+        const fallbackCeiling = linesSum > 0 ? linesSum : Number(woData.total_amount || 0);
+
+        if (fallbackCeiling > 0) {
+          await supabase
+            .from('work_orders')
+            .update({ ceiling_amount: fallbackCeiling, total_amount: fallbackCeiling })
+            .eq('id', workOrderId);
+        } else {
+          throw new Error(
+            'Rate-based Work Order needs a ceiling (not-to-exceed) value or item rates before it can be issued.',
+          );
+        }
+      }
     }
 
     const { data, error } = await supabase.rpc('set_work_order_status', {

@@ -1,6 +1,8 @@
 'use client';
 
 import React, { useState } from 'react';
+import { SearchableSelect, SearchableItemInput } from '../purchase-requisition/pr-item-table';
+import { supabase } from '@/utils/supabase-client';
 import {
   ShoppingBag,
   Building2,
@@ -44,6 +46,8 @@ import {
   listBudgetCategoryOptions,
   cleanMaterialUnit,
 } from '@/lib/procurement';
+import { PoCloseModal } from './po-close-modal';
+import { PoAmendModal } from './po-amend-modal';
 import {
   normalizePoStatus,
   availablePoTransitions,
@@ -106,6 +110,8 @@ export interface PoLineItemEntry {
   grn_balance_qty: number;
   gst_rate: number;
   over_tolerance_pct?: number;
+  activity_name?: string;
+  sub_activity_name?: string;
 }
 
 export interface FullPoFormState {
@@ -272,6 +278,8 @@ export function buildPurchaseOrderPayload(form: FullPoFormState): PurchaseOrderF
     is_open_po: item.open_po,
     open_till_date: item.open_till_date || null,
     required_date: item.due_on || null,
+    activity_name: item.activity_name || null,
+    sub_activity_name: item.sub_activity_name || null,
   }));
 
   return {
@@ -436,6 +444,8 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
   const todayStr = new Date().toISOString().slice(0, 10);
   const [submitting, setSubmitting] = useState(false);
   const [promptReasonTarget, setPromptReasonTarget] = useState<PoStatus | null>(null);
+  const [showCloseModal, setShowCloseModal] = useState(false);
+  const [showAmendModal, setShowAmendModal] = useState(false);
   const [savingTerms, setSavingTerms] = useState(false);
   const [termsSaveMsg, setTermsSaveMsg] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
@@ -443,6 +453,142 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
   const [liveVendors, setLiveVendors] = useState<VendorOption[]>(vendorOptions);
   const [prOptions, setPrOptions] = useState<PrOption[]>([]);
   const [budgetCategories, setBudgetCategories] = useState<BudgetCategoryOption[]>([]);
+  const [dbItems, setDbItems] = useState<any[]>([]);
+  const [itemGroups, setItemGroups] = useState<string[]>([]);
+  const [budgetData, setBudgetData] = useState<{
+    activities: string[];
+    subActivitiesByCategory: Record<string, string[]>;
+  }>({
+    activities: [],
+    subActivitiesByCategory: {},
+  });
+
+  React.useEffect(() => {
+    // 1. Fetch items
+    supabase
+      .from('items')
+      .select('id, item_code, item_description, tax_rate, lead_period_days, item_groups:item_group_id(name), units_of_measure:primary_uom_id(code)')
+      .eq('is_inactive', false)
+      .order('item_description', { ascending: true })
+      .then(({ data, error }) => {
+        if (!error && data) setDbItems(data);
+      });
+
+    // 2. Fetch item groups
+    supabase
+      .from('item_groups')
+      .select('name')
+      .eq('is_active', true)
+      .order('name')
+      .then(({ data, error }) => {
+        if (!error && data) setItemGroups(data.map((g: any) => g.name).filter(Boolean));
+      });
+  }, []);
+
+  React.useEffect(() => {
+    const projectId = po?.project_id;
+    if (!projectId) return;
+
+    const loadProjectActivities = async () => {
+      const DEFAULT_ACTIVITIES = [
+        "Site Development/Pre-Construction Work",
+        "Civil Work - Substructure",
+        "Civil Work - Superstructure",
+        "Masonry / Brickwork",
+        "Plaster & Finishing",
+        "Plumbing & Sanitary",
+        "Electrical Work",
+        "Flooring & Tiling",
+      ];
+
+      const DEFAULT_SUB_ACTIVITIES: Record<string, string[]> = {
+        "Site Development/Pre-Construction Work": ["Site Clearance & Levelling", "Excavation", "Temporary Fencing & Gate", "Soil Testing & Survey"],
+        "Civil Work - Substructure": ["PCC 1:4:8 Bedding", "RCC Footings", "Plinth Beam Construction", "Anti-Termite Treatment"],
+        "Civil Work - Superstructure": ["RCC Columns", "RCC Beam & Slab Casting", "Staircase Casting"],
+        "Masonry / Brickwork": ["Brickwork 9 inch", "AAC Block Masonry 6 inch", "Parapet Wall Masonry"],
+        "Plaster & Finishing": ["Internal Gypsum Plaster", "External Double Coat Plaster", "Neeru Finish"],
+        "Plumbing & Sanitary": ["PVC Drainage Piping", "CPVC Water Supply Lines", "Sanitaryware Installation"],
+        "Electrical Work": ["Conduit Laying", "Wiring & DB Installation", "Switchboard & Fixture Fitting"],
+        "Flooring & Tiling": ["Vitrified Tile Flooring", "Granite Door Frame Moulding", "Dado Tiling"],
+      };
+
+      try {
+        const { data: categories } = await supabase
+          .from('budget_categories')
+          .select('id, category_name')
+          .eq('project_id', projectId)
+          .order('category_name', { ascending: true });
+
+        const { data: items } = await supabase
+          .from('master_budget_items')
+          .select('category_name, item_description')
+          .eq('project_id', projectId)
+          .eq('is_active', true)
+          .is('deleted_at', null)
+          .order('item_description', { ascending: true });
+
+        const activitiesSet = new Set<string>();
+        const subActivitiesByCategory: Record<string, Set<string>> = {};
+
+        if (categories && categories.length > 0) {
+          categories.forEach((c) => {
+            if (c.category_name?.trim()) {
+              const name = c.category_name.trim();
+              activitiesSet.add(name);
+              if (!subActivitiesByCategory[name]) {
+                subActivitiesByCategory[name] = new Set();
+              }
+            }
+          });
+        }
+
+        if (items && items.length > 0) {
+          items.forEach((item) => {
+            const catName = item.category_name?.trim();
+            const subName = item.item_description?.trim();
+            if (catName) {
+              activitiesSet.add(catName);
+              if (!subActivitiesByCategory[catName]) {
+                subActivitiesByCategory[catName] = new Set();
+              }
+              if (subName) {
+                subActivitiesByCategory[catName].add(subName);
+              }
+            }
+          });
+        }
+
+        if (activitiesSet.size === 0) {
+          setBudgetData({
+            activities: DEFAULT_ACTIVITIES,
+            subActivitiesByCategory: DEFAULT_SUB_ACTIVITIES,
+          });
+          return;
+        }
+
+        const activities = Array.from(activitiesSet).sort();
+        const subActivities: Record<string, string[]> = {};
+        for (const cat of activities) {
+          subActivities[cat] = subActivitiesByCategory[cat]
+            ? Array.from(subActivitiesByCategory[cat]).sort()
+            : [];
+        }
+
+        setBudgetData({
+          activities,
+          subActivitiesByCategory: subActivities,
+        });
+      } catch (err) {
+        console.error("Error loading project budget items:", err);
+        setBudgetData({
+          activities: DEFAULT_ACTIVITIES,
+          subActivitiesByCategory: DEFAULT_SUB_ACTIVITIES,
+        });
+      }
+    };
+
+    loadProjectActivities();
+  }, [po?.project_id]);
 
   React.useEffect(() => {
     let active = true;
@@ -612,24 +758,54 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
         ? (rate * discountPct) / 100
         : (qty > 0 ? (Number(l.discount_amount ?? 0) / qty) : 0);
       const gstApplicable = l.is_gst_applicable !== false;
-      const gstRate = gstApplicable ? Number(l.tax_rate ?? 0) : 0;
+      const gstRate = gstApplicable ? Number(l.tax_rate ?? l.gst_rate ?? l.gst_percent ?? 18) : 0;
 
       const netRate = Math.max(rate - discountAmt, 0);
       const basicAmt = qty * netRate;
       const taxAmt = (basicAmt * gstRate) / 100;
 
+      const rawActivity = (l.activity_name || l.work_activity || l.activity || '').trim();
+      const rawSubActivity = (l.sub_activity_name || l.sub_activity || '').trim();
+      const rawGroup = (l.item_group || l.category || l.purchase_category || '').trim();
+      const spec = (l.item_specification || l.specification || '').trim();
+      const brand = (l.item_brand || l.preferred_brand || '').trim();
+
+      /* Legacy rows written before the RFQ->PO mapping was fixed carry the item
+         group in activity_name and the brand in sub_activity_name. Showing the
+         wrong axis is worse than showing nothing, so a value that is merely a
+         copy of another column is treated as absent. The item_group test is the
+         one that matters: that was the actual corruption, and the original
+         sanitizer only checked spec and brand. */
+      const isActCorrupt = Boolean(
+        rawActivity &&
+          ((spec && rawActivity === spec) ||
+            (brand && rawActivity === brand) ||
+            (rawGroup && rawActivity === rawGroup)),
+      );
+      const isSubActCorrupt = Boolean(
+        rawSubActivity &&
+          ((spec && rawSubActivity === spec) ||
+            (brand && rawSubActivity === brand) ||
+            (rawGroup && rawSubActivity === rawGroup)),
+      );
+
+      const cleanAct = isActCorrupt ? '' : rawActivity;
+      const cleanSubAct = isSubActCorrupt ? '' : rawSubActivity;
+
       return {
-        item_group: l.item_group || l.activity_name || '',
+        item_group: rawGroup,
         item_desc: l.item_description || '',
         item_code: l.item_code || (l.item_id ? String(l.item_id) : ''),
-        item_brand: l.item_brand || l.sub_activity_name || '',
-        item_specification: l.item_specification || '',
+        item_brand: brand,
+        item_specification: spec,
+        activity_name: cleanAct,
+        sub_activity_name: cleanSubAct,
         open_po: Boolean(l.is_open_po),
         open_till_date: l.open_till_date || '',
         approved_qty: qty,
         unit: cleanMaterialUnit(l.unit, l.item_description),
         due_on: l.required_date || '',
-        purchase_category: l.purchase_category || l.activity_name || '',
+        purchase_category: l.purchase_category || '',
         estimated_rate: Number(l.estimated_rate ?? rate),
         basic_rate: rate,
         discount_perc: discountPct,
@@ -860,6 +1036,8 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
           item_code: '',
           item_brand: '',
           item_specification: '',
+          activity_name: '',
+          sub_activity_name: '',
           open_po: false,
           open_till_date: '',
           approved_qty: 0,
@@ -1306,11 +1484,55 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
                   onChange={(e) => {
                     const val = e.target.value;
                     const matchedPr = prOptions.find((p) => p.pr_number === val);
-                    // Written into form state, not onto the `po` prop. The
-                    // previous version assigned `po.purchase_requisition_id`
-                    // directly — a mutation React never sees, and one the
-                    // save path never read, so the requisition link was
-                    // never persisted for a form-created order.
+                    const prItems: PoLineItemEntry[] = (matchedPr?.lines && matchedPr.lines.length > 0)
+                      ? matchedPr.lines.map((l: any) => {
+                          const grp = l.item_group || l.category || '';
+                          const act = l.activity_name || l.work_activity || l.activity || '';
+                          const subAct = l.sub_activity_name || l.sub_activity || '';
+                          const spec = l.specification || l.item_specification || '';
+                          const rate = Number(l.estimated_rate || 0);
+                          const qty = Number(l.quantity || 0);
+                          const itemGst = Number(l.tax_rate ?? l.gst_rate ?? l.gst_percent ?? l.tax_percent ?? 18);
+                          const lineAmt = qty * rate;
+                          const lineTax = (lineAmt * itemGst) / 100;
+                          return {
+                            item_group: grp,
+                            item_desc: l.item_description || '',
+                            item_code: l.item_code || (l.item_id ? String(l.item_id) : ''),
+                            item_brand: l.item_brand || l.preferred_brand || '',
+                            item_specification: spec,
+                            activity_name: act,
+                            sub_activity_name: subAct,
+                            open_po: false,
+                            open_till_date: '',
+                            approved_qty: qty,
+                            unit: cleanMaterialUnit(l.unit, l.item_description),
+                            due_on: l.required_date || '',
+                            purchase_category: '',
+                            estimated_rate: rate,
+                            basic_rate: rate,
+                            discount_perc: 0,
+                            discount_amt: 0,
+                            rate: rate,
+                            hsn_code: l.hsn_code || '',
+                            tax_code: '',
+                            tax_code_amount: lineTax,
+                            previous_rate: 0,
+                            amt: lineAmt,
+                            freight_chgs: 0,
+                            load_unload_chgs: 0,
+                            others_chgs: 0,
+                            gst_applicable: itemGst > 0,
+                            net_amt: lineAmt + lineTax,
+                            gst_principal_amount: lineAmt,
+                            grn_balance_qty: qty,
+                            gst_rate: itemGst,
+                            total: lineAmt + lineTax,
+                            remarks: l.remarks || '',
+                          };
+                      })
+                      : [];
+
                     setForm((prev) => ({
                       ...prev,
                       from_pr_no: val,
@@ -1318,6 +1540,7 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
                       project_name: matchedPr?.project_name && !prev.project_name
                         ? matchedPr.project_name
                         : prev.project_name,
+                      items: prItems.length > 0 ? prItems : prev.items,
                     }));
                   }}
                   placeholder="Select or type PR No."
@@ -1501,78 +1724,121 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
               </div>
 
               <div className="overflow-x-auto rounded-xl border border-border shadow-2xs">
-                <table className="group w-full text-left text-xs whitespace-nowrap">
-                  <thead className="bg-muted/60 font-heading text-[10px] font-bold uppercase tracking-wider text-muted-foreground border-b border-border">
+                <table className="group w-full border-collapse text-left text-xs whitespace-normal border border-border/60">
+                  <thead className="bg-muted/60 font-heading text-[10px] font-bold uppercase tracking-wider text-muted-foreground border-b border-border whitespace-nowrap">
                     <tr>
-                      <th className="px-2 py-2 text-center transition-all duration-300 opacity-0 group-hover:opacity-100 max-w-0 group-hover:max-w-[40px] overflow-hidden whitespace-nowrap">Sr</th>
-                      <th className="px-2 py-2 font-bold text-primary min-w-[160px]">Item Description</th>
-                      <th className="px-2 py-2 font-bold text-primary min-w-[150px]">Purchase Category</th>
-                      <th className="px-2 py-2 text-right min-w-[70px]">Approved Qty</th>
-                      <th className="px-2 py-2 font-bold text-primary text-center min-w-[60px]">Unit</th>
-                      <th className="px-2 py-2 font-bold text-primary min-w-[90px]">Due Date</th>
-                      <th className="px-2 py-2 font-bold text-primary text-right min-w-[80px]">Unit Rate (₹)</th>
-                      <th className="px-2 py-2 text-right min-w-[60px]">Discount (%)</th>
-                      <th className="px-2 py-2 text-right min-w-[80px]">Discount/Unit (₹)</th>
-                      <th className="px-2 py-2 text-right min-w-[80px]">Discount Amt (₹)</th>
-                      <th className="px-2 py-2 min-w-[70px]">HSN Code</th>
-                      <th className="px-2 py-2 text-right min-w-[80px]">Subtotal (₹)</th>
-                      <th className="px-2 py-2 text-right min-w-[65px]">Freight (₹)</th>
-                      <th className="px-2 py-2 text-right min-w-[65px]">Handling (₹)</th>
-                      <th className="px-2 py-2 text-right min-w-[65px]">Others (₹)</th>
-                      <th className="px-2 py-2 text-right min-w-[60px]">GST Rate (%)</th>
-                      <th className="px-2 py-2 text-right min-w-[70px] font-bold text-primary">Tol (%)</th>
-                      <th className="px-2 py-2 text-right min-w-[90px]">Total Amount (₹)</th>
+                      <th className="px-2.5 py-2.5 text-center transition-all duration-300 opacity-0 group-hover:opacity-100 max-w-0 group-hover:max-w-[40px] overflow-hidden whitespace-nowrap border-r border-border/50">Sr</th>
+                      <th className="px-2.5 py-2.5 font-bold text-primary min-w-[220px] border-r border-border/50">Item Description</th>
+                      <th className="px-2.5 py-2.5 font-bold text-primary min-w-[180px] border-r border-border/50">Item Group</th>
+                      <th className="px-2.5 py-2.5 font-bold text-primary min-w-[260px] border-r border-border/50">Activity</th>
+                      <th className="px-2.5 py-2.5 font-bold text-primary min-w-[260px] border-r border-border/50">Sub Activity</th>
+                      <th className="px-2.5 py-2.5 font-bold text-primary min-w-[280px] border-r border-border/50">Item Spec</th>
+                      <th className="px-2.5 py-2.5 text-right min-w-[90px] border-r border-border/50">Approved Qty</th>
+                      <th className="px-2.5 py-2.5 font-bold text-primary text-center min-w-[80px] border-r border-border/50">Unit</th>
+                      <th className="px-2.5 py-2.5 font-bold text-primary min-w-[110px] border-r border-border/50">Due Date</th>
+                      <th className="px-2.5 py-2.5 font-bold text-primary text-right min-w-[100px] border-r border-border/50">Unit Rate (₹)</th>
+                      <th className="px-2.5 py-2.5 text-right min-w-[80px] border-r border-border/50">Discount (%)</th>
+                      <th className="px-2.5 py-2.5 text-right min-w-[100px] border-r border-border/50">Discount/Unit (₹)</th>
+                      <th className="px-2.5 py-2.5 font-bold text-primary text-right min-w-[115px] border-r border-border/50">Rate After Disc (₹)</th>
+                      <th className="px-2.5 py-2.5 text-right min-w-[100px] border-r border-border/50">Discount Amt (₹)</th>
+                      <th className="px-2.5 py-2.5 min-w-[90px] border-r border-border/50">HSN Code</th>
+                      <th className="px-2.5 py-2.5 text-right min-w-[100px] border-r border-border/50">Subtotal (₹)</th>
+                      <th className="px-2.5 py-2.5 text-right min-w-[85px] border-r border-border/50">Freight (₹)</th>
+                      <th className="px-2.5 py-2.5 text-right min-w-[85px] border-r border-border/50">Handling (₹)</th>
+                      <th className="px-2.5 py-2.5 text-right min-w-[85px] border-r border-border/50">Others (₹)</th>
+                      <th className="px-2.5 py-2.5 text-right min-w-[80px] border-r border-border/50">GST Rate (%)</th>
+                      <th className="px-2.5 py-2.5 text-right min-w-[90px] font-bold text-primary border-r border-border/50">Tol (%)</th>
+                      <th className="px-2.5 py-2.5 text-right min-w-[120px]">Total Amount (₹)</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border/60">
                     {form.items.map((item, index) => (
                       <tr key={index} className="hover:bg-muted/30 transition-colors align-middle font-mono">
-                        <td className="px-2 py-1.5 text-center font-bold text-muted-foreground transition-all duration-300 opacity-0 group-hover:opacity-100 max-w-0 group-hover:max-w-[40px] overflow-hidden whitespace-nowrap">{index + 1}</td>
+                        <td className="px-2.5 py-2 text-center font-bold text-muted-foreground transition-all duration-300 opacity-0 group-hover:opacity-100 max-w-0 group-hover:max-w-[40px] overflow-hidden whitespace-nowrap border-r border-border/40">{index + 1}</td>
                         {/* Item Description + (Brand) */}
-                        <td className="px-2 py-1.5" title={item.item_desc}>
-                          <div className="flex items-center gap-1">
-                            <input
-                              type="text"
-                              title={item.item_desc}
+                        <td className="px-2.5 py-2 whitespace-normal break-words border-r border-border/40 align-middle" title={item.item_desc}>
+                          <div className="flex flex-col gap-1 w-full">
+                            <SearchableItemInput
                               value={item.item_desc}
-                              onChange={(e) => updateLineItem(index, 'item_desc', e.target.value)}
-                              className="w-36 focus:w-64 hover:w-64 transition-all duration-200 rounded border border-border bg-background px-1.5 py-1 font-sans text-xs font-bold text-foreground relative z-10 hover:z-20 focus:z-20 hover:shadow-xs"
-                              required
+                              items={dbItems}
+                              onSelectItem={(selectedItem) => {
+                                updateLineItem(index, 'item_code', selectedItem.item_code);
+                                updateLineItem(index, 'item_desc', selectedItem.item_description);
+                                updateLineItem(index, 'item_group', selectedItem.item_groups?.name || 'General');
+                                updateLineItem(index, 'unit', selectedItem.units_of_measure?.code || 'NOS');
+                                updateLineItem(index, 'gst_rate', Number(selectedItem.tax_rate ?? 18));
+                              }}
+                              onChangeSearch={(val) => {
+                                const matched = dbItems.find(
+                                  (it: any) => (it.item_description || "").toUpperCase() === val.trim().toUpperCase()
+                                );
+                                if (matched) {
+                                  updateLineItem(index, 'item_code', matched.item_code);
+                                  updateLineItem(index, 'item_desc', val);
+                                  updateLineItem(index, 'item_group', matched.item_groups?.name || 'General');
+                                  updateLineItem(index, 'unit', matched.units_of_measure?.code || 'NOS');
+                                  updateLineItem(index, 'gst_rate', Number(matched.tax_rate ?? 18));
+                                } else {
+                                  updateLineItem(index, 'item_desc', val);
+                                }
+                              }}
+                              placeholder="Search description..."
+                              className="w-full rounded border border-border bg-background px-1.5 py-1 text-xs font-bold text-foreground focus:border-primary focus:outline-none disabled:opacity-75 whitespace-normal break-words resize-none min-h-[58px]"
                             />
                             {item.item_brand && (
                               <span
                                 title={`Brand: ${item.item_brand}`}
-                                className="text-[10px] font-semibold text-primary/80 bg-primary/10 px-1 py-0.5 rounded border border-primary/20 whitespace-nowrap"
+                                className="text-[10px] font-semibold text-primary/80 bg-primary/10 px-1 py-0.5 rounded border border-primary/20 whitespace-nowrap self-start"
                               >
                                 ({item.item_brand})
                               </span>
                             )}
                           </div>
                         </td>
-                        {/* Purchase Category with Searchable Budget Datalist */}
-                        <td className="px-2 py-1.5" title={`Category: ${item.purchase_category}`}>
-                          <input
-                            type="text"
-                            list={`budget-categories-list-${index}`}
-                            placeholder="Search Category..."
-                            value={item.purchase_category}
-                            onChange={(e) => {
-                              const val = e.target.value;
-                              updateLineItem(index, 'purchase_category', val);
-                              updateLineItem(index, 'item_group', val);
-                            }}
-                            className="w-32 focus:w-56 hover:w-56 transition-all duration-200 rounded border border-border bg-background px-1.5 py-1 text-xs font-semibold text-foreground relative z-10 hover:z-20 focus:z-20 hover:shadow-xs"
+                        {/* Item Group */}
+                        <td className="px-2.5 py-2 whitespace-normal break-words border-r border-border/40 align-middle" title={`Group: ${item.item_group || ''}`}>
+                          <SearchableSelect
+                            options={itemGroups}
+                            value={item.item_group || ''}
+                            onChange={(val) => updateLineItem(index, 'item_group', val)}
+                            placeholder="Select group..."
                           />
-                          <datalist id={`budget-categories-list-${index}`}>
-                            {budgetCategories.map((cat) => (
-                              <option key={cat.id} value={cat.name}>
-                                {cat.code} - {cat.name}
-                              </option>
-                            ))}
-                          </datalist>
+                        </td>
+                        {/* Activity */}
+                        <td className="px-2.5 py-2 whitespace-normal break-words border-r border-border/40 align-middle" title={`Activity: ${item.activity_name || ''}`}>
+                          <SearchableSelect
+                            options={budgetData.activities}
+                            value={item.activity_name || ''}
+                            onChange={(val) => {
+                              updateLineItem(index, 'activity_name', val);
+                              updateLineItem(index, 'sub_activity_name', '');
+                            }}
+                            placeholder="Select activity..."
+                          />
+                        </td>
+                        {/* Sub Activity */}
+                        <td className="px-2.5 py-2 whitespace-normal break-words border-r border-border/40 align-middle" title={`Sub Activity: ${item.sub_activity_name || ''}`}>
+                          <SearchableSelect
+                            options={item.activity_name ? budgetData.subActivitiesByCategory[item.activity_name] || [] : []}
+                            value={item.sub_activity_name || ''}
+                            onChange={(val) => updateLineItem(index, 'sub_activity_name', val)}
+                            placeholder="Select sub activity..."
+                            disabled={!item.activity_name}
+                            disabledPlaceholder="Select activity first"
+                          />
+                        </td>
+                        {/* Item Spec */}
+                        <td className="px-2.5 py-2 whitespace-normal break-words border-r border-border/40 align-middle" title={`Spec: ${item.item_specification || ''}`}>
+                          <textarea
+                            value={item.item_specification || ''}
+                            onChange={(e) => updateLineItem(index, 'item_specification', e.target.value)}
+                            placeholder="Item Spec"
+                            className="w-full rounded border border-border bg-background px-1.5 py-1 text-xs font-semibold text-foreground focus:border-primary focus:outline-none disabled:opacity-75 whitespace-normal break-words resize-none min-h-[58px]"
+                            rows={3}
+                          />
                         </td>
                         {/* Approved Qty */}
-                        <td className="px-2 py-1.5" title={`Qty: ${item.approved_qty} ${item.unit}`}>
+                        <td className="px-2.5 py-2 border-r border-border/40 align-middle" title={`Qty: ${item.approved_qty} ${item.unit}`}>
                           <input
                             type="number"
                             step="0.01"
@@ -1587,7 +1853,7 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
                           />
                         </td>
                         {/* Unit */}
-                        <td className="px-2 py-1.5" title={`Unit: ${item.unit}`}>
+                        <td className="px-2.5 py-2 border-r border-border/40 align-middle" title={`Unit: ${item.unit}`}>
                           <select
                             value={item.unit}
                             onChange={(e) => updateLineItem(index, 'unit', e.target.value)}
@@ -1602,7 +1868,7 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
                           </select>
                         </td>
                         {/* Due Date */}
-                        <td className="px-2 py-1.5" title={`Due Date: ${item.due_on}`}>
+                        <td className="px-2.5 py-2 border-r border-border/40 align-middle" title={`Due Date: ${item.due_on}`}>
                           <input
                             type="date"
                             value={item.due_on}
@@ -1611,7 +1877,7 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
                           />
                         </td>
                         {/* Unit Rate (₹) */}
-                        <td className="px-2 py-1.5" title={`Unit Rate: ₹${item.basic_rate}`}>
+                        <td className="px-2.5 py-2 border-r border-border/40 align-middle" title={`Unit Rate: ₹${item.basic_rate}`}>
                           <input
                             type="number"
                             step="0.01"
@@ -1626,7 +1892,7 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
                           />
                         </td>
                         {/* Discount (%) */}
-                        <td className="px-2 py-1.5" title={`Discount: ${item.discount_perc}%`}>
+                        <td className="px-2.5 py-2 border-r border-border/40 align-middle" title={`Discount: ${item.discount_perc}%`}>
                           <input
                             type="number"
                             step="0.01"
@@ -1641,7 +1907,7 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
                           />
                         </td>
                         {/* Discount/Unit (₹) */}
-                        <td className="px-2 py-1.5" title={`Discount/Unit: ₹${item.discount_amt.toFixed(2)}`}>
+                        <td className="px-2.5 py-2 border-r border-border/40 align-middle" title={`Discount/Unit: ₹${item.discount_amt.toFixed(2)}`}>
                           <input
                             type="number"
                             step="0.01"
@@ -1661,8 +1927,18 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
                             className="w-16 focus:w-20 hover:w-20 transition-all duration-200 rounded border border-border bg-background px-1 py-1 text-right text-xs relative z-10 hover:z-20 focus:z-20 font-bold"
                           />
                         </td>
+                        {/* Rate After Disc (Single Unit Amt After Disc) */}
+                        <td className="px-2.5 py-2 border-r border-border/40 align-middle text-right font-extrabold text-primary" title={`Single Unit Amt After Disc: ₹${item.rate.toFixed(2)}`}>
+                          <input
+                            type="number"
+                            step="0.01"
+                            readOnly
+                            value={item.rate === 0 ? '0.00' : item.rate.toFixed(2)}
+                            className="w-20 rounded border border-border/80 bg-muted/40 px-1.5 py-1 text-right text-xs font-extrabold text-primary"
+                          />
+                        </td>
                         {/* Discount Amt (₹) */}
-                        <td className="px-2 py-1.5" title={`Discount Amt: ₹${(item.discount_amt * item.approved_qty).toFixed(2)}`}>
+                        <td className="px-2.5 py-2 border-r border-border/40 align-middle" title={`Discount Amt: ₹${(item.discount_amt * item.approved_qty).toFixed(2)}`}>
                           <input
                             type="number"
                             step="0.01"
@@ -1685,7 +1961,7 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
                           />
                         </td>
                         {/* HSN Code */}
-                        <td className="px-2 py-1.5" title={`HSN Code: ${item.hsn_code}`}>
+                        <td className="px-2.5 py-2 border-r border-border/40 align-middle" title={`HSN Code: ${item.hsn_code}`}>
                           <input
                             type="text"
                             title={`HSN Code: ${item.hsn_code}`}
@@ -1695,11 +1971,11 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
                           />
                         </td>
                         {/* Subtotal (₹) */}
-                        <td className="px-2 py-1.5 text-right font-bold text-foreground text-xs" title={`Subtotal: ₹${item.amt.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`}>
+                        <td className="px-2.5 py-2 text-right font-bold text-foreground text-xs border-r border-border/40 align-middle" title={`Subtotal: ₹${item.amt.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`}>
                           ₹{item.amt.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                         </td>
                         {/* Freight (₹) */}
-                        <td className="px-2 py-1.5 text-right" title={`Freight: ₹${item.freight_chgs}`}>
+                        <td className="px-2.5 py-2 text-right border-r border-border/40 align-middle" title={`Freight: ₹${item.freight_chgs}`}>
                           <input
                             type="number"
                             step="0.01"
@@ -1714,7 +1990,7 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
                           />
                         </td>
                         {/* Handling (₹) */}
-                        <td className="px-2 py-1.5 text-right" title={`Handling: ₹${item.load_unload_chgs}`}>
+                        <td className="px-2.5 py-2 text-right border-r border-border/40 align-middle" title={`Handling: ₹${item.load_unload_chgs}`}>
                           <input
                             type="number"
                             step="0.01"
@@ -1729,7 +2005,7 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
                           />
                         </td>
                         {/* Others (₹) */}
-                        <td className="px-2 py-1.5 text-right" title={`Others: ₹${item.others_chgs}`}>
+                        <td className="px-2.5 py-2 text-right border-r border-border/40 align-middle" title={`Others: ₹${item.others_chgs}`}>
                           <input
                             type="number"
                             step="0.01"
@@ -1744,7 +2020,7 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
                           />
                         </td>
                         {/* GST Rate (%) */}
-                        <td className="px-2 py-1.5 text-right font-bold" title={`GST Rate: ${item.gst_rate}%`}>
+                        <td className="px-2.5 py-2 text-right font-bold border-r border-border/40 align-middle" title={`GST Rate: ${item.gst_rate}%`}>
                           <input
                             type="number"
                             title={`GST Rate: ${item.gst_rate}%`}
@@ -1758,7 +2034,7 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
                           />
                         </td>
                         {/* Over-Delivery Tolerance (%) */}
-                        <td className="px-2 py-1.5 text-right font-bold" title={`Tolerance: ${item.over_tolerance_pct ?? 5}%`}>
+                        <td className="px-2.5 py-2 text-right font-bold border-r border-border/40 align-middle" title={`Tolerance: ${item.over_tolerance_pct ?? 5}%`}>
                           <input
                             type="number"
                             step="0.5"
@@ -1771,7 +2047,7 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
                           />
                         </td>
                         {/* Total Amount (₹) */}
-                        <td className="px-2 py-1.5 text-right font-extrabold text-foreground text-xs" title={`Line Total: ₹${item.net_amt.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`}>
+                        <td className="px-2.5 py-2 text-right font-extrabold text-foreground text-xs border-r border-border/40 align-middle" title={`Line Total: ₹${item.net_amt.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`}>
                           ₹{item.net_amt.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                         </td>
                       </tr>
@@ -2805,12 +3081,24 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
                 <button
                   type="button"
                   disabled={submitting}
-                  onClick={() => void handleActionWithValidation('review')}
-                  className="inline-flex items-center gap-2 rounded-lg bg-purple-600 px-4 py-2 text-xs font-bold text-white hover:bg-purple-700 shadow-md transition-all cursor-pointer disabled:opacity-50"
+                  onClick={() => void handleActionWithValidation('pending_verification')}
+                  className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-xs font-bold text-white hover:bg-indigo-700 shadow-md transition-all cursor-pointer disabled:opacity-50"
                 >
                   {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-                  Send For Review
+                  Send For verification
                 </button>
+
+                {canApprove && (
+                  <button
+                    type="button"
+                    disabled={submitting}
+                    onClick={() => void handleActionWithValidation('approved')}
+                    className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700 shadow-md transition-all cursor-pointer disabled:opacity-50"
+                  >
+                    {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                    Approve
+                  </button>
+                )}
               </>
             )}
 
@@ -2834,13 +3122,52 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
                   className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-xs font-bold text-white hover:bg-indigo-700 shadow-md transition-all cursor-pointer disabled:opacity-50"
                 >
                   {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-                  Send for Verification
+                  Send For verification
                 </button>
+
+                {canApprove && (
+                  <button
+                    type="button"
+                    disabled={submitting}
+                    onClick={() => void handleActionWithValidation('approved')}
+                    className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700 shadow-md transition-all cursor-pointer disabled:opacity-50"
+                  >
+                    {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                    Approve
+                  </button>
+                )}
               </>
             )}
 
             {/* PENDING FOR VERIFICATION ACTIONS */}
             {normalizePoStatus(form.status) === 'pending_verification' && (
+              <>
+                <button
+                  type="button"
+                  disabled={submitting}
+                  onClick={() => void handleActionWithValidation('draft')}
+                  className="inline-flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-2 text-xs font-bold text-amber-700 dark:text-amber-300 hover:bg-amber-500/20 transition-all cursor-pointer disabled:opacity-50"
+                >
+                  {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowLeft className="h-4 w-4" />}
+                  Back to verification
+                </button>
+
+                {canApprove && (
+                  <button
+                    type="button"
+                    disabled={submitting}
+                    onClick={() => void handleActionWithValidation('approved')}
+                    className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700 shadow-md transition-all cursor-pointer disabled:opacity-50"
+                  >
+                    {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                    Approve
+                  </button>
+                )}
+              </>
+            )}
+
+            {/* PENDING FOR APPROVAL ACTIONS */}
+            {normalizePoStatus(form.status) === 'pending_approval' && (
               <>
                 <button
                   type="button"
@@ -2855,61 +3182,28 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
                 <button
                   type="button"
                   disabled={submitting}
-                  onClick={() => void handleActionWithValidation('review')}
-                  className="inline-flex items-center gap-2 rounded-lg border border-purple-500/30 bg-purple-500/10 px-4 py-2 text-xs font-bold text-purple-700 dark:text-purple-300 hover:bg-purple-500/20 transition-all cursor-pointer disabled:opacity-50"
-                >
-                  {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowLeft className="h-4 w-4" />}
-                  Back to Review
-                </button>
-
-                <button
-                  type="button"
-                  disabled={submitting}
-                  onClick={() => void handleActionWithValidation('pending_approval')}
-                  className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-xs font-bold text-white hover:bg-blue-700 shadow-md transition-all cursor-pointer disabled:opacity-50"
-                >
-                  {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-                  Send for Approval
-                </button>
-              </>
-            )}
-
-            {/* PENDING FOR APPROVAL ACTIONS */}
-            {normalizePoStatus(form.status) === 'pending_approval' && (
-              <>
-                <button
-                  type="button"
-                  disabled={submitting}
                   onClick={() => void handleActionWithValidation('pending_verification')}
                   className="inline-flex items-center gap-2 rounded-lg border border-indigo-500/30 bg-indigo-500/10 px-4 py-2 text-xs font-bold text-indigo-700 dark:text-indigo-300 hover:bg-indigo-500/20 transition-all cursor-pointer disabled:opacity-50"
                 >
                   {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowLeft className="h-4 w-4" />}
-                  Back to Verification
+                  Back to verification
                 </button>
 
-                <button
-                  type="button"
-                  disabled={submitting}
-                  onClick={() => setPromptReasonTarget('rejected')}
-                  className="inline-flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2 text-xs font-bold text-white hover:bg-red-700 shadow-md transition-all cursor-pointer disabled:opacity-50"
-                >
-                  {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <XCircle className="h-4 w-4" />}
-                  Reject PO
-                </button>
-
-                <button
-                  type="button"
-                  disabled={submitting}
-                  onClick={() => void handleActionWithValidation('approved')}
-                  className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700 shadow-md transition-all cursor-pointer disabled:opacity-50"
-                >
-                  {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
-                  Approve PO
-                </button>
+                {canApprove && (
+                  <button
+                    type="button"
+                    disabled={submitting}
+                    onClick={() => void handleActionWithValidation('approved')}
+                    className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700 shadow-md transition-all cursor-pointer disabled:opacity-50"
+                  >
+                    {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                    Approve
+                  </button>
+                )}
               </>
             )}
 
-            {/* APPROVED ACTIONS */}
+            {/* APPROVED & POST-APPROVAL ACTIONS */}
             {normalizePoStatus(form.status) === 'approved' && (
               <button
                 type="button"
@@ -2920,6 +3214,30 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
                 {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
                 Reapprove
               </button>
+            )}
+
+            {/* POST-APPROVAL ACTIONS: SHORT CLOSE & AMEND PO */}
+            {(normalizePoStatus(form.status) === 'approved' ||
+              normalizePoStatus(form.status) === 'sent_to_vendor' ||
+              normalizePoStatus(form.status) === 'acknowledged' ||
+              normalizePoStatus(form.status) === 'partially_delivered') && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setShowAmendModal(true)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border-2 border-primary bg-primary/10 px-3.5 py-2 text-xs font-extrabold text-primary hover:bg-primary/20 transition-all cursor-pointer shadow-2xs"
+                >
+                  <FileCheck className="h-4 w-4 text-primary" /> Amend PO / Revisions
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setShowCloseModal(true)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-amber-500/50 bg-amber-500/10 px-3.5 py-2 text-xs font-extrabold text-amber-700 dark:text-amber-300 hover:bg-amber-500/20 transition-all cursor-pointer shadow-2xs"
+                >
+                  <XCircle className="h-4 w-4 text-amber-500" /> Close PO (Short-Close)
+                </button>
+              </>
             )}
 
             {/* OTHER / CUSTOM STATUS ACTIONS */}
@@ -2979,6 +3297,41 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
           </div>
         )}
       </form>
+      {/* Short-Close PO Modal */}
+      {showCloseModal && (
+        <PoCloseModal
+          poId={po.id}
+          poNumber={form.po_number || po.po_number || ''}
+          onSuccess={(newStatus) => {
+            setShowCloseModal(false);
+            setForm((prev) => ({ ...prev, status: (normalizePoStatus(newStatus) || 'short_closed') as PoStatus }));
+            onSubmit(form);
+          }}
+          onClose={() => setShowCloseModal(false)}
+        />
+      )}
+
+      {/* Amend PO Studio Modal */}
+      {showAmendModal && (
+        <PoAmendModal
+          poId={po.id}
+          poNumber={form.po_number || po.po_number || ''}
+          currentRevision={(po as any)?.revision_number || 0}
+          isAmendmentPending={Boolean((po as any)?.is_amendment_pending)}
+          lines={form.items.map((i, idx) => ({
+            id: (i as any).id || `line-${idx}`,
+            item_description: i.item_desc,
+            unit_rate: i.basic_rate || i.rate,
+            quantity: i.approved_qty,
+            unit: i.unit,
+          }))}
+          onSuccess={() => {
+            setShowAmendModal(false);
+            onSubmit(form);
+          }}
+          onClose={() => setShowAmendModal(false)}
+        />
+      )}
     </div>
   );
 }

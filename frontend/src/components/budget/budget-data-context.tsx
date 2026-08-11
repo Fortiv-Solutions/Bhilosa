@@ -38,12 +38,14 @@ import {
   fetchMonthlyCashflow,
   fetchPortfolioSummary,
   fetchRevisionHistory,
+  listBudgetMovements,
   hasBudgetSession,
   isAllProjects,
   subscribeToBudgetChanges,
   type BudgetAlertRow,
   type BudgetAllocationRow,
   type BudgetConfigRow,
+  type BudgetMovementRow,
   type BudgetProject,
   type BudgetRevisionRow,
   type MonthlyCashflowRow,
@@ -122,6 +124,7 @@ export interface BudgetDataContextValue {
   alerts: BudgetAlertRow[];
   allocations: BudgetAllocationRow[];
   revisions: BudgetRevisionRow[];
+  movements: BudgetMovementRow[];
   cashflow: MonthlyCashflowRow[];
   config: BudgetConfig;
   configRow: BudgetConfigRow | null;
@@ -163,6 +166,7 @@ export function BudgetDataProvider({ projectId, projectName, children }: Provide
   const [alerts, setAlerts] = useState<BudgetAlertRow[]>([]);
   const [allocations, setAllocations] = useState<BudgetAllocationRow[]>([]);
   const [revisions, setRevisions] = useState<BudgetRevisionRow[]>([]);
+  const [movements, setMovements] = useState<BudgetMovementRow[]>([]);
   const [cashflow, setCashflow] = useState<MonthlyCashflowRow[]>([]);
   const [configRow, setConfigRow] = useState<BudgetConfigRow | null>(null);
   const [buaSqft, setBuaSqft] = useState(0);
@@ -194,6 +198,7 @@ export function BudgetDataProvider({ projectId, projectName, children }: Provide
           setAlerts([]);
           setAllocations([]);
           setRevisions([]);
+          setMovements([]);
           setCashflow([]);
           return;
         }
@@ -206,6 +211,7 @@ export function BudgetDataProvider({ projectId, projectName, children }: Provide
           alertsData,
           allocationsData,
           revisionsData,
+          movementsData,
           cashflowData,
           bua,
           configData,
@@ -216,6 +222,7 @@ export function BudgetDataProvider({ projectId, projectName, children }: Provide
           fetchBudgetAlerts(projectId),
           fetchBudgetAllocations(projectId),
           fetchRevisionHistory(projectId),
+          listBudgetMovements(projectId),
           fetchMonthlyCashflow(projectId),
           fetchBuaSqft(projectId),
           isPortfolio ? Promise.resolve(null) : fetchBudgetConfig(projectId),
@@ -229,6 +236,7 @@ export function BudgetDataProvider({ projectId, projectName, children }: Provide
         setAlerts(alertsData);
         setAllocations(allocationsData);
         setRevisions(revisionsData);
+        setMovements(movementsData);
         setCashflow(cashflowData);
         setBuaSqft(bua);
         setConfigRow(configData);
@@ -240,7 +248,6 @@ export function BudgetDataProvider({ projectId, projectName, children }: Provide
             ? err.message
             : 'Unexpected error loading budget data.';
         setError(message);
-        // Deliberately do NOT substitute seed data — the UI shows the error.
       } finally {
         if (seq === loadSeqRef.current) {
           setLoading(false);
@@ -265,8 +272,6 @@ export function BudgetDataProvider({ projectId, projectName, children }: Provide
     const unsubscribe = subscribeToBudgetChanges(projectId, () => {
       setRealtimeTick((tick) => tick + 1);
       if (editingRef.current) {
-        // Someone is mid-edit: remember to refresh once they finish rather than
-        // yanking the rows out from under them.
         pendingRefreshRef.current = true;
         return;
       }
@@ -310,18 +315,24 @@ export function BudgetDataProvider({ projectId, projectName, children }: Provide
   );
 
   const totals: BudgetTotals = useMemo(() => {
-    if (summary.length === 0) return EMPTY_TOTALS;
+    // Direct sum from loaded categories (master_budget_items) for 100% baseline accuracy
+    const categoryBaseline = categories.reduce((sum, cat) => sum + cat.totalCost, 0);
+    const categoryLineCount = categories.reduce((sum, cat) => sum + cat.items.length, 0);
+    const categoryCountVal = categories.length;
 
-    const sum = (pick: (row: PortfolioBudgetSummary) => number) =>
+    const sumSummary = (pick: (row: PortfolioBudgetSummary) => number) =>
       summary.reduce((acc, row) => acc + pick(row), 0);
 
-    const baseline = sum((r) => r.baseline_amount);
-    const allocated = sum((r) => r.allocated_amount) || baseline;
-    const committed = sum((r) => r.committed_amount);
-    const spent = sum((r) => r.spent_amount);
+    const summaryBaseline = sumSummary((r) => r.baseline_amount);
+    const baseline = categoryBaseline > 0 ? categoryBaseline : summaryBaseline;
+    const allocated = sumSummary((r) => r.allocated_amount) || baseline;
+    const committed = sumSummary((r) => r.committed_amount);
+    const spent = sumSummary((r) => r.spent_amount);
     const available = allocated - committed - spent;
     // Signed, matching lib/variance-data: positive = under budget.
     const varianceAmount = baseline - spent;
+    const lineItemCount = categoryLineCount > 0 ? categoryLineCount : sumSummary((r) => r.line_item_count);
+    const categoryCount = categoryCountVal > 0 ? categoryCountVal : sumSummary((r) => r.category_count);
 
     return {
       baseline,
@@ -332,16 +343,16 @@ export function BudgetDataProvider({ projectId, projectName, children }: Provide
       utilization: allocated > 0 ? ((committed + spent) / allocated) * 100 : 0,
       variance: varianceAmount,
       variancePercent: baseline > 0 ? (varianceAmount / baseline) * 100 : 0,
-      overrun: sum((r) => r.overrun_amount),
-      retentionHeld: sum((r) => r.retention_held),
-      advanceOutstanding: sum((r) => r.advance_amount),
+      overrun: sumSummary((r) => r.overrun_amount),
+      retentionHeld: sumSummary((r) => r.retention_held),
+      advanceOutstanding: sumSummary((r) => r.advance_amount),
       costPerSqft: buaSqft > 0 ? baseline / buaSqft : 0,
       actualCostPerSqft: buaSqft > 0 ? spent / buaSqft : 0,
-      lineItemCount: sum((r) => r.line_item_count),
-      categoryCount: sum((r) => r.category_count),
-      openAlerts: sum((r) => r.open_alert_count),
+      lineItemCount,
+      categoryCount,
+      openAlerts: sumSummary((r) => r.open_alert_count),
     };
-  }, [summary, buaSqft]);
+  }, [summary, categories, buaSqft]);
 
   const resolvedProjectName = useMemo(() => {
     if (isPortfolio) return 'All Projects Portfolio';
@@ -367,6 +378,7 @@ export function BudgetDataProvider({ projectId, projectName, children }: Provide
       alerts,
       allocations,
       revisions,
+      movements,
       cashflow,
       config,
       configRow,
@@ -378,7 +390,7 @@ export function BudgetDataProvider({ projectId, projectName, children }: Provide
     [
       loading, refreshing, error, needsAuth, projectId, resolvedProjectName, isPortfolio,
       buaSqft, projects, summary, totals, categories, variance, varianceSummary, alerts,
-      allocations, revisions, cashflow, config, configRow, realtimeTick, refresh,
+      allocations, revisions, movements, cashflow, config, configRow, realtimeTick, refresh,
       setEditing, isEditing,
     ],
   );

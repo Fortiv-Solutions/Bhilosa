@@ -3,18 +3,28 @@
 // ============================================================================
 // WORK ORDER FINANCIAL POSITION + TREASURY RELEASES
 //
-// The five indicators the client asked to see, kept strictly apart:
+// Four indicators, down from nine. The panel used to show five cards and then a
+// second row of four balances, several of which were arithmetic the reader could
+// do from the cards above — Remaining Headroom is Contract minus Certified, and
+// Pending Liability restated Approved Net against Cash Paid. Thirteen money
+// figures on one screen (this panel's nine plus Budget Position's four) is not a
+// summary; it is a spreadsheet, and nothing in it stands out as the number to
+// act on.
+//
+// What survives is what someone decides something with:
 //
 //   Contract Value    the envelope
-//   Certified Gross   recognised project COST
-//   Approved Net      what the contractor is owed, after deductions
-//   Authorised        the treasury CASH decision ("release only Rs 10 L")
-//   Cash Paid         what actually left the bank
+//   Certified Gross   recognised project COST, with % of contract consumed
+//   Outstanding       what the contractor is owed right now (net − paid)
+//   Retention Held    money withheld that will have to be released
 //
 // Certified is cost; authorised and paid are cash. A release caps payment and
 // never certification — if Rs 25 L is certified and Rs 10 L released, the
 // budget still shows Rs 25 L spent. That separation is the whole point of the
 // panel, so it is stated on screen rather than left to be inferred.
+//
+// Authorisation figures appear only once a release exists, since on a contract
+// with no releases they are two zeroes that explain nothing.
 // ============================================================================
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -73,7 +83,14 @@ export function FinancialPositionPanel({
   const metrics = useMemo(() => {
     if (!position) return [];
     return [
-      { label: 'Contract Value', value: position.contractValue, tone: 'plain' as const },
+      {
+        label: 'Contract Value',
+        value: position.contractValue,
+        tone: 'plain' as const,
+        note: position.contractValue
+          ? `${formatIndianCurrency(position.remainingHeadroom)} left to certify`
+          : undefined,
+      },
       {
         label: 'Certified Gross',
         value: position.certifiedGross,
@@ -82,18 +99,26 @@ export function FinancialPositionPanel({
           ? `${((position.certifiedGross / position.contractValue) * 100).toFixed(1)}% of contract`
           : undefined,
       },
-      { label: 'Approved Net Payable', value: position.approvedNetPayable, tone: 'plain' as const },
-      { label: 'Authorised Release', value: position.authorisedRelease, tone: 'cash' as const },
       {
-        label: 'Cash Paid',
-        value: position.cashPaid,
+        // Net payable minus cash paid. The single number that answers "what do
+        // we owe this contractor today", which is what the two cards it
+        // replaces only let you work out by subtraction.
+        label: 'Outstanding to Pay',
+        value: position.pendingLiability,
         tone: 'cash' as const,
-        note: position.approvedNetPayable
-          ? `${((position.cashPaid / position.approvedNetPayable) * 100).toFixed(1)}% of net`
-          : undefined,
+        note: position.cashPaid ? `${formatIndianCurrency(position.cashPaid)} paid so far` : undefined,
+      },
+      {
+        label: 'Retention Held',
+        value: position.retentionHeld,
+        tone: 'plain' as const,
+        note: position.retentionHeld > 0 ? 'Releasable after the defect period' : undefined,
       },
     ];
   }, [position]);
+
+  /** Authorisation is only meaningful once someone has authorised something. */
+  const showAuthorisation = releases.length > 0 || (position?.authorisedRelease ?? 0) > 0;
 
   async function submitRelease(event: React.FormEvent) {
     event.preventDefault();
@@ -163,7 +188,7 @@ export function FinancialPositionPanel({
         </div>
       )}
 
-      <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-5">
+      <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
         {metrics.map((metric) => (
           <article
             key={metric.label}
@@ -184,12 +209,22 @@ export function FinancialPositionPanel({
         ))}
       </div>
 
-      <div className="mt-3 grid grid-cols-2 gap-3 text-xs lg:grid-cols-4">
-        <Balance label="Remaining Headroom" value={position.remainingHeadroom} hint="Contract − certified. Room for future RA bills." />
-        <Balance label="Pending Liability" value={position.pendingLiability} hint="Net payable − paid. Still owed to the contractor." />
-        <Balance label="Unused Authorisation" value={position.unusedAuthorisation} hint="Authorised − paid. Cash cleared but not yet disbursed." />
-        <Balance label="Retention Held" value={position.retentionHeld} hint="Withheld and not yet released." />
-      </div>
+      {/* Only shown once a release exists — otherwise these are two zeroes that
+          explain nothing on a contract that does not use the treasury flow. */}
+      {showAuthorisation && (
+        <div className="mt-3 grid grid-cols-2 gap-3 text-xs">
+          <Balance
+            label="Authorised Release"
+            value={position.authorisedRelease}
+            hint="The treasury cash decision. Caps payment, never certification."
+          />
+          <Balance
+            label="Unused Authorisation"
+            value={position.unusedAuthorisation}
+            hint="Authorised − paid. Cash cleared but not yet disbursed."
+          />
+        </div>
+      )}
 
       <p className="mt-3 rounded-lg border border-dashed border-border bg-muted/20 p-2 text-[11px] text-muted-foreground">
         <strong>Certified Gross is project cost</strong> and is recognised in the budget the moment a

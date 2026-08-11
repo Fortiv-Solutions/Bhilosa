@@ -96,6 +96,8 @@ export interface RfqFormItemRow {
   item_brand: string;
   item_description: string;
   specification: string;
+  activity_name?: string;
+  sub_activity_name?: string;
   quantity: number;
   pr_balance_qty: number;
   previous_rate: number;
@@ -235,12 +237,14 @@ export function RfqForm({
           key: `line-${line.id || idx}`,
           item_id: line.item_id || null,
           item_code: line.item_code || `ITEM-00${idx + 1}`,
-          item_group: line.item_group || (idx === 0 ? 'Cement' : 'Sealants & Adhesives'),
-          item_brand: line.preferred_brand || (idx === 0 ? 'Pidilite • Dr. Fixit' : 'Sika • SikaFlex'),
-          item_description: line.item_description || (idx === 0 ? 'Dr. Fixit 101 LW+ Integral Liquid Waterproofing' : 'Polyurethane Elastomeric Sealant SikaFlex'),
-          specification: line.specification || (idx === 0 ? 'Dr. Fixit 101 LW+ Integral Liquid Waterproofing' : 'Polyurethane Elastomeric Sealant SikaFlex'),
-          quantity: Number(line.quantity || 300),
-          pr_balance_qty: Number(line.remaining_mr_qty || line.quantity || 300),
+          item_group: line.item_group || '',
+          item_brand: line.preferred_brand || line.item_brand || '',
+          item_description: line.item_description || '',
+          specification: line.specification || '',
+          activity_name: line.activity_name || '',
+          sub_activity_name: line.sub_activity_name || '',
+          quantity: Number(line.quantity || 1),
+          pr_balance_qty: Number(line.remaining_mr_qty || line.quantity || 1),
           previous_rate: Number(line.estimated_rate || 0),
           unit: (line.unit || 'BAGS').toUpperCase(),
           required_date: line.required_date || defaultGoalDate,
@@ -290,6 +294,7 @@ export function RfqForm({
     ],
   }));
 
+  const [rfqId, setRfqId] = useState<string | null>(null);
   const [uploadingPdf, setUploadingPdf] = useState(false);
   const [pdfModalOpen, setPdfModalOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -311,6 +316,7 @@ export function RfqForm({
           .maybeSingle();
 
         if (rfq) {
+          setRfqId(rfq.id);
           // Restore saved matrix allocations from awards_json or remarks tag
           let savedAllocations: Record<string, EmbeddedAwardCellState> | null = null;
           if (rfq.awards_json && typeof rfq.awards_json === 'object' && Object.keys(rfq.awards_json).length > 0) {
@@ -351,9 +357,12 @@ export function RfqForm({
                 ...existingItem,
                 key: `line-${rl.id || idx}`,
                 item_id: rl.item_id || existingItem?.item_id || null,
+                item_group: rl.item_group || existingItem?.item_group || '',
                 item_description: rl.item_description || existingItem?.item_description || '',
                 specification: rl.specification || existingItem?.specification || '',
                 item_brand: rl.preferred_brand || existingItem?.item_brand || '',
+                activity_name: rl.activity_name || existingItem?.activity_name || '',
+                sub_activity_name: rl.sub_activity_name || existingItem?.sub_activity_name || '',
                 quantity: Number(rl.rfq_quantity || existingItem?.quantity || 1),
                 previous_rate: prevRate,
                 quoted_rate: quotRate,
@@ -682,19 +691,21 @@ export function RfqForm({
       const fileExt = file.name.split('.').pop();
       const filePath = `quotations/${form.quotation_registration_no}_${Date.now()}.${fileExt}`;
       const { error: uploadError } = await supabase.storage
-        .from('procurement_docs')
+        .from('procurement-documents')
         .upload(filePath, file, { upsert: true });
 
       if (uploadError) {
+        console.error('Error uploading quote PDF:', uploadError);
         const localBlobUrl = URL.createObjectURL(file);
         setForm((prev) => ({ ...prev, selected_quotation_url: localBlobUrl }));
       } else {
         const { data: publicUrlData } = supabase.storage
-          .from('procurement_docs')
+          .from('procurement-documents')
           .getPublicUrl(filePath);
         setForm((prev) => ({ ...prev, selected_quotation_url: publicUrlData.publicUrl }));
       }
     } catch (err) {
+      console.error('Catch error uploading quote PDF:', err);
       const localBlobUrl = URL.createObjectURL(file);
       setForm((prev) => ({ ...prev, selected_quotation_url: localBlobUrl }));
     } finally {
@@ -711,15 +722,16 @@ export function RfqForm({
       const fileExt = file.name.split('.').pop();
       const filePath = `quotations/${form.quotation_registration_no}_${supKey}_${Date.now()}.${fileExt}`;
       const { error: uploadError } = await supabase.storage
-        .from('procurement_docs')
+        .from('procurement-documents')
         .upload(filePath, file, { upsert: true });
 
       let pdfUrl = '';
       if (uploadError) {
+        console.error('Error uploading supplier quote PDF:', uploadError);
         pdfUrl = URL.createObjectURL(file);
       } else {
         const { data: publicUrlData } = supabase.storage
-          .from('procurement_docs')
+          .from('procurement-documents')
           .getPublicUrl(filePath);
         pdfUrl = publicUrlData.publicUrl;
       }
@@ -730,6 +742,39 @@ export function RfqForm({
             ? { ...s, quotation_url: pdfUrl }
             : s
         );
+
+        const vendorMatch = updatedSuppliers.find((s) => s.key === supKey || s.supplier_id === supKey || s.supplier_name === supKey);
+        const dbVendorId = vendorMatch?.supplier_id;
+
+        if (dbVendorId && !uploadError) {
+          (async () => {
+            try {
+              let targetRfqId = rfqId;
+              if (!targetRfqId && approvedPr?.id) {
+                const { data: rfqObj } = await supabase
+                  .from('rfqs')
+                  .select('id')
+                  .eq('purchase_requisition_id', approvedPr.id)
+                  .maybeSingle();
+                if (rfqObj) {
+                  targetRfqId = rfqObj.id;
+                  setRfqId(rfqObj.id);
+                }
+              }
+
+              if (targetRfqId) {
+                await supabase
+                  .from('rfq_vendors')
+                  .update({ quotation_url: pdfUrl, updated_at: new Date().toISOString() })
+                  .eq('rfq_id', targetRfqId)
+                  .eq('vendor_id', dbVendorId);
+              }
+            } catch (err) {
+              console.error('Error auto-saving supplier PDF:', err);
+            }
+          })();
+        }
+
         return {
           ...prev,
           suppliers: updatedSuppliers,
@@ -1055,71 +1100,92 @@ export function RfqForm({
           </div>
 
           <div className="overflow-x-auto rounded-xl border border-border shadow-2xs">
-            <table className="w-full text-left text-xs whitespace-nowrap">
-              <thead className="bg-muted/60 font-heading text-[11px] font-bold uppercase tracking-wider text-muted-foreground border-b border-border">
+            <table className="w-full border-collapse text-left text-xs whitespace-normal border border-border/60">
+              <thead className="bg-muted/60 font-heading text-[11px] font-bold uppercase tracking-wider text-muted-foreground border-b border-border whitespace-nowrap">
                 <tr>
-                  <th className="px-2 py-2.5 text-center w-10">#</th>
-                  <th className="px-2 py-2.5 min-w-[100px]">Item Group</th>
-                  <th className="px-2 py-2.5 min-w-[110px]">Item Brand</th>
-                  <th className="px-2 py-2.5 min-w-[200px]">Item Description</th>
-                  <th className="px-2 py-2.5 text-right min-w-[80px]">RFQ Qty</th>
-                  <th className="px-2 py-2.5 text-center min-w-[60px]">Unit</th>
-                  <th className="px-2 py-2.5 text-right min-w-[90px]">Prev Rate (₹)</th>
-                  <th className="px-2 py-2.5 text-right min-w-[100px]">Quoted Rate (₹)</th>
-                  <th className="px-2 py-2.5 text-center min-w-[60px]">Tax %</th>
-                  <th className="px-2 py-2.5 text-right min-w-[90px]">Tax Amt (₹)</th>
-                  <th className="px-2 py-2.5 text-right min-w-[100px]">Amount (₹)</th>
-                  <th className="px-2 py-2.5 text-center min-w-[110px]">Delivery Date</th>
+                  <th className="px-2.5 py-2.5 text-center w-10 border-r border-border/50">#</th>
+                  <th className="px-2.5 py-2.5 min-w-[200px] border-r border-border/50">Item Description</th>
+                  <th className="px-2.5 py-2.5 min-w-[180px] border-r border-border/50">Item Group</th>
+                  <th className="px-2.5 py-2.5 min-w-[260px] border-r border-border/50">Activity</th>
+                  <th className="px-2.5 py-2.5 min-w-[260px] border-r border-border/50">Sub Activity</th>
+                  <th className="px-2.5 py-2.5 min-w-[280px] border-r border-border/50">Item Specification</th>
+                  <th className="px-2.5 py-2.5 text-right min-w-[80px] border-r border-border/50">RFQ Qty</th>
+                  <th className="px-2.5 py-2.5 text-center min-w-[60px] border-r border-border/50">Unit</th>
+                  <th className="px-2.5 py-2.5 text-right min-w-[90px] border-r border-border/50">Prev Rate (₹)</th>
+                  <th className="px-2.5 py-2.5 text-right min-w-[100px] border-r border-border/50">Quoted Rate (₹)</th>
+                  <th className="px-2.5 py-2.5 text-center min-w-[110px] border-r border-border/50">Delivery Date</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/60">
                 {form.items.map((item, idx) => {
                   const qRate = (item.quoted_rate ?? item.previous_rate) ?? 0;
-                  const tRate = item.tax_rate ?? 18;
-                  const lineSubtotal = item.quantity * qRate;
-                  const taxAmt = (lineSubtotal * tRate) / 100;
-                  const lineTot = lineSubtotal + taxAmt;
 
                   return (
                     <tr key={item.key} className="hover:bg-muted/30 transition-colors align-middle">
-                      <td className="px-2 py-2.5 text-center font-bold text-muted-foreground">{idx + 1}</td>
-
-                      {/* Item Group */}
-                      <td className="px-2 py-2.5">
-                        <input
-                          type="text"
-                          value={item.item_group}
-                          disabled={viewModeActive}
-                          onChange={(e) => handleItemChange(idx, 'item_group', e.target.value)}
-                          className="w-full rounded border border-border bg-background px-1.5 py-1 text-xs focus:border-primary focus:outline-none disabled:opacity-75"
-                        />
-                      </td>
-
-                      {/* Item Brand */}
-                      <td className="px-2 py-2.5">
-                        <input
-                          type="text"
-                          value={item.item_brand}
-                          disabled={viewModeActive}
-                          onChange={(e) => handleItemChange(idx, 'item_brand', e.target.value)}
-                          className="w-full rounded border border-border bg-background px-1.5 py-1 text-xs focus:border-primary focus:outline-none disabled:opacity-75"
-                        />
-                      </td>
+                      <td className="px-2.5 py-2 text-center font-bold text-muted-foreground border-r border-border/40 align-middle">{idx + 1}</td>
 
                       {/* Item Description */}
-                      <td className="px-2 py-2.5 font-bold text-foreground">
-                        <input
-                          type="text"
+                      <td className="px-2.5 py-2 font-bold text-foreground whitespace-normal break-words border-r border-border/40 align-middle">
+                        <textarea
                           value={item.item_description}
                           disabled={viewModeActive}
                           onChange={(e) => handleItemChange(idx, 'item_description', e.target.value)}
-                          className="w-full rounded border border-border bg-background px-1.5 py-1 text-xs font-bold text-foreground focus:border-primary focus:outline-none disabled:opacity-75"
+                          className="w-full rounded border border-border bg-background px-1.5 py-1 text-xs font-bold text-foreground focus:border-primary focus:outline-none disabled:opacity-75 whitespace-normal break-words resize-none min-h-[58px]"
+                          rows={3}
                           required
                         />
                       </td>
 
+                      {/* Item Group */}
+                      <td className="px-2.5 py-2 whitespace-normal break-words border-r border-border/40 align-middle">
+                        <textarea
+                          value={item.item_group || ''}
+                          disabled={viewModeActive}
+                          onChange={(e) => handleItemChange(idx, 'item_group', e.target.value)}
+                          placeholder="Item Group"
+                          className="w-full rounded border border-border bg-background px-1.5 py-1 text-xs focus:border-primary focus:outline-none disabled:opacity-75 whitespace-normal break-words resize-none min-h-[58px]"
+                          rows={3}
+                        />
+                      </td>
+
+                      {/* Activity */}
+                      <td className="px-2.5 py-2 whitespace-normal break-words border-r border-border/40 align-middle">
+                        <textarea
+                          value={item.activity_name || ''}
+                          disabled={viewModeActive}
+                          onChange={(e) => handleItemChange(idx, 'activity_name', e.target.value)}
+                          placeholder="Activity"
+                          className="w-full rounded border border-border bg-background px-1.5 py-1 text-xs focus:border-primary focus:outline-none disabled:opacity-75 whitespace-normal break-words resize-none min-h-[58px]"
+                          rows={3}
+                        />
+                      </td>
+
+                      {/* Sub Activity */}
+                      <td className="px-2.5 py-2 whitespace-normal break-words border-r border-border/40 align-middle">
+                        <textarea
+                          value={item.sub_activity_name || ''}
+                          disabled={viewModeActive}
+                          onChange={(e) => handleItemChange(idx, 'sub_activity_name', e.target.value)}
+                          placeholder="Sub Activity"
+                          className="w-full rounded border border-border bg-background px-1.5 py-1 text-xs focus:border-primary focus:outline-none disabled:opacity-75 whitespace-normal break-words resize-none min-h-[58px]"
+                          rows={3}
+                        />
+                      </td>
+
+                      {/* Item Specification */}
+                      <td className="px-2.5 py-2 whitespace-normal break-words border-r border-border/40 align-middle">
+                        <textarea
+                          value={item.specification || ''}
+                          disabled={viewModeActive}
+                          onChange={(e) => handleItemChange(idx, 'specification', e.target.value)}
+                          placeholder="Item Specification"
+                          className="w-full rounded border border-border bg-background px-1.5 py-1 text-xs focus:border-primary focus:outline-none disabled:opacity-75 whitespace-normal break-words resize-none min-h-[58px]"
+                          rows={3}
+                        />
+                      </td>
+
                       {/* RFQ Qty */}
-                      <td className="px-2 py-2.5 text-right font-extrabold text-foreground">
+                      <td className="px-2.5 py-2 text-right font-extrabold text-foreground border-r border-border/40 align-middle">
                         <input
                           type="number"
                           step="any"
@@ -1137,7 +1203,7 @@ export function RfqForm({
                       </td>
 
                       {/* Unit */}
-                      <td className="px-2 py-2.5 text-center uppercase font-bold text-muted-foreground">
+                      <td className="px-2.5 py-2 text-center uppercase font-bold text-muted-foreground border-r border-border/40 align-middle">
                         <input
                           type="text"
                           value={item.unit}
@@ -1148,7 +1214,7 @@ export function RfqForm({
                       </td>
 
                       {/* Previous Rate (₹) */}
-                      <td className="px-2 py-2.5 text-right">
+                      <td className="px-2.5 py-2 text-right border-r border-border/40 align-middle">
                         <input
                           type="number"
                           min="0"
@@ -1166,7 +1232,7 @@ export function RfqForm({
                       </td>
 
                       {/* Quoted Rate (₹) */}
-                      <td className="px-2 py-2.5 text-right bg-primary/5">
+                      <td className="px-2.5 py-2 text-right bg-primary/5 border-r border-border/40 align-middle">
                         <input
                           type="number"
                           min="0"
@@ -1183,38 +1249,8 @@ export function RfqForm({
                         />
                       </td>
 
-                      {/* Tax / GST % */}
-                      <td className="px-2 py-2.5 text-center">
-                        <input
-                          type="number"
-                          min="0"
-                          max="100"
-                          step="0.01"
-                          value={(item.tax_rate ?? 18) === 0 ? '' : (item.tax_rate ?? 18)}
-                          placeholder="0"
-                          disabled={!isItemsEditable}
-                          onChange={(e) => {
-                            const clean = e.target.value.replace(/^0+(?=\d)/, '');
-                            handleItemChange(idx, 'tax_rate', clean === '' ? 0 : Number(clean));
-                          }}
-                          className="w-16 rounded-md border border-border bg-background px-1.5 py-1.5 text-center font-bold text-foreground focus:border-primary focus:outline-none disabled:opacity-75"
-                        />
-                      </td>
-
-                      {/* Tax Amount (₹) */}
-                      <td className="px-2 py-2.5 text-right font-semibold text-muted-foreground">
-                        ₹{taxAmt.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                      </td>
-
-                      {/* Line Total / Amount (₹) */}
-                      <td className="px-2 py-2.5 text-right bg-emerald-500/5">
-                        <span className="font-extrabold text-emerald-700 dark:text-emerald-400">
-                          ₹{lineTot.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                        </span>
-                      </td>
-
                       {/* Goal Delivery Date */}
-                      <td className="px-2 py-2.5 text-center">
+                      <td className="px-2.5 py-2 text-center border-r border-border/40 align-middle">
                         <input
                           type="date"
                           value={item.required_date}

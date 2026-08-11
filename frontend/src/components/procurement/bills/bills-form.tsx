@@ -146,6 +146,17 @@ export interface FullBillsFormState {
     po_lbt_rate: number;
     net_amount: number;
     purchase_ledger_add_bill_item_amt: number;
+    activity_name?: string;
+    sub_activity_name?: string;
+    item_specification?: string;
+    /* Corrections to what was certified — short supply or a rate correction
+       (credit), a quality or delay debit. Both reduce the net payable and both
+       reduce recognised cost in the budget ledger, unlike retention which is a
+       payment-side hold. */
+    credit_amount: number;
+    debit_amount: number;
+    credit_debit_reason?: string;
+    pr_no?: string;
   }[];
 
   // 3. Bill Financial Summary
@@ -285,6 +296,11 @@ export function BillsForm({ bill, approvedGrns = [], vendorOptions = [], onSubmi
   const fp = (raw.form_payload as Record<string, unknown>) || {};
   const dbLines = (raw.vendor_bill_lines as Record<string, unknown>[]) || [];
 
+  /* The bill query joins purchase_order_lines for the activity axis. Rows
+     billed before the GRN carried it read through to the PO line instead. */
+  const poLine = (l: Record<string, unknown>) =>
+    (l.purchase_order_lines as Record<string, unknown> | null) ?? null;
+
   const [form, setForm] = useState<FullBillsFormState>(() => {
     const defaultLines = isExistingBill && dbLines.length > 0
       ? dbLines.map((l, idx) => ({
@@ -295,6 +311,23 @@ export function BillsForm({ bill, approvedGrns = [], vendorOptions = [], onSubmi
           item_group: (l.item_group as string) || '',
           item_desc: (l.description as string) || (l.item_desc as string) || 'Billed item',
           item_brand: (l.item_brand as string) || '',
+          /* The bill line's own value wins. It used to read the PO line FIRST,
+             so a corrected activity on the bill was overwritten by whatever the
+             PO happened to carry — and while the PO's activity_name held the
+             item group, that wrong value won every time. The PO line stays as
+             the fallback for rows billed before the GRN carried the axis. */
+          activity_name:
+            ((l as any).activity_name as string) ||
+            (poLine(l)?.activity_name as string) ||
+            '',
+          sub_activity_name:
+            ((l as any).sub_activity_name as string) ||
+            (poLine(l)?.sub_activity_name as string) ||
+            '',
+          item_specification:
+            ((l as any).item_specification as string) ||
+            (poLine(l)?.item_specification as string) ||
+            '',
           unit: (l.unit as string) || 'PCS',
           received_qty: Number(l.received_qty ?? l.quantity) || 0,
           purchase_category: (l.purchase_category as string) || 'General',
@@ -317,6 +350,10 @@ export function BillsForm({ bill, approvedGrns = [], vendorOptions = [], onSubmi
           po_lbt_rate: Number(l.po_lbt_rate) || 0,
           net_amount: Number(l.net_amount ?? l.line_total) || 0,
           purchase_ledger_add_bill_item_amt: Number(l.purchase_ledger_add_bill_item_amt) || 0,
+          credit_amount: Number(l.credit_amount) || 0,
+          debit_amount: Number(l.debit_amount) || 0,
+          credit_debit_reason: (l.credit_debit_reason as string) || '',
+          pr_no: (l as any).pr_no || '',
         }))
       : [];
 
@@ -453,6 +490,10 @@ export function BillsForm({ bill, approvedGrns = [], vendorOptions = [], onSubmi
           const pId = matched?.id || initialProjName;
           const pos = await fetchApprovedPosForProject(pId);
           setApprovedPoOptions(pos);
+
+          const poIds = pos.map((p) => p.id);
+          const grns = await fetchApprovedGrnsForPos(poIds);
+          setApprovedGrnOptions(grns);
         }
       } catch (err) {
         console.warn('Failed to fetch projects for dropdown:', err);
@@ -466,12 +507,18 @@ export function BillsForm({ bill, approvedGrns = [], vendorOptions = [], onSubmi
     if (!projIdOrName) {
       const pos = await fetchApprovedPosForProject('');
       setApprovedPoOptions(pos);
+      const grns = await fetchApprovedGrnsForPos([]);
+      setApprovedGrnOptions(grns);
       return;
     }
     const projObj = projectOptions.find((p) => p.name === projIdOrName || p.id === projIdOrName);
     const pId = projObj?.id || projIdOrName;
     const pos = await fetchApprovedPosForProject(pId);
     setApprovedPoOptions(pos);
+
+    const poIds = pos.map((p) => p.id);
+    const grns = await fetchApprovedGrnsForPos(poIds);
+    setApprovedGrnOptions(grns);
   };
 
   // Fetch approved GRNs for selected PO numbers/IDs
@@ -550,6 +597,9 @@ export function BillsForm({ bill, approvedGrns = [], vendorOptions = [], onSubmi
         po_lbt_rate: 0,
         net_amount: 0,
         purchase_ledger_add_bill_item_amt: 0,
+        credit_amount: 0,
+        debit_amount: 0,
+        pr_no: '',
       };
       return {
         ...prev,
@@ -591,6 +641,8 @@ export function BillsForm({ bill, approvedGrns = [], vendorOptions = [], onSubmi
         item_group: item.item_group,
         item_desc: item.item_description,
         item_brand: item.item_brand || '',
+        activity_name: item.activity_name || '',
+        sub_activity_name: item.sub_activity_name || '',
         unit: item.unit,
         received_qty: qty,
         purchase_category: item.purchase_category || 'Direct Material',
@@ -613,6 +665,9 @@ export function BillsForm({ bill, approvedGrns = [], vendorOptions = [], onSubmi
         po_lbt_rate: 0,
         net_amount: netAmt,
         purchase_ledger_add_bill_item_amt: netAmt,
+        credit_amount: 0,
+        debit_amount: 0,
+        pr_no: item.pr_no || '',
       };
     });
 
@@ -644,7 +699,7 @@ export function BillsForm({ bill, approvedGrns = [], vendorOptions = [], onSubmi
         const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(grnNoOrId);
         let grnQuery = supabase
           .from('goods_receipt_notes')
-          .select('*, vendors(display_name, legal_name), projects(id, name), purchase_orders(po_number), goods_receipt_note_lines(*)');
+          .select('*, vendors(display_name, legal_name), projects(id, name), purchase_orders(po_number), goods_receipt_note_lines(*, purchase_order_lines(activity_name, sub_activity_name, item_specification))');
 
         if (isUuid) {
           grnQuery = grnQuery.or(`grn_number.eq.${grnNoOrId},id.eq.${grnNoOrId}`);
@@ -693,6 +748,8 @@ export function BillsForm({ bill, approvedGrns = [], vendorOptions = [], onSubmi
         item_group: l.item_group || 'Material',
         item_desc: l.item_description || 'Material Item',
         item_brand: l.item_brand || '',
+        activity_name: l.purchase_order_lines?.activity_name || (l as any).activity_name || '',
+        sub_activity_name: l.purchase_order_lines?.sub_activity_name || (l as any).sub_activity_name || '',
         unit: l.unit || 'NOS',
         received_qty: acceptedQty,
         purchase_category: l.purchase_category || 'Direct Material',
@@ -715,6 +772,8 @@ export function BillsForm({ bill, approvedGrns = [], vendorOptions = [], onSubmi
         po_lbt_rate: 0,
         net_amount: netAmt,
         purchase_ledger_add_bill_item_amt: netAmt,
+        credit_amount: 0,
+        debit_amount: 0,
       };
     });
 
@@ -735,16 +794,29 @@ export function BillsForm({ bill, approvedGrns = [], vendorOptions = [], onSubmi
       const updated = [...prev.purchase_bill_entries];
       const current = { ...updated[index], [field]: value };
 
-      if (field === 'received_qty' || field === 'bill_rate' || field === 'bill_discount_perc' || field === 'freight_chgs') {
+      if (
+        field === 'received_qty' ||
+        field === 'bill_rate' ||
+        field === 'bill_discount_perc' ||
+        field === 'freight_chgs' ||
+        field === 'credit_amount' ||
+        field === 'debit_amount'
+      ) {
         const qty = Number(current.received_qty || 0);
         const bRate = Number(current.bill_rate || 0);
         const bDisc = Number(current.bill_discount_perc || 0);
         const frt = Number(current.freight_chgs || 0);
+        const credit = Number(current.credit_amount || 0);
+        const debit = Number(current.debit_amount || 0);
 
         const discAmt = (bRate * bDisc) / 100;
         const gross = qty * (bRate - discAmt);
-        const tax = (gross * 0.18);
-        const net = gross + tax + frt;
+        const tax = gross * 0.18;
+        /* Credit and debit are corrections to what was certified, so they come
+           off the net and off recognised cost — unlike retention, which is a
+           payment-side hold and must not reduce recorded cost. Clamped at zero
+           so a correction can never invert the line. */
+        const net = Math.max(gross + tax + frt - credit - debit, 0);
 
         current.bill_discount_amt = discAmt;
         current.gross_amount = gross;
@@ -764,7 +836,13 @@ export function BillsForm({ bill, approvedGrns = [], vendorOptions = [], onSubmi
   const totalAmountPb = Math.round(totalNetBeforeRoundoff);
   const roundoffAmount = Number((totalAmountPb - totalNetBeforeRoundoff).toFixed(2));
   const calculatedTotalAdjustedAmount = form.advance_payment_entries.reduce((sum, i) => sum + Number(i.adjust_amt || 0), 0);
-  const finalBillAmount = totalAmountPb - calculatedTotalAdjustedAmount;
+  const finalBillAmount = Math.max(
+    totalAmountPb -
+      calculatedTotalAdjustedAmount +
+      Number(form.credit_details || 0) -
+      Number(form.debit_details || 0),
+    0
+  );
   const amountInWordsStr = numberToWords(finalBillAmount);
 
   const totalDr = form.ledger_posting_info.reduce((sum, i) => sum + Number(i.dr || 0), 0);
@@ -1212,7 +1290,8 @@ export function BillsForm({ bill, approvedGrns = [], vendorOptions = [], onSubmi
                     <tr>
                       <th className="px-3 py-3 font-bold text-center w-12">Details</th>
                       <th className="px-3 py-3 font-bold text-center w-12">Sr No</th>
-                      <th className="px-3 py-3 min-w-[200px]">Item Description &amp; Brand</th>
+                      <th className="px-3 py-3 min-w-[200px]">Item Description &amp; Specification</th>
+                      <th className="px-3 py-3 min-w-[150px]">Activity &amp; Sub-Activity</th>
                       <th className="px-3 py-3 text-center min-w-[130px]">Received Qty &amp; Unit</th>
                       <th className="px-3 py-3 text-right min-w-[120px] font-bold text-primary">Bill Rate* (₹)</th>
                       <th className="px-3 py-3 text-right min-w-[120px]">Gross Amount (₹)</th>
@@ -1264,7 +1343,7 @@ export function BillsForm({ bill, approvedGrns = [], vendorOptions = [], onSubmi
                               {item.sr_no || idx + 1}
                             </td>
 
-                            {/* 3. Item Description & Brand */}
+                            {/* 3. Item Description & Specification */}
                             <td className="px-2 py-2">
                               <div className="space-y-1">
                                 <input
@@ -1275,15 +1354,33 @@ export function BillsForm({ bill, approvedGrns = [], vendorOptions = [], onSubmi
                                   className="w-full rounded border border-border bg-background px-2 py-1 font-sans font-bold text-foreground focus:outline-none focus:border-primary text-xs"
                                 />
                                 <div className="flex items-center gap-1">
-                                  <span className="text-[10px] text-muted-foreground font-semibold">Brand:</span>
+                                  <span className="text-[10px] text-muted-foreground font-semibold">Specification:</span>
                                   <input
                                     type="text"
-                                    placeholder="Brand"
+                                    placeholder="Item Specification"
                                     value={item.item_brand}
                                     onChange={(e) => handleBillEntryChange(idx, 'item_brand', e.target.value)}
                                     className="w-full rounded border border-border/70 bg-background px-1.5 py-0.5 font-sans text-[11px] text-muted-foreground focus:outline-none focus:border-primary"
                                   />
                                 </div>
+                                <div className="flex items-center gap-1">
+                                  <span className="text-[10px] text-muted-foreground font-semibold">PR No:</span>
+                                  <input
+                                    type="text"
+                                    placeholder="PR No"
+                                    value={item.pr_no || ''}
+                                    onChange={(e) => handleBillEntryChange(idx, 'pr_no', e.target.value)}
+                                    className="w-full rounded border border-border/70 bg-background px-1.5 py-0.5 font-mono text-[10px] text-foreground focus:outline-none focus:border-primary font-bold"
+                                  />
+                                </div>
+                              </div>
+                            </td>
+
+                            {/* Activity & Sub-Activity */}
+                            <td className="px-2 py-2">
+                              <div className="space-y-1 text-xs whitespace-normal max-w-[180px]">
+                                <p className="font-semibold text-foreground leading-tight">{item.activity_name || '—'}</p>
+                                <p className="text-[10px] text-muted-foreground leading-tight">{item.sub_activity_name || '—'}</p>
                               </div>
                             </td>
 
@@ -1320,9 +1417,9 @@ export function BillsForm({ bill, approvedGrns = [], vendorOptions = [], onSubmi
                             {/* 6. Gross Amount */}
                             <td className="px-2 py-2 text-right font-bold text-foreground">
                               ₹{item.gross_amount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                            </td>
+                                    </td>
 
-                            {/* 7. Net Amount */}
+                            {/* 9. Net Amount — after credit and debit. */}
                             <td className="px-2 py-2 text-right font-extrabold text-emerald-700 dark:text-emerald-300 bg-emerald-500/10 rounded">
                               ₹{item.net_amount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                             </td>
@@ -2077,8 +2174,29 @@ export function BillsForm({ bill, approvedGrns = [], vendorOptions = [], onSubmi
                     <span className="text-sm font-mono font-extrabold text-foreground">₹{form.cheque_amount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
                   </div>
                   <div>
-                    <span className="block text-[10px] font-bold uppercase text-muted-foreground">Debit / Credit Details</span>
-                    <span className="text-sm font-mono font-bold text-foreground">{form.debit_details || 'Dr 0.00'} | {form.credit_details || 'Cr 0.00'}</span>
+                    <span className="block text-[10px] font-bold uppercase text-muted-foreground mb-1">Debit or Credit Details</span>
+                    <div className="flex items-center gap-2">
+                      <div className="relative flex items-center">
+                        <span className="absolute left-2 text-[10px] font-extrabold text-red-500 uppercase">Dr</span>
+                        <input
+                          type="number"
+                          value={form.debit_details || ''}
+                          placeholder="0.00"
+                          onChange={(e) => updateHeader('debit_details', Number(e.target.value) || 0)}
+                          className="w-20 rounded border border-border bg-background pl-7 pr-1 py-1 font-mono text-[11px] font-bold text-foreground focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500"
+                        />
+                      </div>
+                      <div className="relative flex items-center">
+                        <span className="absolute left-2 text-[10px] font-extrabold text-emerald-500 uppercase">Cr</span>
+                        <input
+                          type="number"
+                          value={form.credit_details || ''}
+                          placeholder="0.00"
+                          onChange={(e) => updateHeader('credit_details', Number(e.target.value) || 0)}
+                          className="w-20 rounded border border-border bg-background pl-7 pr-1 py-1 font-mono text-[11px] font-bold text-foreground focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+                        />
+                      </div>
+                    </div>
                   </div>
                   <div>
                     <span className="block text-[10px] font-bold uppercase text-emerald-600 dark:text-emerald-400">Final Bill Amount</span>
@@ -2534,7 +2652,7 @@ export function BillsForm({ bill, approvedGrns = [], vendorOptions = [], onSubmi
                       <th className="px-3 py-3 text-right">Net Bill Amt</th>
                       <th className="px-3 py-3 font-sans">Item Group</th>
                       <th className="px-3 py-3 font-sans min-w-[180px]">Item Desc</th>
-                      <th className="px-3 py-3 font-sans">Item Brand</th>
+                      <th className="px-3 py-3 font-sans">Item Specification</th>
                       <th className="px-3 py-3 text-right">Approved Qty</th>
                       <th className="px-3 py-3 text-right">Unit Rate</th>
                       <th className="px-3 py-3 text-right font-bold text-foreground">Net Amt</th>

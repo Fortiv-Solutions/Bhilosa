@@ -884,6 +884,9 @@ export async function listPrActivity(prId: string, prNumber?: string | null): Pr
 // ---------------------------------------------------------------------------
 export const PR_EDITABLE_STATUSES: string[] = [
   'draft',
+  'under_verification',
+  'pending_approval',
+  'awaiting_assignment',
   'returned_to_draft',
   'revision_required',
   'auto_draft',
@@ -964,11 +967,11 @@ export async function transitionPurchaseRequisition(prId: string, input: PrTrans
 
     const { data: existing, error: exErr } = await supabase
       .from('purchase_requisitions')
-      .select('project_id, status')
+      .select('project_id, status, material_request_id')
       .eq('id', prId)
       .single();
     if (exErr) throw new Error(exErr.message);
-    const prev = existing as { project_id: string; status: string };
+    const prev = existing as { project_id: string; status: string; material_request_id: string | null };
 
     const patch: Record<string, unknown> = { updated_by: profileId, ...(input.patch ?? {}) };
     if (input.newStatus) {
@@ -1013,8 +1016,27 @@ export async function transitionPurchaseRequisition(prId: string, input: PrTrans
       }
     }
 
+    if ((input.newStatus === 'draft' || input.newStatus === 'returned_to_draft') && input.comment) {
+      patch.revision_reason = input.comment;
+    }
+
     const { error: updErr } = await supabase.from('purchase_requisitions').update(patch).eq('id', prId);
     if (updErr) throw new Error(updErr.message);
+
+    // Sync linked Material Request status & clarification reason to 'draft' when PR goes back to draft
+    if ((input.newStatus === 'draft' || input.newStatus === 'returned_to_draft') && prev.material_request_id) {
+      try {
+        await supabase
+          .from('material_requests')
+          .update({
+            status: 'draft',
+            ...(input.comment ? { clarification_text: input.comment, clarification_at: new Date().toISOString() } : {}),
+          })
+          .eq('id', prev.material_request_id);
+      } catch {
+        /* best-effort MR status sync */
+      }
+    }
 
     if (input.assignment) {
       try {

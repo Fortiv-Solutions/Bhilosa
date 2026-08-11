@@ -512,7 +512,15 @@ export type GrnRow = {
   transporter_name?: string | null;
   qc_no?: string | null;
   uploaded_challan_url?: string | null;
+  uploaded_challan_path?: string | null;
+  uploaded_challan_name?: string | null;
   uploaded_invoice_url?: string | null;
+  uploaded_invoice_path?: string | null;
+  uploaded_invoice_name?: string | null;
+  remarks?: string | null;
+  in_weight?: string | null;
+  out_weight?: string | null;
+  net_weight?: string | null;
   // Legacy columns older GRNs may still carry challan/vehicle in (pre-fix submitGrn).
   quantity_verification?: string | null;
   physical_inspection?: string | null;
@@ -909,7 +917,7 @@ export async function listProcurementDashboard(projectId?: string): Promise<Proc
     projectFilter(
       supabase
         .from('vendor_bills')
-        .select('*, vendors(id, legal_name, display_name, rating), projects(id, name, code), vendor_bill_lines(*), three_way_matches(*)')
+        .select('*, vendors(id, legal_name, display_name, rating), projects(id, name, code), vendor_bill_lines(*, purchase_order_lines(activity_name, sub_activity_name, item_specification)), three_way_matches(*)')
         .order('created_at', { ascending: false })
         .limit(50),
     ),
@@ -1919,6 +1927,8 @@ export async function saveRfqFormDataToSupabase(input: {
       unit: string;
       required_date: string;
       remarks: string;
+      activity_name?: string | null;
+      sub_activity_name?: string | null;
     }>;
     suppliers: Array<{
       key: string;
@@ -2061,10 +2071,11 @@ export async function saveRfqFormDataToSupabase(input: {
           if (vErr) {
             console.warn('Extended rfq_vendors insert notice:', vErr.message || vErr);
             // Fallback: insert base columns if email_to/email_cc don't exist yet
-            const baseVendorInserts = vendorInserts.map(({ rfq_id, project_id, vendor_id }) => ({
+            const baseVendorInserts = vendorInserts.map(({ rfq_id, project_id, vendor_id, quotation_url }) => ({
               rfq_id,
               project_id,
               vendor_id,
+              quotation_url,
             }));
             await supabase.from('rfq_vendors').insert(baseVendorInserts);
           }
@@ -2095,6 +2106,8 @@ export async function saveRfqFormDataToSupabase(input: {
         tax_rate: Number(item.tax_rate ?? 18),
         required_date: item.required_date || null,
         remarks: item.remarks || null,
+        activity_name: item.activity_name || null,
+        sub_activity_name: item.sub_activity_name || null,
       }));
 
       if (lineInserts.length > 0) {
@@ -3202,6 +3215,14 @@ export async function generatePurchaseOrdersFromRfqForm(input: {
       tax_rate?: number;
       unit: string;
       required_date: string;
+      /* Carried through to the PO line unchanged. item_group and
+         activity_name are DIFFERENT axes and must not substitute for
+         each other. */
+      item_group?: string | null;
+      preferred_brand?: string | null;
+      item_brand?: string | null;
+      activity_name?: string | null;
+      sub_activity_name?: string | null;
     }>;
     suppliers: Array<{
       supplier_id: string;
@@ -3342,8 +3363,18 @@ export async function generatePurchaseOrdersFromRfqForm(input: {
             line_total: totalAmount,
             total_amount: totalAmount,
             unit: item.unit || 'nos',
-            activity_name: (item as any).item_group || null,
-            sub_activity_name: (item as any).item_brand || null,
+            /* RFQ is the reference shape and keeps the two axes separate:
+               item_group says WHAT was bought, activity_name says WHY. This
+               used to read activity_name from item_group and sub_activity_name
+               from item_brand, which is why every generated PO showed its Item
+               Group in the Activity column and left Item Group empty. */
+            item_code: (item as any).item_code || null,
+            item_group: (item as any).item_group || null,
+            item_specification: item.specification || null,
+            item_brand: (item as any).preferred_brand || (item as any).item_brand || null,
+            activity_name: (item as any).activity_name || null,
+            sub_activity_name: (item as any).sub_activity_name || null,
+            purchase_category: (item as any).activity_name || null,
           };
         })
         .filter(Boolean) as Array<{
@@ -3358,8 +3389,13 @@ export async function generatePurchaseOrdersFromRfqForm(input: {
           line_total: number;
           total_amount: number;
           unit: string;
+          item_code?: string | null;
+          item_group?: string | null;
+          item_specification?: string | null;
+          item_brand?: string | null;
           activity_name?: string | null;
           sub_activity_name?: string | null;
+          purchase_category?: string | null;
         }>;
 
       if (vendorLinePayloads.length === 0) {
@@ -3547,11 +3583,11 @@ DAP at Site, Freight included.`,
         line_total: l.line_total,
         activity_name: l.activity_name || null,
         sub_activity_name: l.sub_activity_name || null,
-        item_group: l.activity_name || null,
-        item_brand: l.sub_activity_name || null,
+        item_group: (l as any).item_group || null,
+        item_brand: (l as any).item_brand || null,
         item_code: (l as any).item_code || null,
         item_specification: (l as any).item_specification || null,
-        purchase_category: l.activity_name || null,
+        purchase_category: (l as any).purchase_category || null,
       }));
 
       const { error: poLinesErr } = await supabase
@@ -3732,11 +3768,15 @@ export async function generatePurchaseOrdersFromAwards(
 
         // Insert PO lines
         const poLinesToInsert = vendorAwards.map((a, idx) => {
-          const rfqLine = a.rfq_lines as { item_id?: string; item_description?: string; unit?: string; activity_name?: string; sub_activity_name?: string; master_budget_item_id?: string } | null;
+          const rfqLine = a.rfq_lines as { item_id?: string; item_code?: string; item_group?: string; item_description?: string; specification?: string; preferred_brand?: string; unit?: string; activity_name?: string; sub_activity_name?: string; master_budget_item_id?: string } | null;
           return {
             purchase_order_id: poId,
             project_id: pr.project_id,
             item_id: rfqLine?.item_id || null,
+            item_code: rfqLine?.item_code || null,
+            item_group: rfqLine?.item_group || null,
+            item_brand: rfqLine?.preferred_brand || null,
+            item_specification: rfqLine?.specification || null,
             item_description: rfqLine?.item_description || 'Awarded Procurement Item',
             unit: rfqLine?.unit || 'nos',
             quantity: Number(a.awarded_qty),
@@ -4102,13 +4142,20 @@ The Vendor hereby agrees that the Courts situated in location of Organisation ad
         unit: line.unit || 'nos',
         tax_rate: line.tax_rate,
         line_total: line.line_total,
-        activity_name: line.activity_name || line.item_group || null,
-        sub_activity_name: line.sub_activity_name || line.item_brand || null,
-        item_group: line.item_group || line.activity_name || null,
-        item_brand: line.item_brand || line.sub_activity_name || null,
+        /* These four used to fall back into each other
+           (activity_name || item_group, item_group || activity_name, ...).
+           item_group and activity_name are different axes — WHAT was bought
+           versus WHY — so a missing activity became the item group and a
+           missing group became the activity. An empty column is recoverable;
+           a column filled with the wrong axis is not. */
+        activity_name: line.activity_name || null,
+        sub_activity_name: line.sub_activity_name || null,
+        item_group: line.item_group || null,
+        item_brand: line.item_brand || (line as any).preferred_brand || null,
         item_code: (line as any).item_code || null,
         item_specification: (line as any).item_specification || (line as any).specification || null,
-        purchase_category: (line as any).purchase_category || line.item_group || line.activity_name || null,
+        /* purchase_category tracks the activity axis, never the item group. */
+        purchase_category: (line as any).purchase_category || line.activity_name || null,
         purchase_requisition_line_id: line.purchase_requisition_line_id || null,
         vendor_selection_award_id: line.vendor_selection_award_id || null,
         rfq_line_id: line.rfq_line_id || null,
@@ -5168,6 +5215,167 @@ export async function reopenPurchaseOrderLine(poLineId: string): Promise<Mutatio
   }
 }
 
+export interface PoAmendmentRecord {
+  id: string;
+  purchase_order_id: string;
+  revision_number: number;
+  amendment_type: string;
+  reason: string;
+  changes_diff: any;
+  requested_by?: string | null;
+  requested_at: string;
+  status: 'pending' | 'approved' | 'rejected' | 'cancelled';
+  reviewed_by?: string | null;
+  reviewed_at?: string | null;
+  review_remarks?: string | null;
+  created_at: string;
+  requester_name?: string;
+  reviewer_name?: string;
+}
+
+export interface PoRevisionRecord {
+  id: string;
+  purchase_order_id: string;
+  revision_number: number;
+  header_snapshot: any;
+  lines_snapshot: any;
+  amendment_id?: string | null;
+  created_by?: string | null;
+  created_at: string;
+}
+
+/** Short-closes an ENTIRE Purchase Order and releases remaining budget commitments. */
+export async function shortCloseEntirePurchaseOrder(
+  poId: string,
+  reason: string,
+): Promise<MutationResult<{ newStatus: string; linesClosed: number }>> {
+  try {
+    await requireProfile();
+    if (!reason?.trim()) throw new Error('A valid short-close reason is required.');
+    const result = await rpcAction<{ newStatus?: string; linesClosed?: number }>('short_close_entire_purchase_order', {
+      p_po_id: poId,
+      p_reason: reason.trim(),
+    });
+    return {
+      data: {
+        newStatus: String(result.newStatus || 'short_closed'),
+        linesClosed: Number(result.linesClosed || 0),
+      },
+      error: null,
+    };
+  } catch (error) {
+    return { data: null, error: asError(error) };
+  }
+}
+
+/** Submits a PO Amendment request for rate/qty/terms revision. */
+export async function submitPoAmendment(
+  poId: string,
+  amendmentType: string,
+  reason: string,
+  diff: any,
+): Promise<MutationResult<{ amendmentId: string; revisionNumber: number }>> {
+  try {
+    await requireProfile();
+    if (!reason?.trim()) throw new Error('An amendment reason is required.');
+    const result = await rpcAction<{ amendmentId?: string; revisionNumber?: number }>('submit_po_amendment', {
+      p_po_id: poId,
+      p_amendment_type: amendmentType,
+      p_reason: reason.trim(),
+      p_diff: diff,
+    });
+    return {
+      data: {
+        amendmentId: String(result.amendmentId || ''),
+        revisionNumber: Number(result.revisionNumber || 1),
+      },
+      error: null,
+    };
+  } catch (error) {
+    return { data: null, error: asError(error) };
+  }
+}
+
+/** Approves a pending PO Amendment request. */
+export async function approvePoAmendment(
+  amendmentId: string,
+  remarks?: string,
+): Promise<MutationResult<{ newRevisionNumber: number }>> {
+  try {
+    await requireProfile();
+    const result = await rpcAction<{ newRevisionNumber?: number }>('approve_po_amendment', {
+      p_amendment_id: amendmentId,
+      p_remarks: remarks?.trim() || null,
+    });
+    return {
+      data: {
+        newRevisionNumber: Number(result.newRevisionNumber || 1),
+      },
+      error: null,
+    };
+  } catch (error) {
+    return { data: null, error: asError(error) };
+  }
+}
+
+/** Rejects a pending PO Amendment request. */
+export async function rejectPoAmendment(
+  amendmentId: string,
+  reason: string,
+): Promise<MutationResult<{ success: boolean }>> {
+  try {
+    await requireProfile();
+    if (!reason?.trim()) throw new Error('A rejection reason is required.');
+    await rpcAction('reject_po_amendment', {
+      p_amendment_id: amendmentId,
+      p_reason: reason.trim(),
+    });
+    return { data: { success: true }, error: null };
+  } catch (error) {
+    return { data: null, error: asError(error) };
+  }
+}
+
+/** Fetches amendment audit trail for a Purchase Order. */
+export async function fetchPoAmendments(poId: string): Promise<PoAmendmentRecord[]> {
+  try {
+    const { data, error } = await supabase
+      .from('purchase_order_amendments')
+      .select('*')
+      .eq('purchase_order_id', poId)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.warn('fetchPoAmendments error:', error);
+      return [];
+    }
+    return (data || []) as PoAmendmentRecord[];
+  } catch (err) {
+    console.warn('fetchPoAmendments exception:', err);
+    return [];
+  }
+}
+
+/** Fetches revision history snapshots for a Purchase Order. */
+export async function fetchPoRevisions(poId: string): Promise<PoRevisionRecord[]> {
+  try {
+    const { data, error } = await supabase
+      .from('purchase_order_revisions')
+      .select('*')
+      .eq('purchase_order_id', poId)
+      .order('revision_number', { ascending: false });
+
+    if (error) {
+      console.warn('fetchPoRevisions error:', error);
+      return [];
+    }
+    return (data || []) as PoRevisionRecord[];
+  } catch (err) {
+    console.warn('fetchPoRevisions exception:', err);
+    return [];
+  }
+}
+
 /**
  * Every status change this purchase order has been through, newest first.
  * Written by trg_po_record_status_history; the table is append-only.
@@ -5379,6 +5587,12 @@ export async function createFullGoodsReceiptNote(formData: {
     rejected_qty: number;
     unit_rate: number;
     remarks?: string;
+    /* Declared because the insert below already reads them. Undeclared, the
+       caller could stop sending them and nothing would complain — which is
+       exactly how they came to be written as null on every receipt. */
+    item_specification?: string | null;
+    activity_name?: string | null;
+    sub_activity_name?: string | null;
   }[];
 }): Promise<MutationResult<{ id: string; grnNumber: string }>> {
   try {
@@ -5399,7 +5613,15 @@ export async function createFullGoodsReceiptNote(formData: {
     let grnNumber: string | null = null;
 
     const profileId = await currentProfileId();
-    grnNumber = formData.grn_number || (await nextDocumentNumber('GRN'));
+    /* The form seeds gr_no with the placeholder it shows while the number is
+       still unassigned, and that placeholder is truthy — so it was stored as
+       the GRN number itself and the SECOND receipt collided on it. A number
+       that is not a real number is no number. */
+    const suppliedGrnNumber = String(formData.grn_number ?? '').trim();
+    grnNumber =
+      suppliedGrnNumber && !/^\(.*\)$/.test(suppliedGrnNumber)
+        ? suppliedGrnNumber
+        : await nextDocumentNumber('GRN');
 
     // Auto-resolve project_id from project_name, selected PO lines, or default project
     let resolvedProjectId = formData.project_id || null;
@@ -5427,6 +5649,13 @@ export async function createFullGoodsReceiptNote(formData: {
     if (!resolvedProjectId) {
       const { data: defaultProject } = await supabase.from('projects').select('id').limit(1).maybeSingle();
       resolvedProjectId = defaultProject?.id || null;
+    }
+    // Both the header and every line are NOT NULL on project_id. Saying so here
+    // beats a raw constraint violation from two different inserts.
+    if (!resolvedProjectId) {
+      throw new Error(
+        'This goods receipt has no project. Select the Project Name, or link a Purchase Order that carries one.',
+      );
     }
 
     // Auto-resolve vendor_id from supplier_name or selected PO lines
@@ -5483,6 +5712,12 @@ export async function createFullGoodsReceiptNote(formData: {
       asset_amount: formData.asset_amount ?? 0,
       remarks: formData.remarks || null,
       status: dbGrnStatus,
+      uploaded_invoice_url: formData.uploaded_invoice_url || null,
+      uploaded_invoice_path: formData.uploaded_invoice_path || null,
+      uploaded_invoice_name: formData.uploaded_invoice_name || null,
+      uploaded_challan_url: formData.uploaded_challan_url || null,
+      uploaded_challan_path: formData.uploaded_challan_path || null,
+      uploaded_challan_name: formData.uploaded_challan_name || null,
       updated_at: new Date().toISOString(),
       ...(profileId ? { updated_by: profileId } : {}),
     };
@@ -5554,7 +5789,13 @@ export async function createFullGoodsReceiptNote(formData: {
 
             return {
               grn_id: grnId,
-              project_id: formData.project_id || null,
+              /* The SAME resolved project as the header. Using the raw
+                 formData.project_id here made every GRN whose project was
+                 resolved rather than supplied — a receipt picked straight from
+                 the item picker, with no Primary PO reference set — insert its
+                 lines with a null project_id and fail the NOT NULL constraint,
+                 while the header saved happily. */
+              project_id: resolvedProjectId,
               purchase_order_line_id: l.purchase_order_line_id || null,
               item_id: itemId,
               received_qty: Number(l.received_qty || 0),
@@ -5568,8 +5809,15 @@ export async function createFullGoodsReceiptNote(formData: {
               item_code: l.item_code || null,
               item_brand: l.item_brand || null,
               item_description: l.item_description || null,
+              /* Specification distinguishes otherwise identical descriptions at
+                 different rates, and the activity axis is what lets the bill
+                 downstream post to the right budget row. Both were dropped at
+                 receipt, so the lineage died here. */
+              item_specification: l.item_specification || l.specification || null,
+              activity_name: l.activity_name || null,
+              sub_activity_name: l.sub_activity_name || null,
               location: l.location || null,
-              purchase_category: l.purchase_category || null,
+              purchase_category: l.purchase_category || l.activity_name || null,
               unit: l.unit || null,
               approved_qty: Number(l.approved_qty || 0),
               po_balance_qty: Number(l.po_balance_qty || 0),
@@ -5586,7 +5834,14 @@ export async function createFullGoodsReceiptNote(formData: {
 
         const { error: lErr } = await supabase.from('goods_receipt_note_lines').insert(lineInserts);
         if (lErr) {
-          console.warn('GRN line fallback insert notice:', lErr.message);
+          /* Never a warning. The existing lines were deleted just above, so a
+             swallowed failure here reports success and leaves a GRN with no
+             purchase entries at all — which is precisely how received items
+             vanished on save. */
+          throw new Error(
+            `The goods receipt was saved but its ${lineInserts.length} purchase ` +
+            `entr${lineInserts.length === 1 ? 'y' : 'ies'} could not be stored: ${lErr.message}`,
+          );
         }
       }
 
@@ -5709,16 +5964,47 @@ export async function createAutoDraftPurchaseBillFromGrn(
     if (bErr || !newBill?.id) throw new Error(`Auto draft Purchase Bill insert failed: ${bErr?.message || 'no row returned'}`);
 
     if (Array.isArray(lines) && lines.length > 0) {
-      const lineInserts = lines.map((l) => ({
-        vendor_bill_id: newBill.id,
-        grn_line_id: l.id,
-        quantity: Number(l.accepted_qty || l.received_qty || 0),
-        unit_rate: Number(l.unit_rate || 0),
-        amount: Number(l.accepted_qty || l.received_qty || 0) * Number(l.unit_rate || 0),
-        created_at: new Date().toISOString(),
-      }));
+      /* This insert used to name `unit_rate` and `amount` — the real columns
+         are `rate` and `line_total` — and omitted `description` and
+         `project_id`, both NOT NULL. So it failed every time, and the failure
+         was only console.warn'd: every auto-drafted Purchase Bill was created
+         with zero lines. The item identity and the activity axis are carried
+         through from the GRN line so the bill can post to the right budget row. */
+      const lineInserts = lines.map((l: any) => {
+        const qty = Number(l.accepted_qty || l.received_qty || 0);
+        const rate = Number(l.unit_rate || 0);
+        return {
+          vendor_bill_id: newBill.id,
+          project_id: grn.project_id,
+          grn_line_id: l.id,
+          purchase_order_line_id: l.purchase_order_line_id || null,
+          item_id: l.item_id || null,
+          description: l.item_description || 'Received material',
+          item_description: l.item_description || null,
+          item_code: l.item_code || null,
+          item_group: l.item_group || null,
+          item_brand: l.item_brand || null,
+          item_specification: l.item_specification || null,
+          activity_name: l.activity_name || null,
+          sub_activity_name: l.sub_activity_name || null,
+          purchase_category: l.purchase_category || l.activity_name || null,
+          unit: l.unit || null,
+          quantity: qty,
+          received_qty: Number(l.received_qty || 0),
+          rate,
+          unit_rate: rate,
+          tax_rate: 0,
+          line_total: qty * rate,
+          gross_amount: qty * rate,
+          net_amount: qty * rate,
+          credit_amount: 0,
+          debit_amount: 0,
+          pr_no: l.pr_number || null,
+          created_at: new Date().toISOString(),
+        };
+      });
       const { error: blErr } = await supabase.from('vendor_bill_lines').insert(lineInserts);
-      if (blErr) console.warn('Vendor bill lines insert notice:', blErr.message);
+      if (blErr) throw new Error(`Purchase Bill lines could not be created: ${blErr.message}`);
     }
 
     return { data: { vendorBillId: newBill.id, billNumber: newBill.bill_number }, error: null };
@@ -5971,7 +6257,20 @@ export async function savePurchaseBill(payload: {
             challan_no: (l.challan_no as string) || null,
             item_group: (l.item_group as string) || null,
             item_brand: (l.item_brand as string) || null,
-            purchase_category: (l.purchase_category as string) || null,
+            purchase_category:
+              (l.purchase_category as string) || (l.activity_name as string) || null,
+            /* The identity and the activity axis, carried from the GRN line.
+               Without activity_name the certified bill cannot name a budget
+               row, which is why fn_post_vendor_bill_to_budget could only post
+               one header-level allocation for the whole bill. */
+            item_code: (l.item_code as string) || null,
+            item_specification: (l.item_specification as string) || null,
+            item_description: (l.item_desc as string) || (l.description as string) || null,
+            activity_name: (l.activity_name as string) || null,
+            sub_activity_name: (l.sub_activity_name as string) || null,
+            credit_amount: Math.max(toFallbackNum(l.credit_amount), 0),
+            debit_amount: Math.max(toFallbackNum(l.debit_amount), 0),
+            credit_debit_reason: (l.credit_debit_reason as string) || null,
             description: (l.item_desc as string) || (l.description as string) || 'Billed item',
             unit: (l.unit as string) || null,
             quantity: Math.max(toFallbackNum(l.received_qty), 0),
@@ -5997,6 +6296,7 @@ export async function savePurchaseBill(payload: {
             tax_rate: toFallbackNum(l.po_vat_rate),
             net_amount: toFallbackNum(l.net_amount),
             line_total: toFallbackNum(l.net_amount),
+            pr_no: (l.pr_no as string) || null,
             ...(profileId ? { created_by: profileId, updated_by: profileId } : {}),
           });
         }
@@ -6385,16 +6685,49 @@ export async function savePurchaseOrderForm(
         await supabase.from('purchase_order_lines').delete().eq('purchase_order_id', savedPoId);
         const lineInserts = lines.map((l, idx) => ({
           purchase_order_id: savedPoId,
+          line_number: l.line_number ?? idx + 1,
           item_id: uuidOrNull(l.item_id),
+          item_code: l.item_code || null,
+          item_group: l.item_group || null,
+          item_brand: l.item_brand || null,
+          item_specification: l.item_specification || null,
           item_description: (l.item_description ?? '').trim(),
+          hsn_code: l.hsn_code || null,
+          tax_code: l.tax_code || null,
+          purchase_category: l.purchase_category || null,
           quantity: Number(l.quantity) || 0,
           unit: cleanMaterialUnit(l.unit, l.item_description),
           unit_rate: Number(l.unit_rate) || 0,
           tax_rate: Number(l.tax_rate) || 0,
-          amount: Number(l.quantity || 0) * Number(l.unit_rate || 0),
+          estimated_rate: l.estimated_rate ?? null,
+          previous_rate: l.previous_rate ?? null,
+          discount_pct: Number(l.discount_pct) || 0,
+          discount_amount: Number(l.discount_amount) || 0,
+          freight_charges: Number(l.freight_charges) || 0,
+          loading_unloading_charges: Number(l.loading_unloading_charges) || 0,
+          other_charges: Number(l.other_charges) || 0,
+          is_gst_applicable: l.is_gst_applicable ?? true,
+          is_open_po: l.is_open_po ?? false,
+          open_till_date: l.open_till_date || null,
+          required_date: l.required_date || null,
+          activity_name: l.activity_name || null,
+          sub_activity_name: l.sub_activity_name || null,
+          /* Was `amount`, which is not a column on purchase_order_lines (the
+             real ones are subtotal_amount / tax_amount / total_amount /
+             line_total). PostgREST rejects unknown columns, so this insert
+             failed on EVERY save — and because the lines had just been deleted
+             above and the error was never checked, saving a Purchase Order
+             from the form silently emptied it. */
+          subtotal_amount: Number(l.quantity || 0) * Number(l.unit_rate || 0),
+          line_total: Number(l.quantity || 0) * Number(l.unit_rate || 0),
           created_at: new Date().toISOString(),
         }));
-        await supabase.from('purchase_order_lines').insert(lineInserts);
+        const { error: poLineError } = await supabase
+          .from('purchase_order_lines')
+          .insert(lineInserts);
+        if (poLineError) {
+          throw new Error(`Purchase Order lines could not be saved: ${poLineError.message}`);
+        }
       }
     }
 
@@ -6493,6 +6826,7 @@ export type PrOption = {
   id: string;
   pr_number: string;
   project_name?: string;
+  lines?: any[];
 };
 
 export async function listActivePrOptions(): Promise<PrOption[]> {
@@ -6500,7 +6834,7 @@ export async function listActivePrOptions(): Promise<PrOption[]> {
   try {
     const { data, error } = await supabase
       .from('purchase_requisitions')
-      .select('id, pr_number, project_id, projects(name)')
+      .select('id, pr_number, project_id, projects(name), purchase_requisition_lines(*)')
       .order('created_at', { ascending: false })
       .limit(50);
 
@@ -6510,6 +6844,7 @@ export async function listActivePrOptions(): Promise<PrOption[]> {
       id: r.id,
       pr_number: r.pr_number,
       project_name: r.projects?.name || '',
+      lines: r.purchase_requisition_lines || [],
     }));
   } catch (err) {
     return [];
@@ -6604,8 +6939,10 @@ export async function fetchPurchaseOrderOptions(
   project_name?: string;
   vendor_id?: string;
   vendor_name?: string;
+  supplier_name?: string;
   company_name?: string;
   godown_name?: string;
+  dealer_name?: string;
   material_details?: string;
   vendor_details?: {
     gst_number?: string;
@@ -6614,10 +6951,18 @@ export async function fetchPurchaseOrderOptions(
     email?: string;
     address?: string;
     contact_person?: string;
+    dealer_name?: string;
   };
 }[]> {
   try {
-    const selectFields = 'id, po_number, project_id, vendor_id, supplier_name, vendor_name, company_name, delivery_location, status, projects(name), vendors(display_name, legal_name, phone, email, gst_number)';
+    /* `mobile` and `contact_person` are NOT columns on vendors — the real set is
+       display_name / legal_name / phone / email / gst_number / pan_number /
+       address. PostgREST rejects a select naming an unknown column, so this
+       query failed outright, the error was swallowed by the console.warn below,
+       and the function returned [] — leaving the GRN form's "Primary Purchase
+       Order Reference" and "Select Items From PO" empty with no explanation.
+       The same mistake was already fixed once in generatePurchaseOrdersFromRfqForm. */
+    const selectFields = 'id, po_number, project_id, vendor_id, supplier_name, vendor_name, company_name, delivery_location, status, projects(name), vendors(display_name, legal_name, phone, email, gst_number, pan_number, address)';
 
     const isRealProject = _projectId && _projectId !== 'all' && _projectId !== '00000000-0000-0000-0000-000000000001' && isValidUuid(_projectId);
 
@@ -6635,8 +6980,10 @@ export async function fetchPurchaseOrderOptions(
     let { data, error } = await query;
 
     if (error) {
-      console.warn('[procurement] purchase_orders query error:', error);
-      return [];
+      /* Was console.warn + silent []. A schema error here is indistinguishable
+         from "no approved POs exist", which is exactly how the phantom vendor
+         columns above went unnoticed. Callers surface this. */
+      throw new Error(`Unable to read purchase orders: ${error.message}`);
     }
 
     if (!data || data.length === 0) return [];
@@ -6645,16 +6992,24 @@ export async function fetchPurchaseOrderOptions(
       id: po.id,
       po_number: po.po_number || '',
       project_id: po.project_id,
-      project_name: po.projects?.name || '',
+      project_name: po.projects?.name || po.project_name || '',
       vendor_id: po.vendor_id,
       vendor_name: po.vendor_name || po.supplier_name || po.vendors?.display_name || po.vendors?.legal_name || '',
-      company_name: po.company_name || '',
-      godown_name: po.delivery_location || '',
+      supplier_name: po.supplier_name || po.vendor_name || po.vendors?.display_name || po.vendors?.legal_name || '',
+      company_name: po.company_name || 'Pramukh Group Infrastructure Ltd.',
+      godown_name: po.delivery_location || po.godown_name || '',
+      /* vendors carries no contact-person field at all, so the dealer name can
+         only come from the PO itself. */
+      dealer_name: po.dealer_name || '',
       material_details: '',
       vendor_details: {
         gst_number: po.vendors?.gst_number || '',
+        pan_number: po.vendors?.pan_number || '',
         phone: po.vendors?.phone || '',
         email: po.vendors?.email || '',
+        address: po.vendors?.address || '',
+        contact_person: '',
+        dealer_name: '',
       },
     })).filter((p) => Boolean(p.po_number));
 
@@ -6672,8 +7027,13 @@ export async function fetchPurchaseOrderOptions(
 
     return list;
   } catch (err) {
-    console.warn('[procurement] fetchPurchaseOrderOptions failed:', err);
-    return [];
+    /* This catch is why the phantom vendor columns were invisible: it turned
+       every failure — schema errors included — into an empty list that read as
+       "no approved purchase orders". Both callers handle a rejection and show
+       it (grn-form via setPoOptionsError, use-po-lines via its error state). */
+    throw err instanceof Error
+      ? err
+      : new Error('Unable to read purchase orders.');
   }
 }
 
@@ -6690,6 +7050,13 @@ export type PoLineWithBalance = {
   item_description: string;
   item_code: string;
   item_brand: string;
+  /* The identity and the WHY, carried so the GRN — and the bill after it — can
+     name the specification received and the budget activity it belongs to.
+     Without these on the picker the GRN wrote nulls and the lineage died at
+     receipt. */
+  item_specification: string;
+  activity_name: string;
+  sub_activity_name: string;
   purchase_category?: string;
   pr_no?: string;
   unit: string;
@@ -6750,21 +7117,34 @@ export async function fetchPoLinesWithBalances(poId: string): Promise<PoLineWith
     const rfqLine = Array.isArray(line.rfq_lines) ? line.rfq_lines[0] : line.rfq_lines;
     const prLine = Array.isArray(line.purchase_requisition_lines) ? line.purchase_requisition_lines[0] : line.purchase_requisition_lines;
 
+    /* Each axis resolves only within itself, walking back up the chain
+       PO -> RFQ -> PR. The fallbacks used to cross over — activity fell back to
+       item_group and purchase_category, sub-activity fell back to item_brand and
+       preferred_brand — so a PO with no activity produced a GRN whose Activity
+       column showed the item group and whose Sub-Activity showed the brand. */
     const activityName = line.activity_name
-      || line.item_group
-      || line.purchase_category
       || rfqLine?.activity_name
-      || rfqLine?.item_group
       || prLine?.activity_name
-      || prLine?.item_group
       || '';
 
     const subActivityName = line.sub_activity_name
-      || line.item_brand
       || rfqLine?.sub_activity_name
-      || rfqLine?.preferred_brand
       || prLine?.sub_activity_name
+      || '';
+
+    const itemGroup = line.item_group
+      || rfqLine?.item_group
+      || prLine?.item_group
+      || '';
+
+    const itemBrand = line.item_brand
+      || rfqLine?.preferred_brand
       || prLine?.preferred_brand
+      || '';
+
+    const itemSpecification = line.item_specification
+      || rfqLine?.specification
+      || prLine?.specification
       || '';
 
     const itemCode = line.item_code
@@ -6772,12 +7152,8 @@ export async function fetchPoLinesWithBalances(poId: string): Promise<PoLineWith
       || prLine?.item_code
       || (line.item_id ? `ITM-${line.item_id.slice(0, 8).toUpperCase()}` : `POL-${line.id.slice(0, 8).toUpperCase()}`);
 
-    const purchaseCategory = line.purchase_category
-      || line.item_group
-      || line.activity_name
-      || rfqLine?.item_group
-      || prLine?.item_group
-      || '';
+    /* purchase_category tracks the activity axis, never the item group. */
+    const purchaseCategory = line.purchase_category || activityName || '';
 
     const resolvedUnit = cleanMaterialUnit(line.unit, line.item_description);
 
@@ -6787,10 +7163,15 @@ export async function fetchPoLinesWithBalances(poId: string): Promise<PoLineWith
       po_line_id: line.id,
       item_id: line.item_id ?? null,
       unit_rate: Number(line.unit_rate || 0),
-      item_group: activityName,
+      /* Was item_group: activityName / item_brand: subActivityName — the two
+         axes swapped into each other's columns at the PO -> GRN hop. */
+      item_group: itemGroup,
       item_description: line.item_description ?? '',
       item_code: itemCode,
-      item_brand: subActivityName,
+      item_brand: itemBrand,
+      item_specification: itemSpecification,
+      activity_name: activityName,
+      sub_activity_name: subActivityName,
       purchase_category: purchaseCategory,
       pr_no: prObj?.pr_number ?? '',
       unit: resolvedUnit,
@@ -7758,6 +8139,9 @@ export interface ApprovedGrnOption {
     open_billing_qty: number;
     unit_rate: number;
     purchase_category?: string;
+    activity_name?: string;
+    sub_activity_name?: string;
+    pr_no?: string;
   }[];
 }
 
@@ -7859,7 +8243,7 @@ export async function fetchApprovedGrnsForPos(poIds: string[]): Promise<Approved
   try {
     let query = supabase
       .from('goods_receipt_notes')
-      .select('id, grn_number, receipt_date, challan_no, purchase_order_id, supplier_name, status, quantity_verification, purchase_orders(po_number), goods_receipt_note_lines(*)')
+      .select('id, grn_number, receipt_date, challan_no, purchase_order_id, supplier_name, status, quantity_verification, purchase_orders(po_number), goods_receipt_note_lines(*, purchase_order_lines(activity_name, sub_activity_name, item_specification))')
       .order('created_at', { ascending: false });
 
     if (poIds.length > 0) {
@@ -7934,6 +8318,9 @@ export async function fetchApprovedGrnsForPos(poIds: string[]): Promise<Approved
           open_billing_qty: openBilling,
           unit_rate: rate,
           purchase_category: l.purchase_category || '',
+          activity_name: l.purchase_order_lines?.activity_name || l.activity_name || '',
+          sub_activity_name: l.purchase_order_lines?.sub_activity_name || l.sub_activity_name || '',
+          pr_no: l.pr_number || '',
         };
       });
 

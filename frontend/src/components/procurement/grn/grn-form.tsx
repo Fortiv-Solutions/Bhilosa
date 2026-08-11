@@ -21,6 +21,7 @@ import {
   Edit3,
   Printer,
   Upload,
+  Download,
   Save,
   UserCheck,
   ArrowLeft,
@@ -34,9 +35,6 @@ import {
   listProcurementProjects,
   type ProcurementProjectOption,
   printGrnReport,
-  extractInvoiceForGrn,
-  findDuplicateInvoice,
-  saveGrnInvoiceExtraction,
   type VendorOption,
   type PoLineWithBalance,
 } from '@/lib/procurement';
@@ -50,6 +48,13 @@ export interface GrnPurchaseEntry {
   item_description: string;
   item_code: string;
   item_brand: string;
+  /* The identity and the WHY, carried from the PO line so the receipt — and
+     the Purchase Bill after it — can name the specification accepted and the
+     budget activity it belongs to. goods_receipt_note_lines has all three
+     columns; nothing was writing them, so the lineage died at receipt. */
+  item_specification?: string;
+  activity_name?: string;
+  sub_activity_name?: string;
   location: string;
   unit: string;
   purchase_category: string;
@@ -154,43 +159,15 @@ export interface FullGrnFormState {
   assigned_approval_role?: string;
 }
 
-/** Per-page OCR telemetry returned by the extraction endpoint. */
-interface PageDiagnosticSummary {
-  pageNumber: number;
-  rotation: number;
-  width: number;
-  height: number;
-  wordCount: number;
-  usableWordCount: number;
-  meanConfidence: number;
-}
-
-/** A warning emitted by the OCR pipeline's reconciliation pass. */
-export interface ExtractionNotice {
-  code: string;
-  message: string;
-  severity: 'info' | 'warn' | 'error';
-  field?: string;
-}
-
-/** What the UI shows about the most recent invoice read. */
-interface ExtractionSummary {
-  confidence: number;
-  reviewFields: Array<{ field: string; reason: string; severity: 'info' | 'warn' | 'error' }>;
-  invoiceNumber: string | null;
-  invoiceDate: string | null;
-  grandTotal: number | null;
-  vendorName: string | null;
-  itemCount: number;
-  processingMs: number;
-  invoiceCount: number;
-  record: Record<string, any>;
-  warnings: ExtractionNotice[];
-  duplicateOf: { id: string; grn_id: string | null; invoice_number: string | null } | null;
-}
+// The OCR extraction types that stood here are gone with the pipeline. The
+// invoice and challan slots are plain document uploads: nothing reads the file,
+// so there is no confidence, no review-field list and no per-page telemetry to
+// model. The pipeline itself (lib/procurement extractInvoiceForGrn and the
+// grn_invoices tables) is untouched and can be reconnected without schema work.
 
 interface GrnFormProps {
   grn: GrnRow;
+  canApprove?: boolean;
   /** Active vendors backing the supplier dropdown. */
   vendorOptions?: VendorOption[];
   onSubmit: (formData: FullGrnFormState) => void;
@@ -209,6 +186,7 @@ function normalizeGrnFormStatus(st?: string): FullGrnFormState['status'] {
 
 export function GrnForm({
   grn,
+  canApprove = true,
   vendorOptions = [],
   onSubmit,
   onPrint,
@@ -221,59 +199,96 @@ export function GrnForm({
   const [invoiceFile, setInvoiceFile] = useState<File | null>(null);
   const [isInvoiceDirty, setIsInvoiceDirty] = useState(false);
 
+
   // PO Item Picker Drawer State
   const [showPoItemPicker, setShowPoItemPicker] = useState(false);
   const [currentPoLinesWithBalance, setCurrentPoLinesWithBalance] = useState<PoLineWithBalance[]>([]);
-  const [showExtraItemsTable, setShowExtraItemsTable] = useState(() => Boolean((grn as any).extra_items && ((grn as any).extra_items as any[]).length > 0));
+  const [poLinesLoading, setPoLinesLoading] = useState(false);
+  const [poLinesError, setPoLinesError] = useState<string | null>(null);
+  const [poOptionsError, setPoOptionsError] = useState<string | null>(null);
 
-  // Deterministic OCR extraction state.
-  const [extracting, setExtracting] = useState(false);
-  const [extractError, setExtractError] = useState<string | null>(null);
-  const [extraction, setExtraction] = useState<ExtractionSummary | null>(null);
-  /** Per-page OCR telemetry, shown when a read fails so the cause is visible. */
-  const [extractDiagnostics, setExtractDiagnostics] = useState<PageDiagnosticSummary[] | null>(null);
+  /**
+   * Single loader for the PO item picker.
+   *
+   * The three call sites each did `await fetchPoLinesWithBalances(...)` bare, in
+   * an async event handler. That function THROWS on a failed read, so any error
+   * became an unhandled rejection and the form simply did nothing — selecting a
+   * Purchase Order looked inert with no message anywhere.
+   *
+   * Two further defects are fixed by always assigning the result:
+   *   - the picker only opened when lines.length > 0, so a PO whose items were
+   *     already fully received produced no picker and no explanation;
+   *   - on that same path the previous PO's lines were left in state, so the
+   *     picker could open showing items belonging to a DIFFERENT order.
+   */
+  const loadPoLines = async (poId: string | null | undefined): Promise<PoLineWithBalance[]> => {
+    setPoLinesError(null);
+    if (!poId) {
+      setCurrentPoLinesWithBalance([]);
+      return [];
+    }
+    setPoLinesLoading(true);
+    try {
+      const lines = await fetchPoLinesWithBalances(poId);
+      setCurrentPoLinesWithBalance(lines);
+      if (lines.length === 0) {
+        setPoLinesError(
+          'This Purchase Order has no lines left to receive. They may already be fully received or short-closed.',
+        );
+      }
+      return lines;
+    } catch (err) {
+      // Never leave another order's lines behind on a failed read.
+      setCurrentPoLinesWithBalance([]);
+      setPoLinesError(err instanceof Error ? err.message : 'Unable to read the purchase order lines.');
+      return [];
+    } finally {
+      setPoLinesLoading(false);
+    }
+  };
+  const [showExtraItemsTable, setShowExtraItemsTable] = useState(() => Boolean((grn as any).extra_items && ((grn as any).extra_items as any[]).length > 0));
 
   const [form, setForm] = useState<FullGrnFormState>(() => {
     const isNew = !grn.id;
     return {
-      uploaded_invoice_url: '',
-      uploaded_invoice_path: '',
-      uploaded_invoice_name: '',
-      uploaded_challan_url: '',
-      uploaded_challan_path: '',
-      uploaded_challan_name: '',
-      qc_no: isNew ? '' : 'QC-2026-0881',
-      gr_no: grn.grn_number || '',
-      grn_date: grn.received_date || `${todayStr} 10:00`,
+      uploaded_invoice_url: grn.uploaded_invoice_url || '',
+      uploaded_invoice_path: (grn as any).uploaded_invoice_path || '',
+      uploaded_invoice_name: (grn as any).uploaded_invoice_name || '',
+      uploaded_challan_url: grn.uploaded_challan_url || '',
+      uploaded_challan_path: (grn as any).uploaded_challan_path || '',
+      uploaded_challan_name: (grn as any).uploaded_challan_name || '',
+      qc_no: (grn as any).qc_no || (isNew ? `QC-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}` : 'QC-2026-0881'),
+      gr_no: grn.grn_number || '(Auto Generated on Save)',
+      grn_date: grn.received_date || todayStr,
       project_name: grn.project_name && grn.project_name !== '—' ? grn.project_name : '',
-      company_name: 'Pramukh Group Infrastructure Ltd.',
+      company_name: (grn as any).company_name || 'Pramukh Group Infrastructure Ltd.',
       supplier_name: grn.vendor_name && grn.vendor_name !== '—' ? grn.vendor_name : '',
-      phone_no: '',
-      mobile_no: '',
+      phone_no: (grn as any).phone_no || '',
+      mobile_no: (grn as any).mobile_no || '',
       godown_name: grn.godown_name && grn.godown_name !== '—' ? grn.godown_name : 'Main Site Store',
-      dealer_name: '',
+      dealer_name: (grn as any).dealer_name || '',
       challan_no: grn.challan_no && grn.challan_no !== '—' ? grn.challan_no : '',
-      transporter_name: '',
-      vehicle_measure_required: false,
+      transporter_name: (grn as any).transporter_name || '',
+      vehicle_measure_required: Boolean((grn as any).vehicle_measure_required),
       vehicle_no: grn.vehicle_no && grn.vehicle_no !== '—' ? grn.vehicle_no : '',
-      length_in_inches: 0.0,
-      breadth_in_inches: 0.0,
-      height_in_inches: 0.0,
-      volume_in_brass: 0.0,
-      weight_required: false,
-      name_of_weight: 'Bridge Scale 1',
-      in_wt1: 0.0,
-      out_wt1: 0.0,
-      net_weight1: 0.0,
-      name_of_weight2: '',
-      in_wt2: 0.0,
-      out_wt2: 0.0,
-      net_weight2: 0.0,
-      avg_weight: 0.0,
-      grn_weight: 0.0,
-      weight_difference: 0.0,
-      allow_wt_difference: 0.05,
-      net_wt_difference: 0.0,
+      length_in_inches: Number((grn as any).length_in_inches || 0.0),
+      breadth_in_inches: Number((grn as any).breadth_in_inches || 0.0),
+      height_in_inches: Number((grn as any).height_in_inches || 0.0),
+      volume_in_brass: Number((grn as any).volume_in_brass || 0.0),
+      weight_required: Boolean((grn as any).weight_required),
+      name_of_weight: (grn as any).name_of_weight || 'Bridge Scale 1',
+      in_wt1: Number(grn.in_weight || 0.0),
+      out_wt1: Number(grn.out_weight || 0.0),
+      net_weight1: Number(grn.net_weight || 0.0),
+      name_of_weight2: (grn as any).name_of_weight2 || '',
+      in_wt2: Number((grn as any).in_wt2 || 0.0),
+      out_wt2: Number((grn as any).out_wt2 || 0.0),
+      net_weight2: Number((grn as any).net_weight2 || 0.0),
+      avg_weight: Number((grn as any).avg_weight || 0.0),
+      grn_weight: Number((grn as any).grn_weight || 0.0),
+      weight_difference: Number((grn as any).weight_difference || 0.0),
+      allow_wt_difference: Number((grn as any).allow_wt_difference || 0.05),
+      net_wt_difference: Number((grn as any).net_wt_difference || 0.0),
       po_exist: !!(grn.po_number && grn.po_number !== '—' && grn.po_number !== ''),
       from_pos: grn.po_number && grn.po_number !== '—' ? grn.po_number : 'Not Exist',
 
@@ -289,6 +304,7 @@ export function GrnForm({
             item_description: l.item_description || 'Received Goods',
             item_code: l.item_code || `ITM-00${idx + 1}`,
             item_brand: l.item_brand || '',
+            item_specification: l.item_specification || '',
             location: l.location || grn.godown_name || 'Main Site Store',
             unit: l.unit || 'NOS',
             purchase_category: l.purchase_category || 'Direct Material',
@@ -315,6 +331,7 @@ export function GrnForm({
             item_description: 'Received Goods',
             item_code: 'ITM-001',
             item_brand: '',
+            item_specification: '',
             location: 'Main Site Store',
             unit: 'NOS',
             purchase_category: 'Direct Construction Material',
@@ -333,21 +350,37 @@ export function GrnForm({
         ];
       })(),
 
-      extra_items: [],
-      total_extra_items_received: 0,
-      remarks: isNew ? '' : 'Goods inspected and verified at site store gate.',
-      account_posting_material_amount: isNew ? 0 : 45000,
-      asset_amount: 0.0,
-      asset_item: '',
+      extra_items: (grn as any).extra_items || [],
+      total_extra_items_received: Number((grn as any).total_extra_items_received || 0),
+      remarks: grn.remarks || '',
+      account_posting_material_amount: Number((grn as any).account_posting_amount || 0),
+      asset_amount: Number((grn as any).asset_amount || 0.0),
+      asset_item: (grn as any).asset_item || '',
 
-      po_remarks_list: [],
+      po_remarks_list: (grn as any).po_remarks_list || [],
 
-      pb_lines_created: isNew ? 0 : 1,
-      unlocked_fy: 2026,
+      pb_lines_created: Number((grn as any).pb_lines_created || 0),
+      unlocked_fy: Number((grn as any).unlocked_fy || 2026),
       status: isNew ? 'Draft' : normalizeGrnFormStatus((grn as any).quantity_verification || (grn as any).raw_status || grn?.status),
-      assigned_approval_role: '',
+      assigned_approval_role: (grn as any).assigned_approval_role || '',
     };
   });
+
+  const [localInvoiceUrl, setLocalInvoiceUrl] = useState<string>('');
+
+  useEffect(() => {
+    if (!invoiceFile) {
+      setLocalInvoiceUrl('');
+      return;
+    }
+    const url = URL.createObjectURL(invoiceFile);
+    setLocalInvoiceUrl(url);
+    return () => {
+      URL.revokeObjectURL(url);
+    };
+  }, [invoiceFile]);
+
+  const effectiveInvoiceUrl = form.uploaded_invoice_url || localInvoiceUrl;
 
   // Supabase fetched Project Sites
   const [projectOptions, setProjectOptions] = useState<ProcurementProjectOption[]>([]);
@@ -368,10 +401,14 @@ export function GrnForm({
   const [poOptions, setPoOptions] = useState<{
     id: string;
     po_number: string;
+    project_id?: string;
     project_name?: string;
+    vendor_id?: string;
     vendor_name?: string;
+    supplier_name?: string;
     company_name?: string;
     godown_name?: string;
+    dealer_name?: string;
     material_details?: string;
     vendor_details?: {
       gst_number?: string;
@@ -380,6 +417,7 @@ export function GrnForm({
       email?: string;
       address?: string;
       contact_person?: string;
+      dealer_name?: string;
     };
   }[]>([]);
 
@@ -391,8 +429,10 @@ export function GrnForm({
 
     const supplierFilter = form?.supplier_name?.trim() ? form.supplier_name.trim() : undefined;
 
-    fetchPurchaseOrderOptions(selectedProj?.id, supplierFilter).then((list) => {
-      if (active) {
+    setPoOptionsError(null);
+    fetchPurchaseOrderOptions(selectedProj?.id, supplierFilter)
+      .then((list) => {
+        if (!active) return;
         setPoOptions(list);
 
         // Clear invalid primary PO reference if not present in new filtered PO list
@@ -402,8 +442,13 @@ export function GrnForm({
             setForm((prev) => ({ ...prev, from_pos: '' }));
           }
         }
-      }
-    });
+      })
+      .catch((err) => {
+        // Without this the list stayed empty and looked like "no approved POs".
+        if (!active) return;
+        setPoOptions([]);
+        setPoOptionsError(err instanceof Error ? err.message : 'Unable to load purchase orders.');
+      });
 
     return () => {
       active = false;
@@ -429,117 +474,122 @@ export function GrnForm({
   useEffect(() => {
     if (form.from_pos && form.from_pos !== 'Not Exist') {
       setNewPoRemark((prev) => ({ ...prev, po_no: prev.po_no || form.from_pos }));
+
+      if (poOptions.length > 0) {
+        const poObj = poOptions.find((p) => p.po_number === form.from_pos);
+        if (poObj) {
+          const matchedVendor = vendorOptions.find(
+            (v) => (v.display_name || v.legal_name) === (poObj.vendor_name || poObj.supplier_name) || v.id === poObj.vendor_id
+          );
+          const phone = poObj.vendor_details?.phone || matchedVendor?.phone || '';
+          const dealer = poObj.dealer_name || poObj.vendor_details?.contact_person || (matchedVendor as any)?.contact_person || '';
+
+          setForm((prev) => ({
+            ...prev,
+            project_name: prev.project_name || poObj.project_name || '',
+            supplier_name: prev.supplier_name || poObj.vendor_name || matchedVendor?.display_name || '',
+            company_name: prev.company_name || poObj.company_name || 'Pramukh Group Infrastructure Ltd.',
+            godown_name: prev.godown_name || poObj.godown_name || 'Main Site Store',
+            phone_no: prev.phone_no || phone,
+            mobile_no: prev.mobile_no || phone,
+            dealer_name: prev.dealer_name || dealer,
+            qc_no: prev.qc_no || `QC-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`,
+            gr_no: prev.gr_no || '(Auto Generated on Save)',
+            grn_date: prev.grn_date || todayStr,
+          }));
+        }
+      }
     }
-  }, [form.from_pos]);
+  }, [form.from_pos, poOptions, vendorOptions, todayStr]);
+
+  const [uploadingChallan, setUploadingChallan] = useState(false);
+  /** Upload failure, shown rather than logged. */
+  const [documentError, setDocumentError] = useState<string | null>(null);
 
   /**
-   * Reads the uploaded invoice with the deterministic OCR pipeline and merges the
-   * result into the form.
+   * Both document slots are plain uploads.
    *
-   * Only fields the invoice actually supplied are written, so anything the user
-   * has already typed is preserved. Quantities owned by the purchase order
-   * (approved, balance, current stock) are never touched, and the status is left
-   * at Pending QC — an OCR read must not approve a receipt.
+   * OCR is deliberately disconnected: nothing here reads the file, extracts
+   * fields, or writes anything into the form. The document is stored and
+   * referenced, and every GRN field stays whatever the user typed. This removes
+   * the class of defect where a misread invoice quietly rewrote quantities or
+   * a vendor name that had already been entered correctly.
+   *
+   * PDF only, for both slots. A photograph of a challan cannot be relied on as
+   * the archival copy of a financial document, and accepting images invited
+   * exactly that.
    */
-  const [uploadingChallan, setUploadingChallan] = useState(false);
+  const PDF_ONLY_MESSAGE = 'Only PDF files can be attached here. Convert the document to PDF first.';
+
+  function rejectNonPdf(file: File): boolean {
+    const isPdf =
+      file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
+    if (!isPdf) {
+      setDocumentError(`"${file.name}" is not a PDF. ${PDF_ONLY_MESSAGE}`);
+      return true;
+    }
+    if (file.size === 0) {
+      setDocumentError(`"${file.name}" is empty.`);
+      return true;
+    }
+    if (file.size > 25 * 1024 * 1024) {
+      setDocumentError(
+        `"${file.name}" is ${(file.size / 1024 / 1024).toFixed(1)} MB — the limit is 25 MB.`,
+      );
+      return true;
+    }
+    return false;
+  }
 
   const handleChallanFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = ''; // allow re-picking the same file
     if (!file) return;
+    setDocumentError(null);
+    if (rejectNonPdf(file)) return;
+
     setUploadingChallan(true);
     try {
       const res = await uploadChallanInvoiceDocument(file, 'grn-challan');
-      if (res.data) {
-        const docData = res.data;
-        setForm((prev) => ({
-          ...prev,
-          uploaded_challan_url: docData.publicUrl,
-          uploaded_challan_path: docData.storagePath,
-          uploaded_challan_name: file.name,
-        }));
+      // The previous version console.warn'd this and left the UI reporting
+      // nothing, so a failed upload was indistinguishable from a successful one.
+      if (res.error || !res.data) {
+        throw res.error ?? new Error('The delivery challan could not be stored.');
       }
-    } catch (err) {
-      console.warn('Challan upload failed:', err);
+      setForm((prev) => ({
+        ...prev,
+        uploaded_challan_url: res.data!.signedUrl || res.data!.publicUrl,
+        uploaded_challan_path: res.data!.storagePath,
+        uploaded_challan_name: file.name,
+      }));
+    } catch (err: any) {
+      setDocumentError(`Delivery challan upload failed: ${err?.message || 'unknown error'}`);
     } finally {
       setUploadingChallan(false);
     }
   };
 
-  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  /**
+   * Supplier invoice: attach only. The file is uploaded on save (see
+   * handleSubmit) so a GRN that is abandoned leaves no orphaned object.
+   */
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     if (!file) return;
+    setDocumentError(null);
+    if (rejectNonPdf(file)) return;
 
     setInvoiceFile(file);
     setIsInvoiceDirty(true);
     setForm((prev) => ({ ...prev, uploaded_invoice_name: file.name }));
-
-    setExtracting(true);
-    setExtractError(null);
-    setExtraction(null);
-    setExtractDiagnostics(null);
-    try {
-      const res = await extractInvoiceForGrn(file);
-      if (res.error || !res.data) {
-        setExtractError(res.error?.message || 'Could not read this invoice.');
-        setExtractDiagnostics((res.diagnostics as PageDiagnosticSummary[] | undefined) ?? null);
-        return;
-      }
-      setExtractDiagnostics((res.data.diagnostics as PageDiagnosticSummary[] | undefined) ?? null);
-      const { grnPatch, invoice, processingMs, invoiceCount } = res.data;
-
-      // Warn early if this invoice has already been booked.
-      const dup = await findDuplicateInvoice({
-        irn: grnPatch.invoiceRecord.irn,
-        vendorGstin: grnPatch.invoiceRecord.vendor_gstin,
-        invoiceNumber: grnPatch.invoiceRecord.invoice_number,
-        fileHash: res.data.fileHash,
-      });
-      const duplicateOf = dup.data ?? null;
-
-      setForm((prev) => {
-        const next = { ...prev } as unknown as Record<string, unknown>;
-        // Header: only overwrite what the invoice supplied, so anything the user
-        // has already typed survives.
-        for (const [key, value] of Object.entries(grnPatch.header)) {
-          if (value === null || value === undefined || value === '') continue;
-          next[key] = value;
-        }
-        const merged = next as unknown as FullGrnFormState;
-        // Replace the line table only when the invoice yielded items.
-        if (grnPatch.purchaseEntries.length) {
-          merged.purchase_entries = grnPatch.purchaseEntries as unknown as GrnPurchaseEntry[];
-        }
-        merged.uploaded_invoice_name = file.name;
-        return merged;
-      });
-
-      setExtraction({
-        confidence: grnPatch.confidence,
-        reviewFields: grnPatch.reviewFields,
-        invoiceNumber: grnPatch.invoiceRecord.invoice_number,
-        invoiceDate: grnPatch.invoiceRecord.invoice_date,
-        grandTotal: grnPatch.invoiceRecord.grand_total,
-        vendorName: grnPatch.invoiceRecord.vendor_name,
-        itemCount: grnPatch.purchaseEntries.length,
-        processingMs,
-        invoiceCount,
-        record: grnPatch.invoiceRecord,
-        warnings: (invoice?.validation?.warnings ?? []) as ExtractionNotice[],
-        duplicateOf,
-      });
-    } catch (err: any) {
-      setExtractError(err?.message || 'Invoice extraction failed.');
-    } finally {
-      setExtracting(false);
-    }
   };
 
   // Remove attached document
   const handleRemoveDocument = () => {
     setInvoiceFile(null);
     setIsInvoiceDirty(true);
-    setExtraction(null);
-    setExtractError(null);
+    setDocumentError(null);
     setForm((prev) => ({
       ...prev,
       uploaded_invoice_name: '',
@@ -601,6 +651,7 @@ export function GrnForm({
           item_description: 'New Material Item',
           item_code: `ITM-00${prev.purchase_entries.length + 1}`,
           item_brand: 'Standard',
+          item_specification: '',
           location: prev.godown_name || 'Main Site Store',
           unit: 'NOS',
           purchase_category: 'Direct Construction Material',
@@ -671,37 +722,22 @@ export function GrnForm({
     let updatedInvoiceUrl = form.uploaded_invoice_url || '';
     let updatedInvoicePath = form.uploaded_invoice_path || '';
 
-    // Upload Invoice if dirty and new file attached
+    // Upload the invoice on save, so an abandoned form leaves no orphaned object.
+    // No extraction is persisted: nothing reads the document.
     if (isInvoiceDirty && invoiceFile) {
       setUploadingInvoice(true);
+      setDocumentError(null);
       try {
         const uploadRes = await uploadChallanInvoiceDocument(invoiceFile, 'grn-invoice');
-        if (uploadRes.error) throw uploadRes.error;
-        if (uploadRes.data) {
-          updatedInvoiceUrl = uploadRes.data.signedUrl || uploadRes.data.publicUrl;
-          updatedInvoicePath = uploadRes.data.storagePath;
+        if (uploadRes.error || !uploadRes.data) {
+          throw uploadRes.error ?? new Error('The invoice could not be stored.');
         }
-
-        /**
-         * Persist the OCR extraction alongside the document. This is what makes
-         * the invoice's own facts (IRN, invoice number and date, tax breakup,
-         * bank details) available for the three-way match and duplicate checks —
-         * none of them fit in the GRN row itself.
-         */
-        if (extraction?.record) {
-          const saved = await saveGrnInvoiceExtraction(extraction.record, {
-            grnId: grn.id || null,
-            storagePath: updatedInvoicePath || null,
-          });
-          if (saved.error) {
-            // A duplicate invoice must stop the save, not be swallowed.
-            alert(saved.error.message);
-            setUploadingInvoice(false);
-            return;
-          }
-        }
+        updatedInvoiceUrl = uploadRes.data.signedUrl || uploadRes.data.publicUrl;
+        updatedInvoicePath = uploadRes.data.storagePath;
       } catch (err: any) {
-        alert(`Invoice upload failed: ${err?.message || 'Error'}`);
+        // Stop the save. Recording a GRN whose invoice reference points at
+        // nothing is worse than making the user retry the upload.
+        setDocumentError(`Invoice upload failed: ${err?.message || 'unknown error'}`);
         setUploadingInvoice(false);
         return;
       } finally {
@@ -767,21 +803,32 @@ export function GrnForm({
                       <span className="rounded-full bg-emerald-500/20 px-1.5 py-0.5 text-[9px] text-emerald-600 dark:text-emerald-400 font-mono uppercase">grn-invoice</span>
                     </h3>
                     <p className="text-[11px] text-muted-foreground">
-                      Upload invoice PDF or image to extract fields, auto-populate details, and save to Supabase storage.
+                      Attach the supplier invoice as a PDF. Stored against this GRN — no fields are
+                      read from it.
                     </p>
                   </div>
                 </div>
 
-                <div className="flex items-center gap-1.5">
-                  {form.uploaded_invoice_url && (
-                    <a
-                      href={form.uploaded_invoice_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 rounded-md border border-emerald-500/50 bg-emerald-500/10 px-2.5 py-1.5 text-[11px] font-bold text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/20 transition-all cursor-pointer shrink-0"
-                    >
-                      <FileCheck className="h-3.5 w-3.5" /> View Invoice
-                    </a>
+                 <div className="flex items-center gap-1.5">
+                  {effectiveInvoiceUrl && (
+                    <>
+                      <a
+                        href={effectiveInvoiceUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 rounded-md border border-emerald-500/50 bg-emerald-500/10 px-2.5 py-1.5 text-[11px] font-bold text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/20 transition-all cursor-pointer shrink-0"
+                      >
+                        <FileCheck className="h-3.5 w-3.5" /> View
+                      </a>
+                      <a
+                        href={effectiveInvoiceUrl}
+                        download={form.uploaded_invoice_name || 'supplier-invoice.pdf'}
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 rounded-md border border-emerald-500/50 bg-emerald-500/10 px-2.5 py-1.5 text-[11px] font-bold text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/20 transition-all cursor-pointer shrink-0"
+                      >
+                        <Download className="h-3.5 w-3.5" /> Download
+                      </a>
+                    </>
                   )}
                   {form.uploaded_invoice_name && (
                     <button
@@ -799,7 +846,7 @@ export function GrnForm({
               <label className="relative flex items-center justify-center gap-2 rounded-lg border border-emerald-500/30 bg-background px-3 py-2.5 text-xs font-bold text-foreground hover:bg-muted/50 cursor-pointer transition-all shadow-xs">
                 <input
                   type="file"
-                  accept=".pdf,image/*"
+                  accept="application/pdf,.pdf"
                   onChange={(e) => handleFileSelect(e)}
                   className="absolute inset-0 opacity-0 cursor-pointer"
                   disabled={uploadingInvoice}
@@ -814,16 +861,15 @@ export function GrnForm({
                   </span>
                 ) : (
                   <span className="flex items-center gap-1.5 text-muted-foreground text-xs">
-                    <Upload className="h-3.5 w-3.5 text-emerald-600 shrink-0" /> Click to Upload Supplier Invoice
+                    <Upload className="h-3.5 w-3.5 text-emerald-600 shrink-0" /> Click to attach Supplier Invoice (PDF)
                   </span>
                 )}
               </label>
 
-              {extracting && (
-                <div className="flex items-center gap-2 rounded-lg border border-blue-500/40 bg-blue-500/10 px-3 py-2 text-[11px] font-semibold text-blue-700 dark:text-blue-300">
-                  <Upload className="h-3.5 w-3.5 animate-spin shrink-0" />
-                  <span>Reading the invoice&hellip;</span>
-                </div>
+              {invoiceFile && !form.uploaded_invoice_url && (
+                <p className="text-[10px] font-semibold text-muted-foreground">
+                  Attached. It is stored when you save the GRN.
+                </p>
               )}
             </div>
           </div>
@@ -842,21 +888,32 @@ export function GrnForm({
                       <span className="rounded-full bg-blue-500/20 px-1.5 py-0.5 text-[9px] text-blue-600 dark:text-blue-400 font-mono uppercase">grn-challan</span>
                     </h3>
                     <p className="text-[11px] text-muted-foreground">
-                      Upload physical delivery receipt / gate pass document signed by site engineer to Supabase storage.
+                      Attach the signed delivery receipt / gate pass as a PDF. Stored against this
+                      GRN — no fields are read from it.
                     </p>
                   </div>
                 </div>
 
                 <div className="flex items-center gap-1.5">
                   {form.uploaded_challan_url && (
-                    <a
-                      href={form.uploaded_challan_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 rounded-md border border-blue-500/50 bg-blue-500/10 px-2.5 py-1.5 text-[11px] font-bold text-blue-700 dark:text-blue-300 hover:bg-blue-500/20 transition-all cursor-pointer shrink-0"
-                    >
-                      <FileCheck className="h-3.5 w-3.5" /> View Challan
-                    </a>
+                    <>
+                      <a
+                        href={form.uploaded_challan_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 rounded-md border border-blue-500/50 bg-blue-500/10 px-2.5 py-1.5 text-[11px] font-bold text-blue-700 dark:text-blue-300 hover:bg-blue-500/20 transition-all cursor-pointer shrink-0"
+                      >
+                        <FileCheck className="h-3.5 w-3.5" /> View
+                      </a>
+                      <a
+                        href={form.uploaded_challan_url}
+                        download={form.uploaded_challan_name || 'delivery-challan.pdf'}
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 rounded-md border border-blue-500/50 bg-blue-500/10 px-2.5 py-1.5 text-[11px] font-bold text-blue-700 dark:text-blue-300 hover:bg-blue-500/20 transition-all cursor-pointer shrink-0"
+                      >
+                        <Download className="h-3.5 w-3.5" /> Download
+                      </a>
+                    </>
                   )}
                   {form.uploaded_challan_name && (
                     <button
@@ -874,7 +931,7 @@ export function GrnForm({
               <label className="relative flex items-center justify-center gap-2 rounded-lg border border-blue-500/30 bg-background px-3 py-2.5 text-xs font-bold text-foreground hover:bg-muted/50 cursor-pointer transition-all shadow-xs">
                 <input
                   type="file"
-                  accept=".pdf,image/*"
+                  accept="application/pdf,.pdf"
                   onChange={(e) => handleChallanFileSelect(e)}
                   className="absolute inset-0 opacity-0 cursor-pointer"
                   disabled={uploadingChallan}
@@ -889,7 +946,7 @@ export function GrnForm({
                   </span>
                 ) : (
                   <span className="flex items-center gap-1.5 text-muted-foreground text-xs">
-                    <Truck className="h-3.5 w-3.5 text-blue-600 shrink-0" /> Click to Upload Delivery Challan
+                    <Truck className="h-3.5 w-3.5 text-blue-600 shrink-0" /> Click to attach Delivery Challan (PDF)
                   </span>
                 )}
               </label>
@@ -897,119 +954,15 @@ export function GrnForm({
           </div>
         </div>
 
-              {extractError && (
-                <div className="space-y-1.5 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-[11px] font-medium text-red-700 dark:text-red-300">
-                  <div className="flex items-start gap-2">
-                    <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
-                    <span>
-                      <strong>Could not read this invoice.</strong> {extractError} You can still fill the GRN in
-                      manually.
-                    </span>
-                  </div>
-                  {/* Word counts make an empty result diagnosable instead of mysterious. */}
-                  {extractDiagnostics && extractDiagnostics.length > 0 && (
-                    <div className="rounded border border-red-500/30 bg-background/50 px-2 py-1 font-mono text-[10px] text-muted-foreground">
-                      {extractDiagnostics.map((d) => (
-                        <div key={d.pageNumber}>
-                          page {d.pageNumber}: {d.width}×{d.height} rot={d.rotation} words={d.wordCount} usable=
-                          {d.usableWordCount} conf={d.meanConfidence}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
+        {/* One error surface for both slots. Previously a challan failure was
+            console.warn'd and the UI said nothing at all. */}
+        {documentError && (
+          <div className="flex items-start gap-2 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-[11px] font-semibold text-red-700 dark:text-red-300">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>{documentError}</span>
+          </div>
+        )}
 
-              {/* --- OCR result summary ------------------------------------- */}
-              {extraction && !extracting && (
-                <div className="space-y-2 rounded-lg border border-border bg-background/70 p-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex items-center gap-2">
-                      <ShieldCheck
-                        className={`h-4 w-4 shrink-0 ${
-                          extraction.confidence >= 0.9
-                            ? 'text-emerald-500'
-                            : extraction.confidence >= 0.6
-                            ? 'text-amber-500'
-                            : 'text-red-500'
-                        }`}
-                      />
-                      <span className="text-[11px] font-bold text-foreground">
-                        Invoice read without AI &mdash; {Math.round(extraction.confidence * 100)}% confidence
-                      </span>
-                      <span className="font-mono text-[10px] text-muted-foreground">
-                        {(extraction.processingMs / 1000).toFixed(1)}s
-                      </span>
-                    </div>
-                    {extraction.invoiceCount > 1 && (
-                      <span className="rounded-full bg-blue-500/15 px-2 py-0.5 text-[10px] font-bold text-blue-600 dark:text-blue-400">
-                        {extraction.invoiceCount} invoices in this file &mdash; first one applied
-                      </span>
-                    )}
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2 text-[11px] sm:grid-cols-4">
-                    {[
-                      ['Vendor', extraction.vendorName],
-                      ['Invoice No.', extraction.invoiceNumber],
-                      ['Invoice Date', extraction.invoiceDate],
-                      [
-                        'Invoice Value',
-                        extraction.grandTotal === null
-                          ? null
-                          : `₹${extraction.grandTotal.toLocaleString('en-IN')}`,
-                      ],
-                    ].map(([label, value]) => (
-                      <div key={label as string} className="rounded-md border border-border/60 bg-muted/40 px-2 py-1">
-                        <div className="text-[9px] font-bold uppercase tracking-wide text-muted-foreground">{label}</div>
-                        <div className="truncate font-semibold text-foreground">{(value as string) || '—'}</div>
-                      </div>
-                    ))}
-                  </div>
-
-                  <p className="text-[11px] text-muted-foreground">
-                    {extraction.itemCount} line item(s) filled in. Approved and balance quantities come from the
-                    purchase order and were deliberately left blank.
-                  </p>
-
-                  {/* A duplicate is the single most important thing to surface. */}
-                  {extraction.duplicateOf && (
-                    <div className="flex items-start gap-2 rounded-md border border-red-500/50 bg-red-500/10 px-2.5 py-2 text-[11px] font-semibold text-red-700 dark:text-red-300">
-                      <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
-                      <span>
-                        Invoice {extraction.duplicateOf.invoice_number ?? ''} has already been recorded against
-                        {extraction.duplicateOf.grn_id ? ' another GRN' : ' an earlier extraction'}. Verify before
-                        saving &mdash; saving will be blocked if it is a true duplicate.
-                      </span>
-                    </div>
-                  )}
-
-                  {extraction.reviewFields.length > 0 && (
-                    <div className="space-y-1">
-                      <div className="text-[10px] font-bold uppercase tracking-wide text-amber-600 dark:text-amber-400">
-                        Please check {extraction.reviewFields.length} item(s) before saving
-                      </div>
-                      <ul className="space-y-1">
-                        {extraction.reviewFields.slice(0, 6).map((r, i) => (
-                          <li
-                            key={`${r.field}-${i}`}
-                            className={`flex items-start gap-1.5 rounded-md border px-2 py-1 text-[11px] ${
-                              r.severity === 'error'
-                                ? 'border-red-500/40 bg-red-500/5 text-red-700 dark:text-red-300'
-                                : 'border-amber-500/40 bg-amber-500/5 text-amber-700 dark:text-amber-300'
-                            }`}
-                          >
-                            <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />
-                            <span>
-                              <span className="font-mono font-bold">{r.field}</span> &mdash; {r.reason}
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                </div>
-              )}
 
         {/* ========================================================================= */}
         {/* SECTION 1: HEADER FIELDS (Exact Field Order as Specified)                 */}
@@ -1032,30 +985,45 @@ export function GrnForm({
                   const poObj = poOptions.find((p) => p.po_number === selectedPoNumber);
                   updateHeader('from_pos', selectedPoNumber);
 
+                  const matchedVendor = vendorOptions.find(
+                    (v) => (v.display_name || v.legal_name) === (poObj?.vendor_name || poObj?.supplier_name) || v.id === poObj?.vendor_id
+                  );
+
+                  const phone = poObj?.vendor_details?.phone || matchedVendor?.phone || '';
+                  const dealer = poObj?.dealer_name || poObj?.vendor_details?.contact_person || (matchedVendor as any)?.contact_person || '';
+                  const company = poObj?.company_name || 'Pramukh Group Infrastructure Ltd.';
+                  const project = poObj?.project_name || '';
+                  const godown = poObj?.godown_name || 'Main Site Store';
+                  const supplier = poObj?.vendor_name || matchedVendor?.display_name || matchedVendor?.legal_name || '';
+                  const currentYear = new Date().getFullYear();
+
                   setForm((prev) => ({
                     ...prev,
                     from_pos: selectedPoNumber,
-                    project_name: poObj?.project_name || prev.project_name,
-                    supplier_name: poObj?.vendor_name || prev.supplier_name,
-                    company_name: poObj?.company_name || prev.company_name,
-                    godown_name: poObj?.godown_name || prev.godown_name,
-                    phone_no: poObj?.vendor_details?.phone || prev.phone_no,
-                    mobile_no: poObj?.vendor_details?.phone || prev.mobile_no,
+                    project_name: project || prev.project_name,
+                    supplier_name: supplier || prev.supplier_name,
+                    company_name: company || prev.company_name,
+                    godown_name: godown || prev.godown_name,
+                    phone_no: phone || prev.phone_no,
+                    mobile_no: phone || prev.mobile_no,
+                    dealer_name: dealer || prev.dealer_name,
+                    qc_no: prev.qc_no || `QC-${currentYear}-${Math.floor(1000 + Math.random() * 9000)}`,
+                    gr_no: prev.gr_no || '(Auto Generated on Save)',
+                    grn_date: prev.grn_date || todayStr,
                   }));
 
-                  if (poObj?.id) {
-                    const fetchedLines = await fetchPoLinesWithBalances(poObj.id);
-                    if (fetchedLines && fetchedLines.length > 0) {
-                      setCurrentPoLinesWithBalance(fetchedLines);
-                      setShowPoItemPicker(true);
-                    }
+                  // Clearing the reference must clear the lines with it,
+                  // otherwise the picker keeps offering the old order's items.
+                  const fetchedLines = await loadPoLines(poObj?.id);
+                  if (fetchedLines.length > 0) {
+                    setShowPoItemPicker(true);
                   }
                 }}
                 className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono font-bold text-foreground text-xs cursor-pointer focus:ring-2 focus:ring-primary shadow-2xs"
               >
                 <option value="">-- None / Multi-PO Consolidated Entry --</option>
                 {poOptions.map((po) => {
-                  const desc = [po.material_details].filter(Boolean).join(' - ');
+                  const desc = [po.vendor_name, po.material_details].filter(Boolean).join(' - ');
                   return (
                     <option key={po.id || po.po_number} value={po.po_number}>
                       {po.po_number} {desc ? `(${desc})` : ''}
@@ -1069,6 +1037,31 @@ export function GrnForm({
               <p className="text-[10px] text-muted-foreground mt-1 font-medium">
                 Optional single PO reference. Leave blank to pick items from multiple Approved POs below.
               </p>
+              {/* An empty dropdown had two very different causes — the query
+                  failed, or no PO is receivable — and looked identical. */}
+              {poOptionsError && (
+                <p className="mt-1 rounded border border-red-500/40 bg-red-500/10 px-2 py-1 text-[10px] font-semibold text-red-700 dark:text-red-300">
+                  Purchase orders could not be loaded: {poOptionsError}
+                </p>
+              )}
+              {!poOptionsError && poOptions.length === 0 && (
+                <p className="mt-1 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] font-semibold text-amber-800 dark:text-amber-300">
+                  No receivable purchase orders for this project and supplier. Only POs that are
+                  approved, sent to vendor, acknowledged or partially delivered appear here.
+                </p>
+              )}
+              {/* Selecting a Purchase Order used to fail silently: the read
+                  throws, the handler had no catch, and nothing appeared. */}
+              {poLinesLoading && (
+                <p className="mt-1 text-[10px] font-semibold text-muted-foreground">
+                  Loading purchase order lines…
+                </p>
+              )}
+              {poLinesError && !poLinesLoading && (
+                <p className="mt-1 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] font-semibold text-amber-800 dark:text-amber-300">
+                  {poLinesError}
+                </p>
+              )}
             </div>
 
             {/* 2. Select Items From PO* */}
@@ -1078,13 +1071,16 @@ export function GrnForm({
               </label>
               <button
                 type="button"
+                disabled={poLinesLoading}
                 onClick={async () => {
                   if (form.from_pos && form.from_pos !== 'Not Exist') {
                     const poObj = poOptions.find((p) => p.po_number === form.from_pos);
-                    if (poObj?.id) {
-                      const lines = await fetchPoLinesWithBalances(poObj.id);
-                      setCurrentPoLinesWithBalance(lines);
-                    }
+                    await loadPoLines(poObj?.id);
+                  } else {
+                    // Multi-PO mode: the picker sources its own list, so any
+                    // single-PO lines left in state would be stale here.
+                    setCurrentPoLinesWithBalance([]);
+                    setPoLinesError(null);
                   }
                   setShowPoItemPicker(true);
                 }}
@@ -1552,13 +1548,16 @@ export function GrnForm({
             <div className="flex items-center gap-2">
               <button
                 type="button"
+                disabled={poLinesLoading}
                 onClick={async () => {
                   if (form.from_pos && form.from_pos !== 'Not Exist') {
                     const poObj = poOptions.find((p) => p.po_number === form.from_pos);
-                    if (poObj?.id) {
-                      const lines = await fetchPoLinesWithBalances(poObj.id);
-                      setCurrentPoLinesWithBalance(lines);
-                    }
+                    await loadPoLines(poObj?.id);
+                  } else {
+                    // Multi-PO mode: the picker sources its own list, so any
+                    // single-PO lines left in state would be stale here.
+                    setCurrentPoLinesWithBalance([]);
+                    setPoLinesError(null);
                   }
                   setShowPoItemPicker(true);
                 }}
@@ -1603,7 +1602,7 @@ export function GrnForm({
                 <tr className="text-[10px] font-bold tracking-wider">
                   {/* Group 1 */}
                   <th className="px-3 py-2.5 min-w-[200px]">Item Description</th>
-                  <th className="px-3 py-2.5 min-w-[110px]">Brand / Make</th>
+                  <th className="px-3 py-2.5 min-w-[150px]">Item Specifications</th>
                   <th className="px-3 py-2.5 text-center border-r border-border/60 min-w-[70px]">Unit</th>
 
                   {/* Group 2 */}
@@ -1664,9 +1663,9 @@ export function GrnForm({
                         <td className="px-3 py-2.5 font-sans">
                           <input
                             type="text"
-                            value={item.item_brand}
-                            onChange={(e) => handlePurchaseEntryChange(idx, 'item_brand', e.target.value)}
-                            className="w-24 rounded border border-border bg-background px-2 py-1 text-xs font-semibold text-foreground"
+                            value={item.item_specification || ''}
+                            onChange={(e) => handlePurchaseEntryChange(idx, 'item_specification', e.target.value)}
+                            className="w-36 rounded border border-border bg-background px-2 py-1 text-xs font-semibold text-foreground"
                           />
                         </td>
                         <td className="px-3 py-2.5 text-center border-r border-border/60">
@@ -1766,14 +1765,13 @@ export function GrnForm({
                         <td className="px-3 py-2.5 text-center">
                           <button
                             type="button"
-                            onClick={() => {
+                            onClick={async () => {
+                              // Was a floating .then() with no .catch(): a failed
+                              // read rejected silently and the picker opened on
+                              // whatever lines happened to be in state.
                               if (form.from_pos && form.from_pos !== 'Not Exist') {
                                 const poObj = poOptions.find((p) => p.po_number === form.from_pos);
-                                if (poObj?.id) {
-                                  fetchPoLinesWithBalances(poObj.id).then((lines) => {
-                                    setCurrentPoLinesWithBalance(lines);
-                                  });
-                                }
+                                await loadPoLines(poObj?.id);
                               }
                               setShowPoItemPicker(true);
                             }}
@@ -1959,55 +1957,7 @@ export function GrnForm({
             4. Post-Receipt Accounting &amp; PO Remarks Summary (Total {form.po_remarks_list.length})
           </h3>
 
-          {/* Production-Grade Receipt Summary Card */}
-          {(() => {
-            const totalItems = form.purchase_entries.length;
-            const totalReceived = form.purchase_entries.reduce((sum, item) => sum + (item.received_qty || 0), 0);
-            const totalBalance = form.purchase_entries.reduce((sum, item) => sum + (item.as_on_date_po_balance_qty || 0), 0);
-            const toleranceExceedCount = form.purchase_entries.filter((item) => (item.received_qty || 0) > (item.as_on_date_po_balance_qty || 0) * 1.05 + 0.01).length;
-            const toleranceWithinCount = form.purchase_entries.filter((item) => (item.received_qty || 0) > (item.as_on_date_po_balance_qty || 0) && (item.received_qty || 0) <= (item.as_on_date_po_balance_qty || 0) * 1.05 + 0.01).length;
 
-            return (
-              <div className="rounded-xl border border-primary/30 bg-primary/5 p-4 space-y-3 shadow-2xs">
-                <div className="flex items-center justify-between border-b border-primary/20 pb-2">
-                  <h4 className="font-heading text-xs font-bold uppercase tracking-wider text-primary flex items-center gap-2">
-                    <CheckCircle2 className="h-4 w-4" />
-                    Receipt Summary &amp; AP Accrual Telemetry
-                  </h4>
-                  <span className="text-[10px] font-mono font-bold text-muted-foreground uppercase">
-                    PO: {form.from_pos || 'N/A'}
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                  <div className="rounded-lg border border-border bg-background p-2.5 space-y-0.5">
-                    <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">Total Line Items</span>
-                    <p className="font-mono text-sm font-extrabold text-foreground">{totalItems} Items</p>
-                  </div>
-                  <div className="rounded-lg border border-border bg-background p-2.5 space-y-0.5">
-                    <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">Current Receipt Qty</span>
-                    <p className="font-mono text-sm font-extrabold text-primary">{totalReceived.toLocaleString('en-IN')}</p>
-                  </div>
-                  <div className="rounded-lg border border-border bg-background p-2.5 space-y-0.5">
-                    <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">Prior PO Balance</span>
-                    <p className="font-mono text-sm font-extrabold text-muted-foreground">{totalBalance.toLocaleString('en-IN')}</p>
-                  </div>
-                  <div className="rounded-lg border border-border bg-background p-2.5 space-y-0.5">
-                    <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">Tolerance Audit</span>
-                    <p className="font-mono text-xs font-bold text-foreground">
-                      {toleranceExceedCount > 0 ? (
-                        <span className="text-red-600 dark:text-red-400 font-extrabold">❌ {toleranceExceedCount} Exceeded</span>
-                      ) : toleranceWithinCount > 0 ? (
-                        <span className="text-amber-600 dark:text-amber-400 font-extrabold">⚠️ {toleranceWithinCount} +5% Tol</span>
-                      ) : (
-                        <span className="text-emerald-600 dark:text-emerald-400 font-extrabold">✓ 100% In Balance</span>
-                      )}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            );
-          })()}
 
           <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2 lg:grid-cols-4">
             {/* Total Extra Items Received */}
@@ -2252,6 +2202,19 @@ export function GrnForm({
                   >
                     <Send className="h-4 w-4" /> Send for Verification
                   </button>
+
+                  {canApprove && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        updateHeader('status', 'Approved');
+                        onSubmit({ ...form, status: 'Approved' });
+                      }}
+                      className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-5 py-2 text-xs font-bold text-white hover:bg-emerald-700 shadow-md transition-all cursor-pointer"
+                    >
+                      <ShieldCheck className="h-4 w-4" /> Approve
+                    </button>
+                  )}
                 </div>
               );
             }
@@ -2359,6 +2322,19 @@ export function GrnForm({
           }
           alreadySelectedPoLineIds={form.purchase_entries.map((e) => e.purchase_order_line_id || '').filter(Boolean)}
           onConfirmSelection={(selectedItems) => {
+            /* The picker sources lines from ANY approved PO, so the header has
+               to be hydrated from whichever order the chosen lines actually
+               came from. Only the "Primary Purchase Order Reference" dropdown
+               did this, so picking items directly left project_name empty —
+               and an empty project is what made the line insert fail its
+               NOT NULL constraint and the entries disappear on save. */
+            const firstLine = selectedItems[0]?.line;
+            const sourcePo = poOptions.find(
+              (p) => p.id === firstLine?.po_id || p.po_number === firstLine?.po_number,
+            );
+            const resolvedGodown = form.godown_name || sourcePo?.godown_name || '';
+            const resolvedProject = form.project_name || sourcePo?.project_name || '';
+
             const mapped: GrnPurchaseEntry[] = selectedItems.map(({ line, receivingQty }) => ({
               item_id: line.item_id || null,
               purchase_order_line_id: line.po_line_id,
@@ -2367,7 +2343,10 @@ export function GrnForm({
               item_description: line.item_description || '',
               item_code: line.item_code || '',
               item_brand: line.item_brand || '',
-              location: line.location || form.godown_name || form.project_name || '',
+              item_specification: line.item_specification || '',
+              activity_name: line.activity_name || '',
+              sub_activity_name: line.sub_activity_name || '',
+              location: line.location || resolvedGodown || resolvedProject || '',
               unit: line.unit || 'nos',
               purchase_category: line.purchase_category || line.item_group || '',
               open: true,
@@ -2389,6 +2368,23 @@ export function GrnForm({
             setForm((prev) => ({
               ...prev,
               purchase_entries: mapped,
+              /* Anything already typed wins; this only fills what is blank. */
+              from_pos:
+                prev.from_pos && prev.from_pos !== 'Not Exist'
+                  ? prev.from_pos
+                  : sourcePo?.po_number || prev.from_pos,
+              project_name: prev.project_name || sourcePo?.project_name || '',
+              supplier_name:
+                prev.supplier_name || sourcePo?.vendor_name || sourcePo?.supplier_name || '',
+              company_name: prev.company_name || sourcePo?.company_name || '',
+              godown_name: prev.godown_name || sourcePo?.godown_name || '',
+              dealer_name:
+                prev.dealer_name
+                || sourcePo?.dealer_name
+                || sourcePo?.vendor_details?.contact_person
+                || '',
+              phone_no: prev.phone_no || sourcePo?.vendor_details?.phone || '',
+              mobile_no: prev.mobile_no || sourcePo?.vendor_details?.phone || '',
             }));
             setShowPoItemPicker(false);
           }}

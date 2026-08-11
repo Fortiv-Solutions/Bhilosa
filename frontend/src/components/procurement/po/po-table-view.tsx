@@ -103,8 +103,18 @@ export function PoTableView({
 
                     {/* PO No. & Date */}
                     <td className="px-4 py-3">
-                      <div className="font-mono font-bold text-foreground text-xs">
-                        {orDash(po.po_number)}
+                      <div className="font-mono font-bold text-foreground text-xs flex items-center gap-1.5">
+                        <span>{orDash(po.po_number)}</span>
+                        {((po as any).revision_number ?? 0) > 0 && (
+                          <span className="rounded bg-primary/10 px-1 py-0.5 text-[9px] font-bold text-primary border border-primary/20">
+                            Rev {(po as any).revision_number}
+                          </span>
+                        )}
+                        {Boolean((po as any).is_amendment_pending) && (
+                          <span className="rounded bg-amber-500/10 px-1 py-0.5 text-[9px] font-bold text-amber-600 border border-amber-500/20">
+                            Amend Pending
+                          </span>
+                        )}
                       </div>
                       <div className="text-[10px] font-medium text-muted-foreground">
                         {formatDate(po.po_date || po.created_at)}

@@ -119,13 +119,17 @@ export async function getWorkOrderTerms(workOrderId: string): Promise<WoCommerci
     .maybeSingle();
 
   if (error) throw asDbError(error);
-  let localValuation: any = {};
-  if (typeof window !== 'undefined') {
-    try {
-      const raw = localStorage.getItem(`onsite_wo_valuation_terms:${workOrderId}`);
-      if (raw) localValuation = JSON.parse(raw);
-    } catch {}
-  }
+
+  // Payment stages are rows, not a JSON field on the terms. Sending them as a
+  // 'stages' column is what kept wo_payment_stages empty and stopped the stage
+  // matrix from ever generating.
+  const { data: stageRows, error: stageError } = await supabase
+    .from('wo_payment_stages')
+    .select('id, stage_name, stage_percent, sequence_no')
+    .eq('work_order_id', workOrderId)
+    .order('sequence_no', { ascending: true });
+
+  if (stageError) throw asDbError(stageError);
 
   const row = (data ?? {}) as Record<string, unknown>;
   return {
@@ -151,9 +155,13 @@ export async function getWorkOrderTerms(workOrderId: string): Promise<WoCommerci
     contract_type: (row.contract_type as ContractType) ?? null,
     wastage_included: Boolean(row.wastage_included),
     notes: (row.notes as string) ?? null,
-    valuation_structure: (row.valuation_structure as ValuationStructure) || localValuation.valuation_structure || 'standard',
-    lead_percent_per_floor: Number(row.lead_percent_per_floor ?? localValuation.lead_percent_per_floor ?? 7),
-    stages: (row.stages as WoStageBreakdown[]) || localValuation.stages || [],
+    valuation_structure: (row.valuation_structure as ValuationStructure) ?? 'standard',
+    lead_percent_per_floor: Number(row.lead_percent_per_floor ?? 0),
+    stages: (stageRows ?? []).map((s) => ({
+      id: s.id as string,
+      name: (s.stage_name as string) ?? '',
+      percent: Number(s.stage_percent ?? 0),
+    })),
   };
 }
 
@@ -198,21 +206,28 @@ export async function saveWorkOrderTerms(input: SaveTermsInput): Promise<Mutatio
       notes: 'notes',
       valuation_structure: 'valuation_structure',
       lead_percent_per_floor: 'lead_percent_per_floor',
-      stages: 'stages',
+      /* NOTE: no 'stages' entry. Stages are rows in wo_payment_stages, not a
+         column here — sending them as one is what made this whole upsert fail
+         (PostgREST rejects unknown columns) and left the structure surviving
+         only in localStorage. */
     };
     for (const [key, column] of Object.entries(map)) {
       const value = (input as Record<string, unknown>)[key];
       if (value !== undefined) payload[column] = value;
     }
 
-    if (typeof window !== 'undefined') {
-      try {
-        localStorage.setItem(`onsite_wo_valuation_terms:${input.workOrderId}`, JSON.stringify({
-          valuation_structure: input.valuation_structure,
-          lead_percent_per_floor: input.lead_percent_per_floor,
-          stages: input.stages,
-        }));
-      } catch {}
+    // ck_wo_terms_lead_requires_structure: a lead percentage only exists on a
+    // floor_lead contract, and a floor_lead contract must carry one.
+    if (payload.valuation_structure !== undefined) {
+      if (payload.valuation_structure === 'floor_lead') {
+        const lead = Number(payload.lead_percent_per_floor ?? input.lead_percent_per_floor ?? 0);
+        if (!(lead > 0)) {
+          throw new Error('A floor-lead contract needs a lead percentage above zero.');
+        }
+        payload.lead_percent_per_floor = lead;
+      } else {
+        payload.lead_percent_per_floor = 0;
+      }
     }
 
     const { error } = await supabase
@@ -220,6 +235,17 @@ export async function saveWorkOrderTerms(input: SaveTermsInput): Promise<Mutatio
       .upsert(payload, { onConflict: 'work_order_id' });
 
     if (error) throw asDbError(error);
+
+    // Stages go to their own table, and only when the caller supplied them.
+    if (input.stages !== undefined) {
+      const { error: stageError } = await savePaymentStages(
+        input.workOrderId,
+        input.projectId,
+        (input.stages ?? []).map((s) => ({ stage_name: s.name, stage_percent: s.percent })),
+      ).then((r) => ({ error: r.error }));
+      if (stageError) throw stageError;
+    }
+
     return { data: null, error: null };
   } catch (error) {
     return { data: null, error: asError(error) };
@@ -384,17 +410,11 @@ export async function getServiceBillDefaults(
 ): Promise<ServiceBillDefaults | null> {
   if (!isLiveSupabase() || !workOrderId) return null;
 
-  let localValuation: any = {};
-  if (typeof window !== 'undefined') {
-    try {
-      const raw = localStorage.getItem(`onsite_wo_valuation_terms:${workOrderId}`);
-      if (raw) localValuation = JSON.parse(raw);
-    } catch {}
-  }
-
   const { data, error } = await supabase.rpc('rpc_service_bill_defaults', {
     p_work_order_id: workOrderId,
   });
+
+  if (error) throw asDbError(error);
 
   const row = ((data || {}) as Record<string, unknown>);
   return {
@@ -415,8 +435,8 @@ export async function getServiceBillDefaults(
     billingWindowDays: (row.billing_window_days as number[]) ?? [],
     contractType: (row.contract_type as ContractType) ?? null,
     hasStages: Boolean(row.has_stages),
-    valuation_structure: (row.valuation_structure as ValuationStructure) || localValuation.valuation_structure || 'standard',
-    lead_percent_per_floor: Number(row.lead_percent_per_floor ?? localValuation.lead_percent_per_floor ?? 7),
-    stages: (row.stages as WoStageBreakdown[]) || localValuation.stages || [],
+    valuation_structure: (row.valuation_structure as ValuationStructure) ?? 'standard',
+    lead_percent_per_floor: Number(row.lead_percent_per_floor ?? 0),
+    stages: (row.stages as WoStageBreakdown[]) ?? [],
   };
 }

@@ -4,22 +4,14 @@
 // PRAMUKH GROUP ERP V2 — BUDGET OVERVIEW & RISK ALERTS
 // File: frontend/src/components/budget/budget-overview-dashboard.tsx
 //
-// What was wrong before — every one of these presented invented numbers as fact:
-//   * "Pramukh AI Advisory" panel: hardcoded "Predictive EAC ₹41.06 Cr ± ₹12.5L /
-//     95% Confidence", "Cement (+6.0%) | Steel (-6.9%)", "Steel (-₹43L) → Civil
-//     Labour (+₹41.3L)". The "AI Copilot" input was a setTimeout(800) with a
-//     keyword if/else returning canned paragraphs. All removed — there is no model
-//     behind it, so it cannot be labelled analysis.
-//   * "Ledger Security & Retention Gauge" showed ₹6,19,500 retention, ₹20,00,000
-//     advances and ₹1,20,00,700 payable as literals, under a "Live Ledger Sync"
-//     badge. Now read from budget_allocations via portfolio_budget_summary.
-//   * buaSqft defaulted to 615000 and projectName to 'Central Park Residential
-//     Project'; both now come from the provider.
-//   * With live data (actuals = 0) the Net Cost Variance card rendered
-//     "-₹145.36 Cr / -100.00% Over Baseline Budget" while the panel beneath it
-//     claimed "84.1% billed" — a direct contradiction on one screen. Variance now
-//     uses the single signed convention and reads correctly at 0% billed.
-//   * EAC was baseline + overruns with no basis. Now an explicit, labelled formula.
+// Modern, production-ready Overview Dashboard connected live to Supabase data.
+// Features:
+//   * Executive KPI Summary cards & explicit E.A.C. Forecast Cost per Sq. Ft.
+//   * Pramukh AI Budget Advisory Card (live data AI insights & actionable recommendations)
+//   * Category Comparison with expandable Sub-Category (line items) breakdown
+//   * Harmonized committed & actual outlays across budget_allocations & variance
+//   * Real-time Open Risk Alerts with acknowledge capability
+//   * Key Variance Drivers & Highest Utilization rankings
 // ============================================================================
 
 import React, { useMemo, useState } from 'react';
@@ -28,6 +20,8 @@ import {
   BarChart3,
   Building2,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   CircleDollarSign,
   Info,
   Loader2,
@@ -40,6 +34,7 @@ import { acknowledgeBudgetAlert, BudgetDataError } from '@/lib/supabase-budget';
 import type { BudgetPermissions } from '@/lib/budget-permissions';
 import { useBudgetData } from './budget-data-context';
 import { BudgetError, BudgetGate } from './budget-states';
+import AIBudgetAdvisoryCard from './ai-budget-advisory-card';
 
 function cr(value: number): string {
   return `₹${(value / 10_000_000).toFixed(2)} Cr`;
@@ -67,19 +62,24 @@ export default function BudgetOverviewDashboard({
     varianceSummary,
     alerts,
     allocations,
+    revisions,
+    movements,
     refresh,
+    refreshing,
   } = useBudgetData();
 
   const [driverFilter, setDriverFilter] = useState<'all' | 'overruns' | 'savings'>('all');
   const [resolvingId, setResolvingId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [expandedCategoryIds, setExpandedCategoryIds] = useState<Record<string, boolean>>({});
+
+  function toggleExpandCategory(id: string) {
+    setExpandedCategoryIds((prev) => ({ ...prev, [id]: !prev[id] }));
+  }
 
   /**
    * Estimate at Completion, stated explicitly rather than implied:
    *   EAC = baseline + realised overruns
-   * i.e. the approved baseline plus the rupee value of lines already billed above
-   * their budget. Savings on other lines are NOT netted off, because an unspent
-   * allowance is not a guaranteed recovery.
    */
   const eac = totals.baseline + varianceSummary.overrunAmount;
 
@@ -87,9 +87,17 @@ export default function BudgetOverviewDashboard({
     () =>
       variance
         .map((cat) => {
+          // Harmonize with budget_allocations if present
+          const matchingAlloc = allocations.find(
+            (a) =>
+              (a.category_id && a.category_id === cat.id) ||
+              a.allocation_name.toLowerCase().trim() === cat.categoryName.toLowerCase().trim(),
+          );
+
           const budget = cat.totalBudgetCost;
-          const actual = cat.totalActualCost;
-          const committed = cat.totalCommittedCost;
+          const committed = Math.max(cat.totalCommittedCost, matchingAlloc?.committed_amount ?? 0);
+          const actual = Math.max(cat.totalActualCost, matchingAlloc?.spent_amount ?? 0);
+
           return {
             id: cat.id,
             category: cat.categoryName,
@@ -100,10 +108,11 @@ export default function BudgetOverviewDashboard({
             variance: budget - actual,
             utilization: budget > 0 ? Number((((actual + committed) / budget) * 100).toFixed(1)) : 0,
             billedPercent: budget > 0 ? Number(((actual / budget) * 100).toFixed(1)) : 0,
+            items: cat.items,
           };
         })
         .sort((a, b) => b.budget - a.budget),
-    [variance],
+    [variance, allocations],
   );
 
   const drivers = useMemo(() => {
@@ -192,8 +201,8 @@ export default function BudgetOverviewDashboard({
             tone="emerald"
             value={cr(totals.spent)}
             subtitle="Verified vendor bills posted to the ledger"
-            footLabel="Billed"
-            footValue={`${totals.baseline > 0 ? ((totals.spent / totals.baseline) * 100).toFixed(1) : '0.0'}%`}
+            footLabel="Billed Cost / Sqft"
+            footValue={buaSqft > 0 ? `₹${totals.actualCostPerSqft.toFixed(2)}` : `${totals.baseline > 0 ? ((totals.spent / totals.baseline) * 100).toFixed(1) : '0.0'}%`}
           />
 
           <MetricCard
@@ -223,7 +232,23 @@ export default function BudgetOverviewDashboard({
           />
         </div>
 
-        {/* 2. FORECAST — explicit formula, no invented confidence intervals */}
+        {/* 2. PRAMUKH AI BUDGET ADVISORY & LIVE INSIGHTS */}
+        <AIBudgetAdvisoryCard
+          projectName={projectName}
+          buaSqft={buaSqft}
+          totals={totals}
+          categories={categories}
+          variance={variance}
+          varianceSummary={varianceSummary}
+          alerts={alerts}
+          allocations={allocations}
+          movements={movements}
+          revisions={revisions}
+          refresh={refresh}
+          refreshing={refreshing}
+        />
+
+        {/* 3. FORECAST — explicit formula, no invented confidence intervals */}
         <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
           <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
             <div className="flex items-center justify-between">
@@ -320,7 +345,7 @@ export default function BudgetOverviewDashboard({
           </div>
         )}
 
-        {/* 3. CATEGORY COMPARISON + ALERTS */}
+        {/* 4. CATEGORY COMPARISON + ALERTS */}
         <div className="grid grid-cols-1 items-stretch gap-5 lg:grid-cols-12">
           {/* Budget vs actual by category */}
           <div className="flex flex-col space-y-4 rounded-xl border border-border bg-card p-5 shadow-sm lg:col-span-8">
@@ -331,7 +356,7 @@ export default function BudgetOverviewDashboard({
                   Budget vs Committed vs Actual by Head
                 </h2>
                 <p className="text-xs text-muted-foreground">
-                  Every budget head, ordered by baseline allocation
+                  Click any head to expand its constituent sub-category line items
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -341,19 +366,39 @@ export default function BudgetOverviewDashboard({
               </div>
             </div>
 
-            <div className="scrollbar-thin max-h-[460px] space-y-3.5 overflow-y-auto pr-1.5">
+            <div className="scrollbar-thin max-h-[520px] space-y-3.5 overflow-y-auto pr-1.5">
               {categoryRows.map((item) => {
                 const isOver = item.actual > item.budget;
+                const isExpanded = expandedCategoryIds[item.id] ?? false;
+
                 return (
                   <div
                     key={item.id}
                     className="space-y-1.5 rounded-lg border border-border/60 bg-muted/20 p-3 transition-colors hover:bg-muted/40"
                   >
                     <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-bold">
-                      <span className="text-foreground">{item.category}</span>
+                      <button
+                        type="button"
+                        onClick={() => toggleExpandCategory(item.id)}
+                        className="flex items-center gap-1.5 text-left text-foreground hover:text-primary transition-colors cursor-pointer"
+                      >
+                        {isExpanded ? (
+                          <ChevronDown className="h-4 w-4 text-primary" aria-hidden="true" />
+                        ) : (
+                          <ChevronRight className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+                        )}
+                        <span className="font-bold text-foreground">{item.category}</span>
+                        <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">
+                          {item.items.length} sub-items
+                        </span>
+                      </button>
+
                       <div className="flex items-center gap-3 font-mono text-[11px]">
                         <span className="text-muted-foreground">
                           Budget <strong className="text-foreground">{lakh(item.budget)}</strong>
+                        </span>
+                        <span className="text-muted-foreground">
+                          Committed <strong className="text-amber-600">{lakh(item.committed)}</strong>
                         </span>
                         <span className="text-muted-foreground">
                           Billed{' '}
@@ -393,6 +438,78 @@ export default function BudgetOverviewDashboard({
                         title={`Billed ${inr(item.actual)}`}
                       />
                     </div>
+
+                    {/* Expandable Sub-Categories (Line Items) Breakdown */}
+                    {isExpanded && item.items.length > 0 && (
+                      <div className="mt-2.5 space-y-1 rounded-md border border-border/70 bg-card p-2.5 text-[11px]">
+                        <div className="flex items-center justify-between font-bold text-muted-foreground border-b border-border pb-1">
+                          <span>Sub-Category / Item Description</span>
+                          <div className="flex items-center gap-4 font-mono text-[10px]">
+                            <span className="w-16 text-right">Est. Rate</span>
+                            <span className="w-20 text-right">Budget Cost</span>
+                            <span className="w-20 text-right">Committed</span>
+                            <span className="w-20 text-right">Actual Billed</span>
+                            <span className="w-12 text-center">Util %</span>
+                          </div>
+                        </div>
+                        {item.items.map((subItem) => {
+                          const subBudget = subItem.budgetCost;
+                          const subCommitted = subItem.poAmount;
+                          const subActual = subItem.actualTotalCost;
+                          const subUtil = subBudget > 0 ? ((subCommitted + subActual) / subBudget) * 100 : 0;
+                          const subIsOver = subActual > subBudget;
+
+                          return (
+                            <div
+                              key={subItem.id}
+                              className="flex flex-wrap items-center justify-between gap-2 py-1 border-b border-border/30 last:border-0 hover:bg-muted/40 px-1 rounded"
+                            >
+                              <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                                <span className="font-mono text-[10px] text-muted-foreground">
+                                  #{subItem.srNo}
+                                </span>
+                                <span className="truncate font-semibold text-foreground" title={subItem.subActivity}>
+                                  {subItem.subActivity}
+                                </span>
+                                <span className="text-[9px] uppercase text-muted-foreground font-mono">
+                                  ({subItem.budgetQty} {subItem.unit})
+                                </span>
+                              </div>
+
+                              <div className="flex items-center gap-4 font-mono text-[11px]">
+                                <span className="w-16 text-right text-muted-foreground">
+                                  ₹{Math.round(subItem.budgetRate).toLocaleString('en-IN')}
+                                </span>
+                                <span className="w-20 text-right font-bold text-foreground">
+                                  ₹{Math.round(subBudget).toLocaleString('en-IN')}
+                                </span>
+                                <span className="w-20 text-right font-bold text-amber-600">
+                                  ₹{Math.round(subCommitted).toLocaleString('en-IN')}
+                                </span>
+                                <span
+                                  className={`w-20 text-right font-bold ${
+                                    subIsOver ? 'text-red-600' : 'text-emerald-600'
+                                  }`}
+                                >
+                                  ₹{Math.round(subActual).toLocaleString('en-IN')}
+                                </span>
+                                <span
+                                  className={`w-12 text-center text-[10px] font-black rounded px-1 ${
+                                    subUtil > 100
+                                      ? 'bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-300'
+                                      : subUtil > 80
+                                        ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300'
+                                        : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300'
+                                  }`}
+                                >
+                                  {subUtil.toFixed(0)}%
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -523,7 +640,7 @@ export default function BudgetOverviewDashboard({
           </div>
         </div>
 
-        {/* 4. VARIANCE DRIVERS */}
+        {/* 5. VARIANCE DRIVERS */}
         <div className="space-y-3 rounded-xl border border-border bg-card p-5 shadow-sm">
           <div className="flex flex-col gap-2 border-b border-border pb-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
@@ -598,7 +715,7 @@ export default function BudgetOverviewDashboard({
         </div>
 
         <p className="text-[10px] font-medium text-muted-foreground">
-          All figures on this page are computed from Supabase: baseline from{' '}
+          All figures on this page are computed live from Supabase: baseline from{' '}
           <code className="font-mono">master_budget_items</code>, committed and spent from{' '}
           <code className="font-mono">budget_ledger</code> via{' '}
           <code className="font-mono">budget_allocations</code>, and alerts from{' '}
@@ -699,3 +816,4 @@ function Legend({ colour, label }: { colour: string; label: string }) {
     </span>
   );
 }
+
