@@ -38,6 +38,9 @@ import {
 import {
   getServiceBillDefaults,
   type ServiceBillDefaults,
+  type ValuationStructure,
+  listPaymentStages,
+  type PaymentStageRow,
 } from '@/lib/wo-commercial-terms';
 import { useAppStore } from '@/store/use-app-store';
 import { formatIndianCurrency } from '@/utils/format-currency';
@@ -75,6 +78,13 @@ type DraftLine = {
   rate: number;
   contractedRate: number;
   taxRate: number;
+  floorLevel?: number;      // Floor level for floor_lead billing (0 = Ground)
+  stageId?: string;          // Payment stage ID for stage_percentage billing  
+  stageName?: string;        // Payment stage name
+  stagePercent?: number;     // Payment stage percentage
+  effectiveRate?: number;    // Computed: baseRate * (1 + floor * lead%/100)
+  contractedQty?: number;    // Original WO contracted qty (display only)
+  prevCertifiedQty?: number; // Previously certified qty (display only)
 };
 
 function newLine(): DraftLine {
@@ -92,7 +102,8 @@ function newLine(): DraftLine {
 
 function lineValue(line: DraftLine): number {
   const qty = line.quantity && line.quantity > 0 ? line.quantity : 1;
-  const baseVal = qty * (line.rate || 0);
+  const effectiveRate = line.effectiveRate && line.effectiveRate > 0 ? line.effectiveRate : (line.rate || 0);
+  const baseVal = qty * effectiveRate;
   const pct = line.percentCompleted !== undefined && line.percentCompleted !== null ? line.percentCompleted : 100;
   return baseVal * (pct / 100);
 }
@@ -495,6 +506,10 @@ export function CreateServiceBillModal({
   const [masterBudgetItemId, setMasterBudgetItemId] = useState('');
   const [defaults, setDefaults] = useState<ServiceBillDefaults | null>(null);
 
+  const [valuationStructure, setValuationStructure] = useState<'standard' | 'stage_percentage' | 'floor_lead'>('standard');
+  const [leadPercentPerFloor, setLeadPercentPerFloor] = useState(0);
+  const [paymentStages, setPaymentStages] = useState<Array<{ id: string; name: string; percent: number }>>([]);
+
   const [vendorId, setVendorId] = useState('');
   const [workOrderId, setWorkOrderId] = useState('');
   const [serviceDescription, setServiceDescription] = useState('');
@@ -530,6 +545,9 @@ export function CreateServiceBillModal({
     setBudgetAllocationId('');
     setMasterBudgetItemId('');
     setError(null);
+    setValuationStructure('standard');
+    setLeadPercentPerFloor(0);
+    setPaymentStages([]);
   }, []);
 
   useEffect(() => {
@@ -592,6 +610,9 @@ export function CreateServiceBillModal({
         setDefaults(billDefaults);
         setRetentionPercent(billDefaults.retentionPercent);
         setTdsPercent(billDefaults.tdsPercent);
+        setValuationStructure((billDefaults.valuation_structure as 'standard' | 'stage_percentage' | 'floor_lead') ?? 'standard');
+        setLeadPercentPerFloor(billDefaults.lead_percent_per_floor ?? 0);
+        setPaymentStages(billDefaults.stages ?? []);
       }
 
       if (positionRows.length > 0) {
@@ -605,6 +626,8 @@ export function CreateServiceBillModal({
             unit: pos.unit || '',
             rate: pos.rate || 0,
             contractedRate: pos.rate || 0,
+            contractedQty: pos.contractedQuantity,
+            prevCertifiedQty: pos.certifiedQuantity,
             taxRate: billDefaults?.gstTreatment === 'exclusive' ? billDefaults.gstRate : 18,
           })),
         );
@@ -662,10 +685,14 @@ export function CreateServiceBillModal({
         description: l.description,
         unit: l.unit || undefined,
         quantity: l.quantity,
-        rate: l.rate * ((l.percentCompleted ?? 100) / 100),
+        rate: valuationStructure === 'floor_lead' && l.effectiveRate ? l.effectiveRate : l.rate * ((l.percentCompleted ?? 100) / 100),
         taxRate: l.taxRate,
         workOrderLineId: l.workOrderLineId,
         billableItemId: l.billableItemId,
+        floorLevel: valuationStructure === 'floor_lead' ? l.floorLevel : undefined,
+        rateFactorApplied: valuationStructure === 'floor_lead' && l.floorLevel !== undefined
+          ? (1 + (l.floorLevel * leadPercentPerFloor) / 100)
+          : undefined,
       }));
 
     if (billableLines.length === 0) {
@@ -814,6 +841,17 @@ export function CreateServiceBillModal({
                     Draws down on {selectedWorkOrder.tax_inclusive ? 'gross (GST incl.)' : 'net-of-tax'} value
                   </span>
                 </div>
+                {defaults && valuationStructure !== 'standard' && (
+                  <div className="flex items-center gap-2 mt-2">
+                    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                      valuationStructure === 'stage_percentage'
+                        ? 'bg-violet-100 text-violet-700 dark:bg-violet-950/40 dark:text-violet-300'
+                        : 'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300'
+                    }`}>
+                      {valuationStructure === 'stage_percentage' ? '⚡ Stage/Milestone Billing' : '📐 Floor Lead Billing'}
+                    </span>
+                  </div>
+                )}
               </div>
             )}
 
@@ -921,15 +959,43 @@ export function CreateServiceBillModal({
               <div className="overflow-x-auto rounded-lg border border-border">
                 <table className="w-full text-left text-xs border-collapse">
                   <thead className="bg-muted/50 font-heading font-bold text-muted-foreground uppercase border-b border-border text-[10px]">
-                    <tr>
-                      <th className="px-3 py-2 min-w-[200px]">Items</th>
-                      <th className="px-3 py-2 text-right w-[140px]">% of Work Completed</th>
-                      <th className="px-3 py-2 text-right w-[90px]">Qty</th>
-                      <th className="px-3 py-2 w-[90px]">Unit</th>
-                      <th className="px-3 py-2 text-right w-[110px]">Rate/Flat</th>
-                      <th className="px-3 py-2 text-right w-[120px]">Amount</th>
-                      <th className="px-3 py-2 text-center w-[40px]"></th>
-                    </tr>
+                    {valuationStructure === 'standard' && (
+                      <tr>
+                        <th className="px-3 py-2 min-w-[200px]">Items</th>
+                        <th className="px-3 py-2 text-right w-[90px]">Contracted Qty</th>
+                        <th className="px-3 py-2 text-right w-[90px]">Prev. Certified</th>
+                        <th className="px-3 py-2 text-right w-[90px]">This Bill Qty</th>
+                        <th className="px-3 py-2 w-[90px]">Unit</th>
+                        <th className="px-3 py-2 text-right w-[110px]">Rate/Unit (₹)</th>
+                        <th className="px-3 py-2 text-right w-[140px]">% of Work Completed</th>
+                        <th className="px-3 py-2 text-right w-[120px]">Amount (₹)</th>
+                        <th className="px-3 py-2 text-center w-[40px]"></th>
+                      </tr>
+                    )}
+                    {valuationStructure === 'stage_percentage' && (
+                      <tr>
+                        <th className="px-3 py-2 min-w-[200px]">Items</th>
+                        <th className="px-3 py-2 min-w-[150px]">Stage</th>
+                        <th className="px-3 py-2 text-right w-[90px]">Stage %</th>
+                        <th className="px-3 py-2 text-right w-[90px]">Flats</th>
+                        <th className="px-3 py-2 text-right w-[110px]">Flat Rate (₹)</th>
+                        <th className="px-3 py-2 text-right w-[120px]">Amount (₹)</th>
+                        <th className="px-3 py-2 text-center w-[40px]"></th>
+                      </tr>
+                    )}
+                    {valuationStructure === 'floor_lead' && (
+                      <tr>
+                        <th className="px-3 py-2 min-w-[200px]">Items</th>
+                        <th className="px-3 py-2 text-right w-[90px]">Qty</th>
+                        <th className="px-3 py-2 w-[90px]">Unit</th>
+                        <th className="px-3 py-2 text-center w-[90px]">Floor Level</th>
+                        <th className="px-3 py-2 text-right w-[110px]">Base Rate (₹)</th>
+                        <th className="px-3 py-2 text-right w-[90px]">Lead %</th>
+                        <th className="px-3 py-2 text-right w-[110px]">Effective Rate (₹)</th>
+                        <th className="px-3 py-2 text-right w-[120px]">Amount (₹)</th>
+                        <th className="px-3 py-2 text-center w-[40px]"></th>
+                      </tr>
+                    )}
                   </thead>
                   <tbody>
                     {lines.map((line) => {
@@ -946,55 +1012,191 @@ export function CreateServiceBillModal({
                               className="w-full rounded border border-input bg-background px-2 py-1 text-xs font-medium"
                             />
                           </td>
-                          <td className="px-2 py-1.5">
-                            <div className="flex items-center justify-end gap-1">
-                              <input
-                                required
-                                type="number"
-                                min="0"
-                                max="100"
-                                step="0.5"
-                                placeholder="100"
-                                value={line.percentCompleted === 0 ? '' : line.percentCompleted}
-                                onChange={(e) => updateLine(line.key, { percentCompleted: Number(e.target.value) })}
-                                className="w-16 rounded border border-input bg-background px-2 py-1 text-xs text-right font-semibold"
-                              />
-                              <span className="text-xs text-muted-foreground">%</span>
-                            </div>
-                          </td>
-                          <td className="px-2 py-1.5">
-                            <input
-                              required
-                              type="number"
-                              min="0"
-                              step="0.01"
-                              placeholder="Qty"
-                              value={line.quantity === 0 ? '' : line.quantity}
-                              onChange={(e) => updateLine(line.key, { quantity: Number(e.target.value) })}
-                              className="w-full rounded border border-input bg-background px-2 py-1 text-xs text-right"
-                            />
-                          </td>
-                          <td className="px-2 py-1.5">
-                            <input
-                              type="text"
-                              placeholder="Unit"
-                              value={line.unit}
-                              onChange={(e) => updateLine(line.key, { unit: e.target.value })}
-                              className="w-full rounded border border-input bg-background px-2 py-1 text-xs"
-                            />
-                          </td>
-                          <td className="px-2 py-1.5">
-                            <input
-                              required
-                              type="number"
-                              min="0"
-                              step="0.01"
-                              placeholder="Rate"
-                              value={line.rate === 0 ? '' : line.rate}
-                              onChange={(e) => updateLine(line.key, { rate: Number(e.target.value) })}
-                              className="w-full rounded border border-input bg-background px-2 py-1 text-xs text-right"
-                            />
-                          </td>
+
+                          {valuationStructure === 'standard' && (
+                            <>
+                              <td className="px-2 py-1.5 text-right text-muted-foreground">{line.contractedQty || '-'}</td>
+                              <td className="px-2 py-1.5 text-right text-muted-foreground">{line.prevCertifiedQty || '-'}</td>
+                              <td className="px-2 py-1.5">
+                                <input
+                                  required
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  placeholder="Qty"
+                                  value={line.quantity === 0 ? '' : line.quantity}
+                                  onChange={(e) => updateLine(line.key, { quantity: Number(e.target.value) })}
+                                  className="w-full rounded border border-input bg-background px-2 py-1 text-xs text-right"
+                                />
+                              </td>
+                              <td className="px-2 py-1.5">
+                                <input
+                                  type="text"
+                                  placeholder="Unit"
+                                  value={line.unit}
+                                  onChange={(e) => updateLine(line.key, { unit: e.target.value })}
+                                  className="w-full rounded border border-input bg-background px-2 py-1 text-xs"
+                                />
+                              </td>
+                              <td className="px-2 py-1.5">
+                                <input
+                                  required
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  placeholder="Rate"
+                                  value={line.rate === 0 ? '' : line.rate}
+                                  onChange={(e) => updateLine(line.key, { rate: Number(e.target.value) })}
+                                  className="w-full rounded border border-input bg-background px-2 py-1 text-xs text-right"
+                                />
+                              </td>
+                              <td className="px-2 py-1.5">
+                                <div className="flex items-center justify-end gap-1">
+                                  <input
+                                    required
+                                    type="number"
+                                    min="0"
+                                    max="100"
+                                    step="0.5"
+                                    placeholder="100"
+                                    value={line.percentCompleted === 0 ? '' : line.percentCompleted}
+                                    onChange={(e) => updateLine(line.key, { percentCompleted: Number(e.target.value) })}
+                                    className="w-16 rounded border border-input bg-background px-2 py-1 text-xs text-right font-semibold"
+                                  />
+                                  <span className="text-xs text-muted-foreground">%</span>
+                                </div>
+                              </td>
+                            </>
+                          )}
+
+                          {valuationStructure === 'stage_percentage' && (
+                            <>
+                              <td className="px-2 py-1.5">
+                                <select
+                                  required
+                                  value={line.stageId || ''}
+                                  onChange={(e) => {
+                                    const selectedStage = paymentStages.find((s) => s.id === e.target.value);
+                                    if (selectedStage) {
+                                      updateLine(line.key, {
+                                        stageId: selectedStage.id,
+                                        stageName: selectedStage.name,
+                                        stagePercent: selectedStage.percent,
+                                        percentCompleted: selectedStage.percent,
+                                      });
+                                    } else {
+                                      updateLine(line.key, {
+                                        stageId: '',
+                                        stageName: '',
+                                        stagePercent: undefined,
+                                        percentCompleted: 100,
+                                      });
+                                    }
+                                  }}
+                                  className="w-full rounded border border-input bg-background px-2 py-1 text-xs"
+                                >
+                                  <option value="">Select Stage…</option>
+                                  {paymentStages.map((stage) => (
+                                    <option key={stage.id} value={stage.id}>
+                                      {stage.name} ({stage.percent}%)
+                                    </option>
+                                  ))}
+                                </select>
+                              </td>
+                              <td className="px-2 py-1.5 text-right font-semibold text-muted-foreground">
+                                {line.stagePercent ? `${line.stagePercent}%` : '-'}
+                              </td>
+                              <td className="px-2 py-1.5">
+                                <input
+                                  required
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  placeholder="Flats"
+                                  value={line.quantity === 0 ? '' : line.quantity}
+                                  onChange={(e) => updateLine(line.key, { quantity: Number(e.target.value) })}
+                                  className="w-full rounded border border-input bg-background px-2 py-1 text-xs text-right"
+                                />
+                              </td>
+                              <td className="px-2 py-1.5">
+                                <input
+                                  required
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  placeholder="Rate"
+                                  value={line.rate === 0 ? '' : line.rate}
+                                  onChange={(e) => updateLine(line.key, { rate: Number(e.target.value) })}
+                                  className="w-full rounded border border-input bg-background px-2 py-1 text-xs text-right"
+                                />
+                              </td>
+                            </>
+                          )}
+
+                          {valuationStructure === 'floor_lead' && (
+                            <>
+                              <td className="px-2 py-1.5">
+                                <input
+                                  required
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  placeholder="Qty"
+                                  value={line.quantity === 0 ? '' : line.quantity}
+                                  onChange={(e) => updateLine(line.key, { quantity: Number(e.target.value) })}
+                                  className="w-full rounded border border-input bg-background px-2 py-1 text-xs text-right"
+                                />
+                              </td>
+                              <td className="px-2 py-1.5">
+                                <input
+                                  type="text"
+                                  placeholder="Unit"
+                                  value={line.unit}
+                                  onChange={(e) => updateLine(line.key, { unit: e.target.value })}
+                                  className="w-full rounded border border-input bg-background px-2 py-1 text-xs"
+                                />
+                              </td>
+                              <td className="px-2 py-1.5">
+                                <input
+                                  required
+                                  type="number"
+                                  min="0"
+                                  step="1"
+                                  placeholder="0"
+                                  value={line.floorLevel === undefined ? '' : line.floorLevel}
+                                  onChange={(e) => {
+                                    const floorLevel = Number(e.target.value);
+                                    const effectiveRate = line.rate * (1 + (floorLevel * leadPercentPerFloor) / 100);
+                                    updateLine(line.key, { floorLevel, effectiveRate });
+                                  }}
+                                  className="w-full rounded border border-input bg-background px-2 py-1 text-xs text-center font-semibold"
+                                />
+                              </td>
+                              <td className="px-2 py-1.5">
+                                <input
+                                  required
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  placeholder="Base"
+                                  value={line.rate === 0 ? '' : line.rate}
+                                  onChange={(e) => {
+                                    const rate = Number(e.target.value);
+                                    const effectiveRate = rate * (1 + ((line.floorLevel || 0) * leadPercentPerFloor) / 100);
+                                    updateLine(line.key, { rate, effectiveRate });
+                                  }}
+                                  className="w-full rounded border border-input bg-background px-2 py-1 text-xs text-right"
+                                />
+                              </td>
+                              <td className="px-2 py-1.5 text-right text-muted-foreground text-[10px]">
+                                {leadPercentPerFloor}% / floor
+                              </td>
+                              <td className="px-2 py-1.5 text-right font-semibold text-emerald-700 dark:text-emerald-400">
+                                {formatIndianCurrency(line.effectiveRate || line.rate || 0)}
+                              </td>
+                            </>
+                          )}
+
                           <td className="px-3 py-2 text-right font-bold text-foreground">
                             {formatIndianCurrency(val)}
                           </td>
