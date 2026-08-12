@@ -1338,67 +1338,6 @@ export function CreateWorkOrderModal({ isOpen, onClose, onSuccess }: CreateWorkO
                   </p>
                 </div>
               )}
-
-              {/* GST Percentage (%) Section */}
-              <div className="mt-3 p-3.5 rounded-xl border border-border bg-card shadow-sm space-y-3">
-                <div className="flex items-center justify-between">
-                  <label className="text-xs font-bold text-foreground flex items-center gap-1.5">
-                    GST Percentage (%)
-                  </label>
-                  <div className="flex items-center gap-1">
-                    {[0, 5, 12, 18, 28].map((rate) => (
-                      <button
-                        key={rate}
-                        type="button"
-                        onClick={() => setGstPercentage(rate)}
-                        className={`px-2.5 py-1 text-xs font-extrabold rounded-md border transition-all ${
-                          gstPercentage === rate
-                            ? 'bg-primary text-primary-foreground border-primary shadow-sm'
-                            : 'bg-muted/40 text-muted-foreground border-border hover:bg-muted'
-                        }`}
-                      >
-                        {rate}%
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1 border-t border-border/50">
-                  <div className="space-y-1">
-                    <span className="text-[11px] font-semibold text-muted-foreground">Custom GST Rate</span>
-                    <div className="relative flex items-center">
-                      <input
-                        type="number"
-                        min="0"
-                        max="100"
-                        step="0.1"
-                        value={gstPercentage}
-                        onChange={(e) => setGstPercentage(Math.max(0, Number(e.target.value) || 0))}
-                        placeholder="18"
-                        className="w-full rounded-md border border-input bg-background px-3 py-1.5 text-sm font-extrabold text-right pr-8"
-                      />
-                      <span className="absolute right-3 text-xs font-bold text-muted-foreground">%</span>
-                    </div>
-                  </div>
-
-                  <div className="space-y-1 bg-muted/20 p-2.5 rounded-lg border border-border/60 text-xs">
-                    <div className="flex justify-between text-muted-foreground">
-                      <span>Base Subtotal:</span>
-                      <span className="font-semibold text-foreground">{formatIndianCurrency(subtotalAmount)}</span>
-                    </div>
-                    <div className="flex justify-between text-muted-foreground">
-                      <span>GST ({gstPercentage}%):</span>
-                      <span className="font-semibold text-amber-600 dark:text-amber-400">
-                        + {formatIndianCurrency(gstAmount)}
-                      </span>
-                    </div>
-                    <div className="flex justify-between text-foreground font-bold border-t border-border/50 pt-1 mt-1">
-                      <span>Gross Total:</span>
-                      <span className="text-primary font-extrabold">{formatIndianCurrency(grossAmount)}</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
             </div>
 
             <div className="grid grid-cols-2 gap-4">
