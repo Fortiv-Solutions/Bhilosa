@@ -47,7 +47,7 @@ export type ContractType =
   | 'supply_only'
   | 'supply_and_install';
 
-export type ValuationStructure = 'standard' | 'stage_percentage' | 'floor_lead';
+export type ValuationStructure = 'standard' | 'stage_percentage' | 'floor_lead' | 'rate_based';
 
 export type WoStageBreakdown = {
   id: string;
@@ -417,6 +417,18 @@ export async function getServiceBillDefaults(
   if (error) throw asDbError(error);
 
   const row = ((data || {}) as Record<string, unknown>);
+
+  const { data: woRow } = await supabase
+    .from('work_orders')
+    .select('work_order_type, valuation_structure')
+    .eq('id', workOrderId)
+    .maybeSingle();
+
+  const valStructure: ValuationStructure =
+    woRow?.work_order_type === 'rate_based' || woRow?.valuation_structure === 'rate_based' || row.valuation_structure === 'rate_based'
+      ? 'rate_based'
+      : (row.valuation_structure as ValuationStructure) ?? 'standard';
+
   return {
     retentionPercent: Number(row.retention_percent || 0),
     retentionReleaseMonths:
@@ -435,7 +447,7 @@ export async function getServiceBillDefaults(
     billingWindowDays: (row.billing_window_days as number[]) ?? [],
     contractType: (row.contract_type as ContractType) ?? null,
     hasStages: Boolean(row.has_stages),
-    valuation_structure: (row.valuation_structure as ValuationStructure) ?? 'standard',
+    valuation_structure: valStructure,
     lead_percent_per_floor: Number(row.lead_percent_per_floor ?? 0),
     stages: (row.stages as WoStageBreakdown[]) ?? [],
   };

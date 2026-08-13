@@ -26,10 +26,49 @@ export type CreateWorkOrderModalProps = {
   onSuccess: () => void;
 };
 
-type DraftLine = CreateWorkOrderLineInput & { key: string; itemName?: string; gstPercentage?: number };
+type DraftLine = CreateWorkOrderLineInput & { key: string; gstPercentage?: number };
 
 function emptyLine(): DraftLine {
-  return { key: Math.random().toString(36).slice(2), itemName: '', description: '', quantity: 0, unit: '', rate: 0, gstPercentage: 18 };
+  return { key: Math.random().toString(36).slice(2), description: '', quantity: 0, unit: '', rate: 0, gstPercentage: 18 };
+}
+
+/* ─── Auto-Resizing Textarea Component ────────────────────────────────── */
+function AutoResizingTextarea({
+  value,
+  onChange,
+  placeholder,
+  className,
+  required,
+}: {
+  value: string;
+  onChange: (val: string) => void;
+  placeholder?: string;
+  className?: string;
+  required?: boolean;
+}) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (ref.current) {
+      ref.current.style.height = 'auto';
+      ref.current.style.height = `${Math.max(38, ref.current.scrollHeight)}px`;
+    }
+  }, [value]);
+
+  return (
+    <textarea
+      ref={ref}
+      rows={1}
+      required={required}
+      placeholder={placeholder}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className={
+        className ||
+        'w-full rounded border border-input bg-background px-2.5 py-1.5 text-xs leading-relaxed resize-none overflow-hidden min-h-[38px] font-medium transition-all focus:ring-1 focus:ring-primary'
+      }
+    />
+  );
 }
 
 /* ─── Searchable Combobox: Format / Template ─────────────────────────── */
@@ -731,15 +770,14 @@ export function CreateWorkOrderModal({ isOpen, onClose, onSuccess }: CreateWorkO
   const subtotalAmount = useMemo(() => {
     const linesSum = lines.reduce((sum, l) => {
       const q = l.quantity && l.quantity > 0 ? l.quantity : 1;
-      const lineVal = (l.quantity === 0 && l.rate > 0) ? l.rate : q * (l.rate || 0);
-      return sum + lineVal;
+      return sum + q * (l.rate || 0);
     }, 0);
 
     if (woType === 'rate_based' && ceilingAmount > 0) {
       return ceilingAmount;
     }
     return linesSum;
-  }, [lines, woType, ceilingAmount, isPlumbing]);
+  }, [lines, woType, ceilingAmount]);
 
   const gstAmount = useMemo(() => {
     return (subtotalAmount * (gstPercentage || 0)) / 100;
@@ -807,8 +845,8 @@ export function CreateWorkOrderModal({ isOpen, onClose, onSuccess }: CreateWorkO
         taxInclusive: taxInclusive || gstPercentage > 0,
         ceilingAmount: woType === 'rate_based' ? (ceilingAmount > 0 ? ceilingAmount : subtotalAmount) : undefined,
         lines: lines.map((l) => ({
-          description: (!isPlumbing && l.itemName) ? `${l.itemName} - ${l.description}` : l.description,
-          quantity: isPlumbing ? 1 : l.quantity,
+          description: l.description,
+          quantity: l.quantity || 1,
           unit: l.unit,
           rate: l.rate,
         })),
@@ -1128,7 +1166,7 @@ export function CreateWorkOrderModal({ isOpen, onClose, onSuccess }: CreateWorkO
                   <label className="text-xs font-medium text-foreground">Lead Increment per Floor (%):</label>
                   <input
                     type="number"
-                    step="0.5"
+                    step="any"
                     value={leadPercentPerFloor}
                     onChange={(e) => setLeadPercentPerFloor(Number(e.target.value) || 0)}
                     className="w-20 rounded border border-input bg-background px-2 py-1 text-xs font-bold text-center"
@@ -1162,7 +1200,7 @@ export function CreateWorkOrderModal({ isOpen, onClose, onSuccess }: CreateWorkO
                         <div className="flex items-center gap-1 shrink-0">
                           <input
                             type="number"
-                            step="0.5"
+                            step="any"
                             value={st.percent}
                             onChange={(e) => {
                               const copy = [...stages];
@@ -1193,13 +1231,12 @@ export function CreateWorkOrderModal({ isOpen, onClose, onSuccess }: CreateWorkO
                   <thead className="bg-muted/50 font-heading font-bold text-muted-foreground uppercase border-b border-border text-[10px]">
                     <tr>
                       <th className="px-3 py-2 text-center w-[40px]">Sr</th>
-                      {!isPlumbing && <th className="px-3 py-2 min-w-[150px]">Item / Service Description</th>}
-                      <th className="px-3 py-2 min-w-[240px]">Work Description & Specification</th>
-                      {!isPlumbing && woType === 'fixed_scope' && <th className="px-3 py-2 text-right w-[80px]">Qty</th>}
+                      <th className="px-3 py-2 min-w-[360px]">Work Description & Specification</th>
+                      <th className="px-3 py-2 text-right w-[80px]">Qty</th>
                       <th className="px-3 py-2 w-[80px]">Unit</th>
                       <th className="px-3 py-2 text-right w-[110px]">Rate (₹)</th>
                       <th className="px-3 py-2 w-[90px]">GST %</th>
-                      {woType === 'fixed_scope' && <th className="px-3 py-2 text-right w-[110px]">Amount (₹)</th>}
+                      <th className="px-3 py-2 text-right w-[110px]">Amount (₹)</th>
                       <th className="px-3 py-2 text-center w-[40px]"></th>
                     </tr>
                   </thead>
@@ -1207,52 +1244,26 @@ export function CreateWorkOrderModal({ isOpen, onClose, onSuccess }: CreateWorkO
                     {lines.map((line, idx) => (
                       <tr key={line.key} className="border-b border-border last:border-0 hover:bg-muted/10">
                         <td className="px-3 py-2 text-center font-semibold text-muted-foreground">{idx + 1}</td>
-                        {!isPlumbing && (
-                          <td className="px-2 py-1.5">
-                            <input
-                              required={!isPlumbing}
-                              type="text"
-                              placeholder="e.g. Concrete, AC"
-                              value={line.itemName || ''}
-                              onChange={(e) => updateLine(line.key, { itemName: e.target.value })}
-                              className="w-full rounded border border-input bg-background px-2 py-1 text-xs"
-                            />
-                          </td>
-                        )}
                         <td className="px-2 py-1.5">
-                          <textarea
+                          <AutoResizingTextarea
                             required
-                            rows={1}
-                            placeholder="Detailed specifications"
+                            placeholder="Detailed work description & specifications"
                             value={line.description}
-                            onInput={(e) => {
-                              const target = e.currentTarget;
-                              target.style.height = 'auto';
-                              target.style.height = `${target.scrollHeight}px`;
-                            }}
-                            onChange={(e) => {
-                              updateLine(line.key, { description: e.target.value });
-                              const target = e.currentTarget;
-                              target.style.height = 'auto';
-                              target.style.height = `${target.scrollHeight}px`;
-                            }}
-                            className="w-full rounded border border-input bg-background px-2 py-1 text-xs resize-none overflow-hidden min-h-[34px]"
+                            onChange={(val) => updateLine(line.key, { description: val })}
                           />
                         </td>
-                        {!isPlumbing && woType === 'fixed_scope' && (
-                          <td className="px-2 py-1.5">
-                            <input
-                              required={!isPlumbing}
-                              type="number"
-                              min="0"
-                              step="0.01"
-                              placeholder="Qty"
-                              value={line.quantity === 0 ? '' : line.quantity}
-                              onChange={(e) => updateLine(line.key, { quantity: Number(e.target.value) })}
-                              className="w-full rounded border border-input bg-background px-2 py-1 text-xs text-right"
-                            />
-                          </td>
-                        )}
+                        <td className="px-2 py-1.5">
+                          <input
+                            required
+                            type="number"
+                            min="0"
+                            step="any"
+                            placeholder="Qty"
+                            value={line.quantity === 0 ? '' : line.quantity}
+                            onChange={(e) => updateLine(line.key, { quantity: Number(e.target.value) })}
+                            className="w-full rounded border border-input bg-background px-2 py-1 text-xs text-right font-medium"
+                          />
+                        </td>
                         <td className="px-2 py-1.5">
                           <input
                             required
@@ -1268,7 +1279,7 @@ export function CreateWorkOrderModal({ isOpen, onClose, onSuccess }: CreateWorkO
                             required
                             type="number"
                             min="0"
-                            step="0.01"
+                            step="any"
                             placeholder="Rate"
                             value={line.rate === 0 ? '' : line.rate}
                             onChange={(e) => updateLine(line.key, { rate: Number(e.target.value) })}
@@ -1288,11 +1299,9 @@ export function CreateWorkOrderModal({ isOpen, onClose, onSuccess }: CreateWorkO
                             <option value={28}>28%</option>
                           </select>
                         </td>
-                        {woType === 'fixed_scope' && (
-                          <td className="px-3 py-2 text-right font-semibold">
-                            {formatIndianCurrency(isPlumbing ? line.rate : (line.quantity || 0) * line.rate)}
-                          </td>
-                        )}
+                        <td className="px-3 py-2 text-right font-semibold">
+                          {formatIndianCurrency((line.quantity || 1) * line.rate)}
+                        </td>
                         <td className="px-2 py-1.5 text-center">
                           <button
                             type="button"

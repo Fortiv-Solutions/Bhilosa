@@ -51,6 +51,17 @@ function formatAmount(n: number) {
   return `₹${n.toLocaleString('en-IN')}`;
 }
 
+function formatDate(dateStr?: string | null) {
+  if (!dateStr) return '-';
+  try {
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return dateStr;
+    return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+  } catch {
+    return dateStr;
+  }
+}
+
 export default function WorkOrdersPage() {
   const [workOrders, setWorkOrders] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
@@ -158,10 +169,10 @@ export default function WorkOrdersPage() {
             <thead className="border-b border-gray-200 text-gray-400 dark:border-gray-800">
               <tr>
                 <th className="pb-3">WO Number</th>
+                <th className="pb-3 min-w-[180px]">Trade / Scope</th>
                 <th className="pb-3">Project</th>
                 <th className="pb-3">Agency</th>
-                <th className="pb-3 min-w-[200px]">WO Type</th>
-                <th className="pb-3 w-[100px]">GST %</th>
+                <th className="pb-3">WO Type</th>
                 <th className="pb-3">WO Value</th>
                 <th className="pb-3">Billed to Date</th>
                 <th className="pb-3">Remaining</th>
@@ -176,47 +187,26 @@ export default function WorkOrdersPage() {
                   <td className="py-3 font-bold">
                     <Link href={`/work-orders/${wo.id}`} className="text-primary hover:underline">{wo.workOrderNumber}</Link>
                   </td>
+                  <td className="py-3 font-semibold text-gray-900 dark:text-gray-100 max-w-[220px] truncate" title={wo.scopeOfWork || 'General Works'}>
+                    {wo.scopeOfWork || 'General Works'}
+                  </td>
                   <td className="py-3">
-                    <Link href={`/projects/${wo.projectId}`} className="font-semibold text-primary">{wo.projectName}</Link>
+                    <Link href={`/projects/${wo.projectId}`} className="font-semibold text-primary hover:underline">{wo.projectName}</Link>
                   </td>
                   <td className="py-3">{wo.agencyName}</td>
                   <td className="py-3">
-                    <select
-                      value={wo.woType}
-                      onChange={(e) => {
-                        const newType = e.target.value;
-                        setWorkOrders((prev) =>
-                          prev.map((item) => (item.id === wo.id ? { ...item, wo_type: newType } : item)),
-                        );
-                      }}
-                      className="rounded-lg border border-input bg-background px-2.5 py-1 text-xs font-semibold text-foreground cursor-pointer outline-none focus:ring-2 focus:ring-primary/20"
-                    >
-                      <option value="fixed_scope">Fixed-scope (defined quantity)</option>
-                      <option value="rate_based">Rate-based (quantity at execution)</option>
-                    </select>
-                  </td>
-                  <td className="py-3">
-                    <select
-                      value={wo.gstPercentage}
-                      onChange={(e) => {
-                        const newGst = Number(e.target.value);
-                        setWorkOrders((prev) =>
-                          prev.map((item) => (item.id === wo.id ? { ...item, gst_percentage: newGst } : item)),
-                        );
-                      }}
-                      className="rounded-lg border border-input bg-background px-2.5 py-1 text-xs font-bold text-foreground cursor-pointer outline-none focus:ring-2 focus:ring-primary/20"
-                    >
-                      <option value={0}>0%</option>
-                      <option value={5}>5%</option>
-                      <option value={12}>12%</option>
-                      <option value={18}>18%</option>
-                      <option value={28}>28%</option>
-                    </select>
+                    <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
+                      wo.woType === 'rate_based'
+                        ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-900/40'
+                        : 'bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-300 border border-blue-200 dark:border-blue-900/40'
+                    }`}>
+                      {wo.woType === 'rate_based' ? '📐 Rate-Based' : '⚡ Fixed Scope'}
+                    </span>
                   </td>
                   <td className="py-3 font-bold">{formatAmount(wo.totalAmount)}</td>
                   <td className="py-3 text-gray-500">{formatAmount(wo.billedToDate)}</td>
                   <td className="py-3 font-bold">{formatAmount(wo.remainingBalance)}</td>
-                  <td className="py-3 text-gray-500">{wo.startDate || '-'}</td>
+                  <td className="py-3 text-gray-500 font-medium">{formatDate(wo.startDate)}</td>
                   <td className="py-3">
                     <div className="flex items-center gap-1.5">
                       <span

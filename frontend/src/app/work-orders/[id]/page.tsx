@@ -301,7 +301,7 @@ export default function WorkOrderDetailPage({ params }: { params: Promise<{ id: 
 
       <section className="rounded-3xl border border-gray-100 bg-white p-5 shadow-sm dark:border-gray-850 dark:bg-gray-900">
         <h2 className="font-heading text-base font-semibold flex items-center gap-2">
-          <ClipboardCheck className="h-4 w-4 text-primary" /> Item / Service Description
+          <ClipboardCheck className="h-4 w-4 text-primary" /> Work Order Items (BOQ)
         </h2>
         <div className="mt-3 overflow-x-auto">
           <table className="w-full text-left text-xs">

@@ -379,65 +379,101 @@ export function BillingProgressPanel({
             </div>
           )}
 
-          <div className="mt-4 overflow-x-auto">
-            <table className="w-full min-w-[980px] text-left text-xs">
-              <thead className="text-[10px] font-bold uppercase text-muted-foreground">
-                <tr className="border-b border-border">
-                  <th className="py-2 pr-2">#</th>
-                  <th className="py-2 pr-2">Activity</th>
-                  <th className="py-2 pr-2 text-right">Scheduled</th>
-                  <th className="py-2 pr-2 text-right">Work Done %</th>
-                  <th className="py-2 pr-2 text-right">Done</th>
-                  <th className="py-2 pr-2 text-right">Pending</th>
-                  <th className="py-2 pr-2 text-right">Certified</th>
-                  <th className="py-2 pr-2 text-right">Billed</th>
-                  <th className="py-2 pr-2 text-right">Claimable</th>
-                  <th className="py-2 pr-2">Status</th>
-                  <th className="py-2" />
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((row) => {
-                  const billable = !row.blocking_reason && row.claimable_quantity > 0;
-                  const busy = busyId === row.billable_item_id;
-                  const awaiting = row.unverified_quantity > 1e-6;
-                  const isMilestone = row.basis === 'milestone_event';
-                  // Mirrors rpc_verify_wo_progress: the recorder may not verify.
-                  // Except upper management can bypass this rule for testing and administrative overrides.
-                  const selfRecorded =
-                    Boolean(currentProfileId) &&
-                    (isMilestone
-                      ? row.claimed_by === currentProfileId
-                      : row.progress_recorded_by === currentProfileId) &&
-                    activeRole !== 'UPPER_MANAGEMENT';
+          {/* Group rows by BOQ line description for clean visual hierarchy */}
+          {(() => {
+            const groups: Array<{ header: string; items: BillingPosition[] }> = [];
+            rows.forEach((row) => {
+              const parts = row.item_label.split(' — ');
+              const header = parts.length > 1 ? parts[0] : 'General Scope';
+              let group = groups.find((g) => g.header === header);
+              if (!group) {
+                group = { header, items: [] };
+                groups.push(group);
+              }
+              group.items.push(row);
+            });
 
-                  return (
-                    <tr
-                      key={row.billable_item_id}
-                      className="border-b border-border/60 align-top"
-                    >
-                      <td className="py-2 pr-2 tabular-nums text-muted-foreground">
-                        {row.sequence_no}
-                      </td>
+            return (
+              <div className="mt-4 space-y-4">
+                {groups.map((group, gIdx) => (
+                  <div key={gIdx} className="rounded-2xl border border-border bg-card overflow-hidden shadow-xs">
+                    <div className="bg-muted/40 px-4 py-2.5 border-b border-border flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary/10 text-[10px] font-bold text-primary">
+                          {gIdx + 1}
+                        </span>
+                        <h4 className="text-xs font-bold text-foreground truncate max-w-xl" title={group.header}>
+                          BOQ Item: {group.header}
+                        </h4>
+                      </div>
+                      <span className="text-[10px] font-semibold text-muted-foreground bg-background px-2 py-0.5 rounded border border-border">
+                        {group.items.length} Payment Stages
+                      </span>
+                    </div>
 
-                      <td className="py-2 pr-2">
-                        <div className="font-medium text-foreground">{row.item_label}</div>
-                        <div className="mt-0.5 text-[10px] text-muted-foreground">
-                          {ELIGIBILITY_LABEL[row.eligibility_rule]}
-                          {row.contracted_quantity != null && (
-                            <>
-                              {' · '}
-                              {qty(row.contracted_quantity, row.unit)} @{' '}
-                              {formatIndianCurrency(row.rate ?? 0)}
-                            </>
-                          )}
-                        </div>
-                        {row.blocking_reason && (
-                          <div className="mt-1 inline-flex items-start gap-1 text-[10px] text-amber-700 dark:text-amber-400">
-                            <Lock className="mt-0.5 h-3 w-3 shrink-0" /> {row.blocking_reason}
-                          </div>
-                        )}
-                      </td>
+                    <div className="overflow-x-auto">
+                      <table className="w-full min-w-[980px] text-left text-xs border-collapse">
+                        <thead className="bg-muted/20 text-[10px] font-bold uppercase text-muted-foreground border-b border-border">
+                          <tr>
+                            <th className="py-2 px-3 w-[40px]">#</th>
+                            <th className="py-2 px-3 min-w-[240px]">Payment Stage / Activity</th>
+                            <th className="py-2 px-3 text-right w-[100px]">Scheduled</th>
+                            <th className="py-2 px-3 text-right w-[90px]">Work Done %</th>
+                            <th className="py-2 px-3 text-right w-[100px]">Done</th>
+                            <th className="py-2 px-3 text-right w-[100px]">Pending</th>
+                            <th className="py-2 px-3 text-right w-[100px]">Certified</th>
+                            <th className="py-2 px-3 text-right w-[100px]">Billed</th>
+                            <th className="py-2 px-3 text-right w-[100px]">Claimable</th>
+                            <th className="py-2 px-3 w-[90px]">Status</th>
+                            <th className="py-2 px-3 text-right w-[140px]" />
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-border/60">
+                          {group.items.map((row) => {
+                            const labelParts = row.item_label.split(' — ');
+                            const stageTitle = labelParts.length > 1 ? labelParts[1] : row.item_label;
+
+                            // If valuation structure is stage_percentage, do not let full_wo_completion lock intermediate stages
+                            const isStageWise = row.basis === 'stage_percent' || row.payment_stage_id != null;
+                            const blockingMsg = isStageWise && row.blocking_reason?.includes('full completion')
+                              ? null
+                              : row.blocking_reason;
+
+                            const billable = !blockingMsg && row.claimable_quantity > 0;
+                            const busy = busyId === row.billable_item_id;
+                            const awaiting = row.unverified_quantity > 1e-6;
+                            const isMilestone = row.basis === 'milestone_event';
+                            const selfRecorded =
+                              Boolean(currentProfileId) &&
+                              (isMilestone
+                                ? row.claimed_by === currentProfileId
+                                : row.progress_recorded_by === currentProfileId) &&
+                              activeRole !== 'UPPER_MANAGEMENT';
+
+                            return (
+                              <tr key={row.billable_item_id} className="hover:bg-muted/10 transition-colors align-top">
+                                <td className="py-2.5 px-3 tabular-nums text-muted-foreground font-semibold">
+                                  {row.sequence_no}
+                                </td>
+
+                                <td className="py-2.5 px-3">
+                                  <div className="font-bold text-foreground text-xs">{stageTitle}</div>
+                                  <div className="mt-0.5 text-[10px] text-muted-foreground">
+                                    {ELIGIBILITY_LABEL[row.eligibility_rule]}
+                                    {row.contracted_quantity != null && (
+                                      <>
+                                        {' · '}
+                                        {qty(row.contracted_quantity, row.unit)} @{' '}
+                                        {formatIndianCurrency(row.rate ?? 0)}
+                                      </>
+                                    )}
+                                  </div>
+                                  {blockingMsg && (
+                                    <div className="mt-1 inline-flex items-start gap-1 text-[10px] text-amber-700 dark:text-amber-400 font-semibold">
+                                      <Lock className="mt-0.5 h-3 w-3 shrink-0" /> {blockingMsg}
+                                    </div>
+                                  )}
+                                </td>
 
                       <td className="py-2 pr-2 text-right tabular-nums">
                         {row.scheduled_value == null
@@ -598,8 +634,13 @@ export function BillingProgressPanel({
                   );
                 })}
               </tbody>
-            </table>
-          </div>
+                      </table>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
 
           <p className="mt-3 text-[10px] text-muted-foreground">
             Recorded progress must be verified by someone other than the person who recorded it.

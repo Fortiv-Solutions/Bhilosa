@@ -27,9 +27,12 @@ import {
 } from '@/lib/service-bills';
 import {
   getWorkOrderLineBillingPosition,
+  type WorkOrderLineBillingPosition,
 } from '@/lib/measurement-sheets';
+import { supabase } from '@/utils/supabase-client';
 import {
   getBillableWorkOrders,
+  getWorkOrder,
   listBudgetHeads,
   listMasterBudgetLines,
   type BudgetHeadOption,
@@ -55,11 +58,14 @@ type BillableWorkOrder = {
   id: string;
   work_order_number: string;
   scope_of_work: string;
+  wo_type?: string | null;
   total_amount: number;
   billed_to_date: number;
   claimed_to_date: number;
   remaining_balance: number;
   tax_inclusive: boolean;
+  gst_percentage?: number | null;
+  agency_id?: string | null;
   vendor_id: string | null;
   contractor_id: string | null;
   activity_id: string | null;
@@ -79,12 +85,15 @@ type DraftLine = {
   contractedRate: number;
   taxRate: number;
   floorLevel?: number;      // Floor level for floor_lead billing (0 = Ground)
-  stageId?: string;          // Payment stage ID for stage_percentage billing  
-  stageName?: string;        // Payment stage name
-  stagePercent?: number;     // Payment stage percentage
+  stageId?: string;          // Primary payment stage ID for stage_percentage billing  
+  stageIds?: string[];       // Array of selected stage IDs for multi-stage selection
+  stageName?: string;        // Primary payment stage name
+  stageNames?: string[];     // Array of selected stage names
+  stagePercent?: number;     // Combined payment stage percentage (sum)
   effectiveRate?: number;    // Computed: baseRate * (1 + floor * lead%/100)
   contractedQty?: number;    // Original WO contracted qty (display only)
   prevCertifiedQty?: number; // Previously certified qty (display only)
+  warrantyPeriod?: string;   // Display-only warranty period (e.g. 10 Years Paint Performance Warranty)
 };
 
 function newLine(): DraftLine {
@@ -100,12 +109,177 @@ function newLine(): DraftLine {
   };
 }
 
+/* ─── Auto-Resizing Textarea Component ────────────────────────────────── */
+function AutoResizingTextarea({
+  value,
+  onChange,
+  placeholder,
+  className,
+  required,
+}: {
+  value: string;
+  onChange: (val: string) => void;
+  placeholder?: string;
+  className?: string;
+  required?: boolean;
+}) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (ref.current) {
+      ref.current.style.height = 'auto';
+      ref.current.style.height = `${Math.max(38, ref.current.scrollHeight)}px`;
+    }
+  }, [value]);
+
+  return (
+    <textarea
+      ref={ref}
+      rows={1}
+      required={required}
+      placeholder={placeholder}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className={
+        className ||
+        'w-full rounded border border-input bg-background px-2.5 py-1.5 text-xs leading-relaxed resize-none overflow-hidden min-h-[38px] font-medium transition-all focus:ring-1 focus:ring-primary'
+      }
+    />
+  );
+}
+
+/* ─── Multi-Stage Selection Dropdown Component ───────────────────────── */
+function MultiStageDropdown({
+  stages,
+  selectedStageIds = [],
+  onChange,
+}: {
+  stages: Array<{ id: string; name: string; percent: number }>;
+  selectedStageIds: string[];
+  onChange: (
+    stageIds: string[],
+    selectedStages: Array<{ id: string; name: string; percent: number }>
+  ) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const selectedStages = useMemo(
+    () => stages.filter((s) => selectedStageIds.includes(s.id)),
+    [stages, selectedStageIds]
+  );
+
+  const totalPercent = useMemo(
+    () => selectedStages.reduce((sum, s) => sum + s.percent, 0),
+    [selectedStages]
+  );
+
+  const toggleStage = (stageId: string) => {
+    let nextIds: string[];
+    if (selectedStageIds.includes(stageId)) {
+      nextIds = selectedStageIds.filter((id) => id !== stageId);
+    } else {
+      nextIds = [...selectedStageIds, stageId];
+    }
+    const nextStages = stages.filter((s) => nextIds.includes(s.id));
+    onChange(nextIds, nextStages);
+  };
+
+  const toggleAll = () => {
+    if (selectedStageIds.length === stages.length) {
+      onChange([], []);
+    } else {
+      onChange(stages.map((s) => s.id), stages);
+    }
+  };
+
+  return (
+    <div className="relative w-full" ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 text-xs bg-background border border-input rounded hover:border-primary/50 text-left transition-all"
+      >
+        <span className="truncate font-medium">
+          {selectedStages.length === 0 ? (
+            <span className="text-muted-foreground">Select Stage(s)…</span>
+          ) : selectedStages.length === 1 ? (
+            <span>{selectedStages[0].name} ({selectedStages[0].percent}%)</span>
+          ) : (
+            <span className="font-semibold text-violet-700 dark:text-violet-300">
+              {selectedStages.length} Stages ({totalPercent}%)
+            </span>
+          )}
+        </span>
+        <ChevronDown className={`w-3.5 h-3.5 text-muted-foreground shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+
+      {open && (
+        <div className="absolute z-50 left-0 mt-1 min-w-[260px] max-w-sm w-max bg-popover border border-border rounded-lg shadow-xl p-2.5 animate-in fade-in-50 zoom-in-95 duration-100">
+          <div className="flex items-center justify-between border-b border-border pb-1.5 mb-1.5 px-1">
+            <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">
+              Select Stages ({selectedStages.length}/{stages.length})
+            </span>
+            <button
+              type="button"
+              onClick={toggleAll}
+              className="text-[10px] font-semibold text-primary hover:underline"
+            >
+              {selectedStageIds.length === stages.length ? 'Clear all' : 'Select all'}
+            </button>
+          </div>
+
+          <div className="max-h-52 overflow-y-auto space-y-1">
+            {stages.map((stage) => {
+              const isSelected = selectedStageIds.includes(stage.id);
+              return (
+                <label
+                  key={stage.id}
+                  className={`flex items-center justify-between gap-2 px-2 py-1.5 rounded cursor-pointer text-xs transition-colors ${
+                    isSelected ? 'bg-primary/10 font-semibold text-primary' : 'hover:bg-muted text-foreground'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => toggleStage(stage.id)}
+                      className="rounded border-input text-primary focus:ring-primary h-3.5 w-3.5"
+                    />
+                    <span className="truncate">{stage.name}</span>
+                  </div>
+                  <span className="text-[11px] font-mono text-muted-foreground shrink-0">{stage.percent}%</span>
+                </label>
+              );
+            })}
+          </div>
+
+          {selectedStages.length > 0 && (
+            <div className="border-t border-border mt-2 pt-1.5 px-1 flex justify-between items-center text-[11px] font-bold text-foreground">
+              <span>Combined Total:</span>
+              <span className="text-violet-700 dark:text-violet-300 font-mono text-xs">{totalPercent}%</span>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function lineValue(line: DraftLine): number {
-  const qty = line.quantity && line.quantity > 0 ? line.quantity : 1;
+  const qty = line.quantity && line.quantity > 0 ? line.quantity : 0;
   const effectiveRate = line.effectiveRate && line.effectiveRate > 0 ? line.effectiveRate : (line.rate || 0);
-  const baseVal = qty * effectiveRate;
-  const pct = line.percentCompleted !== undefined && line.percentCompleted !== null ? line.percentCompleted : 100;
-  return baseVal * (pct / 100);
+  return qty * effectiveRate;
 }
 
 /* ─── Typo-Tolerant & Partial Text Fuzzy Matching Helper ───────────────── */
@@ -506,7 +680,7 @@ export function CreateServiceBillModal({
   const [masterBudgetItemId, setMasterBudgetItemId] = useState('');
   const [defaults, setDefaults] = useState<ServiceBillDefaults | null>(null);
 
-  const [valuationStructure, setValuationStructure] = useState<'standard' | 'stage_percentage' | 'floor_lead'>('standard');
+  const [valuationStructure, setValuationStructure] = useState<'standard' | 'stage_percentage' | 'floor_lead' | 'rate_based'>('standard');
   const [leadPercentPerFloor, setLeadPercentPerFloor] = useState(0);
   const [paymentStages, setPaymentStages] = useState<Array<{ id: string; name: string; percent: number }>>([]);
 
@@ -550,30 +724,44 @@ export function CreateServiceBillModal({
     setPaymentStages([]);
   }, []);
 
+  const targetProjectId = projectId || 'central-park';
+
   useEffect(() => {
-    if (!isOpen || !projectId) return;
+    if (!isOpen) return;
     resetForm();
-    getBillableWorkOrders(projectId)
-      .then((rows) => setWorkOrders((rows || []) as unknown as BillableWorkOrder[]))
-      .catch(() => setWorkOrders([]));
+    getBillableWorkOrders(targetProjectId)
+      .then(async (rows) => {
+        if (rows && rows.length > 0) {
+          setWorkOrders(rows as unknown as BillableWorkOrder[]);
+        } else {
+          // Fallback: query all active Work Orders if project ID mapping differs or no project passed
+          const allWos = await getBillableWorkOrders().catch(() => []);
+          setWorkOrders((allWos || []) as unknown as BillableWorkOrder[]);
+        }
+      })
+      .catch(async () => {
+        const allWos = await getBillableWorkOrders().catch(() => []);
+        setWorkOrders((allWos || []) as unknown as BillableWorkOrder[]);
+      });
     listBillableVendors()
       .then(setVendors)
       .catch(() => setVendors([]));
-    listBudgetHeads(projectId)
+    listBudgetHeads(targetProjectId)
       .then(setBudgetHeads)
       .catch(() => setBudgetHeads([]));
-    listMasterBudgetLines(projectId)
+    listMasterBudgetLines(targetProjectId)
       .then(setMasterLines)
       .catch(() => setMasterLines([]));
-  }, [isOpen, projectId, resetForm]);
+  }, [isOpen, targetProjectId, resetForm]);
 
-  // Requirement 1: If contractor/vendor is selected first, show ONLY connected Work Orders
+  // Requirement 1: If contractor/vendor is selected first, filter connected Work Orders with fallback
   const filteredWorkOrders = useMemo(() => {
     if (!vendorId) return workOrders;
-    return workOrders.filter((wo) => {
-      const woVendor = wo.contractor_id || wo.vendor_id;
-      return woVendor === vendorId;
+    const matched = workOrders.filter((wo) => {
+      const woVendor = wo.agency_id || wo.contractor_id || wo.vendor_id;
+      return !woVendor || woVendor === vendorId;
     });
+    return matched.length > 0 ? matched : workOrders;
   }, [workOrders, vendorId]);
 
   const selectedWorkOrder = useMemo(
@@ -594,46 +782,100 @@ export function CreateServiceBillModal({
     }
 
     // Auto-fetch Activity & Sub-Activity from Work Order
-    if (selectedWorkOrder.activity_id) {
-      setBudgetAllocationId(selectedWorkOrder.activity_id);
-    }
     if (selectedWorkOrder.master_budget_item_id) {
       setMasterBudgetItemId(selectedWorkOrder.master_budget_item_id);
+      const line = masterLines.find((m) => m.id === selectedWorkOrder.master_budget_item_id);
+      if (line) {
+        const matchingHead = budgetHeads.find(
+          (h) =>
+            (line.categoryId && h.categoryId === line.categoryId) ||
+            (line.categoryName &&
+              (h.allocationName?.toLowerCase() === line.categoryName.toLowerCase() ||
+                h.categoryName?.toLowerCase() === line.categoryName.toLowerCase())),
+        );
+        if (matchingHead) {
+          setBudgetAllocationId(matchingHead.id);
+        }
+      }
+    } else if (selectedWorkOrder.activity_id) {
+      setBudgetAllocationId(selectedWorkOrder.activity_id);
     }
 
     // Fetch commercial defaults and populate initial line items
-    Promise.all([
-      getWorkOrderLineBillingPosition(workOrderId).catch(() => []),
-      getServiceBillDefaults(workOrderId).catch(() => null),
-    ]).then(([positionRows, billDefaults]) => {
-      if (billDefaults) {
-        setDefaults(billDefaults);
-        setRetentionPercent(billDefaults.retentionPercent);
-        setTdsPercent(billDefaults.tdsPercent);
-        setValuationStructure((billDefaults.valuation_structure as 'standard' | 'stage_percentage' | 'floor_lead') ?? 'standard');
-        setLeadPercentPerFloor(billDefaults.lead_percent_per_floor ?? 0);
-        setPaymentStages(billDefaults.stages ?? []);
-      }
+    async function loadWoData() {
+      try {
+        const [positionRows, billDefaults, woDetail, billCountRes] = await Promise.all([
+          getWorkOrderLineBillingPosition(workOrderId).catch(() => [] as WorkOrderLineBillingPosition[]),
+          getServiceBillDefaults(workOrderId).catch(() => null),
+          getWorkOrder(workOrderId).catch(() => null),
+          supabase
+            .from('service_bills')
+            .select('id', { count: 'exact', head: true })
+            .eq('work_order_id', workOrderId)
+            .is('deleted_at', null),
+        ]);
 
-      if (positionRows.length > 0) {
-        setLines(
-          positionRows.map((pos) => ({
-            key: pos.workOrderLineId || Math.random().toString(36).slice(2),
-            workOrderLineId: pos.workOrderLineId,
-            description: pos.description,
-            percentCompleted: 100,
-            quantity: pos.contractedQuantity || 1,
-            unit: pos.unit || '',
-            rate: pos.rate || 0,
-            contractedRate: pos.rate || 0,
-            contractedQty: pos.contractedQuantity,
-            prevCertifiedQty: pos.certifiedQuantity,
-            taxRate: billDefaults?.gstTreatment === 'exclusive' ? billDefaults.gstRate : 18,
-          })),
-        );
+        const existingBillsCount = billCountRes.count ?? 0;
+
+        // Auto-generate sequential RA bill number
+        const woNum = selectedWorkOrder?.work_order_number || 'SB';
+        const seq = existingBillsCount + 1;
+        setBillNumber(`${woNum}/RA-${seq}`);
+
+        if (billDefaults) {
+          setDefaults(billDefaults);
+          setRetentionPercent(billDefaults.retentionPercent);
+          setTdsPercent(billDefaults.tdsPercent);
+          setValuationStructure((billDefaults.valuation_structure as 'standard' | 'stage_percentage' | 'floor_lead' | 'rate_based') ?? 'standard');
+          setLeadPercentPerFloor(billDefaults.lead_percent_per_floor ?? 0);
+          setPaymentStages(billDefaults.stages ?? []);
+        }
+
+        if (positionRows && positionRows.length > 0) {
+          const defaultGstRate = Number(
+            (woDetail as any)?.gst_percentage ??
+              (woDetail as any)?.gst_rate ??
+              billDefaults?.gstRate ??
+              18,
+          );
+          const woLines = (woDetail as any)?.work_order_lines || [];
+
+          setLines(
+            positionRows.map((pos: any) => {
+              const matchedLine = woLines.find((l: any) => l.id === pos.workOrderLineId);
+              const lineGst = Number(
+                pos.gst_percentage ??
+                  pos.gstRate ??
+                  pos.tax_rate ??
+                  matchedLine?.gst_percentage ??
+                  matchedLine?.gst_rate ??
+                  matchedLine?.tax_rate ??
+                  defaultGstRate,
+              );
+
+              return {
+                key: pos.workOrderLineId || Math.random().toString(36).slice(2),
+                workOrderLineId: pos.workOrderLineId,
+                description: pos.description,
+                percentCompleted: 100,
+                quantity: pos.contractedQuantity || 1,
+                unit: pos.unit || '',
+                rate: pos.rate || 0,
+                contractedRate: pos.rate || 0,
+                contractedQty: pos.contractedQuantity,
+                prevCertifiedQty: pos.certifiedQuantity,
+                taxRate: lineGst,
+              };
+            }),
+          );
+        }
+      } catch (err) {
+        console.error('Error loading Work Order billing data:', err);
       }
-    });
-  }, [workOrderId, selectedWorkOrder, vendors]);
+    }
+
+    void loadWoData();
+  }, [workOrderId, selectedWorkOrder, vendors, budgetHeads, masterLines]);
 
   function updateLine(key: string, patch: Partial<DraftLine>) {
     setLines((prev) => prev.map((l) => (l.key === key ? { ...l, ...patch } : l)));
@@ -685,7 +927,7 @@ export function CreateServiceBillModal({
         description: l.description,
         unit: l.unit || undefined,
         quantity: l.quantity,
-        rate: valuationStructure === 'floor_lead' && l.effectiveRate ? l.effectiveRate : l.rate * ((l.percentCompleted ?? 100) / 100),
+        rate: valuationStructure === 'floor_lead' && l.effectiveRate ? l.effectiveRate : l.rate,
         taxRate: l.taxRate,
         workOrderLineId: l.workOrderLineId,
         billableItemId: l.billableItemId,
@@ -699,6 +941,22 @@ export function CreateServiceBillModal({
       return setError('Please enter at least one line item.');
     }
 
+    // Client-side over-billing validation for fixed scope contracts
+    const woType = selectedWorkOrder?.wo_type || 'fixed_scope';
+    if (woType === 'fixed_scope') {
+      for (const l of lines) {
+        if (l.description.trim() && l.contractedQty !== undefined && l.contractedQty > 0) {
+          const prevBilled = l.prevCertifiedQty || 0;
+          const availQty = Math.max(0, l.contractedQty - prevBilled);
+          if (l.quantity > availQty + 0.0001) {
+            return setError(
+              `Over-billing on "${l.description}": Entered quantity (${l.quantity}) exceeds remaining balance (${availQty.toFixed(2)}). Previously billed: ${prevBilled}, Contracted: ${l.contractedQty}.`,
+            );
+          }
+        }
+      }
+    }
+
     setLoading(true);
     setError(null);
 
@@ -706,7 +964,7 @@ export function CreateServiceBillModal({
       projectId,
       vendorId,
       workOrderId,
-      activityId: budgetAllocationId || selectedWorkOrder?.activity_id || undefined,
+      activityId: selectedWorkOrder?.activity_id || undefined,
       budgetAllocationId: budgetAllocationId || undefined,
       masterBudgetItemId:
         masterBudgetItemId || selectedWorkOrder?.master_budget_item_id || undefined,
@@ -735,7 +993,7 @@ export function CreateServiceBillModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-      <div className="w-full max-w-4xl rounded-xl bg-card border border-border shadow-2xl flex flex-col max-h-[92vh]">
+      <div className="w-full max-w-[94vw] lg:max-w-7xl xl:max-w-[90vw] rounded-2xl bg-card border border-border shadow-2xl flex flex-col max-h-[95vh] duration-200">
         <div className="flex items-center justify-between border-b border-border p-4">
           <div className="flex items-center gap-2">
             <FileText className="h-5 w-5 text-primary" />
@@ -807,7 +1065,7 @@ export function CreateServiceBillModal({
                   <option value="">Select an issued/active Work Order…</option>
                   {filteredWorkOrders.map((wo) => (
                     <option key={wo.id} value={wo.id}>
-                      {wo.work_order_number} — {wo.site_agencies?.agency_name || 'Agency'} (
+                      {wo.work_order_number} {wo.scope_of_work ? `[${wo.scope_of_work}]` : ''} — {wo.site_agencies?.agency_name || 'Agency'} (
                       {formatIndianCurrency(wo.remaining_balance)} left)
                     </option>
                   ))}
@@ -846,9 +1104,13 @@ export function CreateServiceBillModal({
                     <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
                       valuationStructure === 'stage_percentage'
                         ? 'bg-violet-100 text-violet-700 dark:bg-violet-950/40 dark:text-violet-300'
-                        : 'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300'
+                        : valuationStructure === 'floor_lead'
+                        ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300'
+                        : 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300'
                     }`}>
-                      {valuationStructure === 'stage_percentage' ? '⚡ Stage/Milestone Billing' : '📐 Floor Lead Billing'}
+                      {valuationStructure === 'stage_percentage' && '⚡ Stage/Milestone Billing'}
+                      {valuationStructure === 'floor_lead' && '📐 Floor Lead Billing'}
+                      {valuationStructure === 'rate_based' && '📐 Rate-Based Contract (Quantity at Execution)'}
                     </span>
                   </div>
                 )}
@@ -956,68 +1218,133 @@ export function CreateServiceBillModal({
                 </button>
               </div>
 
-              <div className="overflow-x-auto rounded-lg border border-border">
-                <table className="w-full text-left text-xs border-collapse">
-                  <thead className="bg-muted/50 font-heading font-bold text-muted-foreground uppercase border-b border-border text-[10px]">
+              {valuationStructure === 'floor_lead' && (
+                <div className="mb-2 rounded.md border border-amber-200 bg-amber-50 p-2.5 text-xs text-amber-800 flex items-center gap-2 font-medium">
+                  <span className="shrink-0 font-bold">📐 Floor Lead Billing:</span>
+                  <span>Each floor level must be recorded as a separate bill line (e.g. Ground Floor, 1st Floor, 2nd Floor). Base rate increases by +{leadPercentPerFloor}% per floor level.</span>
+                </div>
+              )}
+
+              {valuationStructure === 'stage_percentage' && (
+                <div className="mb-2 rounded-md border border-violet-200 bg-violet-50 p-2.5 text-xs text-violet-800 flex items-center gap-2 font-medium">
+                  <span className="shrink-0 font-bold">⚡ Stage/Milestone Billing:</span>
+                  <span>Multiple stages can be billed in a single bill by selecting the stage for each line item.</span>
+                </div>
+              )}
+
+              {valuationStructure === 'rate_based' && (
+                <div className="mb-2 rounded-md border border-emerald-200 bg-emerald-50 p-2.5 text-xs text-emerald-900 flex items-center gap-2 font-medium">
+                  <span className="shrink-0 font-bold">📐 Rate-Based Contract:</span>
+                  <span>Quantities are measured at site execution time. Enter the actual measured work quantity for this bill period. Line Amount = Executed Qty × Contract Rate.</span>
+                </div>
+              )}
+
+              <div className="overflow-x-auto rounded-xl border border-border">
+                <table className="w-full min-w-[1500px] text-left text-xs border-collapse">
+                  <thead className="bg-muted/60 font-heading font-bold text-muted-foreground uppercase border-b border-border text-[10px] tracking-wider">
                     {valuationStructure === 'standard' && (
                       <tr>
-                        <th className="px-3 py-2 min-w-[200px]">Items</th>
-                        <th className="px-3 py-2 text-right w-[90px]">Contracted Qty</th>
-                        <th className="px-3 py-2 text-right w-[90px]">Prev. Certified</th>
-                        <th className="px-3 py-2 text-right w-[90px]">This Bill Qty</th>
-                        <th className="px-3 py-2 w-[90px]">Unit</th>
-                        <th className="px-3 py-2 text-right w-[110px]">Rate/Unit (₹)</th>
-                        <th className="px-3 py-2 text-right w-[140px]">% of Work Completed</th>
-                        <th className="px-3 py-2 text-right w-[120px]">Amount (₹)</th>
-                        <th className="px-3 py-2 text-center w-[40px]"></th>
+                        <th className="px-3 py-2.5 min-w-[280px]">Items</th>
+                        <th className="px-2 py-2.5 text-right w-[90px]">Contracted</th>
+                        <th className="px-2 py-2.5 text-right w-[90px]">Prev Billed</th>
+                        <th className="px-2 py-2.5 text-right w-[100px] text-emerald-700 dark:text-emerald-400">Balance Qty</th>
+                        <th className="px-2 py-2.5 text-right w-[110px] text-purple-700 dark:text-purple-400">Remaining (₹)</th>
+                        <th className="px-2 py-2.5 text-right w-[100px]">This Bill Qty</th>
+                        <th className="px-2 py-2.5 w-[70px]">Unit</th>
+                        <th className="px-2 py-2.5 text-right w-[100px]">Rate (₹)</th>
+                        <th className="px-2 py-2.5 text-right w-[110px]">% Work Done</th>
+                        <th className="px-2 py-2.5 w-[80px]">GST %</th>
+                        {lines.some((l) => l.warrantyPeriod) && (
+                          <th className="px-2 py-2.5 w-[110px]">Warranty</th>
+                        )}
+                        <th className="px-3 py-2.5 text-right w-[120px]">Amount (₹)</th>
+                        <th className="px-2 py-2.5 text-center w-[40px]"></th>
                       </tr>
                     )}
                     {valuationStructure === 'stage_percentage' && (
                       <tr>
-                        <th className="px-3 py-2 min-w-[200px]">Items</th>
-                        <th className="px-3 py-2 min-w-[150px]">Stage</th>
-                        <th className="px-3 py-2 text-right w-[90px]">Stage %</th>
-                        <th className="px-3 py-2 text-right w-[90px]">Flats</th>
-                        <th className="px-3 py-2 text-right w-[110px]">Flat Rate (₹)</th>
-                        <th className="px-3 py-2 text-right w-[120px]">Amount (₹)</th>
-                        <th className="px-3 py-2 text-center w-[40px]"></th>
+                        <th className="px-3 py-2.5 min-w-[280px]">Items</th>
+                        <th className="px-2 py-2.5 min-w-[150px]">Stage</th>
+                        <th className="px-2 py-2.5 text-right w-[70px]">Stage %</th>
+                        <th className="px-2 py-2.5 text-right w-[90px]">Contracted</th>
+                        <th className="px-2 py-2.5 text-right w-[90px]">Prev Billed</th>
+                        <th className="px-2 py-2.5 text-right w-[100px] text-emerald-700 dark:text-emerald-400">Balance Qty</th>
+                        <th className="px-2 py-2.5 text-right w-[110px] text-purple-700 dark:text-purple-400">Remaining (₹)</th>
+                        <th className="px-2 py-2.5 text-right w-[90px]">Flats to Bill</th>
+                        <th className="px-2 py-2.5 text-right w-[100px]">Flat Rate (₹)</th>
+                        <th className="px-2 py-2.5 w-[80px]">GST %</th>
+                        {lines.some((l) => l.warrantyPeriod) && (
+                          <th className="px-2 py-2.5 w-[110px]">Warranty</th>
+                        )}
+                        <th className="px-3 py-2.5 text-right w-[120px]">Amount (₹)</th>
+                        <th className="px-2 py-2.5 text-center w-[40px]"></th>
                       </tr>
                     )}
                     {valuationStructure === 'floor_lead' && (
                       <tr>
-                        <th className="px-3 py-2 min-w-[200px]">Items</th>
-                        <th className="px-3 py-2 text-right w-[90px]">Qty</th>
-                        <th className="px-3 py-2 w-[90px]">Unit</th>
-                        <th className="px-3 py-2 text-center w-[90px]">Floor Level</th>
-                        <th className="px-3 py-2 text-right w-[110px]">Base Rate (₹)</th>
-                        <th className="px-3 py-2 text-right w-[90px]">Lead %</th>
-                        <th className="px-3 py-2 text-right w-[110px]">Effective Rate (₹)</th>
-                        <th className="px-3 py-2 text-right w-[120px]">Amount (₹)</th>
-                        <th className="px-3 py-2 text-center w-[40px]"></th>
+                        <th className="px-3 py-2.5 min-w-[280px]">Items</th>
+                        <th className="px-2 py-2.5 text-right w-[90px]">Contracted</th>
+                        <th className="px-2 py-2.5 text-right w-[90px]">Prev Billed</th>
+                        <th className="px-2 py-2.5 text-right w-[100px] text-emerald-700 dark:text-emerald-400">Balance Qty</th>
+                        <th className="px-2 py-2.5 text-right w-[110px] text-purple-700 dark:text-purple-400">Remaining (₹)</th>
+                        <th className="px-2 py-2.5 text-right w-[100px]">This Bill Qty</th>
+                        <th className="px-2 py-2.5 w-[70px]">Unit</th>
+                        <th className="px-2 py-2.5 text-center w-[85px]">Floor Level</th>
+                        <th className="px-2 py-2.5 text-right w-[100px]">Base Rate (₹)</th>
+                        <th className="px-2 py-2.5 text-right w-[80px]">Lead %</th>
+                        <th className="px-2 py-2.5 text-right w-[110px]">Effective (₹)</th>
+                        <th className="px-2 py-2.5 w-[80px]">GST %</th>
+                        {lines.some((l) => l.warrantyPeriod) && (
+                          <th className="px-2 py-2.5 w-[110px]">Warranty</th>
+                        )}
+                        <th className="px-3 py-2.5 text-right w-[120px]">Amount (₹)</th>
+                        <th className="px-2 py-2.5 text-center w-[40px]"></th>
+                      </tr>
+                    )}
+                    {valuationStructure === 'rate_based' && (
+                      <tr>
+                        <th className="px-3 py-2.5 min-w-[280px]">Items</th>
+                        <th className="px-2 py-2.5 text-right w-[110px]">Prev. Executed</th>
+                        <th className="px-2 py-2.5 text-right w-[130px] text-emerald-700 dark:text-emerald-400">This Bill Executed Qty</th>
+                        <th className="px-2 py-2.5 w-[80px]">Unit</th>
+                        <th className="px-2 py-2.5 text-right w-[110px]">Rate/Unit (₹)</th>
+                        <th className="px-2 py-2.5 w-[80px]">GST %</th>
+                        {lines.some((l) => l.warrantyPeriod) && (
+                          <th className="px-2 py-2.5 w-[110px]">Warranty</th>
+                        )}
+                        <th className="px-3 py-2.5 text-right w-[120px]">Amount (₹)</th>
+                        <th className="px-2 py-2.5 text-center w-[40px]"></th>
                       </tr>
                     )}
                   </thead>
-                  <tbody>
+                  <tbody className="divide-y divide-border/60">
                     {lines.map((line) => {
                       const val = lineValue(line);
+                      const prevBilled = line.prevCertifiedQty || 0;
+                      const contracted = line.contractedQty;
+                      const availBalanceQty = contracted !== undefined ? Math.max(0, contracted - prevBilled) : 0;
+                      const netBalanceQty = contracted !== undefined ? Math.max(0, contracted - prevBilled - (line.quantity || 0)) : 0;
+                      const isOverBilled = contracted !== undefined && contracted > 0 && (line.quantity || 0) > availBalanceQty + 0.0001;
+                      const remainingVal = netBalanceQty * line.rate;
+
                       return (
                         <tr key={line.key} className="border-b border-border last:border-0 hover:bg-muted/10">
-                          <td className="px-2 py-1.5">
-                            <input
+                          <td className="px-3 py-2.5">
+                            <AutoResizingTextarea
                               required
-                              type="text"
-                              placeholder="Item description"
+                              placeholder="Item description & specification"
                               value={line.description}
-                              onChange={(e) => updateLine(line.key, { description: e.target.value })}
-                              className="w-full rounded border border-input bg-background px-2 py-1 text-xs font-medium"
+                              onChange={(val) => updateLine(line.key, { description: val })}
                             />
                           </td>
 
                           {valuationStructure === 'standard' && (
                             <>
-                              <td className="px-2 py-1.5 text-right text-muted-foreground">{line.contractedQty || '-'}</td>
-                              <td className="px-2 py-1.5 text-right text-muted-foreground">{line.prevCertifiedQty || '-'}</td>
-                              <td className="px-2 py-1.5">
+                              <td className="px-2 py-2.5 text-right font-medium text-muted-foreground tabular-nums">{contracted ?? '-'}</td>
+                              <td className="px-2 py-2.5 text-right font-semibold text-muted-foreground tabular-nums">{prevBilled}</td>
+                              <td className="px-2 py-2.5 text-right font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">{contracted !== undefined ? netBalanceQty : '-'}</td>
+                              <td className="px-2 py-2.5 text-right font-bold text-purple-600 dark:text-purple-400 tabular-nums">{contracted !== undefined ? formatIndianCurrency(remainingVal) : '-'}</td>
+                              <td className="px-2 py-2.5">
                                 <input
                                   required
                                   type="number"
@@ -1025,20 +1352,36 @@ export function CreateServiceBillModal({
                                   step="0.01"
                                   placeholder="Qty"
                                   value={line.quantity === 0 ? '' : line.quantity}
-                                  onChange={(e) => updateLine(line.key, { quantity: Number(e.target.value) })}
-                                  className="w-full rounded border border-input bg-background px-2 py-1 text-xs text-right"
+                                  onChange={(e) => {
+                                    const newQty = Number(e.target.value);
+                                    const patch: Partial<DraftLine> = { quantity: newQty };
+                                    if (contracted && contracted > 0) {
+                                      patch.percentCompleted = Number(((newQty / contracted) * 100).toFixed(1));
+                                    }
+                                    updateLine(line.key, patch);
+                                  }}
+                                  className={`w-full rounded border px-2 py-1 text-xs text-right font-semibold ${
+                                    isOverBilled
+                                      ? 'border-red-500 bg-red-50 text-red-700 font-bold dark:bg-red-950/40 dark:text-red-300'
+                                      : 'border-input bg-background'
+                                  }`}
                                 />
+                                {isOverBilled && (
+                                  <p className="text-[10px] font-bold text-red-600 text-right mt-0.5">
+                                    Max: {availBalanceQty}
+                                  </p>
+                                )}
                               </td>
-                              <td className="px-2 py-1.5">
+                              <td className="px-2 py-2.5">
                                 <input
                                   type="text"
                                   placeholder="Unit"
                                   value={line.unit}
                                   onChange={(e) => updateLine(line.key, { unit: e.target.value })}
-                                  className="w-full rounded border border-input bg-background px-2 py-1 text-xs"
+                                  className="w-full rounded border border-input bg-background px-2 py-1 text-xs font-semibold"
                                 />
                               </td>
-                              <td className="px-2 py-1.5">
+                              <td className="px-2 py-2.5">
                                 <input
                                   required
                                   type="number"
@@ -1047,66 +1390,69 @@ export function CreateServiceBillModal({
                                   placeholder="Rate"
                                   value={line.rate === 0 ? '' : line.rate}
                                   onChange={(e) => updateLine(line.key, { rate: Number(e.target.value) })}
-                                  className="w-full rounded border border-input bg-background px-2 py-1 text-xs text-right"
+                                  className="w-full rounded border border-input bg-background px-2 py-1 text-xs text-right font-semibold"
                                 />
                               </td>
-                              <td className="px-2 py-1.5">
+                              <td className="px-2 py-2.5">
                                 <div className="flex items-center justify-end gap-1">
                                   <input
                                     required
                                     type="number"
                                     min="0"
                                     max="100"
-                                    step="0.5"
+                                    step="any"
                                     placeholder="100"
                                     value={line.percentCompleted === 0 ? '' : line.percentCompleted}
                                     onChange={(e) => updateLine(line.key, { percentCompleted: Number(e.target.value) })}
-                                    className="w-16 rounded border border-input bg-background px-2 py-1 text-xs text-right font-semibold"
+                                    className="w-16 rounded border border-input bg-background px-2 py-1 text-xs text-right font-bold text-foreground"
                                   />
                                   <span className="text-xs text-muted-foreground">%</span>
                                 </div>
+                              </td>
+                              <td className="px-2 py-2.5">
+                                <select
+                                  value={line.taxRate ?? 18}
+                                  onChange={(e) => updateLine(line.key, { taxRate: Number(e.target.value) })}
+                                  className="w-full rounded border border-input bg-background px-2 py-1 text-xs font-bold text-foreground cursor-pointer"
+                                >
+                                  <option value={0}>0%</option>
+                                  <option value={5}>5%</option>
+                                  <option value={12}>12%</option>
+                                  <option value={18}>18%</option>
+                                  <option value={28}>28%</option>
+                                </select>
                               </td>
                             </>
                           )}
 
                           {valuationStructure === 'stage_percentage' && (
                             <>
-                              <td className="px-2 py-1.5">
-                                <select
-                                  required
-                                  value={line.stageId || ''}
-                                  onChange={(e) => {
-                                    const selectedStage = paymentStages.find((s) => s.id === e.target.value);
-                                    if (selectedStage) {
-                                      updateLine(line.key, {
-                                        stageId: selectedStage.id,
-                                        stageName: selectedStage.name,
-                                        stagePercent: selectedStage.percent,
-                                        percentCompleted: selectedStage.percent,
-                                      });
-                                    } else {
-                                      updateLine(line.key, {
-                                        stageId: '',
-                                        stageName: '',
-                                        stagePercent: undefined,
-                                        percentCompleted: 100,
-                                      });
-                                    }
+                              <td className="px-2 py-2.5 min-w-[200px]">
+                                <MultiStageDropdown
+                                  stages={paymentStages}
+                                  selectedStageIds={line.stageIds || (line.stageId ? [line.stageId] : [])}
+                                  onChange={(selectedIds, selectedStages) => {
+                                    const totalPct = selectedStages.reduce((sum, s) => sum + s.percent, 0);
+                                    const names = selectedStages.map((s) => s.name);
+                                    updateLine(line.key, {
+                                      stageId: selectedIds[0] || '',
+                                      stageIds: selectedIds,
+                                      stageName: names.join(', ') || '',
+                                      stageNames: names,
+                                      stagePercent: totalPct || undefined,
+                                      percentCompleted: totalPct || 100,
+                                    });
                                   }}
-                                  className="w-full rounded border border-input bg-background px-2 py-1 text-xs"
-                                >
-                                  <option value="">Select Stage…</option>
-                                  {paymentStages.map((stage) => (
-                                    <option key={stage.id} value={stage.id}>
-                                      {stage.name} ({stage.percent}%)
-                                    </option>
-                                  ))}
-                                </select>
+                                />
                               </td>
-                              <td className="px-2 py-1.5 text-right font-semibold text-muted-foreground">
+                              <td className="px-2 py-2.5 text-right font-bold text-violet-700 dark:text-violet-300 tabular-nums">
                                 {line.stagePercent ? `${line.stagePercent}%` : '-'}
                               </td>
-                              <td className="px-2 py-1.5">
+                              <td className="px-2 py-2.5 text-right font-medium text-muted-foreground tabular-nums">{line.contractedQty ?? '-'}</td>
+                              <td className="px-2 py-2.5 text-right font-medium text-muted-foreground tabular-nums">{line.prevCertifiedQty ?? '0'}</td>
+                              <td className="px-2 py-2.5 text-right font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">{line.contractedQty !== undefined ? netBalanceQty : '-'}</td>
+                              <td className="px-2 py-2.5 text-right font-bold text-purple-600 dark:text-purple-400 tabular-nums">{line.contractedQty !== undefined ? formatIndianCurrency(remainingVal) : '-'}</td>
+                              <td className="px-2 py-2.5">
                                 <input
                                   required
                                   type="number"
@@ -1115,27 +1461,35 @@ export function CreateServiceBillModal({
                                   placeholder="Flats"
                                   value={line.quantity === 0 ? '' : line.quantity}
                                   onChange={(e) => updateLine(line.key, { quantity: Number(e.target.value) })}
-                                  className="w-full rounded border border-input bg-background px-2 py-1 text-xs text-right"
+                                  className="w-full rounded border border-input bg-background px-2 py-1 text-xs text-right font-semibold"
                                 />
                               </td>
-                              <td className="px-2 py-1.5">
-                                <input
-                                  required
-                                  type="number"
-                                  min="0"
-                                  step="0.01"
-                                  placeholder="Rate"
-                                  value={line.rate === 0 ? '' : line.rate}
-                                  onChange={(e) => updateLine(line.key, { rate: Number(e.target.value) })}
-                                  className="w-full rounded border border-input bg-background px-2 py-1 text-xs text-right"
-                                />
+                              <td className="px-2 py-2.5 text-right font-bold text-foreground tabular-nums">
+                                {formatIndianCurrency(line.rate || 0)}
+                              </td>
+                              <td className="px-2 py-2.5">
+                                <select
+                                  value={line.taxRate ?? 18}
+                                  onChange={(e) => updateLine(line.key, { taxRate: Number(e.target.value) })}
+                                  className="w-full rounded border border-input bg-background px-2 py-1 text-xs font-bold text-foreground cursor-pointer"
+                                >
+                                  <option value={0}>0%</option>
+                                  <option value={5}>5%</option>
+                                  <option value={12}>12%</option>
+                                  <option value={18}>18%</option>
+                                  <option value={28}>28%</option>
+                                </select>
                               </td>
                             </>
                           )}
 
                           {valuationStructure === 'floor_lead' && (
                             <>
-                              <td className="px-2 py-1.5">
+                              <td className="px-2 py-2.5 text-right font-medium text-muted-foreground tabular-nums">{line.contractedQty ?? '-'}</td>
+                              <td className="px-2 py-2.5 text-right font-medium text-muted-foreground tabular-nums">{line.prevCertifiedQty ?? '0'}</td>
+                              <td className="px-2 py-2.5 text-right font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">{line.contractedQty !== undefined ? netBalanceQty : '-'}</td>
+                              <td className="px-2 py-2.5 text-right font-bold text-purple-600 dark:text-purple-400 tabular-nums">{line.contractedQty !== undefined ? formatIndianCurrency(remainingVal) : '-'}</td>
+                              <td className="px-2 py-2.5">
                                 <input
                                   required
                                   type="number"
@@ -1144,19 +1498,19 @@ export function CreateServiceBillModal({
                                   placeholder="Qty"
                                   value={line.quantity === 0 ? '' : line.quantity}
                                   onChange={(e) => updateLine(line.key, { quantity: Number(e.target.value) })}
-                                  className="w-full rounded border border-input bg-background px-2 py-1 text-xs text-right"
+                                  className="w-full rounded border border-input bg-background px-2 py-1 text-xs text-right font-semibold"
                                 />
                               </td>
-                              <td className="px-2 py-1.5">
+                              <td className="px-2 py-2.5">
                                 <input
                                   type="text"
                                   placeholder="Unit"
                                   value={line.unit}
                                   onChange={(e) => updateLine(line.key, { unit: e.target.value })}
-                                  className="w-full rounded border border-input bg-background px-2 py-1 text-xs"
+                                  className="w-full rounded border border-input bg-background px-2 py-1 text-xs font-semibold"
                                 />
                               </td>
-                              <td className="px-2 py-1.5">
+                              <td className="px-2 py-2.5">
                                 <input
                                   required
                                   type="number"
@@ -1169,10 +1523,10 @@ export function CreateServiceBillModal({
                                     const effectiveRate = line.rate * (1 + (floorLevel * leadPercentPerFloor) / 100);
                                     updateLine(line.key, { floorLevel, effectiveRate });
                                   }}
-                                  className="w-full rounded border border-input bg-background px-2 py-1 text-xs text-center font-semibold"
+                                  className="w-full rounded border border-input bg-background px-2 py-1 text-xs text-center font-bold text-foreground"
                                 />
                               </td>
-                              <td className="px-2 py-1.5">
+                              <td className="px-2 py-2.5">
                                 <input
                                   required
                                   type="number"
@@ -1185,27 +1539,101 @@ export function CreateServiceBillModal({
                                     const effectiveRate = rate * (1 + ((line.floorLevel || 0) * leadPercentPerFloor) / 100);
                                     updateLine(line.key, { rate, effectiveRate });
                                   }}
-                                  className="w-full rounded border border-input bg-background px-2 py-1 text-xs text-right"
+                                  className="w-full rounded border border-input bg-background px-2 py-1 text-xs text-right font-semibold"
                                 />
                               </td>
-                              <td className="px-2 py-1.5 text-right text-muted-foreground text-[10px]">
-                                {leadPercentPerFloor}% / floor
+                              <td className="px-2 py-2.5 text-right text-muted-foreground text-[10px] font-semibold">
+                                {leadPercentPerFloor}% / flr
                               </td>
-                              <td className="px-2 py-1.5 text-right font-semibold text-emerald-700 dark:text-emerald-400">
+                              <td className="px-2 py-2.5 text-right font-bold text-emerald-700 dark:text-emerald-400 tabular-nums">
                                 {formatIndianCurrency(line.effectiveRate || line.rate || 0)}
+                              </td>
+                              <td className="px-2 py-2.5">
+                                <select
+                                  value={line.taxRate ?? 18}
+                                  onChange={(e) => updateLine(line.key, { taxRate: Number(e.target.value) })}
+                                  className="w-full rounded border border-input bg-background px-2 py-1 text-xs font-bold text-foreground cursor-pointer"
+                                >
+                                  <option value={0}>0%</option>
+                                  <option value={5}>5%</option>
+                                  <option value={12}>12%</option>
+                                  <option value={18}>18%</option>
+                                  <option value={28}>28%</option>
+                                </select>
                               </td>
                             </>
                           )}
 
-                          <td className="px-3 py-2 text-right font-bold text-foreground">
+                          {valuationStructure === 'rate_based' && (
+                            <>
+                              <td className="px-2 py-2.5 text-right font-medium text-muted-foreground tabular-nums">
+                                {line.prevCertifiedQty ?? '0'} {line.unit}
+                              </td>
+                              <td className="px-2 py-2.5">
+                                <input
+                                  required
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  placeholder="Executed Qty"
+                                  value={line.quantity === 0 ? '' : line.quantity}
+                                  onChange={(e) => updateLine(line.key, { quantity: Number(e.target.value) })}
+                                  className="w-full rounded border border-emerald-500/40 bg-emerald-50/30 dark:bg-emerald-950/20 px-2 py-1 text-xs text-right font-bold text-foreground focus:ring-emerald-500"
+                                />
+                              </td>
+                              <td className="px-2 py-2.5">
+                                <input
+                                  type="text"
+                                  placeholder="Unit"
+                                  value={line.unit}
+                                  onChange={(e) => updateLine(line.key, { unit: e.target.value })}
+                                  className="w-full rounded border border-input bg-background px-2 py-1 text-xs font-semibold"
+                                />
+                              </td>
+                              <td className="px-2 py-2.5">
+                                <input
+                                  required
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  placeholder="Rate"
+                                  value={line.rate === 0 ? '' : line.rate}
+                                  onChange={(e) => updateLine(line.key, { rate: Number(e.target.value) })}
+                                  className="w-full rounded border border-input bg-background px-2 py-1 text-xs text-right font-semibold"
+                                />
+                              </td>
+                              <td className="px-2 py-2.5">
+                                <select
+                                  value={line.taxRate ?? 18}
+                                  onChange={(e) => updateLine(line.key, { taxRate: Number(e.target.value) })}
+                                  className="w-full rounded border border-input bg-background px-2 py-1 text-xs font-bold text-foreground cursor-pointer"
+                                >
+                                  <option value={0}>0%</option>
+                                  <option value={5}>5%</option>
+                                  <option value={12}>12%</option>
+                                  <option value={18}>18%</option>
+                                  <option value={28}>28%</option>
+                                </select>
+                              </td>
+                            </>
+                          )}
+
+                          {lines.some((l) => l.warrantyPeriod) && (
+                            <td className="px-2 py-2.5">
+                              <span className="inline-block px-2 py-0.5 rounded bg-muted/60 text-[11px] text-muted-foreground font-mono truncate max-w-[130px]" title={line.warrantyPeriod || 'N/A'}>
+                                {line.warrantyPeriod || 'N/A'}
+                              </span>
+                            </td>
+                          )}
+
+                          <td className="px-3 py-2 text-right font-bold text-foreground tabular-nums text-sm">
                             {formatIndianCurrency(val)}
                           </td>
-                          <td className="px-2 py-1.5 text-center">
+                          <td className="px-2 py-2.5 text-center">
                             <button
                               type="button"
-                              disabled={lines.length === 1}
                               onClick={() => removeLine(line.key)}
-                              className="text-red-500 hover:text-red-700 disabled:opacity-30"
+                              className="text-muted-foreground hover:text-red-600 transition-colors"
                             >
                               <Trash2 className="h-4 w-4" />
                             </button>
@@ -1215,6 +1643,44 @@ export function CreateServiceBillModal({
                     })}
                   </tbody>
                 </table>
+              </div>
+
+              {/* Commercial Summary directly after table */}
+              <div className="mt-3 rounded-xl border border-border bg-muted/20 p-3.5 text-xs font-medium">
+                <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-muted-foreground">Subtotal</span>
+                    <span className="font-bold text-foreground">{formatIndianCurrency(subtotal)}</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-muted-foreground">GST</span>
+                    <span className="font-bold text-foreground">{formatIndianCurrency(taxAmount)}</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-muted-foreground">Gross</span>
+                    <span className="font-bold text-foreground">{formatIndianCurrency(totalAmount)}</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-muted-foreground">Retention</span>
+                    <span className="font-bold text-amber-600 dark:text-amber-400">−{formatIndianCurrency(retentionAmount)}</span>
+                  </div>
+                  {tdsAmount > 0 && (
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-muted-foreground">TDS</span>
+                      <span className="font-bold text-amber-600 dark:text-amber-400">−{formatIndianCurrency(tdsAmount)}</span>
+                    </div>
+                  )}
+                  {debitAmount > 0 && (
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-muted-foreground">Debit</span>
+                      <span className="font-bold text-red-600 dark:text-red-400">−{formatIndianCurrency(debitAmount)}</span>
+                    </div>
+                  )}
+                  <div className="flex items-center gap-2 rounded-lg bg-primary/10 px-3 py-1 text-primary border border-primary/20">
+                    <span className="font-semibold">Net Payable</span>
+                    <span className="font-extrabold text-sm">{formatIndianCurrency(netPayable)}</span>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -1295,29 +1761,6 @@ export function CreateServiceBillModal({
                     placeholder="Safety violation / delay"
                     className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                   />
-                </div>
-              </div>
-
-              <label className="mt-3 flex items-center gap-2 text-xs font-semibold text-muted-foreground">
-                <input
-                  type="checkbox"
-                  checked={isInterstate}
-                  onChange={(e) => setIsInterstate(e.target.checked)}
-                />
-                Interstate supply (IGST instead of CGST + SGST)
-              </label>
-
-              <div className="mt-3 rounded-lg border border-border bg-muted/30 p-3 text-xs">
-                <div className="flex flex-wrap gap-x-6 gap-y-1">
-                  <span>Subtotal <strong>{formatIndianCurrency(subtotal)}</strong></span>
-                  <span>
-                    {isInterstate ? 'IGST' : 'CGST + SGST'} <strong>{formatIndianCurrency(taxAmount)}</strong>
-                  </span>
-                  <span>Gross <strong>{formatIndianCurrency(totalAmount)}</strong></span>
-                  <span>Retention <strong>−{formatIndianCurrency(retentionAmount)}</strong></span>
-                  {tdsAmount > 0 && <span>TDS <strong>−{formatIndianCurrency(tdsAmount)}</strong></span>}
-                  {debitAmount > 0 && <span>Debit <strong>−{formatIndianCurrency(debitAmount)}</strong></span>}
-                  <span className="text-primary">Net payable <strong>{formatIndianCurrency(netPayable)}</strong></span>
                 </div>
               </div>
             </div>

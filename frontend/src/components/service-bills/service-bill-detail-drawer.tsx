@@ -47,6 +47,10 @@ import {
   type AttachmentRow,
 } from '@/lib/documents';
 import { formatIndianCurrency } from '@/utils/format-currency';
+import {
+  getWorkOrderLineBillingPosition,
+  type WorkOrderLineBillingPosition,
+} from '@/lib/measurement-sheets';
 import { StatusActionBar, type StatusAction } from '@/components/work-orders/status-action-bar';
 import {
   SERVICE_BILL_ACTION_LABELS,
@@ -95,6 +99,7 @@ export function ServiceBillDetailDrawer({
   const [billAttachments, setBillAttachments] = useState<AttachmentRow[]>([]);
   const [woAttachments, setWoAttachments] = useState<AttachmentRow[]>([]);
   const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({});
+  const [linePositions, setLinePositions] = useState<WorkOrderLineBillingPosition[]>([]);
   
   // Upload state
   const [docType, setDocType] = useState<string>(SERVICE_BILL_DOC_TYPES[0].value);
@@ -119,12 +124,17 @@ export function ServiceBillDetailDrawer({
         const bFiles = await listEntityAttachments('service_bills', data.id).catch(() => []);
         setBillAttachments(bFiles);
 
-        // Load inherited Work Order attachments
+        // Load inherited Work Order attachments and line positions
         if (data.work_order_id) {
-          const woFiles = await listEntityAttachments('work_orders', data.work_order_id).catch(() => []);
+          const [woFiles, positions] = await Promise.all([
+            listEntityAttachments('work_orders', data.work_order_id).catch(() => []),
+            getWorkOrderLineBillingPosition(data.work_order_id).catch(() => []),
+          ]);
           setWoAttachments(woFiles);
+          setLinePositions(positions);
         } else {
           setWoAttachments([]);
+          setLinePositions([]);
         }
 
         // Pre-fetch signed URLs for images/previews
@@ -296,7 +306,7 @@ export function ServiceBillDetailDrawer({
   return (
     <div className="fixed inset-0 z-50 overflow-hidden bg-black/50 backdrop-blur-sm animate-in fade-in duration-200">
       <div className="absolute inset-y-0 right-0 max-w-full flex pl-10">
-        <div className="w-screen max-w-4xl bg-card border-l border-border shadow-2xl flex flex-col min-h-0">
+        <div className="w-screen max-w-7xl xl:max-w-[85vw] bg-card border-l border-border shadow-2xl flex flex-col min-h-0 duration-200">
           
           {/* Drawer Header */}
           <div className="px-6 py-4 border-b border-border flex items-center justify-between bg-muted/20">
@@ -379,34 +389,142 @@ export function ServiceBillDetailDrawer({
             {!loading && bill && (
               <>
                 {/* Financial Summary Cockpit */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                  <div className="rounded-xl border border-border bg-card p-3 shadow-sm">
-                    <p className="text-[10px] font-extrabold uppercase text-muted-foreground">Gross Bill Total</p>
-                    <p className="text-base font-bold tabular-nums text-foreground mt-0.5">
-                      {formatIndianCurrency(Number(bill.total_amount || 0))}
-                    </p>
-                  </div>
-                  <div className="rounded-xl border border-border bg-card p-3 shadow-sm">
-                    <p className="text-[10px] font-extrabold uppercase text-muted-foreground">Retention Deduction</p>
-                    <p className="text-base font-bold tabular-nums text-amber-600 dark:text-amber-400 mt-0.5">
-                      {Number(bill.retention_amount || 0) > 0
-                        ? `−${formatIndianCurrency(Number(bill.retention_amount))}`
-                        : '−'}
-                    </p>
-                  </div>
-                  <div className="rounded-xl border border-primary/20 bg-primary/5 p-3 shadow-sm">
-                    <p className="text-[10px] font-extrabold uppercase text-primary">Net Payable Amount</p>
-                    <p className="text-base font-black tabular-nums text-primary mt-0.5">
-                      {formatIndianCurrency(Number(bill.net_payable_amount || bill.total_amount || 0))}
-                    </p>
-                  </div>
-                  <div className="rounded-xl border border-border bg-card p-3 shadow-sm">
-                    <p className="text-[10px] font-extrabold uppercase text-muted-foreground">Tax Amount (GST)</p>
-                    <p className="text-base font-bold tabular-nums text-foreground mt-0.5">
-                      {formatIndianCurrency(Number(bill.tax_amount || 0))}
-                    </p>
-                  </div>
-                </div>
+                {(() => {
+                  const totalDeductions =
+                    Number(bill.retention_amount || 0) +
+                    Number(bill.advance_adjusted || 0) +
+                    Number(bill.other_deductions || 0) +
+                    Number(bill.debit_amount || 0) +
+                    Number(bill.tds_amount || 0);
+
+                  return (
+                    <div className="space-y-4">
+                      {/* Top Financial Cards */}
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <div className="rounded-xl border border-border bg-card p-3.5 shadow-sm">
+                          <p className="text-[10px] font-extrabold uppercase text-muted-foreground tracking-wider">
+                            Gross Bill Total
+                          </p>
+                          <p className="text-lg font-bold tabular-nums text-foreground mt-0.5">
+                            {formatIndianCurrency(Number(bill.total_amount || 0))}
+                          </p>
+                          <p className="text-[11px] text-muted-foreground mt-0.5">
+                            Ex-Tax Subtotal: {formatIndianCurrency(Number(bill.subtotal_amount || (bill.total_amount - bill.tax_amount)))} + GST: {formatIndianCurrency(Number(bill.tax_amount || 0))}
+                          </p>
+                        </div>
+
+                        <div className="rounded-xl border border-amber-200/60 bg-amber-50/40 dark:border-amber-900/40 dark:bg-amber-950/20 p-3.5 shadow-sm">
+                          <p className="text-[10px] font-extrabold uppercase text-amber-700 dark:text-amber-300 tracking-wider">
+                            Total Deductions
+                          </p>
+                          <p className="text-lg font-bold tabular-nums text-amber-600 dark:text-amber-400 mt-0.5">
+                            {totalDeductions > 0 ? `−${formatIndianCurrency(totalDeductions)}` : '₹0'}
+                          </p>
+                          <p className="text-[11px] text-amber-700/70 dark:text-amber-400/70 mt-0.5">
+                            Retention, Advance, Debit &amp; TDS
+                          </p>
+                        </div>
+
+                        <div className="rounded-xl border border-primary/30 bg-primary/10 p-3.5 shadow-sm">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <p className="text-[10px] font-extrabold uppercase text-primary tracking-wider">
+                                Net Payable Amount
+                              </p>
+                              <p className="text-xl font-black tabular-nums text-primary mt-0.5">
+                                {formatIndianCurrency(Number(bill.net_payable_amount || bill.total_amount || 0))}
+                              </p>
+                            </div>
+                            <span className="rounded-full bg-primary/20 px-2.5 py-1 text-[10px] font-bold text-primary">
+                              Final Payable
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Commercial Deductions Grid (Only Non-Zero & Key Figures) */}
+                      <div className="rounded-xl border border-border bg-card p-4 shadow-sm space-y-3">
+                        <div className="flex items-center justify-between border-b border-border pb-2">
+                          <h3 className="text-xs font-extrabold uppercase tracking-wider text-foreground">
+                            Commercial Summary &amp; Deductions Breakdown
+                          </h3>
+                          {bill.ra_sequence != null && (
+                            <span className="text-[11px] font-mono text-muted-foreground">RA #{bill.ra_sequence}</span>
+                          )}
+                        </div>
+
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                          <div>
+                            <span className="text-muted-foreground block text-[10px] font-semibold uppercase">Ex-Tax Subtotal</span>
+                            <span className="font-bold text-foreground tabular-nums">
+                              {formatIndianCurrency(Number(bill.subtotal_amount || (bill.total_amount - bill.tax_amount)))}
+                            </span>
+                          </div>
+
+                          <div>
+                            <span className="text-muted-foreground block text-[10px] font-semibold uppercase">Tax Amount (GST)</span>
+                            <span className="font-bold text-foreground tabular-nums">
+                              +{formatIndianCurrency(Number(bill.tax_amount || 0))}
+                            </span>
+                          </div>
+
+                          <div>
+                            <span className="text-muted-foreground block text-[10px] font-semibold uppercase">Gross Total</span>
+                            <span className="font-bold text-foreground tabular-nums">
+                              {formatIndianCurrency(Number(bill.total_amount || 0))}
+                            </span>
+                          </div>
+
+                          <div>
+                            <span className="text-muted-foreground block text-[10px] font-semibold uppercase">
+                              Retention ({bill.retention_percent || 0}%)
+                            </span>
+                            <span className="font-bold text-amber-600 dark:text-amber-400 tabular-nums">
+                              {Number(bill.retention_amount || 0) > 0 ? `−${formatIndianCurrency(Number(bill.retention_amount))}` : '₹0'}
+                            </span>
+                          </div>
+
+                          <div>
+                            <span className="text-muted-foreground block text-[10px] font-semibold uppercase">Advance Recovery</span>
+                            <span className="font-bold text-amber-600 dark:text-amber-400 tabular-nums">
+                              {Number(bill.advance_adjusted || 0) > 0 ? `−${formatIndianCurrency(Number(bill.advance_adjusted))}` : '₹0'}
+                            </span>
+                          </div>
+
+                          <div>
+                            <span className="text-muted-foreground block text-[10px] font-semibold uppercase">Other Deductions</span>
+                            <span className="font-bold text-amber-600 dark:text-amber-400 tabular-nums">
+                              {Number(bill.other_deductions || 0) > 0 ? `−${formatIndianCurrency(Number(bill.other_deductions))}` : '₹0'}
+                            </span>
+                          </div>
+
+                          <div>
+                            <span className="text-muted-foreground block text-[10px] font-semibold uppercase">Debit Penalty</span>
+                            <span className="font-bold text-red-600 dark:text-red-400 tabular-nums">
+                              {Number(bill.debit_amount || 0) > 0 ? `−${formatIndianCurrency(Number(bill.debit_amount))}` : '₹0'}
+                            </span>
+                          </div>
+
+                          <div>
+                            <span className="text-muted-foreground block text-[10px] font-semibold uppercase">
+                              TDS ({bill.tds_percent || 0}%)
+                            </span>
+                            <span className="font-bold text-amber-600 dark:text-amber-400 tabular-nums">
+                              {Number(bill.tds_amount || 0) > 0 ? `−${formatIndianCurrency(Number(bill.tds_amount))}` : '₹0'}
+                            </span>
+                          </div>
+                        </div>
+
+                        {bill.debit_reason && (
+                          <div className="mt-2 p-2.5 rounded-lg border border-red-200 bg-red-50/50 dark:border-red-900/30 dark:bg-red-950/20 text-xs text-red-700 dark:text-red-300">
+                            <span className="font-bold uppercase text-[10px] block">Debit Penalty Reason:</span>
+                            <p className="mt-0.5 font-medium">{bill.debit_reason}</p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {/* Contract & Vendor Information Cards */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -442,43 +560,72 @@ export function ServiceBillDetailDrawer({
                   </div>
                 </div>
 
-                {/* Scope & Line Items Breakdown */}
-                <div className="rounded-xl border border-border bg-card p-4 shadow-sm space-y-3">
-                  <div className="flex items-center justify-between">
+                {/* Redesigned Bill Items Breakdown Table (Exact Service Bill Form Columns) */}
+                <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
+                  <div className="px-4 py-3 border-b border-border bg-muted/30 flex items-center justify-between">
                     <h3 className="text-xs font-extrabold uppercase tracking-wider text-foreground">
                       Bill Items Breakdown ({bill.service_bill_lines?.length || 0})
                     </h3>
                   </div>
 
                   <div className="overflow-x-auto">
-                    <table className="w-full text-left text-xs">
-                      <thead className="border-b border-border text-muted-foreground">
+                    <table className="w-full min-w-[1200px] text-left text-xs border-collapse">
+                      <thead className="bg-muted/60 font-heading font-bold text-muted-foreground uppercase border-b border-border text-[10px] tracking-wider">
                         <tr>
-                          <th className="pb-2">Description</th>
-                          <th className="pb-2">Unit</th>
-                          <th className="pb-2 text-right">This Bill Qty</th>
-                          <th className="pb-2 text-right">Prev Qty</th>
-                          <th className="pb-2 text-right">Rate</th>
-                          <th className="pb-2 text-right">Line Total</th>
+                          <th className="px-4 py-2.5 min-w-[320px]">Work Description &amp; Specification</th>
+                          <th className="px-3 py-2.5 text-right w-[90px]">Contracted</th>
+                          <th className="px-3 py-2.5 text-right w-[90px]">Prev Billed</th>
+                          <th className="px-3 py-2.5 text-right w-[100px] text-emerald-700 dark:text-emerald-400">Balance Qty</th>
+                          <th className="px-3 py-2.5 text-right w-[110px] text-purple-700 dark:text-purple-400">Remaining (₹)</th>
+                          <th className="px-3 py-2.5 text-center w-[70px]">Unit</th>
+                          <th className="px-3 py-2.5 text-right w-[100px]">This Bill Qty</th>
+                          <th className="px-3 py-2.5 text-right w-[110px]">Rate (₹)</th>
+                          <th className="px-3 py-2.5 text-right w-[80px]">GST %</th>
+                          <th className="px-4 py-2.5 text-right w-[130px]">Line Total (₹)</th>
                         </tr>
                       </thead>
-                      <tbody>
-                        {(bill.service_bill_lines || []).map((line) => (
-                          <tr key={line.id} className="border-b border-border/50">
-                            <td className="py-2.5 font-medium text-foreground">{line.description}</td>
-                            <td className="py-2.5 text-muted-foreground">{line.unit || '-'}</td>
-                            <td className="py-2.5 text-right font-bold tabular-nums">{line.quantity}</td>
-                            <td className="py-2.5 text-right text-muted-foreground tabular-nums">{line.previous_quantity || 0}</td>
-                            <td className="py-2.5 text-right tabular-nums">{formatIndianCurrency(Number(line.rate || 0))}</td>
-                            <td className="py-2.5 text-right font-bold text-primary tabular-nums">
-                              {formatIndianCurrency(Number(line.line_total || 0))}
-                            </td>
-                          </tr>
-                        ))}
+                      <tbody className="divide-y divide-border/60">
+                        {(bill.service_bill_lines || []).map((line) => {
+                          const pos = linePositions.find((p) => p.workOrderLineId === line.work_order_line_id);
+                          return (
+                            <tr key={line.id} className="hover:bg-muted/15 transition-colors">
+                              <td className="px-4 py-3 font-medium text-foreground whitespace-pre-wrap break-words leading-relaxed">
+                                {line.description}
+                              </td>
+                              <td className="px-3 py-3 text-right font-medium text-muted-foreground tabular-nums">
+                                {pos?.contractedQuantity && pos.contractedQuantity > 1 ? pos.contractedQuantity : 'Rate Contract'}
+                              </td>
+                              <td className="px-3 py-3 text-right font-medium text-muted-foreground tabular-nums">
+                                {pos?.certifiedQuantity ?? '0'}
+                              </td>
+                              <td className="px-3 py-3 text-right font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">
+                                {pos && pos.contractedQuantity > 1 ? pos.remainingQuantity : 'Measured at Site'}
+                              </td>
+                              <td className="px-3 py-3 text-right font-bold text-purple-600 dark:text-purple-400 tabular-nums">
+                                {pos && pos.contractedQuantity > 1 ? formatIndianCurrency(pos.remainingQuantity * pos.rate) : '-'}
+                              </td>
+                              <td className="px-3 py-3 text-center text-muted-foreground font-semibold">
+                                {line.unit || '-'}
+                              </td>
+                              <td className="px-3 py-3 text-right font-bold tabular-nums text-foreground">
+                                {line.quantity}
+                              </td>
+                              <td className="px-3 py-3 text-right tabular-nums text-foreground">
+                                {formatIndianCurrency(Number(line.rate || 0))}
+                              </td>
+                              <td className="px-3 py-3 text-right font-semibold text-muted-foreground tabular-nums">
+                                {line.tax_rate ?? 18}%
+                              </td>
+                              <td className="px-4 py-3 text-right font-bold text-primary tabular-nums text-sm">
+                                {formatIndianCurrency(Number(line.line_total || 0))}
+                              </td>
+                            </tr>
+                          );
+                        })}
 
                         {(!bill.service_bill_lines || bill.service_bill_lines.length === 0) && (
                           <tr>
-                            <td colSpan={6} className="py-4 text-center text-muted-foreground">
+                            <td colSpan={10} className="px-4 py-6 text-center text-muted-foreground italic">
                               Lump sum bill with no itemized line breakdown.
                             </td>
                           </tr>

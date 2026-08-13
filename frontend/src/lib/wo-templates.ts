@@ -41,6 +41,18 @@ export async function listWoTemplates(): Promise<WoTemplateRow[]> {
  * form working against a database that has not applied it yet.
  */
 function normaliseTemplate(row: Record<string, unknown>): WoTemplateRow {
+  const rawCols = Array.isArray(row.item_columns) ? (row.item_columns as string[]) : [];
+  const hasQty = rawCols.some((col) => /qty|quantity|flats/i.test(col));
+  let cols = [...rawCols];
+  if (!hasQty && cols.length > 0) {
+    const unitIdx = cols.findIndex((col) => /unit/i.test(col));
+    if (unitIdx >= 0) {
+      cols.splice(unitIdx + 1, 0, 'Qty');
+    } else {
+      cols.splice(Math.min(2, cols.length), 0, 'Qty');
+    }
+  }
+
   const stages = Array.isArray(row.default_stages)
     ? (row.default_stages as Array<Record<string, unknown>>).map((s) => ({
         name: String(s.name ?? ''),
@@ -49,6 +61,7 @@ function normaliseTemplate(row: Record<string, unknown>): WoTemplateRow {
     : [];
   return {
     ...(row as unknown as WoTemplateRow),
+    item_columns: cols,
     default_valuation_structure:
       (row.default_valuation_structure as WoTemplateRow['default_valuation_structure']) ??
       'standard',

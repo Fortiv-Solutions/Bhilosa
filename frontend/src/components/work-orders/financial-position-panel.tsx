@@ -99,10 +99,18 @@ export function FinancialPositionPanel({
           ? `${((position.certifiedGross / position.contractValue) * 100).toFixed(1)}% of contract`
           : undefined,
       },
+      ...(position.claimedUncertified > 0
+        ? [
+            {
+              label: 'Pending Certification',
+              value: position.claimedUncertified,
+              tone: 'cost' as const,
+              note: 'Submitted / Verified bills in pipeline',
+            },
+          ]
+        : []),
       {
-        // Net payable minus cash paid. The single number that answers "what do
-        // we owe this contractor today", which is what the two cards it
-        // replaces only let you work out by subtraction.
+        // Net payable minus cash paid.
         label: 'Outstanding to Pay',
         value: position.pendingLiability,
         tone: 'cash' as const,

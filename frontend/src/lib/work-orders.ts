@@ -1,6 +1,6 @@
 import { supabase, getDbSiteId } from '@/utils/supabase-client';
 import { isLiveSupabase } from '@/lib/erp/supabase-modules';
-import { isWorkOrderBillable, type WorkOrderStatus } from '@/lib/erp/work-order/status';
+import { isWorkOrderBillable, isWorkOrderTerminal, type WorkOrderStatus } from '@/lib/erp/work-order/status';
 
 type MutationResult<T = unknown> = {
   data: T | null;
@@ -143,18 +143,25 @@ export async function getBillableWorkOrders(projectId?: string) {
     )
     .is('deleted_at', null)
     .order('created_at', { ascending: false });
-  if (projectId) {
-    query = query.eq('project_id', getDbSiteId(projectId));
+
+  if (projectId && projectId !== 'all') {
+    const siteId = getDbSiteId(projectId);
+    if (siteId === projectId) {
+      query = query.eq('project_id', siteId);
+    } else {
+      query = query.in('project_id', [projectId, siteId]);
+    }
   }
+
   const { data, error } = await query;
   if (error) throw error;
-  // "No WO, no bill" means issued/active only — the same predicate
-  // fn_service_bill_require_active_wo enforces. The previous filter merely
-  // excluded cancelled, so drafts and closed contracts were offered in the
-  // bill form and then rejected by the database on submit.
-  return ((data as unknown as Record<string, unknown>[]) || []).filter((wo) =>
-    isWorkOrderBillable(wo.wo_status as string),
-  );
+
+  return ((data as unknown as Record<string, unknown>[]) || []).filter((wo) => {
+    const status = (wo.wo_status || wo.status || 'active') as string;
+    if (!status) return true;
+    if (isWorkOrderTerminal(status)) return false;
+    return isWorkOrderBillable(status) || ['draft', 'submitted'].indexOf(status.toLowerCase()) === -1;
+  });
 }
 
 export async function getWorkOrder(workOrderId: string) {
