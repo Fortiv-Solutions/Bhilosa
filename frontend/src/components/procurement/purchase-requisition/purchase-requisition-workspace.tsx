@@ -80,19 +80,53 @@ const DOC_TYPE_MAP: Record<string, string> = {
 function blankForm(projectId: string): PrFormState {
   const today = new Date().toISOString().slice(0, 10);
   const required = new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10);
+  const effectiveProjectId = projectId && projectId !== 'all' ? projectId : 'f6704467-df8c-4f51-a49b-ddfdc40c39af';
+
   return {
     id: null, pr_number: null, status: 'draft',
-    pr_date: today, company_name: '', project_id: projectId, site_id: null,
+    pr_date: today, company_name: 'Bhilosa Industries Private Limited', project_id: effectiveProjectId, site_id: null,
     pr_type: 'material', priority: 'normal', required_date: required, pr_release_date: null,
     budget_applicable: true, budget_head_id: null, cost_code_id: null, cost_centre: '',
-    activity_name: '', activity_code: '', wbs_code: '', over_budget_justification: '',
+    activity_name: 'Textile Manufacturing', activity_code: 'ACT-YARN-01', wbs_code: 'WBS-SILVASSA-U1', over_budget_justification: '',
     contractor_applicable: false, contractor_name: '', vendor_code: '', contract_reference: '',
-    scope_of_service: '', contact_person: '', contact_number: '',
-    delivery_address: '', site_contact_person: '', site_contact_number: '', delivery_instructions: '',
-    general_remarks: '', internal_notes: '', terms_and_conditions: '', department: 'Rohan Mehta (Site Eng)',
-    unlocked_project: 1.00, prepared_by: 'Rohan Mehta (Site Eng)',
+    scope_of_service: '', contact_person: 'Bhilosa Admin', contact_number: '+91 22 6744 1200',
+    delivery_address: 'Silvassa Unit I - Polyester Division, UT of DNH & DD', site_contact_person: 'Plant Manager', site_contact_number: '+91 98250 12345', delivery_instructions: 'Handle with care. Grade A Spools.',
+    general_remarks: '', internal_notes: '', terms_and_conditions: '', department: 'Polyester Yarn Division',
+    unlocked_project: 1.00, prepared_by: 'Bhilosa Admin',
     discount_amount: 0, freight_amount: 0, other_charges: 0, contingency_amount: 0,
-    lines: [],
+    lines: [
+      {
+        key: `line-default-bhilosa-001`,
+        source_mr_id: null,
+        source_mr_number: null,
+        mr_line_number: null,
+        material_request_line_id: null,
+        resource_type: 'material',
+        item_id: 'item-yarn-7536',
+        item_code: 'YARN-DTY-75-36',
+        item_group: 'Draw Texturised Yarn',
+        item_description: '75/36 Semi Dull Micro DTY Yarn (Grade A Spools)',
+        specification: '75 Denier / 36 Filaments Filament Micro Polyester Yarn',
+        approved_mr_qty: 5000,
+        prev_pr_qty: 0,
+        remaining_mr_qty: 5000,
+        pr_quantity: 5000,
+        unit: 'kg',
+        estimated_rate: 135,
+        tax_rate: 12,
+        required_date: required,
+        preferred_brand: 'Bhilosa Premium Yarns',
+        suggested_vendor: 'Reliance Polyester Raw Materials Ltd',
+        delivery_location: 'Silvassa Unit I Store',
+        stock_audit: 'Audited',
+        activity_name: 'Textile Manufacturing',
+        sub_activity_name: 'Yarn Spinning & Texturising',
+        activity_code: 'ACT-YARN-01',
+        raised_by: 'Bhilosa Admin',
+        submitted_at: today,
+        remarks: '',
+      },
+    ],
   };
 }
 

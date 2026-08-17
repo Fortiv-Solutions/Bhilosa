@@ -18,11 +18,15 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Jyoti ERP - Construction Operations Platform",
-  description: "Company-wide construction project, procurement, inventory, billing, budget, and analytics management.",
+  title: "Bhilosa Industries Private Limited",
+  description: "Bhilosa Industries Private Limited - Enterprise Operations, Yarn Manufacturing, Supply Chain, Procurement, Inventory, & Financial Management System.",
   icons: {
-    icon: "/icon.png",
-    apple: "/icon.png",
+    icon: [
+      { url: "/icon.svg", type: "image/svg+xml" },
+      { url: "/bhilosa-logo.svg", type: "image/svg+xml" }
+    ],
+    shortcut: "/icon.svg",
+    apple: "/icon.svg",
   }
 };
 

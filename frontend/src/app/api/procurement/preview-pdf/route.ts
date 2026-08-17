@@ -28,7 +28,7 @@ export async function GET(req: NextRequest) {
   let title = 'Purchase Requisition';
   let docNumber = 'PR-2026-001';
   let date = new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
-  let projectName = 'Pramukh Heights';
+  let projectName = 'Silvassa Unit I - Polyester Division';
   let lines: Array<{ item: string; qty: number; rate: number }> = [];
   let totalCost = 0;
   let status = 'Approved';
@@ -64,7 +64,7 @@ export async function GET(req: NextRequest) {
       docNumber = po.po_number || docNumber;
       title = `Purchase Order — ${docNumber}`;
       projectName = po.projects?.name || projectName;
-      vendorName = po.vendors?.legal_name || 'Approved Vendor';
+      vendorName = po.vendors?.legal_name || 'Reliance Polyester Raw Materials Ltd';
       status = po.status?.toUpperCase() || status;
       lines = (po.purchase_order_lines || []).map((l: any) => ({
         item: l.item_description,
@@ -77,9 +77,9 @@ export async function GET(req: NextRequest) {
 
   if (lines.length === 0) {
     lines = [
-      { item: 'CPVC Pipes & Fittings 2"', qty: 150, rate: 450 },
-      { item: 'Brass Ball Valves 1"', qty: 40, rate: 850 },
-      { item: 'Solvent Cement 500ml', qty: 15, rate: 320 },
+      { item: '75/36 Semi Dull Micro DTY Yarn (Grade A Spools)', qty: 5000, rate: 135 },
+      { item: '150/48 Bright FDY Yarn (Grade A Bobbins)', qty: 3000, rate: 142 },
+      { item: 'High-Tenacity Polyester Chips - Bright Grade', qty: 10000, rate: 98 },
     ];
     totalCost = lines.reduce((a, b) => a + b.qty * b.rate, 0);
   }
@@ -96,23 +96,23 @@ export async function GET(req: NextRequest) {
     }
     body { font-family: 'Segoe UI', Arial, sans-serif; margin: 0; padding: 40px; background: #f8fafc; color: #1e293b; }
     .container { max-width: 850px; margin: 0 auto; background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 40px; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.05); }
-    .header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #0f172a; padding-bottom: 20px; margin-bottom: 30px; }
-    .company-title { font-size: 24px; font-weight: 800; color: #0f172a; letter-spacing: -0.5px; }
-    .company-subtitle { font-size: 12px; color: #64748b; margin-top: 4px; text-transform: uppercase; tracking: 1px; font-weight: 600; }
-    .doc-badge { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; font-weight: 700; font-size: 13px; padding: 6px 14px; rounded-radius: 6px; border-radius: 6px; text-transform: uppercase; }
+    .header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #f37021; padding-bottom: 20px; margin-bottom: 30px; }
+    .company-title { font-size: 22px; font-weight: 900; color: #f37021; letter-spacing: -0.5px; }
+    .company-subtitle { font-size: 11px; color: #2e3192; margin-top: 4px; text-transform: uppercase; tracking: 1px; font-weight: 700; }
+    .doc-badge { background: #fff4ec; color: #f37021; border: 1px solid #f37021; font-weight: 700; font-size: 13px; padding: 6px 14px; border-radius: 6px; text-transform: uppercase; }
     .meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 30px; background: #f8fafc; padding: 20px; border-radius: 8px; border: 1px solid #f1f5f9; }
     .meta-item { font-size: 13px; }
     .meta-label { color: #64748b; font-weight: 600; text-transform: uppercase; font-size: 11px; margin-bottom: 2px; }
     .meta-val { font-weight: 700; color: #0f172a; }
     table { width: 100%; border-collapse: collapse; margin-bottom: 30px; }
-    th { background: #0f172a; color: #fff; font-size: 12px; text-transform: uppercase; padding: 12px; text-align: left; font-weight: 600; }
+    th { background: #2e3192; color: #fff; font-size: 12px; text-transform: uppercase; padding: 12px; text-align: left; font-weight: 600; }
     td { padding: 12px; border-bottom: 1px solid #e2e8f0; font-size: 13px; }
     .text-right { text-align: right; }
-    .total-row td { font-weight: 800; font-size: 15px; background: #f8fafc; border-top: 2px solid #0f172a; }
+    .total-row td { font-weight: 800; font-size: 15px; background: #f8fafc; border-top: 2px solid #f37021; }
     .footer-signatures { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; margin-top: 50px; text-align: center; }
     .sig-line { border-top: 1px solid #94a3b8; margin-top: 40px; padding-top: 8px; font-size: 12px; font-weight: 600; color: #475569; }
-    .btn-print { background: #2563eb; color: #fff; border: none; padding: 10px 20px; font-weight: 700; font-size: 14px; border-radius: 8px; cursor: pointer; transition: all 0.2s; }
-    .btn-print:hover { background: #1d4ed8; }
+    .btn-print { background: #f37021; color: #fff; border: none; padding: 10px 20px; font-weight: 700; font-size: 14px; border-radius: 8px; cursor: pointer; transition: all 0.2s; }
+    .btn-print:hover { background: #2e3192; }
   </style>
 </head>
 <body>
@@ -124,8 +124,8 @@ export async function GET(req: NextRequest) {
   <div class="container">
     <div class="header">
       <div>
-        <div class="company-title">PRAMUKH REALTY & BUILDERS</div>
-        <div class="company-subtitle">Field Operations & ERP System</div>
+        <div class="company-title">BHILOSA INDUSTRIES PRIVATE LIMITED</div>
+        <div class="company-subtitle">Manufacturer of 100% polyester yarns</div>
       </div>
       <div class="doc-badge">${type === 'PR' ? 'Purchase Requisition' : 'Purchase Order'}</div>
     </div>

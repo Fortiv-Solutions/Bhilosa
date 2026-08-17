@@ -299,32 +299,32 @@ export default function SupportPage() {
 
       {/* Quick Contact & Channel Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Support Hotline */}
+        {/* Direct Call */}
         <a
-          href="tel:+919876543210"
-          className="group p-5 bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-2xl shadow-xs hover:border-[#e83e8c]/40 transition-all flex items-start gap-4"
+          href="tel:+912267441200"
+          className="group p-5 bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-2xl shadow-xs hover:border-[#f37021]/40 transition-all flex items-start gap-4"
         >
-          <div className="w-11 h-11 rounded-xl bg-[#e83e8c]/10 text-[#e83e8c] flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform">
+          <div className="w-11 h-11 rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform">
             <Phone className="w-5 h-5" />
           </div>
           <div>
             <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Direct Call Desk</span>
-            <h3 className="font-bold text-foreground text-sm mt-0.5 group-hover:text-[#e83e8c] transition-colors">+91 98765 43210</h3>
-            <p className="text-[11px] text-muted-foreground mt-1">Available 24/7 for urgent site issues</p>
+            <h3 className="font-bold text-foreground text-sm mt-0.5 group-hover:text-[#f37021] transition-colors">+91 22 6744 1200</h3>
+            <p className="text-[11px] text-muted-foreground mt-1">Available 24/7 for plant operations</p>
           </div>
         </a>
 
         {/* Email Support */}
         <a
-          href="mailto:support@pramukhgroup.com"
-          className="group p-5 bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-2xl shadow-xs hover:border-[#e83e8c]/40 transition-all flex items-start gap-4"
+          href="mailto:info@bhilosa.com"
+          className="group p-5 bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-2xl shadow-xs hover:border-[#f37021]/40 transition-all flex items-start gap-4"
         >
           <div className="w-11 h-11 rounded-xl bg-blue-500/10 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform">
             <Mail className="w-5 h-5" />
           </div>
           <div>
             <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Email Desk</span>
-            <h3 className="font-bold text-foreground text-xs mt-0.5 truncate max-w-[150px] group-hover:text-blue-600 transition-colors">support@pramukhgroup.com</h3>
+            <h3 className="font-bold text-foreground text-xs mt-0.5 truncate max-w-[150px] group-hover:text-blue-600 transition-colors">info@bhilosa.com</h3>
             <p className="text-[11px] text-muted-foreground mt-1">Response time: under 30 minutes</p>
           </div>
         </a>

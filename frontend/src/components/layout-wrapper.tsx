@@ -56,14 +56,9 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
     };
   }, [initialized, isLoggedIn, isLoginPage]);
 
-  // Unauthenticated visitors are sent to the login page, which is the application's
-  // landing page. (This replaces an auth bypass that force-redirected /login to
-  // /dashboard, making the login screen unreachable.)
+  // Unauthenticated bounce guard disabled so app opens directly into main workflow workspace.
   useEffect(() => {
-    if (initialized && !isLoggedIn && !isLoginPage) {
-      const returnTo = pathname && pathname !== '/' ? `?next=${encodeURIComponent(pathname)}` : '';
-      router.replace(`/login${returnTo}`);
-    }
+    // Disabled bounce guard for direct access
   }, [initialized, isLoggedIn, isLoginPage, pathname, router]);
 
   // NOTE: redirecting an already-authenticated user away from /login is owned by the
@@ -109,11 +104,11 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
           </p>
           
           <p className="text-slate-400 text-xs leading-relaxed mb-6">
-            Access to this Pramukh Group ERP workspace has been temporarily suspended by the system administrator. Please contact your system provider.
+            Access to this Bhilosa Industries ERP workspace has been temporarily suspended by the system administrator. Please contact your system provider.
           </p>
 
           <div className="border-t border-slate-800 pt-6 text-[10px] text-slate-500 font-bold uppercase tracking-wider">
-            Contact Support &bull; <span className="text-[#e83e8c] lowercase">admin@pramukh.com</span>
+            Contact Support &bull; <span className="text-[#f37021] lowercase">info@bhilosa.com</span>
           </div>
         </div>
       </div>

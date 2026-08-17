@@ -180,19 +180,14 @@ export function RfqForm({
 
   // Auto-populate Project & Company details
   const autoProjectName =
-    approvedPr.project_id === 'central-park'
-      ? 'Central Park'
-      : approvedPr.project_id === 'riverside-heights'
-      ? 'Riverside Heights'
-      : approvedPr.project_id === 'skyline-towers'
-      ? 'Skyline Towers'
-      : approvedPr.company_name?.includes('Electrical')
-      ? 'Skyline Towers'
-      : 'Central Park';
+    (approvedPr as any).projects?.name ||
+    approvedPr.company_name?.includes('Bhilosa')
+      ? 'Silvassa Unit I - Polyester Division'
+      : 'Silvassa Unit I - Polyester Division';
 
   const autoDeliveryAddress =
     approvedPr.delivery_address ||
-    `Site Office, Block A, ${autoProjectName}, Ring Road, Surat, Gujarat - 395007`;
+    'Silvassa Unit I - Polyester Division, UT of DNH & DD';
 
   // Derive initial status from RFQ DB status, falling back to approvedPr status
   const getInitialStatus = (pr: PurchaseRequisitionRow, rfqDbStatus?: string | null): RfqStatusType => {
@@ -224,7 +219,7 @@ export function RfqForm({
     pr_id: approvedPr.id,
     pr_number: approvedPr.pr_number || 'PR-Approved',
     project_name: autoProjectName,
-    company_name: approvedPr.company_name || 'Pramukh Group Infrastructure Ltd.',
+    company_name: approvedPr.company_name || 'Bhilosa Industries Private Limited',
     process_type: 'Quotation Request',
     contractor_name: approvedPr.contractor_name || '',
     delivery_address: autoDeliveryAddress,

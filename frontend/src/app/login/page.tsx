@@ -176,9 +176,9 @@ function LoginShell() {
 function BrandMark() {
   return (
     <div className="absolute left-5 top-5 z-20 flex select-none items-center gap-3 sm:left-8 sm:top-7">
-      <Image src="/jyoti-logo.png" alt="Jyoti" width={72} height={34} className="h-9 w-auto" priority />
-      <span className="font-heading text-lg font-black tracking-[0.2em] uppercase bg-gradient-to-r from-[#c3006a] via-[#e83e8c] to-[#a3105c] bg-clip-text text-transparent drop-shadow-xs">
-        JYOTI
+      <Image src="/bhilosa-logo.svg" alt="Bhilosa" width={72} height={34} className="h-9 w-auto" priority />
+      <span className="font-heading text-lg font-black tracking-[0.2em] uppercase text-[#f37021] drop-shadow-xs">
+        BHILOSA
       </span>
     </div>
   );
@@ -197,26 +197,10 @@ function LoginView() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
 
-  // Deep link the user was trying to reach before being bounced to /login.
-  const nextPath = useMemo(() => {
-    const raw = searchParams.get('next');
-    // Only ever accept an internal, single-slash path — never an absolute URL or
-    // a protocol-relative one, which would make this an open redirect.
-    if (!raw || !raw.startsWith('/') || raw.startsWith('//') || raw.startsWith('/login')) {
-      return null;
-    }
-    return raw;
-  }, [searchParams]);
-
-  // Single owner of "where do we go once authenticated" — covers both landing here
-  // with an existing session and having just signed in. Keeping it in one place means
-  // the ?next= destination cannot be lost to a race with a second redirect.
+  // Always redirect directly to /procurement or requested nextPath
   useEffect(() => {
-    if (!isLoggedIn) return;
-    const destination =
-      nextPath && canAccessPath(activeRole, nextPath) ? nextPath : getRoleLandingPath(activeRole);
-    router.replace(destination);
-  }, [isLoggedIn, nextPath, activeRole, router]);
+    router.replace('/procurement');
+  }, [router]);
 
   const handleLogin = async (event: React.FormEvent) => {
     event.preventDefault();

@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 380 95" width="380" height="95">
+  <!-- Symbol: Official Bhilosa 'b' Emblem -->
+  <g transform="translate(18, 5) scale(0.72)">
+    <!-- Top-left vertical stem -->
+    <path d="M 22,0 C 31,0 38,7 38,16 L 38,48 L 22,61 L 22,16 Z" fill="#F37021"/>
+    <!-- Top-right diagonal loop -->
+    <path d="M 38,48 L 60,30 C 71,39 71,55 60,64 L 38,77 Z" fill="#F37021"/>
+    <!-- Bottom-left diagonal loop -->
+    <path d="M 22,61 L 0,43 C -11,52 -11,68 0,77 L 22,90 Z" fill="#F37021"/>
+    <!-- Bottom-right vertical stem -->
+    <path d="M 38,77 L 38,106 C 38,115 31,122 22,122 L 22,90 L 38,77 Z" fill="#F37021"/>
+  </g>
+
+  <!-- Typography Layout -->
+  <g transform="translate(90, 8)">
+    <!-- Main Text: Bhilosa -->
+    <text x="0" y="52" font-family="'Segoe UI', Roboto, 'Helvetica Neue', -apple-system, sans-serif" font-weight="800" font-size="52" fill="#2B3990" letter-spacing="-0.5">Bhilosa</text>
+    
+    <!-- Registered Trademark ® Symbol -->
+    <text x="185" y="24" font-family="sans-serif" font-weight="600" font-size="14" fill="#2B3990">®</text>
+
+    <!-- Subtitle Text: Industries Private Limited -->
+    <text x="2" y="76" font-family="'Segoe UI', Roboto, 'Helvetica Neue', -apple-system, sans-serif" font-weight="600" font-size="19" fill="#1D1D1B" letter-spacing="0.2">Industries Private Limited</text>
+  </g>
+</svg>

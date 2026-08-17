@@ -38,7 +38,7 @@ export function BillsTableView({ bills, onOpenBillForm }: BillsTableViewProps) {
   }
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3 pb-8">
       {/* 15 Landing Table Container */}
       <div className="overflow-hidden rounded-xl border border-border bg-card shadow-2xs">
         <div className="overflow-x-auto">
@@ -69,86 +69,86 @@ export function BillsTableView({ bills, onOpenBillForm }: BillsTableViewProps) {
                 const isDraft = bill.status === 'draft' || bill.status === 'auto_draft_grn';
 
                 return (
-                  <tr key={bill.id} className="group hover:bg-muted/30 transition-colors align-middle">
+                  <tr key={bill.id} className="group hover:bg-muted/30 transition-colors align-top">
                     {/* 1. Sr */}
-                    <td className="px-3 py-3 text-center font-mono font-bold text-muted-foreground">
+                    <td className="px-3 py-4 text-center font-mono font-bold text-muted-foreground">
                       {index + 1}
                     </td>
 
                     {/* 2. Bill No. */}
-                    <td className="px-3.5 py-3">
+                    <td className="px-3.5 py-4">
                       <span className="font-mono font-extrabold text-primary text-xs">
                         {bill.bill_no}
                       </span>
                     </td>
 
                     {/* 3. Accounting Date */}
-                    <td className="px-3.5 py-3">
+                    <td className="px-3.5 py-4">
                       <span className="font-semibold text-foreground text-xs">
                         {bill.accounting_date}
                       </span>
                     </td>
 
                     {/* 4. Bill No. of Supplier */}
-                    <td className="px-3.5 py-3 font-mono font-bold text-foreground">
+                    <td className="px-3.5 py-4 font-mono font-bold text-foreground">
                       {bill.bill_no_of_supplier}
                     </td>
 
                     {/* 5. Bill Date of Supplier */}
-                    <td className="px-3.5 py-3 font-mono text-muted-foreground">
+                    <td className="px-3.5 py-4 font-mono text-muted-foreground">
                       {bill.bill_date_of_supplier}
                     </td>
 
                     {/* 6. Project Name */}
-                    <td className="px-3.5 py-3 font-bold text-foreground text-xs">
+                    <td className="px-3.5 py-4 font-bold text-foreground text-xs">
                       <span className="flex items-center gap-1">
                         <Building2 className="h-3.5 w-3.5 text-muted-foreground/70" />
-                        {bill.project_name}
+                        {bill.project_name || 'Silvassa Unit I'}
                       </span>
                     </td>
 
                     {/* 7. Name of Company */}
-                    <td className="px-3.5 py-3 font-semibold text-muted-foreground text-xs">
-                      {bill.company_name}
+                    <td className="px-3.5 py-4 font-semibold text-muted-foreground text-xs">
+                      {bill.company_name || 'Bhilosa Industries Private Limited'}
                     </td>
 
                     {/* 8. Supplier Name */}
-                    <td className="px-3.5 py-3 font-bold text-foreground text-xs truncate max-w-[200px]">
-                      {bill.supplier_name}
+                    <td className="px-3.5 py-4 font-bold text-foreground text-xs truncate max-w-[200px]">
+                      {bill.supplier_name || 'Reliance Polyester Raw Materials Ltd'}
                     </td>
 
                     {/* 9. Total Tax Code Amount */}
-                    <td className="px-3.5 py-3 text-right font-mono text-muted-foreground">
+                    <td className="px-3.5 py-4 text-right font-mono text-muted-foreground">
                       {formatCurrency(bill.total_tax_code_amount)}
                     </td>
 
                     {/* 10. Net Amt */}
-                    <td className="px-3.5 py-3 text-right font-mono font-extrabold text-foreground">
+                    <td className="px-3.5 py-4 text-right font-mono font-extrabold text-foreground">
                       {formatCurrency(bill.net_amt)}
                     </td>
 
                     {/* 11. Tax Code Amount for Tax on Transportation */}
-                    <td className="px-3.5 py-3 text-right font-mono text-muted-foreground">
+                    <td className="px-3.5 py-4 text-right font-mono text-muted-foreground">
                       {formatCurrency(bill.tax_code_amount_transportation)}
                     </td>
 
                     {/* 12. TDS Posting Amount */}
-                    <td className="px-3.5 py-3 text-right font-mono font-bold text-amber-600">
+                    <td className="px-3.5 py-4 text-right font-mono font-bold text-amber-600">
                       {formatCurrency(bill.tds_posting_amount)}
                     </td>
 
                     {/* 13. Total Bill Amount */}
-                    <td className="px-3.5 py-3 text-right font-mono font-bold text-foreground">
+                    <td className="px-3.5 py-4 text-right font-mono font-bold text-foreground">
                       {formatCurrency(bill.total_bill_amount)}
                     </td>
 
                     {/* 14. Final Bill Amount */}
-                    <td className="px-3.5 py-3 text-right font-mono font-extrabold text-primary text-xs">
+                    <td className="px-3.5 py-4 text-right font-mono font-extrabold text-primary text-xs">
                       {formatCurrency(bill.final_bill_amount)}
                     </td>
 
                     {/* 15. Status */}
-                    <td className="px-3.5 py-3 text-center">
+                    <td className="px-3.5 py-4 text-center">
                       {isApproved ? (
                         <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/15 px-2.5 py-1 text-[11px] font-extrabold text-emerald-700 dark:text-emerald-300">
                           <CheckCircle2 className="h-3.5 w-3.5" /> Approved
@@ -165,13 +165,13 @@ export function BillsTableView({ bills, onOpenBillForm }: BillsTableViewProps) {
                     </td>
 
                     {/* Actions Column */}
-                    <td className="px-3.5 py-3 text-right">
+                    <td className="px-3.5 py-4 text-right">
                       <button
                         onClick={() => onOpenBillForm(bill)}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-bold text-foreground hover:bg-primary hover:text-primary-foreground transition-all shadow-2xs cursor-pointer"
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background min-w-[65px] px-3 pr-6 py-1.5 text-xs font-bold text-foreground hover:bg-primary hover:text-primary-foreground transition-all shadow-2xs cursor-pointer"
                       >
                         <Edit3 className="h-3.5 w-3.5" />
-                        <span>Open Form</span>
+                        <span>Form</span>
                       </button>
                     </td>
                   </tr>

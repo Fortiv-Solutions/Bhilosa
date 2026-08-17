@@ -67,7 +67,7 @@ export function PRTableView({
   const allSelected = approvableRows.length > 0 && approvableRows.every((r) => selectedIds.has(r.id));
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3 pb-8">
       <div className="overflow-hidden rounded-xl border border-border bg-card shadow-2xs">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs whitespace-nowrap">
@@ -108,29 +108,20 @@ export function PRTableView({
                 const sourceMr = firstLine?.source_mr_number || (row.material_request_id ? 'MR-20260721-001' : null);
                 const isAutoDraft = row.status === 'auto_draft_pr' || (row.status === 'draft' && !!sourceMr);
 
-                const projectName =
-                  row.project_id === 'central-park'
-                    ? 'Central Park'
-                    : row.project_id === 'riverside-heights'
-                    ? 'Riverside Heights'
-                    : row.project_id === 'skyline-towers'
-                    ? 'Skyline Towers'
-                    : row.company_name?.includes('Electrical')
-                    ? 'Skyline Towers'
-                    : 'Central Park';
+                const projectName = row.projects?.name || 'Silvassa Unit I - Polyester Division';
 
                 const isUuidStr = (s?: string | null) => Boolean(s && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s.trim()));
                 const rawPrepared = row.profiles?.name || (firstLine?.raised_by && !isUuidStr(firstLine.raised_by) ? firstLine.raised_by : null) || row.created_by_name || row.department;
-                const preparedBy = rawPrepared && !isUuidStr(rawPrepared) ? rawPrepared : 'Rohan Mehta (Site Eng)';
+                const preparedBy = rawPrepared && !isUuidStr(rawPrepared) ? rawPrepared : 'Bhilosa Admin';
                 const priorityVal = firstLine?.priority || row.priority || 'medium';
 
                 return (
                   <tr
                     key={row.id}
-                    className="group hover:bg-muted/30 transition-colors align-middle"
+                    className="group hover:bg-muted/30 transition-colors align-top"
                   >
                     {canApprove && (
-                      <td className="px-4 py-3 w-10">
+                      <td className="px-4 py-4 w-10">
                         <input
                           type="checkbox"
                           checked={selectedIds.has(row.id)}
@@ -143,15 +134,15 @@ export function PRTableView({
                       </td>
                     )}
                     {/* Column 1: Sr No. */}
-                    <td className="px-4 py-3">
+                    <td className="px-4 py-4">
                       <span className="font-bold text-foreground text-xs">{rowIndex + 1}</span>
                     </td>
 
                     {/* Column 2: Company & Project */}
-                    <td className="px-4 py-3">
+                    <td className="px-4 py-4">
                       <div className="flex flex-col gap-0.5">
                         <span className="font-bold text-foreground text-xs truncate max-w-[200px]">
-                          {row.company_name || 'Pramukh Group Infrastructure Ltd.'}
+                          {row.company_name || 'Bhilosa Industries Private Limited'}
                         </span>
                         <span className="text-[11px] text-muted-foreground font-medium flex items-center gap-1">
                           <Building2 className="h-3 w-3 text-muted-foreground/60" />
@@ -161,7 +152,7 @@ export function PRTableView({
                     </td>
 
                     {/* Column 3: Prepared By / Date */}
-                    <td className="px-4 py-3">
+                    <td className="px-4 py-4">
                       <div className="flex flex-col gap-0.5">
                         <span className="font-medium text-foreground text-xs truncate max-w-[180px]">
                           {preparedBy}
@@ -173,22 +164,22 @@ export function PRTableView({
                     </td>
 
                     {/* Column 4: Required By */}
-                    <td className="px-4 py-3">
+                    <td className="px-4 py-4">
                       <span className={`font-medium text-xs ${row.required_date && new Date(row.required_date) < new Date() ? 'text-red-600 dark:text-red-400 font-bold' : 'text-foreground'}`}>
                         {formatDate(row.required_date)}
                       </span>
                     </td>
 
                     {/* Column 5: Site */}
-                    <td className="px-4 py-3">
+                    <td className="px-4 py-4">
                       <span className="font-medium text-xs text-foreground truncate max-w-[160px] block flex items-center gap-1">
                         <MapPin className="h-3 w-3 text-muted-foreground/60" />
-                        {row.delivery_address || row.wbs_code || (firstLine as any)?.delivery_location || (firstLine as any)?.site_block || 'Project Site'}
+                        {row.delivery_address || row.wbs_code || (firstLine as any)?.delivery_location || (firstLine as any)?.site_block || 'Silvassa Unit I'}
                       </span>
                     </td>
 
                     {/* Column 6: No. of Items */}
-                    <td className="px-4 py-3">
+                    <td className="px-4 py-4">
                       <span className="font-bold text-foreground text-xs flex items-center gap-1">
                         <Layers className="h-3 w-3 text-primary" />
                         {lineCount}
@@ -196,12 +187,12 @@ export function PRTableView({
                     </td>
 
                     {/* Column 5: Priority */}
-                    <td className="px-4 py-3">
+                    <td className="px-4 py-4">
                       <PrPriorityBadge priority={priorityVal} />
                     </td>
 
                     {/* Column 6: Status & Responsible Person */}
-                    <td className="px-4 py-3">
+                    <td className="px-4 py-4">
                       <div className="flex flex-col gap-1.5 min-w-[150px]">
                         <PrStatusBadge status={row.status} />
                         {((row as any).assigned_profile?.name || (row as any).assigned_to_name || (row as any).approved_profile?.name || (row as any).approved_by_name || row.created_by_name || row.profiles?.name || row.site_contact_person || preparedBy) && (
@@ -215,11 +206,11 @@ export function PRTableView({
                     </td>
 
                     {/* Column 7: Actions */}
-                    <td className="px-4 py-3 text-right">
+                    <td className="px-4 py-4 text-right">
                       <div className="flex items-center justify-end gap-1.5">
                         <button
                           onClick={() => onEdit(row.id)}
-                          className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-bold text-foreground hover:bg-primary hover:text-primary-foreground transition-all shadow-2xs"
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background min-w-[65px] px-3 pr-6 py-1.5 text-xs font-bold text-foreground hover:bg-primary hover:text-primary-foreground transition-all shadow-2xs"
                         >
                           {row.status === 'approved' ? (
                             <>
@@ -238,7 +229,7 @@ export function PRTableView({
                           <button
                             onClick={() => onPdf(row)}
                             title="Download PR report PDF"
-                            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-bold text-foreground hover:bg-muted hover:text-foreground transition-colors shadow-2xs"
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background min-w-[65px] px-3 pr-6 py-1.5 text-xs font-bold text-foreground hover:bg-muted hover:text-foreground transition-colors shadow-2xs"
                           >
                             <FileDown className="h-3.5 w-3.5" />
                             <span>PDF</span>
