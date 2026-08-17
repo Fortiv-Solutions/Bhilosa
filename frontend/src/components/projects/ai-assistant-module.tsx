@@ -177,7 +177,7 @@ export function AIAssistantModule({ project }: AIAssistantModuleProps) {
               <Menu className="h-4 w-4" />
             </button>
             <div className="flex min-w-0 items-center gap-1.5 py-1">
-              <span className="grid h-7 w-7 flex-shrink-0 place-items-center rounded-lg bg-[#b68d40] text-white shadow-sm">
+              <span className="grid h-7 w-7 flex-shrink-0 place-items-center rounded-lg bg-[#e83e8c] text-white shadow-sm">
                 <PramukhLogo className="h-4.5 w-4.5" />
               </span>
               <span className="min-w-0">
@@ -216,7 +216,7 @@ export function AIAssistantModule({ project }: AIAssistantModuleProps) {
                       }`}
                     >
                       {message.role === 'assistant' && (
-                        <div className="grid h-7 w-7 flex-shrink-0 place-items-center rounded-lg bg-[#b68d40] text-white shadow-sm">
+                        <div className="grid h-7 w-7 flex-shrink-0 place-items-center rounded-lg bg-[#e83e8c] text-white shadow-sm">
                           <PramukhLogo className="h-4 w-4" />
                         </div>
                       )}
@@ -266,7 +266,7 @@ export function AIAssistantModule({ project }: AIAssistantModuleProps) {
                     animate={{ opacity: 1, y: 0 }}
                     className="mb-5 flex items-center gap-3"
                   >
-                    <div className="grid h-7 w-7 place-items-center rounded-lg bg-[#b68d40] text-white">
+                    <div className="grid h-7 w-7 place-items-center rounded-lg bg-[#e83e8c] text-white">
                       <PramukhLogo className="h-4 w-4" />
                     </div>
                     <div className="flex items-center gap-1.5">
@@ -275,7 +275,7 @@ export function AIAssistantModule({ project }: AIAssistantModuleProps) {
                           key={dot}
                           animate={{ opacity: [0.3, 1, 0.3], y: [0, -2, 0] }}
                           transition={{ duration: 0.9, repeat: Infinity, delay: dot * 0.12 }}
-                          className="h-1.5 w-1.5 rounded-full bg-[#b68d40]"
+                          className="h-1.5 w-1.5 rounded-full bg-[#e83e8c]"
                         />
                       ))}
                     </div>
@@ -294,26 +294,26 @@ export function AIAssistantModule({ project }: AIAssistantModuleProps) {
               <button 
                 type="button"
                 onClick={() => sendMessage(`Generate MOM for yesterday's site inspection for ${project?.name}`)}
-                className="text-[10px] font-bold border border-gray-250 bg-gray-50 hover:bg-[#faf6ee] hover:border-[#b68d40]/45 dark:bg-gray-900 dark:border-gray-800 dark:hover:bg-[#30200d]/15 px-2.5 py-1 rounded-full transition-all flex items-center gap-1.5 cursor-pointer text-gray-700 dark:text-gray-300"
+                className="text-[10px] font-bold border border-gray-250 bg-gray-50 hover:bg-[#fdeef4] hover:border-[#e83e8c]/45 dark:bg-gray-900 dark:border-gray-800 dark:hover:bg-[#3a0f28]/15 px-2.5 py-1 rounded-full transition-all flex items-center gap-1.5 cursor-pointer text-gray-700 dark:text-gray-300"
               >
                 📝 Generate MOM
               </button>
               <button 
                 type="button"
                 onClick={() => sendMessage(`Generate Daily Progress Report (DPR) for ${project?.name}`)}
-                className="text-[10px] font-bold border border-gray-250 bg-gray-50 hover:bg-[#faf6ee] hover:border-[#b68d40]/45 dark:bg-gray-900 dark:border-gray-800 dark:hover:bg-[#30200d]/15 px-2.5 py-1 rounded-full transition-all flex items-center gap-1.5 cursor-pointer text-gray-700 dark:text-gray-300"
+                className="text-[10px] font-bold border border-gray-250 bg-gray-50 hover:bg-[#fdeef4] hover:border-[#e83e8c]/45 dark:bg-gray-900 dark:border-gray-800 dark:hover:bg-[#3a0f28]/15 px-2.5 py-1 rounded-full transition-all flex items-center gap-1.5 cursor-pointer text-gray-700 dark:text-gray-300"
               >
                 📋 Generate DPR
               </button>
               <button 
                 type="button"
                 onClick={() => sendMessage(`Create a draft Purchase Request for Portland Cement for ${project?.name}`)}
-                className="text-[10px] font-bold border border-gray-250 bg-gray-50 hover:bg-[#faf6ee] hover:border-[#b68d40]/45 dark:bg-gray-900 dark:border-gray-800 dark:hover:bg-[#30200d]/15 px-2.5 py-1 rounded-full transition-all flex items-center gap-1.5 cursor-pointer text-gray-700 dark:text-gray-300"
+                className="text-[10px] font-bold border border-gray-250 bg-gray-50 hover:bg-[#fdeef4] hover:border-[#e83e8c]/45 dark:bg-gray-900 dark:border-gray-800 dark:hover:bg-[#3a0f28]/15 px-2.5 py-1 rounded-full transition-all flex items-center gap-1.5 cursor-pointer text-gray-700 dark:text-gray-300"
               >
                 📦 Create PR
               </button>
             </div>
-            <div className="rounded-xl border border-gray-200 bg-white p-2 shadow-[0_5px_20px_rgba(15,23,42,0.05)] transition-[border-color,box-shadow] duration-200 focus-within:border-[#b68d40]/70 focus-within:shadow-[0_8px_25px_rgba(182,141,64,0.08)] dark:border-gray-700 dark:bg-gray-900">
+            <div className="rounded-xl border border-gray-200 bg-white p-2 shadow-[0_5px_20px_rgba(15,23,42,0.05)] transition-[border-color,box-shadow] duration-200 focus-within:border-[#e83e8c]/70 focus-within:shadow-[0_8px_25px_rgba(182,141,64,0.08)] dark:border-gray-700 dark:bg-gray-900">
               <textarea
                 value={inputValue}
                 onChange={(event) => setInputValue(event.target.value)}
@@ -340,7 +340,7 @@ export function AIAssistantModule({ project }: AIAssistantModuleProps) {
                 <button
                   onClick={() => sendMessage()}
                   disabled={!inputValue.trim() || isResponding}
-                  className="grid h-8 w-8 flex-shrink-0 place-items-center rounded-lg bg-[#b68d40] text-white shadow-sm transition-[transform,background-color,opacity] duration-150 active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-35"
+                  className="grid h-8 w-8 flex-shrink-0 place-items-center rounded-lg bg-[#e83e8c] text-white shadow-sm transition-[transform,background-color,opacity] duration-150 active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-35"
                   aria-label="Send message"
                 >
                   <ArrowUp className="h-3.5 w-3.5" />
@@ -371,7 +371,7 @@ function ConversationHistory({
     <div className="flex h-full flex-col bg-[#f7f7f5] p-3 dark:bg-gray-900">
       <div className="mb-3 flex items-center justify-between px-1">
         <div className="flex items-center gap-1.5">
-          <span className="grid h-7 w-7 place-items-center rounded-lg border border-[#b68d40]/20 bg-white text-[#b68d40] shadow-sm dark:bg-gray-950">
+          <span className="grid h-7 w-7 place-items-center rounded-lg border border-[#e83e8c]/20 bg-white text-[#e83e8c] shadow-sm dark:bg-gray-950">
             <PramukhLogo className="h-4 w-4" />
           </span>
           <span className="text-xs font-semibold text-gray-900 dark:text-white">AI Workspace</span>
@@ -389,7 +389,7 @@ function ConversationHistory({
 
       <button
         onClick={onNewChat}
-        className="mb-4 flex h-8 w-full items-center justify-center gap-1.5 rounded-lg border border-gray-250 bg-white text-[11px] font-semibold text-gray-800 shadow-sm transition-[transform,border-color] duration-150 hover:border-[#b68d40]/50 active:scale-[0.98] dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+        className="mb-4 flex h-8 w-full items-center justify-center gap-1.5 rounded-lg border border-gray-250 bg-white text-[11px] font-semibold text-gray-800 shadow-sm transition-[transform,border-color] duration-150 hover:border-[#e83e8c]/50 active:scale-[0.98] dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
       >
         <Plus className="h-3.5 w-3.5" />
         New conversation
@@ -407,13 +407,13 @@ function ConversationHistory({
             onClick={() => onSelect(conversation.id)}
             className={`group flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left transition-colors duration-200 ${
               activeConversationId === conversation.id
-                ? 'bg-[#b68d40]/10 text-[#9a742f] dark:bg-[#b68d40]/20 dark:text-[#d4b068] font-medium'
+                ? 'bg-[#e83e8c]/10 text-[#c3006a] dark:bg-[#e83e8c]/20 dark:text-[#f2679f] font-medium'
                 : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800/50'
             }`}
           >
             <MessageSquare
               className={`h-3.5 w-3.5 flex-shrink-0 ${
-                activeConversationId === conversation.id ? 'text-[#b68d40]' : 'text-gray-400'
+                activeConversationId === conversation.id ? 'text-[#e83e8c]' : 'text-gray-400'
               }`}
             />
             <span className="min-w-0 flex-1">
@@ -426,7 +426,7 @@ function ConversationHistory({
 
       <div className="mt-2 border-t border-gray-200 pt-2 dark:border-gray-800">
         <div className="flex items-center gap-1.5 rounded-lg px-1.5 py-1.5">
-          <span className="grid h-7 w-7 place-items-center rounded-full bg-[#b68d40] text-[9px] font-bold text-white">PA</span>
+          <span className="grid h-7 w-7 place-items-center rounded-full bg-[#e83e8c] text-[9px] font-bold text-white">PA</span>
           <span className="min-w-0">
             <span className="block text-[10px] font-semibold text-gray-800 dark:text-gray-100">Pramukh AI</span>
             <span className="block text-[8px] text-emerald-600 dark:text-emerald-400">Data loaded</span>
@@ -454,7 +454,7 @@ function EmptyConversation({
         transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
         className="mb-6"
       >
-        <div className="mb-4 grid h-10 w-10 place-items-center rounded-xl bg-[#b68d40] text-white shadow-[0_6px_20px_rgba(182,141,64,0.2)]">
+        <div className="mb-4 grid h-10 w-10 place-items-center rounded-xl bg-[#e83e8c] text-white shadow-[0_6px_20px_rgba(182,141,64,0.2)]">
           <PramukhLogo className="h-5 w-5" />
         </div>
         <h1 className="font-heading text-xl font-semibold text-gray-950 dark:text-white sm:text-2xl">Ask Pramukh AI about {projectName}</h1>

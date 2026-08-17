@@ -2,16 +2,24 @@
 
 import { FormEvent, useCallback, useEffect, useState } from 'react';
 import {
+  CalendarClock,
   PackageCheck,
   RefreshCcw,
   ReceiptIndianRupee,
   ShoppingCart,
+  TrendingUp,
   Truck,
   UsersRound,
   X,
 } from 'lucide-react';
 import { isLiveSupabase } from '@/lib/erp/supabase-modules';
 import { supabase } from '@/utils/supabase-client';
+import {
+  getDemoRfqRow,
+  getDemoRfqLines,
+  findDemoVendorByNameOrGstin,
+} from '@/lib/procurement-demo-quotations';
+import type { ExtractedPdfQuotation } from '@/components/procurement/rfq/ai-pdf-quotation-comparison';
 import {
   approveVendorSelection,
   assignPrToCurrentUser,
@@ -78,8 +86,11 @@ import { normalizePoStatus, poStatusLabel, type PoStatus } from '@/lib/erp/purch
 import { GrnWorkspace } from '@/components/procurement/grn/grn-workspace';
 import { BillsWorkspace } from '@/components/procurement/bills/bills-workspace';
 import { useAppStore } from '@/store/use-app-store';
+import { DeliveriesWorkspace } from '@/components/procurement/deliveries/deliveries-workspace';
+import { ApprovalAnalyticsDashboard } from '@/components/procurement/approval-analytics/approval-analytics-dashboard';
+import { ProcurementVendorsTab } from '@/components/procurement/vendors/procurement-vendors-tab';
 
-type TabId = 'requisitions' | 'rfq' | 'orders' | 'grn' | 'billing';
+type TabId = 'requisitions' | 'rfq' | 'orders' | 'grn' | 'billing' | 'deliveries' | 'analytics' | 'vendors';
 
 const tabs: { id: TabId; label: string; icon: typeof ShoppingCart }[] = [
   { id: 'requisitions', label: 'PR', icon: ShoppingCart },
@@ -87,6 +98,9 @@ const tabs: { id: TabId; label: string; icon: typeof ShoppingCart }[] = [
   { id: 'orders', label: 'PO', icon: Truck },
   { id: 'grn', label: 'GRN', icon: PackageCheck },
   { id: 'billing', label: 'Bills', icon: ReceiptIndianRupee },
+  { id: 'deliveries', label: 'Deliveries', icon: CalendarClock },
+  { id: 'analytics', label: 'Analytics', icon: TrendingUp },
+  { id: 'vendors', label: 'Vendors', icon: UsersRound },
 ];
 
 const emptyData: ProcurementDashboardData = {
@@ -249,6 +263,12 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
 
   const liveMode = isLiveSupabase();
   const projectOptions = liveMode && liveProjects.length > 0 ? liveProjects : projects;
+
+  // listProcurementDashboard has no demo branch, so data.rfqs is empty without
+  // Supabase — splice in one fully-scored demo RFQ so the comparison matrix
+  // (and the AI-PDF "push to comparison" bridge) are reachable through normal
+  // navigation instead of only via a hidden code path.
+  const rfqsForUi = liveMode ? data.rfqs : [...data.rfqs, getDemoRfqRow()];
 
   useEffect(() => {
     if (initialProjectId) {
@@ -568,6 +588,67 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
     }
 
     setQuoteModalOpen(true);
+  }
+
+  /**
+   * Bridges an OCR-extracted PDF/email quote (ai-pdf-quotation-comparison.tsx)
+   * into the same Record-Quote modal a manually-entered quote goes through —
+   * not a second insert path. The buyer reviews/edits the pre-fill and saves
+   * through the existing handleSaveQuote -> recordQuotation pipeline, so a
+   * PDF-submitted quote ends up scored and ranked in the same comparison
+   * matrix as everything else.
+   */
+  async function handleImportPdfQuote(rfqId: string, extracted: ExtractedPdfQuotation) {
+    const rfq = rfqsForUi.find((r) => r.id === rfqId);
+    if (!rfq) return;
+
+    // Reuses the normal open path first (seeds quoteLines from rfq_lines and
+    // defaults the vendor to the first invited one) so anything the OCR bridge
+    // doesn't override below still has a sane value.
+    await handleOpenQuoteModal(rfq);
+
+    setQuoteNumber(extracted.supplier.quotationNo || '');
+    setQuoteDate(extracted.supplier.quotationDate || new Date().toISOString().split('T')[0]);
+    setQuoteLeadTimeDays(extracted.financials.deliveryDays || 7);
+    if (extracted.financials.paymentTerms) setQuotePaymentTerms(extracted.financials.paymentTerms);
+    setQuoteGstDetails(extracted.supplier.gstin ? `GSTIN: ${extracted.supplier.gstin}` : 'GST extra as applicable');
+
+    // Vendor resolution by name/GSTIN — never auto-create a vendor silently.
+    // No match just leaves handleOpenQuoteModal's default (first invited
+    // vendor) selected; the buyer picks the right one manually.
+    const liveMatch = data.vendors.find(
+      (v) =>
+        (v.legal_name || '').trim().toLowerCase() === extracted.supplier.name.trim().toLowerCase() ||
+        (v.gst_number || '').trim().toUpperCase() === extracted.supplier.gstin.trim().toUpperCase(),
+    );
+    const matchedVendor = liveMatch || (!liveMode ? findDemoVendorByNameOrGstin(extracted.supplier.name, extracted.supplier.gstin) : null);
+    if (matchedVendor) setSelectedVendorForQuote(matchedVendor.id);
+
+    // Match extracted line items to RFQ lines by description so they land on
+    // the right row in the comparison matrix; unmatched lines still get
+    // recorded (rfq_line_id: null) but are flagged for the buyer to fix,
+    // rather than silently vanishing from the matrix later.
+    const rfqLines = liveMode ? await listRfqLines(rfqId).catch(() => []) : getDemoRfqLines();
+    setQuoteLines(
+      extracted.items.map((item) => {
+        const matchedLine = rfqLines.find(
+          (rl) => rl.item_description.trim().toLowerCase() === item.description.trim().toLowerCase(),
+        );
+        return {
+          item_id: matchedLine?.item_id ?? null,
+          item_description: item.description,
+          quantity: item.quantity,
+          offered_qty: item.quantity,
+          unit_rate: item.unitRate,
+          discount_percent: 0,
+          tax_rate: extracted.financials.gstRate || 18,
+          rfq_line_id: matchedLine?.id,
+          remarks: matchedLine ? '' : 'No matching RFQ line found — pick one manually before saving.',
+        };
+      }),
+    );
+
+    setMessage(`Pre-filled from ${extracted.fileName} — review before saving.`);
   }
 
   async function handleSaveQuote(event: FormEvent) {
@@ -1193,7 +1274,7 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
         <h4 className="text-sm font-bold uppercase text-foreground mb-4">Procurement Pipeline</h4>
         <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
           <Metric icon={ShoppingCart} label="1. PR" value={data.purchaseRequisitions.length} />
-          <Metric icon={UsersRound} label="2. RFQ" value={data.rfqs.length} />
+          <Metric icon={UsersRound} label="2. RFQ" value={rfqsForUi.length} />
           <Metric icon={Truck} label="3. PO" value={data.purchaseOrders.length} />
           <Metric icon={PackageCheck} label="4. GRN" value={data.grns.length} />
           <Metric icon={ReceiptIndianRupee} label="5. Bills" value={data.vendorBills.length} />
@@ -1256,7 +1337,7 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
       {activeTab === 'rfq' && (
         <RFQWorkspace
           prs={data.purchaseRequisitions}
-          rfqs={data.rfqs}
+          rfqs={rfqsForUi}
           quotations={data.quotations}
           selections={data.vendorSelections}
           purchaseOrders={data.purchaseOrders}
@@ -1274,11 +1355,12 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
           onApproveSelection={(selection) => handleApproveSelection(selection.id)}
           onGeneratePo={(pr, quotation, selection) => handleOpenPoModal(pr, quotation, selection.id)}
           onPrintRfq={(rfqId) => {
-            const rfq = data.rfqs.find((r) => r.id === rfqId);
+            const rfq = rfqsForUi.find((r) => r.id === rfqId);
             if (rfq) printRfqReport(rfq);
           }}
           onRefresh={refresh}
           onNavigateToPo={() => setActiveTab('orders')}
+          onImportPdfQuote={handleImportPdfQuote}
         />
       )}
 
@@ -1338,6 +1420,16 @@ export function ProcurementModule({ initialProjectId, hideProjectSelector = fals
           onError={setError}
         />
       )}
+
+      {activeTab === 'deliveries' && (
+        <DeliveriesWorkspace projectId={selectedProjectId === 'all' ? undefined : selectedProjectId} />
+      )}
+
+      {activeTab === 'analytics' && (
+        <ApprovalAnalyticsDashboard projectId={selectedProjectId === 'all' ? undefined : selectedProjectId} />
+      )}
+
+      {activeTab === 'vendors' && <ProcurementVendorsTab />}
 
       {/* MODALS */}
 

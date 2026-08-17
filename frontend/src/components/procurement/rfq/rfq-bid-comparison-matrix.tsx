@@ -260,6 +260,11 @@ export function RfqBidComparisonMatrix({
                               <Star className="h-3 w-3 fill-purple-500 text-purple-500" /> Score: {v.scores.weighted_score}
                             </span>
                           )}
+                          {v.scores?.rank != null && (
+                            <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-extrabold text-amber-700 dark:text-amber-300">
+                              Rank #{v.scores.rank} of {vendors.length}
+                            </span>
+                          )}
                         </div>
 
                         {onRecommendVendor && (

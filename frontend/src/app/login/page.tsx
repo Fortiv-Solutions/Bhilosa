@@ -1,7 +1,7 @@
 'use client';
 
 // ============================================================================
-// PRAMUKH GROUP ERP — SIGN IN
+// JYOTI ERP — SIGN IN
 // File: frontend/src/app/login/page.tsx
 //
 // This is the application's landing page for unauthenticated visitors.
@@ -15,6 +15,7 @@
 // ============================================================================
 
 import { Suspense, useEffect, useMemo, useState } from 'react';
+import Image from 'next/image';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { AlertCircle, Eye, EyeOff, Loader2, Lock, LogIn, Mail } from 'lucide-react';
 import { useAppStore } from '@/store/use-app-store';
@@ -22,39 +23,21 @@ import { bootstrapInboxData, signIn } from '@/lib/inbox';
 import { canAccessPath, getRoleLandingPath, normalizeDatabaseRole } from '@/lib/rbac';
 import { isSupabaseConfigured } from '@/utils/supabase-client';
 
-// ── Pramukh monogram ────────────────────────────────────────────────────────────
-function PramukhLogo({ className = '' }: { className?: string }) {
-  return (
-    <svg
-      className={className}
-      viewBox="30 1 36 29"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      aria-hidden="true"
-    >
-      <path
-        className="fill-current"
-        d="M52.13,17.62v2.6s7.81,1.18,9,9.31h4.34a4.39,4.39,0,0,1-1.9-2.21C63,25.74,60.25,18.65,52.13,17.62ZM34.47,3.9H44.72V14.23C37.23,14.15,34.62,13.2,34.47,3.9ZM30,1.38A5.14,5.14,0,0,1,32,5.24v.63c.71,9.31,4.65,10.57,12.7,10.65V27.16h-.08s-.4,2.21-1.58,2.37h4.18V1.38H30ZM43.53,17.62v2.6s-7.8,1.18-8.91,9.31H30.29a4.07,4.07,0,0,0,1.81-2.21C32.65,25.74,35.49,18.65,43.53,17.62ZM51,14.23V3.9H61.28C61,13.2,58.44,14.15,51,14.23ZM63.8,1.38H48.5V29.53h4.1C51.5,29.37,51,27.16,51,27.16h0V16.52c8-.08,12-1.34,12.61-10.65a1.71,1.71,0,0,0,.08-.63,4.93,4.93,0,0,1,2-3.86Z"
-      />
-    </svg>
-  );
-}
-
 // ── Sky backdrop ────────────────────────────────────────────────────────────────
-// Dense, realistic cloudscape recolored to the ERP brand palette (warm gold
-// #b68d40 fading to the app's neutral cream/slate background) instead of blue.
+// Dense, realistic cloudscape recolored to the ERP brand palette (Jyoti pink
+// #e83e8c fading to the app's neutral cream/slate background) instead of blue.
 // Multiple SVG blur layers create volumetric depth: thin wisps up high,
 // mid-altitude puffs, a thick cumulus bank filling the lower third, and a
 // solid white floor at the very bottom.
 function SkyBackdrop() {
   return (
     <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
-      {/* Daytime gradient — warm gold-to-cream transition matching the brand accent */}
-      <div className="absolute inset-0 bg-[linear-gradient(180deg,#ead9b0_0%,#f0e2bf_14%,#f4e9cc_28%,#f7eed9_42%,#f9f2e2_54%,#fbf5e9_66%,#fdf8f0_78%,#fefaf6_88%,#ffffff_100%)] dark:hidden" />
+      {/* Daytime gradient — warm pink-to-cream transition matching the brand accent */}
+      <div className="absolute inset-0 bg-[linear-gradient(180deg,#f6cfe2_0%,#f8d8e6_14%,#fae0eb_28%,#fbe6ee_42%,#fceaf1_54%,#fdeef4_66%,#fef3f7_78%,#fef7fa_88%,#ffffff_100%)] dark:hidden" />
 
       {/* Night backdrop for dark mode — matches the app's dark navy background */}
       <div className="absolute inset-0 hidden dark:block dark:bg-[linear-gradient(180deg,#060a16_0%,#0a1124_30%,#101a35_62%,#0a1020_86%,#080d1b_100%)]" />
-      <div className="absolute inset-0 hidden dark:block dark:bg-[radial-gradient(120%_80%_at_50%_112%,rgba(182,141,64,0.28)_0%,transparent_62%)]" />
+      <div className="absolute inset-0 hidden dark:block dark:bg-[radial-gradient(120%_80%_at_50%_112%,rgba(232,62,140,0.28)_0%,transparent_62%)]" />
 
       {/* Faint crossing arcs behind the card */}
       <svg
@@ -165,8 +148,8 @@ function SkyBackdrop() {
       </svg>
 
       {/* Dark mode: a low horizon glow instead of clouds. */}
-      <div className="absolute -bottom-[20%] left-1/2 hidden h-[52%] w-[120%] -translate-x-1/2 rounded-[50%] bg-amber-400/10 blur-[90px] dark:block" />
-      <div className="absolute -bottom-[26%] right-[-12%] hidden h-[54%] w-[70%] rounded-full bg-amber-500/8 blur-[100px] dark:block" />
+      <div className="absolute -bottom-[20%] left-1/2 hidden h-[52%] w-[120%] -translate-x-1/2 rounded-[50%] bg-pink-500/10 blur-[90px] dark:block" />
+      <div className="absolute -bottom-[26%] right-[-12%] hidden h-[54%] w-[70%] rounded-full bg-pink-600/8 blur-[100px] dark:block" />
     </div>
   );
 }
@@ -193,11 +176,9 @@ function LoginShell() {
 function BrandMark() {
   return (
     <div className="absolute left-5 top-5 z-20 flex select-none items-center gap-3 sm:left-8 sm:top-7">
-      <span className="flex h-9 w-9 items-center justify-center text-[#b68d40] dark:text-[#d1a349]">
-        <PramukhLogo className="h-6 w-6" />
-      </span>
-      <span className="font-heading text-lg font-black tracking-[0.2em] uppercase bg-gradient-to-r from-[#a6802f] via-[#d1a349] to-[#8a641c] bg-clip-text text-transparent drop-shadow-xs">
-        PRAGATI
+      <Image src="/jyoti-logo.png" alt="Jyoti" width={72} height={34} className="h-9 w-auto" priority />
+      <span className="font-heading text-lg font-black tracking-[0.2em] uppercase bg-gradient-to-r from-[#c3006a] via-[#e83e8c] to-[#a3105c] bg-clip-text text-transparent drop-shadow-xs">
+        JYOTI
       </span>
     </div>
   );
@@ -252,9 +233,10 @@ function LoginView() {
     setIsLoading(true);
     try {
       if (!isSupabaseConfigured) {
-        throw new Error(
-          'Supabase is not configured. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY before signing in.',
-        );
+        // No database configured yet — sign straight in locally so the app
+        // remains usable on mock data until Supabase is wired up.
+        login(trimmedEmail, 'UPPER_MANAGEMENT');
+        return;
       }
 
       const profile = await signIn(trimmedEmail, password);
@@ -287,9 +269,9 @@ function LoginView() {
         className="relative z-10 w-full max-w-[380px] overflow-hidden rounded-[28px] border border-white/70 bg-white/45 p-7 shadow-[0_24px_70px_-20px_rgba(31,58,95,0.28)] backdrop-blur-2xl sm:p-8 dark:border-white/10 dark:bg-slate-900/45 dark:shadow-[0_24px_70px_-20px_rgba(0,0,0,0.7)]"
         aria-labelledby="login-heading"
       >
-        {/* Soft interior tint: warm gold at the top-left, cream at the bottom-right */}
+        {/* Soft interior tint: Jyoti pink at the top-left, cream at the bottom-right */}
         <div
-          className="pointer-events-none absolute inset-0 bg-[radial-gradient(120%_90%_at_0%_0%,rgba(182,141,64,0.16)_0%,transparent_55%),radial-gradient(110%_90%_at_100%_100%,rgba(182,141,64,0.1)_0%,transparent_55%)] dark:bg-[radial-gradient(120%_90%_at_0%_0%,rgba(182,141,64,0.14)_0%,transparent_55%),radial-gradient(110%_90%_at_100%_100%,rgba(182,141,64,0.1)_0%,transparent_55%)]"
+          className="pointer-events-none absolute inset-0 bg-[radial-gradient(120%_90%_at_0%_0%,rgba(232,62,140,0.16)_0%,transparent_55%),radial-gradient(110%_90%_at_100%_100%,rgba(232,62,140,0.1)_0%,transparent_55%)] dark:bg-[radial-gradient(120%_90%_at_0%_0%,rgba(232,62,140,0.14)_0%,transparent_55%),radial-gradient(110%_90%_at_100%_100%,rgba(232,62,140,0.1)_0%,transparent_55%)]"
           aria-hidden="true"
         />
 
@@ -310,7 +292,7 @@ function LoginView() {
               Sign in with email
             </h1>
             <p className="mx-auto mt-2 max-w-[300px] text-[13px] leading-relaxed text-slate-500 dark:text-slate-400">
-              Access your Pramukh Group workspace — projects, procurement, budget and
+              Access your Jyoti workspace — projects, procurement, budget and
               billing, together in one place.
             </p>
           </div>
@@ -386,7 +368,7 @@ function LoginView() {
             {/* Forgot password */}
             <div className="flex justify-end">
               <a
-                href="mailto:admin@pramukh.com?subject=Pragati%20ERP%20password%20reset"
+                href="mailto:admin@pramukh.com?subject=Jyoti%20ERP%20password%20reset"
                 className="rounded text-xs font-medium text-slate-600 underline-offset-2 transition-colors hover:text-slate-900 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900/20 dark:text-slate-400 dark:hover:text-white"
               >
                 Forgot password?
@@ -429,7 +411,7 @@ function LoginView() {
             Access is provisioned by your administrator.
             <br />
             <a
-              href="mailto:admin@pramukh.com?subject=Pragati%20ERP%20access%20request"
+              href="mailto:admin@pramukh.com?subject=Jyoti%20ERP%20access%20request"
               className="font-semibold text-slate-700 underline-offset-2 hover:underline dark:text-slate-300"
             >
               Request an account

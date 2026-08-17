@@ -1,6 +1,11 @@
 import { supabase, getDbSiteId, getSupabaseJsonHeaders } from '@/utils/supabase-client';
 import { isLiveSupabase } from '@/lib/erp/supabase-modules';
 import { calculateLandedCostAllocation } from '@/lib/bill-allocation';
+import {
+  getDemoRfqBundle,
+  demoRecordQuotation,
+  demoRecomputeQuotationRanks,
+} from '@/lib/procurement-demo-quotations';
 import { normalizeDatabaseRole, type Role } from '@/lib/roles';
 import {
   normalizePoStatus,
@@ -2499,7 +2504,54 @@ function scoreQuotation(input: {
   };
 }
 
+/**
+ * Recomputes and persists `rank` for every non-cancelled quotation on an RFQ,
+ * ordered by weighted_score descending. Rank is a property of the whole set —
+ * a new quote can shift everyone else's rank, not just its own — so this
+ * always re-ranks the full set rather than writing a single row's rank at
+ * insert time (which is how `quotation_scores.rank` ended up always null).
+ */
+export async function recomputeQuotationRanks(rfqId: string): Promise<MutationResult<{ ranked: number }>> {
+  if (!isLiveSupabase()) return { data: demoRecomputeQuotationRanks(rfqId), error: null };
+
+  try {
+    const { data: quotes, error: qErr } = await supabase
+      .from('vendor_quotations')
+      .select('id')
+      .eq('rfq_id', rfqId)
+      .neq('status', 'cancelled');
+    if (qErr) throw new Error(qErr.message);
+
+    const quoteIds = (quotes ?? []).map((q: any) => q.id);
+    if (quoteIds.length === 0) return { data: { ranked: 0 }, error: null };
+
+    const { data: scores, error: sErr } = await supabase
+      .from('quotation_scores')
+      .select('quotation_id, weighted_score')
+      .in('quotation_id', quoteIds);
+    if (sErr) throw new Error(sErr.message);
+
+    // Tiebreak is whatever order Supabase returned .in() in — an easy follow-up
+    // if exact ties ever matter (would need vendor_quotations.created_at too).
+    const ranked = [...(scores ?? [])].sort(
+      (a: any, b: any) => Number(b.weighted_score) - Number(a.weighted_score),
+    );
+
+    await Promise.all(
+      ranked.map((row: any, idx: number) =>
+        supabase.from('quotation_scores').update({ rank: idx + 1 }).eq('quotation_id', row.quotation_id),
+      ),
+    );
+
+    return { data: { ranked: ranked.length }, error: null };
+  } catch (error) {
+    return { data: null, error: asError(error) };
+  }
+}
+
 export async function recordQuotation(input: RecordQuotationInput): Promise<MutationResult<{ quotationId: string }>> {
+  if (!isLiveSupabase()) return { data: demoRecordQuotation(input), error: null };
+
   try {
     const profileId = await currentProfileId();
     if (input.lines.length === 0) throw new Error('Add at least one quotation line.');
@@ -2620,6 +2672,10 @@ export async function recordQuotation(input: RecordQuotationInput): Promise<Muta
       updated_by: profileId,
     });
 
+    // A new quote can shift every other vendor's rank on this RFQ, not just its
+    // own — recompute the whole set rather than only writing this one's rank.
+    await recomputeQuotationRanks(input.rfq.id);
+
     await supabase
       .from('rfq_vendors')
       .update({ response_status: 'submitted', responded_at: new Date().toISOString(), updated_by: profileId })
@@ -2703,84 +2759,93 @@ export type RfqComparisonMatrix = {
  * Highlights L1 (lowest evaluated net unit rate) per RFQ line item.
  */
 export async function getQuotationComparisonMatrix(rfqId: string): Promise<RfqComparisonMatrix | null> {
-  if (!isLiveSupabase()) return null;
+  let rfq: RfqRow;
+  let rfqLines: RfqLineRow[];
+  let rawQuotes: any[];
+  let scoresByQuote: Record<string, QuotationScoreRow>;
 
-  // 1. Fetch RFQ Header
-  const { data: rfqData, error: rfqErr } = await supabase
-    .from('rfqs')
-    .select('*, rfq_vendors(*, vendors(id, legal_name, display_name, rating))')
-    .eq('id', rfqId)
-    .single();
+  if (!isLiveSupabase()) {
+    const bundle = getDemoRfqBundle(rfqId);
+    if (!bundle) return null;
+    ({ rfq, rfqLines, rawQuotes, scoresByQuote } = bundle);
+  } else {
+    // 1. Fetch RFQ Header
+    const { data: rfqData, error: rfqErr } = await supabase
+      .from('rfqs')
+      .select('*, rfq_vendors(*, vendors(id, legal_name, display_name, rating))')
+      .eq('id', rfqId)
+      .single();
 
-  if (rfqErr || !rfqData) return null;
-  const rfq = rfqData as unknown as RfqRow;
+    if (rfqErr || !rfqData) return null;
+    rfq = rfqData as unknown as RfqRow;
 
-  // 2. Fetch RFQ Lines
-  let rfqLines = await listRfqLines(rfqId);
+    // 2. Fetch RFQ Lines
+    rfqLines = await listRfqLines(rfqId);
 
-  // Fallback 2a: If rfq_lines table has no rows for this RFQ, construct lines from parent PR
-  if (rfqLines.length === 0 && rfqData.purchase_requisition_id) {
-    const { data: prLinesData } = await supabase
-      .from('purchase_requisition_lines')
-      .select('*')
-      .eq('purchase_requisition_id', rfqData.purchase_requisition_id);
-
-    if (prLinesData && prLinesData.length > 0) {
-      rfqLines = prLinesData.map((prl: any, idx: number) => ({
-        id: prl.id,
-        rfq_id: rfqId,
-        project_id: rfqData.project_id,
-        purchase_requisition_line_id: prl.id,
-        purchase_requisition_id: rfqData.purchase_requisition_id,
-        line_number: idx + 1,
-        item_id: prl.item_id || null,
-        item_code: null,
-        item_group: 'Materials',
-        item_description: prl.item_description || 'Requisitioned Material Item',
-        specification: null,
-        preferred_brand: null,
-        unit: prl.unit || 'nos',
-        rfq_quantity: Number(prl.quantity || 1),
-        estimated_rate: Number(prl.estimated_rate || 0),
-        activity_name: prl.activity_name || null,
-        sub_activity_name: prl.sub_activity_name || null,
-        activity_code: prl.activity_code || null,
-        required_date: prl.required_date || null,
-        remarks: prl.remarks || null,
-        status: 'open',
-      }));
-    }
-  }
-
-  if (rfqLines.length === 0) return null;
-
-  // 3. Fetch Quotations for this RFQ
-  const { data: quotesData, error: quotesErr } = await supabase
-    .from('vendor_quotations')
-    .select('*, vendors(id, legal_name, display_name, rating), quotation_lines(*)')
-    .eq('rfq_id', rfqId)
-    .neq('status', 'cancelled');
-
-  if (quotesErr) throw new Error(quotesErr.message);
-
-  const rawQuotes = (quotesData ?? []) as any[];
-  const quoteIds = rawQuotes.map((q) => q.id);
-
-  const scoresByQuote: Record<string, QuotationScoreRow> = {};
-  if (quoteIds.length > 0) {
-    try {
-      const { data: scoresData } = await supabase
-        .from('quotation_scores')
+    // Fallback 2a: If rfq_lines table has no rows for this RFQ, construct lines from parent PR
+    if (rfqLines.length === 0 && rfqData.purchase_requisition_id) {
+      const { data: prLinesData } = await supabase
+        .from('purchase_requisition_lines')
         .select('*')
-        .in('quotation_id', quoteIds);
+        .eq('purchase_requisition_id', rfqData.purchase_requisition_id);
 
-      if (scoresData) {
-        for (const s of scoresData) {
-          scoresByQuote[s.quotation_id] = s as any;
-        }
+      if (prLinesData && prLinesData.length > 0) {
+        rfqLines = prLinesData.map((prl: any, idx: number) => ({
+          id: prl.id,
+          rfq_id: rfqId,
+          project_id: rfqData.project_id,
+          purchase_requisition_line_id: prl.id,
+          purchase_requisition_id: rfqData.purchase_requisition_id,
+          line_number: idx + 1,
+          item_id: prl.item_id || null,
+          item_code: null,
+          item_group: 'Materials',
+          item_description: prl.item_description || 'Requisitioned Material Item',
+          specification: null,
+          preferred_brand: null,
+          unit: prl.unit || 'nos',
+          rfq_quantity: Number(prl.quantity || 1),
+          estimated_rate: Number(prl.estimated_rate || 0),
+          activity_name: prl.activity_name || null,
+          sub_activity_name: prl.sub_activity_name || null,
+          activity_code: prl.activity_code || null,
+          required_date: prl.required_date || null,
+          remarks: prl.remarks || null,
+          status: 'open',
+        }));
       }
-    } catch {
-      // Non-blocking score lookup fallback
+    }
+
+    if (rfqLines.length === 0) return null;
+
+    // 3. Fetch Quotations for this RFQ
+    const { data: quotesData, error: quotesErr } = await supabase
+      .from('vendor_quotations')
+      .select('*, vendors(id, legal_name, display_name, rating), quotation_lines(*)')
+      .eq('rfq_id', rfqId)
+      .neq('status', 'cancelled');
+
+    if (quotesErr) throw new Error(quotesErr.message);
+
+    rawQuotes = (quotesData ?? []) as any[];
+    const quoteIds = rawQuotes.map((q) => q.id);
+
+    scoresByQuote = {};
+    if (quoteIds.length > 0) {
+      try {
+        const { data: scoresData } = await supabase
+          .from('quotation_scores')
+          .select('*')
+          .in('quotation_id', quoteIds);
+
+        if (scoresData) {
+          for (const s of scoresData) {
+            scoresByQuote[s.quotation_id] = s as any;
+          }
+        }
+      } catch {
+        // Non-blocking score lookup fallback
+      }
     }
   }
 
@@ -2805,8 +2870,8 @@ export async function getQuotationComparisonMatrix(rfqId: string): Promise<RfqCo
   });
 
   // 4b. Fallback: If no online vendor_quotations exist yet, map invited vendors from rfq_vendors
-  if (vendors.length === 0 && Array.isArray((rfqData as any).rfq_vendors) && (rfqData as any).rfq_vendors.length > 0) {
-    for (const rv of (rfqData as any).rfq_vendors) {
+  if (vendors.length === 0 && Array.isArray((rfq as any).rfq_vendors) && (rfq as any).rfq_vendors.length > 0) {
+    for (const rv of (rfq as any).rfq_vendors) {
       const v = rv.vendors || {};
       vendors.push({
         vendor_id: String(rv.vendor_id),

@@ -10,6 +10,7 @@ import {
   isPoEditable,
   PO_TRANSITIONS,
 } from '@/lib/erp/purchase-order/status';
+import { getDeliveryUrgency, DELIVERY_URGENCY_TONE_CLASSES } from '@/lib/erp/purchase-order/delivery-urgency';
 
 interface PoTableViewProps {
   purchaseOrders: PurchaseOrderRow[];
@@ -82,6 +83,7 @@ export function PoTableView({
                 <th className="px-4 py-3.5 min-w-[140px]">Project</th>
                 <th className="px-4 py-3.5 min-w-[180px]">Supplier</th>
                 <th className="px-3 py-3.5 min-w-[150px]">Linked Source</th>
+                <th className="px-3 py-3.5 min-w-[120px]">Delivery</th>
                 <th className="px-3 py-3.5 text-right">Discount (₹)</th>
                 <th className="px-3 py-3.5 text-right">Amount (₹)</th>
                 <th className="px-3 py-3.5 text-center">Status</th>
@@ -156,6 +158,25 @@ export function PoTableView({
                           <span className="text-muted-foreground">—</span>
                         ) : null}
                       </div>
+                    </td>
+
+                    {/* Delivery */}
+                    <td className="px-3 py-3">
+                      {(() => {
+                        const urgency = getDeliveryUrgency(po);
+                        return (
+                          <div className="flex flex-col gap-0.5">
+                            <span className="text-[10px] font-medium text-muted-foreground">
+                              {formatDate(po.delivery_date)}
+                            </span>
+                            <span
+                              className={`inline-flex w-max items-center rounded-md border px-1.5 py-0.5 text-[9px] font-extrabold ${DELIVERY_URGENCY_TONE_CLASSES[urgency.tone]}`}
+                            >
+                              {urgency.label}
+                            </span>
+                          </div>
+                        );
+                      })()}
                     </td>
 
                     {/* Discount Amount */}

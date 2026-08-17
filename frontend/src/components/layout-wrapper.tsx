@@ -113,7 +113,7 @@ export default function LayoutWrapper({ children }: { children: React.ReactNode 
           </p>
 
           <div className="border-t border-slate-800 pt-6 text-[10px] text-slate-500 font-bold uppercase tracking-wider">
-            Contact Support &bull; <span className="text-[#b68d40] lowercase">admin@pramukh.com</span>
+            Contact Support &bull; <span className="text-[#e83e8c] lowercase">admin@pramukh.com</span>
           </div>
         </div>
       </div>

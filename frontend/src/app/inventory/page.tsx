@@ -412,7 +412,7 @@ export default function InventoryPage() {
           <button
             type="button"
             onClick={() => setItemModalOpen(true)}
-            className="inline-flex h-10 items-center gap-1.5 rounded-xl bg-[#b68d40] hover:bg-[#967332] px-3 text-xs font-bold text-white shadow-sm transition-colors"
+            className="inline-flex h-10 items-center gap-1.5 rounded-xl bg-[#e83e8c] hover:bg-[#c3006a] px-3 text-xs font-bold text-white shadow-sm transition-colors"
           >
             <Plus className="h-4 w-4" />
             Register Stock Item
@@ -663,7 +663,7 @@ export default function InventoryPage() {
               <button 
                 type="submit" 
                 disabled={loading}
-                className="w-full rounded-xl bg-[#b68d40] py-3 text-xs font-bold text-white shadow-sm transition-colors hover:bg-[#967332] disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-500 dark:disabled:bg-gray-800 flex items-center justify-center gap-1.5"
+                className="w-full rounded-xl bg-[#e83e8c] py-3 text-xs font-bold text-white shadow-sm transition-colors hover:bg-[#c3006a] disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-500 dark:disabled:bg-gray-800 flex items-center justify-center gap-1.5"
               >
                 {loading && <Loader2 className="h-4 w-4 animate-spin" />}
                 Post Stock Ledger Transaction

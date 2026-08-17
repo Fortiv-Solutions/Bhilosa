@@ -31,41 +31,17 @@ export async function updateProfileProject(userId: string, projectId: string | n
   if (error) throw error;
 }
 
+// Scoped down to Procurement (+ MRP), Work Orders, and Inventory for every
+// role — see config/erp-navigation.ts for the full rationale. This used to
+// include '*' for UPPER_MANAGEMENT (unrestricted); that wildcard is gone so
+// direct-URL access to a removed page is actually blocked, not just hidden
+// from the nav.
+const CORE_ALLOWED_PATHS = ['/procurement', '/mrp', '/work-orders', '/service-bills', '/inventory', '/vendors'];
+
 export const ROLE_ALLOWED_PATHS: Record<Role, string[]> = {
-  UPPER_MANAGEMENT: ['*'],
-  PROJECT_MANAGER: [
-    '/dashboard',
-    '/projects',
-    '/activities',
-    '/work-orders',
-    '/billing',
-    '/service-bills',
-    '/boq',
-    '/budget',
-    '/materials',
-    '/item-master',
-    '/inventory',
-    '/documents',
-    '/communication',
-    '/inbox',
-    '/reports',
-    '/notifications',
-    '/support',
-  ],
-  PR_TEAM: [
-    '/dashboard',
-    '/procurement',
-    '/item-master',
-    '/vendors',
-    '/budget',
-    '/inventory',
-    '/documents',
-    '/communication',
-    '/inbox',
-    '/reports',
-    '/notifications',
-    '/support',
-  ],
+  UPPER_MANAGEMENT: CORE_ALLOWED_PATHS,
+  PROJECT_MANAGER: CORE_ALLOWED_PATHS,
+  PR_TEAM: CORE_ALLOWED_PATHS,
 };
 
 export function isUpperManagement(role: Role): boolean {
@@ -85,20 +61,20 @@ export function canAccessPath(role: Role, pathname: string): boolean {
 /**
  * Where a role lands immediately after signing in.
  *
- * Every role can reach /dashboard, so that is the safe default; PR_TEAM is sent
- * straight to its procurement workspace instead. The result is validated through
- * canAccessPath so a future ROLE_ALLOWED_PATHS change can never strand a user on a
- * page their role is then redirected away from.
+ * Every role's allowed-path list is scoped to Procurement/MRP/Work
+ * Orders/Inventory only, so every role lands on /procurement. The result is
+ * validated through canAccessPath so a future ROLE_ALLOWED_PATHS change can
+ * never strand a user on a page their role is then redirected away from.
  */
 const ROLE_LANDING_PATH: Record<Role, string> = {
-  UPPER_MANAGEMENT: '/dashboard',
-  PROJECT_MANAGER: '/dashboard',
+  UPPER_MANAGEMENT: '/procurement',
+  PROJECT_MANAGER: '/procurement',
   PR_TEAM: '/procurement',
 };
 
 export function getRoleLandingPath(role: Role | null | undefined): string {
-  if (!role) return '/dashboard';
+  if (!role) return '/procurement';
   const preferred = ROLE_LANDING_PATH[role];
   if (preferred && canAccessPath(role, preferred)) return preferred;
-  return canAccessPath(role, '/dashboard') ? '/dashboard' : '/';
+  return canAccessPath(role, '/procurement') ? '/procurement' : '/';
 }

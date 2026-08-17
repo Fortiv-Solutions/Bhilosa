@@ -35,6 +35,7 @@ import {
   type VendorProfileRow,
   type VendorInput,
 } from '@/lib/procurement';
+import { VendorScorecard } from '@/components/vendors/vendor-scorecard';
 
 const EMPTY_FORM: VendorInput = {
   legal_name: '',
@@ -681,6 +682,12 @@ export default function VendorsPage() {
                   Linked MRs are counted through PO → PR → Material Request, since material requests are not raised against a vendor directly.
                 </p>
               </div>
+
+              {/* Vendor performance scorecard (OTIF + rejection rate) */}
+              <VendorScorecard
+                vendorId={profileVendor.vendor_id}
+                vendorName={profileVendor.display_name || profileVendor.legal_name}
+              />
 
               {/* Master details */}
               <div>

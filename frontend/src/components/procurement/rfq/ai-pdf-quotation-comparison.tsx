@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   FileText,
   UploadCloud,
@@ -26,8 +26,10 @@ import {
   Bot,
   BadgeCheck,
   FileSignature,
+  SendHorizonal,
 } from 'lucide-react';
 import { formatCurrency } from '../shared';
+import type { RfqRow, VendorRow } from '@/lib/procurement';
 
 export interface ExtractedPdfQuotation {
   id: string;
@@ -205,15 +207,24 @@ const INITIAL_EXTRACTED_PDFS: ExtractedPdfQuotation[] = [
 interface AiPdfQuotationComparisonProps {
   onImportQuotes?: (quotes: ExtractedPdfQuotation[]) => void;
   onAcceptAiRecommendation?: (recommendedQuote: ExtractedPdfQuotation) => void;
+  /** RFQs to push an extracted quote into — without one, "Push to Official Comparison" has nothing to target. */
+  rfqs?: RfqRow[];
+  vendors?: VendorRow[];
+  /** Pre-fills the real Record-Quote modal from an OCR-extracted PDF/email quote for buyer review before saving. */
+  onPushToComparison?: (rfqId: string, extracted: ExtractedPdfQuotation) => void;
 }
 
 export function AiPdfQuotationComparison({
   onImportQuotes,
   onAcceptAiRecommendation,
+  rfqs = [],
+  onPushToComparison,
 }: AiPdfQuotationComparisonProps) {
   const [extractedQuotes, setExtractedQuotes] = useState<ExtractedPdfQuotation[]>(INITIAL_EXTRACTED_PDFS);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [acceptedPoStatus, setAcceptedPoStatus] = useState<boolean>(false);
+  const [selectedRfqId, setSelectedRfqId] = useState<string>(rfqs[0]?.id || '');
+  const [pushedQuoteIds, setPushedQuoteIds] = useState<Set<string>>(new Set());
 
   const [uploadErrors, setUploadErrors] = useState<string[]>([]);
 
@@ -351,6 +362,19 @@ export function AiPdfQuotationComparison({
     }
   };
 
+  // rfqs can arrive after this component mounts (async dashboard load) — pick
+  // a default the first time a list actually shows up, without stomping on a
+  // choice the buyer already made.
+  useEffect(() => {
+    if (!selectedRfqId && rfqs.length > 0) setSelectedRfqId(rfqs[0].id);
+  }, [rfqs, selectedRfqId]);
+
+  const handlePushToComparison = (quote: ExtractedPdfQuotation) => {
+    if (!selectedRfqId || !onPushToComparison) return;
+    onPushToComparison(selectedRfqId, quote);
+    setPushedQuoteIds((prev) => new Set(prev).add(quote.id));
+  };
+
   return (
     <div className="space-y-6">
       {/* AI Neural OCR Upload Header & Dropzone */}
@@ -371,6 +395,25 @@ export function AiPdfQuotationComparison({
               <FileCheck className="h-3.5 w-3.5" /> {extractedQuotes.length} PDF Quote(s) Parsed
             </span>
           </div>
+        </div>
+
+        {/* Target RFQ — required before any extracted quote can be pushed into the real comparison matrix */}
+        <div className="rounded-lg border border-border bg-muted/30 p-3 flex flex-wrap items-center gap-3">
+          <label className="text-[11px] font-bold uppercase text-muted-foreground shrink-0">
+            Push extracted quotes into
+          </label>
+          <select
+            value={selectedRfqId}
+            onChange={(e) => setSelectedRfqId(e.target.value)}
+            className="flex-1 min-w-[220px] rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-semibold text-foreground"
+          >
+            {rfqs.length === 0 && <option value="">No RFQs available</option>}
+            {rfqs.map((rfq) => (
+              <option key={rfq.id} value={rfq.id}>
+                {rfq.rfq_number} — {rfq.title}
+              </option>
+            ))}
+          </select>
         </div>
 
         {/* Drag & Drop Bulk Upload Zone */}
@@ -482,6 +525,19 @@ export function AiPdfQuotationComparison({
                       </span>
                     </div>
                   </div>
+
+                  {onPushToComparison && (
+                    <button
+                      type="button"
+                      onClick={() => handlePushToComparison(q)}
+                      disabled={!selectedRfqId || pushedQuoteIds.has(q.id)}
+                      className="w-full inline-flex items-center justify-center gap-1.5 rounded-lg border border-primary/40 bg-primary/10 px-3 py-1.5 text-[11px] font-bold text-primary hover:bg-primary/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                      title={!selectedRfqId ? 'Choose a target RFQ above first' : 'Pre-fill the Record Quote form for buyer review'}
+                    >
+                      <SendHorizonal className="h-3.5 w-3.5" />
+                      {pushedQuoteIds.has(q.id) ? 'Pushed — Review in RFQ' : 'Push to Official Comparison'}
+                    </button>
+                  )}
                 </div>
               );
             })}

@@ -227,6 +227,8 @@ export interface FullPoFormState {
   to_grn: boolean;
   credit_period: number;
   delivery_address: string;
+  /** Promised delivery date, YYYY-MM-DD. Drives the Deliveries follow-up tab's urgency badges. */
+  delivery_date: string;
   note_on_po: string;
   remarks: string;
   relation_count: number;
@@ -295,6 +297,7 @@ export function buildPurchaseOrderPayload(form: FullPoFormState): PurchaseOrderF
     po_date: form.po_date ? form.po_date.slice(0, 10) : null,
     delivery_location: form.project_address || null,
     delivery_address: form.delivery_address || form.project_address || null,
+    delivery_date: form.delivery_date || null,
     payment_terms: form.credit_period ? `${form.credit_period} days credit` : null,
     terms_and_conditions: form.terms_and_conditions,
 
@@ -971,6 +974,7 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
       to_grn: (po as any).to_grn !== false,
       credit_period: Number((po as any).credit_period || (po as any).credit_period_days || 30),
       delivery_address: (po as any).delivery_address || po.delivery_location || (po as any).project_address || '',
+      delivery_date: (po as any).delivery_date || '',
       note_on_po: (po as any).note_on_po || '',
       remarks: (po as any).remarks || (po as any).general_remarks || '',
       relation_count: Number((po as any).relation_count || 0),
@@ -2979,6 +2983,17 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
                 type="number"
                 value={form.credit_period}
                 onChange={(e) => updateHeader('credit_period', Number(e.target.value))}
+                className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono font-bold text-foreground"
+              />
+            </div>
+
+            {/* Promised Delivery Date — drives the Deliveries tab's overdue/due-soon badges */}
+            <div>
+              <label className="block text-[11px] font-bold uppercase text-muted-foreground mb-1">Promised Delivery Date</label>
+              <input
+                type="date"
+                value={form.delivery_date}
+                onChange={(e) => updateHeader('delivery_date', e.target.value)}
                 className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono font-bold text-foreground"
               />
             </div>

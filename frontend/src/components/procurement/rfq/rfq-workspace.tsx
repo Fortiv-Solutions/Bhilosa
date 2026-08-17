@@ -24,7 +24,7 @@ import { RfqStatsBar } from './rfq-stats-bar';
 import { RfqFilterBar, DEFAULT_RFQ_FILTERS, type RfqFiltersState } from './rfq-filter-bar';
 import { RfqTableView } from './rfq-table-view';
 import { RfqForm, toSupplierOptions, type RfqFormState } from './rfq-form';
-import { AiPdfQuotationComparison } from './ai-pdf-quotation-comparison';
+import { AiPdfQuotationComparison, type ExtractedPdfQuotation } from './ai-pdf-quotation-comparison';
 
 interface RFQWorkspaceProps {
   prs: PurchaseRequisitionRow[];
@@ -50,6 +50,8 @@ interface RFQWorkspaceProps {
   onPrintRfq?: (rfqId: string) => void;
   onRefresh?: () => void;
   onNavigateToPo?: () => void;
+  /** Pushes an OCR-extracted PDF/email quote into the real Record-Quote pipeline for the chosen RFQ. */
+  onImportPdfQuote?: (rfqId: string, extracted: ExtractedPdfQuotation) => void;
 }
 
 export function RFQWorkspace(props: RFQWorkspaceProps) {
@@ -75,6 +77,7 @@ export function RFQWorkspace(props: RFQWorkspaceProps) {
     onPrintRfq,
     onRefresh,
     onNavigateToPo,
+    onImportPdfQuote,
   } = props;
 
   const [viewMode, setViewMode] = useState<'list' | 'form' | 'ai_pdf' | 'workbench'>('list');
@@ -311,7 +314,11 @@ export function RFQWorkspace(props: RFQWorkspaceProps) {
           );
         })()
       ) : viewMode === 'ai_pdf' ? (
-        <AiPdfQuotationComparison />
+        <AiPdfQuotationComparison
+          rfqs={rfqs}
+          vendors={vendors}
+          onPushToComparison={onImportPdfQuote}
+        />
       ) : (
         <>
           {/* Daily RFQ Operational Reminders & Stats Bar */}

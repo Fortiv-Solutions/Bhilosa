@@ -263,7 +263,7 @@ export default function SupportPage() {
         <div className="relative z-10 flex flex-col md:flex-row md:items-center md:justify-between gap-6">
           <div className="space-y-2">
             <div className="flex items-center gap-2">
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-[#b68d40]/20 px-3 py-1 text-xs font-bold text-[#b68d40] border border-[#b68d40]/30">
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-[#e83e8c]/20 px-3 py-1 text-xs font-bold text-[#e83e8c] border border-[#e83e8c]/30">
                 <HelpCircle className="h-3.5 w-3.5" /> 24/7 Operations Desk
               </span>
               <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2.5 py-1 text-xs font-bold text-emerald-400 border border-emerald-500/20">
@@ -289,7 +289,7 @@ export default function SupportPage() {
 
             <a
               href="tel:+919876543210"
-              className="inline-flex h-11 items-center gap-2 rounded-xl bg-[#b68d40] px-4 text-xs font-bold text-white shadow-lg shadow-[#b68d40]/25 transition hover:bg-[#967332] active:scale-95"
+              className="inline-flex h-11 items-center gap-2 rounded-xl bg-[#e83e8c] px-4 text-xs font-bold text-white shadow-lg shadow-[#e83e8c]/25 transition hover:bg-[#c3006a] active:scale-95"
             >
               <Phone className="h-4 w-4" /> Call Hotline: +91 98765 43210
             </a>
@@ -302,14 +302,14 @@ export default function SupportPage() {
         {/* Support Hotline */}
         <a
           href="tel:+919876543210"
-          className="group p-5 bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-2xl shadow-xs hover:border-[#b68d40]/40 transition-all flex items-start gap-4"
+          className="group p-5 bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-2xl shadow-xs hover:border-[#e83e8c]/40 transition-all flex items-start gap-4"
         >
-          <div className="w-11 h-11 rounded-xl bg-[#b68d40]/10 text-[#b68d40] flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform">
+          <div className="w-11 h-11 rounded-xl bg-[#e83e8c]/10 text-[#e83e8c] flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform">
             <Phone className="w-5 h-5" />
           </div>
           <div>
             <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Direct Call Desk</span>
-            <h3 className="font-bold text-foreground text-sm mt-0.5 group-hover:text-[#b68d40] transition-colors">+91 98765 43210</h3>
+            <h3 className="font-bold text-foreground text-sm mt-0.5 group-hover:text-[#e83e8c] transition-colors">+91 98765 43210</h3>
             <p className="text-[11px] text-muted-foreground mt-1">Available 24/7 for urgent site issues</p>
           </div>
         </a>
@@ -317,7 +317,7 @@ export default function SupportPage() {
         {/* Email Support */}
         <a
           href="mailto:support@pramukhgroup.com"
-          className="group p-5 bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-2xl shadow-xs hover:border-[#b68d40]/40 transition-all flex items-start gap-4"
+          className="group p-5 bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-2xl shadow-xs hover:border-[#e83e8c]/40 transition-all flex items-start gap-4"
         >
           <div className="w-11 h-11 rounded-xl bg-blue-500/10 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform">
             <Mail className="w-5 h-5" />
@@ -369,13 +369,13 @@ export default function SupportPage() {
           <div className="flex items-center justify-between">
             <div>
               <h2 className="font-heading text-lg font-bold text-foreground flex items-center gap-2">
-                <Send className="w-5 h-5 text-[#b68d40]" /> Raise a Support Ticket
+                <Send className="w-5 h-5 text-[#e83e8c]" /> Raise a Support Ticket
               </h2>
               <p className="text-xs text-muted-foreground mt-0.5">
                 Submit an issue or technical ticket directly to Pramukh Group Operations Engineers.
               </p>
             </div>
-            <span className="text-[11px] font-bold bg-[#b68d40]/10 text-[#b68d40] px-3 py-1 rounded-full border border-[#b68d40]/20">
+            <span className="text-[11px] font-bold bg-[#e83e8c]/10 text-[#e83e8c] px-3 py-1 rounded-full border border-[#e83e8c]/20">
               Database Synced
             </span>
           </div>
@@ -456,7 +456,7 @@ export default function SupportPage() {
             <div>
               <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground block mb-1 flex items-center justify-between">
                 <span className="flex items-center gap-1.5">
-                  <ImageIcon className="w-3.5 h-3.5 text-[#b68d40]" /> Attach Screenshots / Proof Images (Optional)
+                  <ImageIcon className="w-3.5 h-3.5 text-[#e83e8c]" /> Attach Screenshots / Proof Images (Optional)
                 </span>
                 <span className="text-[10px] text-muted-foreground">{attachedImages.length} Attached</span>
               </label>
@@ -474,7 +474,7 @@ export default function SupportPage() {
                 onClick={() => fileInputRef.current?.click()}
                 className="border-2 border-dashed border-border/80 hover:border-primary/60 bg-muted/10 hover:bg-muted/30 rounded-xl p-4 text-center cursor-pointer transition-all flex flex-col items-center justify-center gap-1.5"
               >
-                <div className="w-9 h-9 rounded-full bg-[#b68d40]/10 text-[#b68d40] flex items-center justify-center">
+                <div className="w-9 h-9 rounded-full bg-[#e83e8c]/10 text-[#e83e8c] flex items-center justify-center">
                   <UploadCloud className="w-5 h-5" />
                 </div>
                 <p className="text-xs font-bold text-foreground">Click or Drag & Drop Screenshots here</p>
@@ -520,7 +520,7 @@ export default function SupportPage() {
               <button
                 type="submit"
                 disabled={isSubmitting || !subject.trim() || !description.trim()}
-                className="inline-flex h-10 items-center gap-2 rounded-xl bg-[#b68d40] px-6 text-xs font-bold text-white shadow-sm hover:bg-[#967332] active:scale-95 disabled:opacity-50 transition-all cursor-pointer"
+                className="inline-flex h-10 items-center gap-2 rounded-xl bg-[#e83e8c] px-6 text-xs font-bold text-white shadow-sm hover:bg-[#c3006a] active:scale-95 disabled:opacity-50 transition-all cursor-pointer"
               >
                 {isSubmitting ? (
                   <>Writing to Database...</>
@@ -540,7 +540,7 @@ export default function SupportPage() {
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="font-heading text-lg font-bold text-foreground flex items-center gap-2">
-                  <Clock className="w-5 h-5 text-[#b68d40]" /> Live Database Tickets
+                  <Clock className="w-5 h-5 text-[#e83e8c]" /> Live Database Tickets
                 </h2>
                 <p className="text-xs text-muted-foreground mt-0.5">
                   Track resolution status of tickets stored in database.
@@ -583,7 +583,7 @@ export default function SupportPage() {
                   {t.attachments && t.attachments.length > 0 && (
                     <div className="flex items-center gap-1.5 pt-1">
                       <span className="text-[9px] font-bold text-muted-foreground flex items-center gap-1">
-                        <Paperclip className="w-3 h-3 text-[#b68d40]" /> Proofs:
+                        <Paperclip className="w-3 h-3 text-[#e83e8c]" /> Proofs:
                       </span>
                       <div className="flex items-center gap-1">
                         {t.attachments.map((imgUrl, imgIdx) => (
@@ -610,7 +610,7 @@ export default function SupportPage() {
 
           <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-800 dark:text-amber-300 flex items-center justify-between gap-2">
             <span>Escalation needed? Call HQ Senior Systems Manager directly.</span>
-            <a href="tel:+919876543210" className="font-bold underline text-[#b68d40] shrink-0">Call Now</a>
+            <a href="tel:+919876543210" className="font-bold underline text-[#e83e8c] shrink-0">Call Now</a>
           </div>
         </div>
       </div>
@@ -620,7 +620,7 @@ export default function SupportPage() {
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
             <h2 className="font-heading text-xl font-bold text-foreground flex items-center gap-2">
-              <Sparkles className="w-5 h-5 text-[#b68d40]" /> Knowledge Base & FAQs
+              <Sparkles className="w-5 h-5 text-[#e83e8c]" /> Knowledge Base & FAQs
             </h2>
             <p className="text-xs text-muted-foreground mt-0.5">
               Frequently asked questions and step-by-step guides for Pramukh Group ERP modules.
@@ -652,7 +652,7 @@ export default function SupportPage() {
                   className="w-full flex items-center justify-between p-4 text-left font-bold text-xs lg:text-sm text-foreground hover:bg-muted/30 transition-colors cursor-pointer"
                 >
                   <span className="flex items-center gap-2">
-                    <HelpCircle className="w-4 h-4 text-[#b68d40] shrink-0" />
+                    <HelpCircle className="w-4 h-4 text-[#e83e8c] shrink-0" />
                     {faq.question}
                   </span>
                   {isOpen ? <ChevronUp className="w-4 h-4 text-muted-foreground shrink-0" /> : <ChevronDown className="w-4 h-4 text-muted-foreground shrink-0" />}

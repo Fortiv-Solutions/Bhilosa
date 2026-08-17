@@ -56,10 +56,10 @@ function VoicePlayer({url,mine}:{url:string;mine:boolean}) {
 
   const progress=duration?Math.min(100,(currentTime/duration)*100):0;
   const railClass=mine?'bg-white/25':'bg-gray-300 dark:bg-gray-600';
-  const fillClass=mine?'bg-white':'bg-[#b68d40]';
+  const fillClass=mine?'bg-white':'bg-[#e83e8c]';
 
   return <div className={`mt-2 flex w-fit min-w-[260px] max-w-[340px] items-center gap-3 rounded-xl px-3 py-2.5 ${
-    mine?'bg-[#b68d40] text-white shadow-sm':'bg-gray-100 dark:bg-gray-800 shadow-sm ring-1 ring-inset ring-black/[0.04] dark:ring-white/5'
+    mine?'bg-[#e83e8c] text-white shadow-sm':'bg-gray-100 dark:bg-gray-800 shadow-sm ring-1 ring-inset ring-black/[0.04] dark:ring-white/5'
   }`}>
     <audio
       ref={audio}
@@ -76,7 +76,7 @@ function VoicePlayer({url,mine}:{url:string;mine:boolean}) {
       type="button"
       onClick={togglePlayback}
       className={`grid h-9 w-9 shrink-0 place-items-center rounded-full transition-transform hover:scale-105 active:scale-95 ${
-        mine?'bg-white text-[#9a742f]':'bg-[#b68d40] text-white'
+        mine?'bg-white text-[#c3006a]':'bg-[#e83e8c] text-white'
       }`}
       aria-label={playing?'Pause voice message':'Play voice message'}
     >
@@ -588,7 +588,7 @@ export function InboxModule({project}:{project:ProjectSite}) {
     } catch(e){setError(e instanceof Error?e.message:'Direct conversation could not be opened.');}
   };
 
-  if(loading)return <div className="h-[calc(100vh-140px)] grid place-items-center"><Loader2 className="animate-spin text-[#b68d40]"/></div>;
+  if(loading)return <div className="h-[calc(100vh-140px)] grid place-items-center"><Loader2 className="animate-spin text-[#e83e8c]"/></div>;
 
   const getInitials = (name?: string | null) => (name || '?').substring(0, 2).toUpperCase();
 
@@ -614,8 +614,8 @@ export function InboxModule({project}:{project:ProjectSite}) {
             <button onClick={() => setShowCreateModal(true)} className="p-0.5 rounded-sm hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"><Plus className="w-3.5 h-3.5"/></button>
           </h3>
           <div className="space-y-0.5">
-            {(conversations || []).filter(c=>c.type==='project_group' || c.type==='channel').map(c=><button key={c.id} onClick={()=>setActive(c)} className={`w-full text-left px-2 py-1.5 rounded-md flex items-center gap-2 transition-colors ${active?.id===c.id?'bg-[#b68d40]/10 text-[#9a742f] dark:bg-[#b68d40]/20 dark:text-[#d4b068] font-medium':'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800/50'}`}>
-              <Hash className="w-4 h-4 opacity-70"/><span className="text-[13px] truncate flex-1">{c.title||'General'}</span>{Boolean(c.unread_count)&&<span className="rounded-full bg-[#b68d40] text-white text-[9px] px-1.5 py-0.5 leading-none">{c.unread_count}</span>}
+            {(conversations || []).filter(c=>c.type==='project_group' || c.type==='channel').map(c=><button key={c.id} onClick={()=>setActive(c)} className={`w-full text-left px-2 py-1.5 rounded-md flex items-center gap-2 transition-colors ${active?.id===c.id?'bg-[#e83e8c]/10 text-[#c3006a] dark:bg-[#e83e8c]/20 dark:text-[#f2679f] font-medium':'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800/50'}`}>
+              <Hash className="w-4 h-4 opacity-70"/><span className="text-[13px] truncate flex-1">{c.title||'General'}</span>{Boolean(c.unread_count)&&<span className="rounded-full bg-[#e83e8c] text-white text-[9px] px-1.5 py-0.5 leading-none">{c.unread_count}</span>}
             </button>)}
           </div>
         </div>
@@ -625,9 +625,9 @@ export function InboxModule({project}:{project:ProjectSite}) {
               Direct Messages
             </h3>
             <div className="space-y-0.5">
-              {(conversations || []).filter(c=>c.type!=='project_group').map(c=><button key={c.id} onClick={()=>setActive(c)} className={`w-full text-left px-2 py-1.5 rounded-md flex items-center gap-2 transition-colors ${active?.id===c.id?'bg-[#b68d40]/10 text-[#9a742f] dark:bg-[#b68d40]/20 dark:text-[#d4b068] font-medium':'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800/50'}`}>
+              {(conversations || []).filter(c=>c.type!=='project_group').map(c=><button key={c.id} onClick={()=>setActive(c)} className={`w-full text-left px-2 py-1.5 rounded-md flex items-center gap-2 transition-colors ${active?.id===c.id?'bg-[#e83e8c]/10 text-[#c3006a] dark:bg-[#e83e8c]/20 dark:text-[#f2679f] font-medium':'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800/50'}`}>
                 <div className="w-4 h-4 rounded-[4px] bg-gradient-to-br from-gray-200 to-gray-300 dark:from-gray-700 dark:to-gray-800 text-[8px] flex items-center justify-center font-bold text-gray-600 dark:text-gray-300 uppercase shrink-0">{getInitials(c.title)}</div>
-                <span className="text-[13px] truncate flex-1">{c.title||'Direct message'}</span>{Boolean(c.unread_count)&&<span className="rounded-full bg-[#b68d40] text-white text-[9px] px-1.5 py-0.5 leading-none">{c.unread_count}</span>}
+                <span className="text-[13px] truncate flex-1">{c.title||'Direct message'}</span>{Boolean(c.unread_count)&&<span className="rounded-full bg-[#e83e8c] text-white text-[9px] px-1.5 py-0.5 leading-none">{c.unread_count}</span>}
               </button>)}
             </div>
           </div>
@@ -715,7 +715,7 @@ export function InboxModule({project}:{project:ProjectSite}) {
                   type="button"
                   onClick={() => handleConvertMessage(message, 'qc')}
                   title="Convert message text to a new QC Observation"
-                  className="p-1 text-gray-500 hover:text-[#b68d40] hover:bg-gray-100 dark:hover:bg-gray-800 rounded transition-colors flex items-center gap-0.5 text-[10px] font-extrabold uppercase"
+                  className="p-1 text-gray-500 hover:text-[#e83e8c] hover:bg-gray-100 dark:hover:bg-gray-800 rounded transition-colors flex items-center gap-0.5 text-[10px] font-extrabold uppercase"
                 >
                   <ShieldCheck className="w-3.5 h-3.5" />
                   <span className="hidden sm:inline">QC</span>
@@ -737,7 +737,7 @@ export function InboxModule({project}:{project:ProjectSite}) {
       </div>
       {error&&<div className="mx-6 mb-2 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-900/50 text-red-600 dark:text-red-400 px-3 py-2 text-xs">{error}</div>}
       <div className="px-6 pb-6 pt-2">
-        <div className="flex flex-col rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-[#161616] focus-within:ring-1 focus-within:ring-[#b68d40]/50 focus-within:border-[#b68d40] transition-all shadow-sm overflow-hidden">
+        <div className="flex flex-col rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-[#161616] focus-within:ring-1 focus-within:ring-[#e83e8c]/50 focus-within:border-[#e83e8c] transition-all shadow-sm overflow-hidden">
           <textarea 
             value={text} 
             onChange={e=>setText(e.target.value)} 
@@ -758,7 +758,7 @@ export function InboxModule({project}:{project:ProjectSite}) {
             </div>
             <div className="flex items-center gap-3">
               <span className="text-[10px] text-gray-400 hidden sm:inline-block font-medium"><strong>Return</strong> to send</span>
-              <button onClick={()=>submit()} disabled={!active||sending||(!text.trim()&&!recording)} className="px-3 py-1.5 rounded-md bg-[#b68d40] text-white text-[13px] font-medium hover:bg-[#9a742f] disabled:opacity-40 transition-colors flex items-center gap-1.5 shadow-sm">
+              <button onClick={()=>submit()} disabled={!active||sending||(!text.trim()&&!recording)} className="px-3 py-1.5 rounded-md bg-[#e83e8c] text-white text-[13px] font-medium hover:bg-[#c3006a] disabled:opacity-40 transition-colors flex items-center gap-1.5 shadow-sm">
                 {sending?<Loader2 className="w-3.5 h-3.5 animate-spin"/>:<>Send <Send className="w-3.5 h-3.5"/></>}
               </button>
             </div>
@@ -785,7 +785,7 @@ export function InboxModule({project}:{project:ProjectSite}) {
                   value={newChannelName}
                   onChange={e => setNewChannelName(e.target.value)}
                   placeholder="e.g. Site Safety"
-                  className="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 focus:border-[#b68d40] focus:ring-1 focus:ring-[#b68d40] outline-none transition-all"
+                  className="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 focus:border-[#e83e8c] focus:ring-1 focus:ring-[#e83e8c] outline-none transition-all"
                 />
               </div>
               <div>
@@ -800,7 +800,7 @@ export function InboxModule({project}:{project:ProjectSite}) {
                           if (e.target.checked) setSelectedMembers([...selectedMembers, m.user_id]);
                           else setSelectedMembers(selectedMembers.filter(id => id !== m.user_id));
                         }}
-                        className="w-4 h-4 rounded border-gray-300 text-[#b68d40] focus:ring-[#b68d40]"
+                        className="w-4 h-4 rounded border-gray-300 text-[#e83e8c] focus:ring-[#e83e8c]"
                       />
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{m.profiles?.name || m.profiles?.email}</p>
@@ -816,7 +816,7 @@ export function InboxModule({project}:{project:ProjectSite}) {
             </form>
             <div className="px-5 py-4 border-t border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-900/50 flex justify-end gap-3">
               <button type="button" onClick={() => setShowCreateModal(false)} className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-800 rounded-lg transition-colors">Cancel</button>
-              <button onClick={handleCreateChannel} disabled={creatingChannel || !newChannelName.trim()} className="px-4 py-2 text-sm font-medium text-white bg-[#b68d40] hover:bg-[#9a742f] rounded-lg disabled:opacity-50 transition-colors flex items-center gap-2">
+              <button onClick={handleCreateChannel} disabled={creatingChannel || !newChannelName.trim()} className="px-4 py-2 text-sm font-medium text-white bg-[#e83e8c] hover:bg-[#c3006a] rounded-lg disabled:opacity-50 transition-colors flex items-center gap-2">
                 {creatingChannel ? <Loader2 className="w-4 h-4 animate-spin"/> : null}
                 Create
               </button>

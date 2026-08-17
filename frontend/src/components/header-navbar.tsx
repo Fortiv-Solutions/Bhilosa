@@ -1,9 +1,10 @@
 'use client';
 
 import { useState } from 'react';
+import Image from 'next/image';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { ChevronDown, LogOut, Moon, Sun, Search, Bell, UserCog, Phone, Download } from 'lucide-react';
+import { ChevronDown, LogOut, Moon, Sun, Search, Bell, Phone, Download } from 'lucide-react';
 import { ROLE_LABELS } from '@/lib/rbac';
 import { useAppStore } from '@/store/use-app-store';
 import { downloadWholeReport } from '@/utils/report-generator';
@@ -64,24 +65,21 @@ export default function HeaderNavbar() {
       {/* Left side: Logo, Title & Search */}
       <div className="flex items-center h-full">
         {/* Logo Icon Container (Matches sidebar width: 80px) */}
-        <Link href="/dashboard" className="w-20 shrink-0 h-full flex items-center justify-center border-r border-border hover:bg-muted/30 transition-colors">
-          <svg
-            className="w-6.5 h-6.5 text-[#b68d40] drop-shadow-md flex-shrink-0"
-            viewBox="30 1 36 29"
-            fill="none"
-            xmlns="http://www.w3.org/2000/svg"
-          >
-            <path
-              className="fill-[#b68d40]"
-              d="M52.13,17.62v2.6s7.81,1.18,9,9.31h4.34a4.39,4.39,0,0,1-1.9-2.21C63,25.74,60.25,18.65,52.13,17.62ZM34.47,3.9H44.72V14.23C37.23,14.15,34.62,13.2,34.47,3.9ZM30,1.38A5.14,5.14,0,0,1,32,5.24v.63c.71,9.31,4.65,10.57,12.7,10.65V27.16h-.08s-.4,2.21-1.58,2.37h4.18V1.38H30ZM43.53,17.62v2.6s-7.8,1.18-8.91,9.31H30.29a4.07,4.07,0,0,0,1.81-2.21C32.65,25.74,35.49,18.65,43.53,17.62ZM51,14.23V3.9H61.28C61,13.2,58.44,14.15,51,14.23ZM63.8,1.38H48.5V29.53h4.1C51.5,29.37,51,27.16,51,27.16h0V16.52c8-.08,12-1.34,12.61-10.65a1.71,1.71,0,0,0,.08-.63,4.93,4.93,0,0,1,2-3.86Z"
-            />
-          </svg>
+        <Link href="/procurement" className="w-20 shrink-0 h-full flex items-center justify-center border-r border-border hover:bg-muted/30 transition-colors">
+          <Image
+            src="/jyoti-logo.png"
+            alt="Jyoti"
+            width={72}
+            height={34}
+            className="w-14 h-auto drop-shadow-md flex-shrink-0"
+            priority
+          />
         </Link>
 
         {/* Brand Text and Page Title */}
         <div className="flex items-center gap-2 px-6 select-none">
-          <span className="text-[14px] font-heading font-black tracking-wider text-[#b68d40] leading-none uppercase">
-            PRAGATI
+          <span className="text-[14px] font-heading font-black tracking-wider text-primary leading-none uppercase">
+            JYOTI
           </span>
           <span className="text-muted-foreground/30 text-xs">/</span>
           <span className="text-[11px] font-extrabold text-muted-foreground uppercase tracking-widest leading-none">
@@ -186,21 +184,12 @@ export default function HeaderNavbar() {
                   )}
                 </div>
 
-                <div className="mt-1 border-t border-border pt-1">
-                  <Link
-                    href="/notifications"
-                    onClick={() => setIsNotificationsOpen(false)}
-                    className="block text-center text-[10px] font-bold text-primary hover:underline py-1.5 cursor-pointer"
-                  >
-                    View All Notifications
-                  </Link>
-                </div>
               </div>
             </>
           )}
         </div>
 
-        {/* Users & Roles Button */}
+        {/* Executive Report Download */}
         {activeRole === 'UPPER_MANAGEMENT' && (
           <div className="flex items-center gap-1.5">
             <button
@@ -211,13 +200,6 @@ export default function HeaderNavbar() {
             >
               <Download className="h-4.5 w-4.5" strokeWidth={1.8} />
             </button>
-            <Link
-              href="/users"
-              className="grid h-9 w-9 place-items-center rounded-xl text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors cursor-pointer relative"
-              title="Users & Roles"
-            >
-              <UserCog className="h-4.5 w-4.5" strokeWidth={1.8} />
-            </Link>
           </div>
         )}
 
@@ -259,11 +241,7 @@ export default function HeaderNavbar() {
                   Access is assigned by upper management and enforced by database policies.
                 </div>
                 <div className="mt-1.5 border-t border-border pt-1.5 flex flex-col gap-0.5">
-                  <Link
-                    href="/support"
-                    onClick={() => setIsProfileOpen(false)}
-                    className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs font-semibold text-muted-foreground transition-colors hover:bg-muted cursor-pointer"
-                  >
+                  <div className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs font-semibold text-muted-foreground">
                     <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
                       <Phone className="h-3.5 w-3.5" strokeWidth={1.8} />
                     </span>
@@ -271,7 +249,7 @@ export default function HeaderNavbar() {
                       <span className="text-[9px] text-muted-foreground leading-none">Help & Support Desk</span>
                       <span className="text-[11px] font-bold text-foreground mt-0.5 leading-none">+91 98765 43210</span>
                     </div>
-                  </Link>
+                  </div>
 
                   <button
                     type="button"

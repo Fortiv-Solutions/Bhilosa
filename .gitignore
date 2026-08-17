@@ -87,6 +87,7 @@ $RECYCLE.BIN/
 # Antigravity & AI Assistant Cache
 .gemini/
 .antigravity/
+.claude/
 
 # Logs
 *.log

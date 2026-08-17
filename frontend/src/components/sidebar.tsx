@@ -3,15 +3,12 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
-  LayoutGrid,
-  MessageSquare,
-  Building2,
   ShoppingCart,
+  ClipboardList,
+  Boxes,
+  Handshake,
   ClipboardCheck,
-  CircleDollarSign,
-  FileText,
-  Settings2,
-  HelpCircle,
+  Wrench,
 } from 'lucide-react';
 import { useAppStore } from '@/store/use-app-store';
 
@@ -19,24 +16,33 @@ export default function Sidebar() {
   const pathname = usePathname();
   const { activeRole } = useAppStore();
 
+  // Each module is its own direct sidebar entry — no umbrella groups, no
+  // secondary tab strip. See config/erp-navigation.ts for the full rationale
+  // behind this being the full module list.
   const slimNavItems = [
-    { 
-      label: 'Home', 
-      path: '/dashboard', 
-      icon: LayoutGrid,
-      groupPaths: ['/dashboard', '/inbox'] 
-    },
-    { 
-      label: 'Projects', 
-      path: '/projects', 
-      icon: Building2,
-      groupPaths: ['/projects', '/activities', '/safety-qc']
-    },
-    { 
-      label: 'Supply Chain', 
-      path: '/procurement', 
+    {
+      label: 'Procurement',
+      path: '/procurement',
       icon: ShoppingCart,
-      groupPaths: ['/procurement', '/item-master', '/vendors', '/inventory']
+      groupPaths: ['/procurement']
+    },
+    {
+      label: 'MRP',
+      path: '/mrp',
+      icon: ClipboardList,
+      groupPaths: ['/mrp']
+    },
+    {
+      label: 'Inventory',
+      path: '/inventory',
+      icon: Boxes,
+      groupPaths: ['/inventory']
+    },
+    {
+      label: 'Vendors',
+      path: '/vendors',
+      icon: Handshake,
+      groupPaths: ['/vendors']
     },
     {
       label: 'Work Orders',
@@ -44,29 +50,11 @@ export default function Sidebar() {
       icon: ClipboardCheck,
       groupPaths: ['/work-orders']
     },
-    { 
-      label: 'Financials', 
-      path: '/budget', 
-      icon: CircleDollarSign,
-      groupPaths: ['/budget', '/reports']
-    },
-    { 
-      label: 'Documents', 
-      path: '/documents', 
-      icon: FileText,
-      groupPaths: ['/documents']
-    },
-    { 
-      label: 'Settings', 
-      path: '/settings', 
-      icon: Settings2,
-      groupPaths: ['/settings']
-    },
-    { 
-      label: 'Support', 
-      path: '/support', 
-      icon: HelpCircle,
-      groupPaths: ['/support']
+    {
+      label: 'Service Bills',
+      path: '/service-bills',
+      icon: Wrench,
+      groupPaths: ['/service-bills']
     },
   ];
 
@@ -89,7 +77,7 @@ export default function Sidebar() {
               href={item.path}
               className={`flex flex-col items-center justify-center gap-1.5 w-full py-3.5 transition-all duration-150 border-l-[3px] ${
                 isActive
-                  ? 'bg-[#b68d40]/10 text-[#b68d40] border-[#b68d40]'
+                  ? 'bg-primary/10 text-primary border-primary'
                   : 'text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-white border-transparent'
               }`}
             >

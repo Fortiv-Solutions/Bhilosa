@@ -439,8 +439,8 @@ export default function CommunicationPage() {
             <h2 className="font-heading font-bold text-[18px] tracking-tight text-gray-900 dark:text-gray-100">Messages</h2>
             <div className="flex items-center gap-2">
               <span className="relative flex h-2.5 w-2.5">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#b68d40] opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-[#b68d40]"></span>
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#e83e8c] opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-[#e83e8c]"></span>
               </span>
             </div>
           </div>
@@ -463,18 +463,18 @@ export default function CommunicationPage() {
                       : 'hover:bg-white/60 dark:hover:bg-gray-900/50 rounded-2xl border border-transparent hover:border-gray-100 dark:hover:border-gray-800'}`}
                 >
                   {/* Gold left bar for active state */}
-                  {isActive && <div className="absolute left-0 top-1/2 -translate-y-1/2 h-10 w-1 bg-gradient-to-b from-[#d4af37] to-[#b68d40] rounded-r-md"></div>}
+                  {isActive && <div className="absolute left-0 top-1/2 -translate-y-1/2 h-10 w-1 bg-gradient-to-b from-[#f2679f] to-[#e83e8c] rounded-r-md"></div>}
                   
                   <div className={`w-12 h-12 rounded-full flex items-center justify-center font-bold text-[14px] flex-shrink-0 shadow-sm border
                     ${isActive 
-                      ? 'bg-gradient-to-br from-[#faf6ee] to-[#f0e6d2] dark:from-[#30200d] dark:to-[#201505] text-[#b68d40] border-[#b68d40]/20' 
-                      : 'bg-white dark:bg-gray-900 text-gray-500 dark:text-gray-400 border-gray-100 dark:border-gray-800 group-hover:text-[#b68d40]'}`}>
+                      ? 'bg-gradient-to-br from-[#fdeef4] to-[#fbe6ee] dark:from-[#3a0f28] dark:to-[#2a0a1c] text-[#e83e8c] border-[#e83e8c]/20' 
+                      : 'bg-white dark:bg-gray-900 text-gray-500 dark:text-gray-400 border-gray-100 dark:border-gray-800 group-hover:text-[#e83e8c]'}`}>
                     {initials}
                   </div>
                   <div className="flex-1 overflow-hidden">
                     <div className="flex items-center justify-between mb-0.5">
-                      <p className={`text-[15px] truncate font-semibold ${isActive ? 'text-[#b68d40]' : 'text-gray-700 dark:text-gray-300'}`}>{src.display}</p>
-                      <span className={`text-[11px] font-medium flex-shrink-0 ${isActive ? 'text-[#b68d40]/80' : 'text-gray-400'}`}>{timeDisplay}</span>
+                      <p className={`text-[15px] truncate font-semibold ${isActive ? 'text-[#e83e8c]' : 'text-gray-700 dark:text-gray-300'}`}>{src.display}</p>
+                      <span className={`text-[11px] font-medium flex-shrink-0 ${isActive ? 'text-[#e83e8c]/80' : 'text-gray-400'}`}>{timeDisplay}</span>
                     </div>
                     <p className={`text-[13px] truncate ${isActive ? 'text-gray-600 dark:text-gray-400' : 'text-gray-500 dark:text-gray-500'}`}>
                       {previewText}
@@ -487,14 +487,14 @@ export default function CommunicationPage() {
         </div>
 
         {/* Right chat stream (2/3) */}
-        <div className="flex-1 flex flex-col bg-[#faf6ee] dark:bg-[#0c0a09] relative">
+        <div className="flex-1 flex flex-col bg-[#fdeef4] dark:bg-[#0c0a09] relative">
           {/* Premium pattern overlay */}
-          <div className="absolute inset-0 z-0 opacity-[0.04] dark:opacity-[0.02] pointer-events-none" style={{ backgroundImage: 'radial-gradient(#b68d40 1px, transparent 1px)', backgroundSize: '24px 24px' }}></div>
+          <div className="absolute inset-0 z-0 opacity-[0.04] dark:opacity-[0.02] pointer-events-none" style={{ backgroundImage: 'radial-gradient(#e83e8c 1px, transparent 1px)', backgroundSize: '24px 24px' }}></div>
 
           {/* Active Header */}
           <div className="h-20 border-b border-gray-100 dark:border-gray-900/40 px-6 flex items-center justify-between bg-white/80 dark:bg-gray-950/80 backdrop-blur-md z-10 shadow-sm">
             <div className="flex items-center gap-4">
-              <div className="w-12 h-12 rounded-full bg-gradient-to-br from-[#d4af37] to-[#8a5e1b] flex items-center justify-center text-white font-bold text-[14px] shadow-[0_2px_10px_-2px_rgba(182,141,64,0.4)] border border-[#b68d40]/20">
+              <div className="w-12 h-12 rounded-full bg-gradient-to-br from-[#f2679f] to-[#a3105c] flex items-center justify-center text-white font-bold text-[14px] shadow-[0_2px_10px_-2px_rgba(182,141,64,0.4)] border border-[#e83e8c]/20">
                 {activeSource?.display ? activeSource.display.split(' ').map((n: string) => n[0]).join('').substring(0, 2).toUpperCase() : 'WA'}
               </div>
               <div className="flex flex-col">
@@ -506,7 +506,7 @@ export default function CommunicationPage() {
               </div>
             </div>
             <span className={`text-[10px] px-3 py-1.5 rounded-full font-bold uppercase tracking-wider border shadow-sm ${
-              apiState === 'Live' ? 'bg-[#b68d40]/10 text-[#b68d40] border-[#b68d40]/20' : 'bg-orange-50 dark:bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-200 dark:border-orange-500/20'
+              apiState === 'Live' ? 'bg-[#e83e8c]/10 text-[#e83e8c] border-[#e83e8c]/20' : 'bg-orange-50 dark:bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-200 dark:border-orange-500/20'
             }`}>
               {apiState === 'Live' ? 'LIVE SYNC' : 'SIMULATION'}
             </span>
@@ -572,8 +572,8 @@ export default function CommunicationPage() {
                       {transcript && (
                         <div className="bg-white/60 dark:bg-black/20 p-2.5 rounded-xl text-[13px] text-gray-700 dark:text-gray-300 border border-black/5 dark:border-white/5 italic max-w-full">
                           <div className="flex items-center gap-1.5 mb-1.5">
-                            <span className="w-1 h-3 bg-[#b68d40] rounded-full"></span>
-                            <span className="font-semibold text-[#b68d40] not-italic text-[10px] uppercase tracking-wider">Transcript</span>
+                            <span className="w-1 h-3 bg-[#e83e8c] rounded-full"></span>
+                            <span className="font-semibold text-[#e83e8c] not-italic text-[10px] uppercase tracking-wider">Transcript</span>
                           </div>
                           "{transcript}"
                         </div>
@@ -598,13 +598,13 @@ export default function CommunicationPage() {
                 <div key={msg.id} className={`flex flex-col w-full ${isMe ? 'items-end' : 'items-start'}`}>
                   {/* Sender Name */}
                   {!isMe && senderName !== activeSource?.display && (
-                    <div className="text-[11px] text-[#b68d40] font-bold mb-1 tracking-wider uppercase ml-1">
+                    <div className="text-[11px] text-[#e83e8c] font-bold mb-1 tracking-wider uppercase ml-1">
                       {displaySender}
                     </div>
                   )}
                   <div className={`max-w-[85%] lg:max-w-[70%] px-4 py-3 relative shadow-sm border ${
                     isMe 
-                      ? 'bg-gradient-to-br from-[#b68d40] to-[#967433] rounded-2xl rounded-tr-sm text-white border-[#8a5e1b]/30 shadow-[0_2px_8px_-2px_rgba(182,141,64,0.3)]' 
+                      ? 'bg-gradient-to-br from-[#e83e8c] to-[#c3006a] rounded-2xl rounded-tr-sm text-white border-[#a3105c]/30 shadow-[0_2px_8px_-2px_rgba(182,141,64,0.3)]' 
                       : 'bg-white dark:bg-gray-900 rounded-2xl rounded-tl-sm text-gray-800 dark:text-gray-200 border-gray-100 dark:border-gray-800 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.05)]'
                   }`}>
                     {/* Message Content */}
@@ -638,7 +638,7 @@ export default function CommunicationPage() {
             {dbMessages.length === 0 && (
               <div className="h-full flex flex-col items-center justify-center py-24 text-center">
                 <div className="w-20 h-20 bg-white dark:bg-gray-900 rounded-full flex items-center justify-center shadow-lg mb-6 border border-gray-100 dark:border-gray-800">
-                  <MessageSquare className="w-8 h-8 text-[#b68d40]" />
+                  <MessageSquare className="w-8 h-8 text-[#e83e8c]" />
                 </div>
                 <h3 className="font-heading text-xl font-bold text-gray-900 dark:text-gray-100 mb-2">No messages yet</h3>
                 <p className="text-sm font-medium text-gray-500">Send a message to start the conversation.</p>
@@ -648,9 +648,9 @@ export default function CommunicationPage() {
           </div>
           
           {/* Floating Input Area */}
-          <div className="p-4 bg-gradient-to-t from-[#faf6ee] via-[#faf6ee]/80 to-transparent dark:from-[#0c0a09] dark:via-[#0c0a09]/80 z-10 shrink-0">
-            <div className="max-w-4xl mx-auto flex items-center gap-3 bg-white dark:bg-gray-900 rounded-full shadow-[0_8px_30px_rgb(0,0,0,0.08)] border border-gray-200/50 dark:border-gray-800/80 p-2 pl-4 transition-all focus-within:shadow-[0_8px_30px_rgba(182,141,64,0.15)] focus-within:border-[#b68d40]/30">
-              <button className="text-gray-400 hover:text-[#b68d40] transition-colors shrink-0 p-2 rounded-full hover:bg-gray-50 dark:hover:bg-gray-800">
+          <div className="p-4 bg-gradient-to-t from-[#fdeef4] via-[#fdeef4]/80 to-transparent dark:from-[#0c0a09] dark:via-[#0c0a09]/80 z-10 shrink-0">
+            <div className="max-w-4xl mx-auto flex items-center gap-3 bg-white dark:bg-gray-900 rounded-full shadow-[0_8px_30px_rgb(0,0,0,0.08)] border border-gray-200/50 dark:border-gray-800/80 p-2 pl-4 transition-all focus-within:shadow-[0_8px_30px_rgba(182,141,64,0.15)] focus-within:border-[#e83e8c]/30">
+              <button className="text-gray-400 hover:text-[#e83e8c] transition-colors shrink-0 p-2 rounded-full hover:bg-gray-50 dark:hover:bg-gray-800">
                 <svg viewBox="0 0 24 24" width="22" height="22" className="fill-current"><path d="M1.816 15.556v.002c0 1.502.584 2.912 1.646 3.972s2.472 1.647 3.974 1.647a5.58 5.58 0 0 0 3.972-1.645l9.547-9.548c.769-.768 1.147-1.767 1.058-2.817-.079-.968-.548-1.927-1.319-2.698-1.594-1.592-4.068-1.711-5.517-.262l-7.916 7.915c-.881.881-.792 2.25.214 3.261.959.958 2.423 1.053 3.263.215l5.511-5.512c.28-.28.267-.722.053-.936l-.244-.244c-.191-.191-.567-.349-.957.04l-5.506 5.506c-.18.18-.635.127-.976-.214-.098-.097-.576-.613-.213-.973l7.915-7.917c.818-.817 2.267-.699 3.23.262.5.501.802 1.1.849 1.685.051.573-.156 1.111-.589 1.543l-9.547 9.549a3.97 3.97 0 0 1-2.829 1.171 3.975 3.975 0 0 1-2.83-1.173 3.973 3.973 0 0 1-1.172-2.828c0-1.071.415-2.076 1.172-2.83l7.209-7.211c.157-.157.264-.579.028-.814L11.5 4.36a.57.57 0 0 0-.834.018l-7.205 7.207a5.577 5.577 0 0 0-1.645 3.971z"></path></svg>
               </button>
               <form onSubmit={handleSendMessage} className="flex-1 flex items-center gap-2">
@@ -665,7 +665,7 @@ export default function CommunicationPage() {
                 <button 
                   type="submit" 
                   disabled={!messageInput.trim() || isSending}
-                  className="w-11 h-11 rounded-full bg-gradient-to-br from-[#d4af37] to-[#b68d40] hover:from-[#e3c155] hover:to-[#c49b4c] flex items-center justify-center text-white transition-all shadow-md disabled:opacity-50 disabled:grayscale shrink-0"
+                  className="w-11 h-11 rounded-full bg-gradient-to-br from-[#f2679f] to-[#e83e8c] hover:from-[#f68bc2] hover:to-[#ec6aa8] flex items-center justify-center text-white transition-all shadow-md disabled:opacity-50 disabled:grayscale shrink-0"
                 >
                   {isSending ? (
                     <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>

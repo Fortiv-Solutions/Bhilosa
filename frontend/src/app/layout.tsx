@@ -18,11 +18,11 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Pramukh ERP - Construction Operations Platform",
+  title: "Jyoti ERP - Construction Operations Platform",
   description: "Company-wide construction project, procurement, inventory, billing, budget, and analytics management.",
   icons: {
-    icon: "/icon.svg",
-    apple: "/icon.svg",
+    icon: "/icon.png",
+    apple: "/icon.png",
   }
 };
 

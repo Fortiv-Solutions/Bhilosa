@@ -156,7 +156,7 @@ const renderMessageContent = (content: string) => {
         );
       } else if (line.startsWith('## ')) {
         elements.push(
-          <h3 key={`h-${currentKey++}`} className="mt-5 mb-2.5 text-sm font-extrabold text-[#b68d40] dark:text-[#d6b26b]">
+          <h3 key={`h-${currentKey++}`} className="mt-5 mb-2.5 text-sm font-extrabold text-[#e83e8c] dark:text-[#f2679f]">
             {parseFormatting(line.substring(3))}
           </h3>
         );
@@ -421,7 +421,7 @@ export default function FloatingChatbot() {
             className="mb-4 flex h-[500px] w-[380px] flex-col rounded-2xl border border-gray-200 bg-white/95 shadow-2xl backdrop-blur-md dark:border-gray-800 dark:bg-gray-900/95 sm:w-[420px]"
           >
             {/* Header */}
-            <div className="flex items-center justify-between rounded-t-2xl bg-gradient-to-r from-[#b68d40] to-[#cba358] px-4 py-3 text-white">
+            <div className="flex items-center justify-between rounded-t-2xl bg-gradient-to-r from-[#e83e8c] to-[#f2679f] px-4 py-3 text-white">
               <div className="flex items-center gap-2">
                 <div className="grid h-8 w-8 place-items-center rounded-lg bg-white/20">
                   <Sparkles className="h-4.5 w-4.5 animate-pulse" />
@@ -459,7 +459,7 @@ export default function FloatingChatbot() {
                 return (
                   <div key={index} className={`flex gap-3 ${isUser ? 'justify-end' : 'justify-start'}`}>
                     {!isUser && (
-                      <div className="grid h-7 w-7 flex-shrink-0 place-items-center rounded bg-[#b68d40] text-white shadow-sm text-[10px] font-bold">
+                      <div className="grid h-7 w-7 flex-shrink-0 place-items-center rounded bg-[#e83e8c] text-white shadow-sm text-[10px] font-bold">
                         AI
                       </div>
                     )}
@@ -515,11 +515,11 @@ export default function FloatingChatbot() {
 
               {isLoading && (
                 <div className="flex gap-3 justify-start">
-                  <div className="grid h-7 w-7 flex-shrink-0 place-items-center rounded bg-[#b68d40] text-white shadow-sm text-[10px] font-bold">
+                  <div className="grid h-7 w-7 flex-shrink-0 place-items-center rounded bg-[#e83e8c] text-white shadow-sm text-[10px] font-bold">
                     AI
                   </div>
                   <div className="flex items-center gap-1.5 bg-white dark:bg-gray-950 border border-gray-100 dark:border-gray-900 rounded-2xl rounded-tl-none px-4 py-3 shadow-sm">
-                    <Loader2 className="h-3.5 w-3.5 animate-spin text-[#b68d40]" />
+                    <Loader2 className="h-3.5 w-3.5 animate-spin text-[#e83e8c]" />
                     <span className="text-[11px] text-gray-400">Analyzing ERP data...</span>
                   </div>
                 </div>
@@ -541,7 +541,7 @@ export default function FloatingChatbot() {
                         className="flex items-center justify-between rounded-xl border border-gray-100 bg-gray-50/50 px-3.5 py-2 text-left text-xs font-medium text-gray-600 hover:bg-gray-100 dark:border-gray-800 dark:bg-gray-800/30 dark:text-gray-300 dark:hover:bg-gray-800/80 transition-colors"
                       >
                         <div className="flex items-center gap-2">
-                          <SugIcon className="h-3.5 w-3.5 text-[#b68d40]" />
+                          <SugIcon className="h-3.5 w-3.5 text-[#e83e8c]" />
                           <span>{sug.text}</span>
                         </div>
                         <ArrowRight className="h-3 w-3 text-gray-400" />
@@ -568,7 +568,7 @@ export default function FloatingChatbot() {
                 <button
                   type="submit"
                   disabled={!inputValue.trim() || isLoading}
-                  className="rounded-lg bg-[#b68d40] p-1.5 text-white hover:bg-[#a57f35] disabled:bg-gray-100 disabled:text-gray-300 dark:disabled:bg-gray-800 dark:disabled:text-gray-600 transition-colors"
+                  className="rounded-lg bg-[#e83e8c] p-1.5 text-white hover:bg-[#c3006a] disabled:bg-gray-100 disabled:text-gray-300 dark:disabled:bg-gray-800 dark:disabled:text-gray-600 transition-colors"
                 >
                   <Send className="h-3.5 w-3.5" />
                 </button>
@@ -583,7 +583,7 @@ export default function FloatingChatbot() {
         onClick={toggleChat}
         whileHover={{ scale: 1.05 }}
         whileTap={{ scale: 0.95 }}
-        className="flex h-14 w-14 items-center justify-center rounded-full bg-gradient-to-r from-[#b68d40] to-[#cba358] text-white shadow-2xl transition-shadow duration-300 hover:shadow-[#b68d40]/20"
+        className="flex h-14 w-14 items-center justify-center rounded-full bg-gradient-to-r from-[#e83e8c] to-[#f2679f] text-white shadow-2xl transition-shadow duration-300 hover:shadow-[#e83e8c]/20"
         aria-label="Open AI Assistant"
       >
         {isOpen ? (
@@ -592,8 +592,8 @@ export default function FloatingChatbot() {
           <div className="relative">
             <MessageSquare className="h-6 w-6" />
             <span className="absolute -right-1 -top-1 flex h-2.5 w-2.5">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#d6b26b] opacity-75"></span>
-              <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-[#fae5b6]"></span>
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#f2679f] opacity-75"></span>
+              <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-[#fbc4de]"></span>
             </span>
           </div>
         )}

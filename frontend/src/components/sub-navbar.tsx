@@ -15,65 +15,18 @@ export default function SubNavBar() {
 
   if (isProjectDetails || isLoginPage) return null;
 
-  // Define tab groups
+  // Every module is now a direct sidebar entry (see sidebar.tsx) rather than a
+  // grouped umbrella, so each "group" here is just its own module — which
+  // means allowedTabs.length below is always <= 1 and this bar never renders.
+  // Kept as single-item groups (not deleted) so the role-filtering logic below
+  // stays correct if a module ever needs a real sub-tab again.
   const groups = [
-    {
-      name: 'Home',
-      paths: ['/dashboard', '/inbox'],
-      tabs: [
-        { label: 'Overview', path: '/dashboard' },
-        { label: 'Inbox', path: '/inbox' }
-      ]
-    },
-    {
-      name: 'Projects',
-      paths: ['/projects', '/activities', '/safety-qc'],
-      tabs: [
-        { label: 'Projects', path: '/projects' },
-        { label: 'Execution', path: '/activities' },
-        { label: 'Safety & QC', path: '/safety-qc' }
-      ]
-    },
-    {
-      name: 'Supply Chain',
-      paths: ['/procurement', '/item-master', '/vendors', '/inventory'],
-      tabs: [
-        { label: 'Procurement', path: '/procurement' },
-        { label: 'Item Master', path: '/item-master' },
-        { label: 'Vendors', path: '/vendors' },
-        { label: 'Inventory', path: '/inventory' }
-      ]
-    },
-    {
-      name: 'Work Orders',
-      paths: ['/work-orders', '/service-bills'],
-      tabs: [
-        { label: 'Work Orders', path: '/work-orders' },
-        { label: 'Service Bills', path: '/service-bills' }
-      ]
-    },
-    {
-      name: 'Financials',
-      paths: ['/budget', '/reports'],
-      tabs: [
-        { label: 'Budget Control', path: '/budget' },
-        { label: 'Reports', path: '/reports' }
-      ]
-    },
-    {
-      name: 'Documents',
-      paths: ['/documents'],
-      tabs: [
-        { label: 'Documents', path: '/documents' }
-      ]
-    },
-    {
-      name: 'Settings',
-      paths: ['/settings'],
-      tabs: [
-        { label: 'Settings', path: '/settings' }
-      ]
-    }
+    { name: 'Procurement', paths: ['/procurement'], tabs: [{ label: 'Procurement', path: '/procurement' }] },
+    { name: 'MRP', paths: ['/mrp'], tabs: [{ label: 'MRP', path: '/mrp' }] },
+    { name: 'Inventory', paths: ['/inventory'], tabs: [{ label: 'Inventory', path: '/inventory' }] },
+    { name: 'Vendors', paths: ['/vendors'], tabs: [{ label: 'Vendors', path: '/vendors' }] },
+    { name: 'Work Orders', paths: ['/work-orders'], tabs: [{ label: 'Work Orders', path: '/work-orders' }] },
+    { name: 'Service Bills', paths: ['/service-bills'], tabs: [{ label: 'Service Bills', path: '/service-bills' }] },
   ];
 
   // Find active group based on current pathname
@@ -104,7 +57,7 @@ export default function SubNavBar() {
             href={tab.path}
             className={`h-full flex items-center text-xs font-semibold px-1 border-b-2 transition-all duration-150 ${
               isActive
-                ? 'border-[#b68d40] text-[#b68d40]'
+                ? 'border-[#e83e8c] text-[#e83e8c]'
                 : 'border-transparent text-gray-500 hover:text-gray-900 dark:hover:text-white'
             }`}
           >

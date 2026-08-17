@@ -169,7 +169,7 @@ export default function ProjectsPage() {
                         className="h-full rounded-full transition-all duration-1000 ease-out"
                         style={{ 
                           width: `${proj.progress}%`,
-                          background: 'linear-gradient(90deg, #b68d40 0%, #f4d08b 100%)',
+                          background: 'linear-gradient(90deg, #e83e8c 0%, #f4d08b 100%)',
                           boxShadow: '0 0 8px rgba(244, 208, 139, 0.6)'
                         }}
                       />

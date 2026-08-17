@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
+import Image from 'next/image';
 import Link from 'next/link';
 import { useAppStore } from '@/store/use-app-store';
 import { 
@@ -75,8 +76,9 @@ import { isUpperManagement, ROLE_LABELS } from '@/lib/rbac';
 import { downloadWholeReport } from '@/utils/report-generator';
 import { getPendingApprovals } from '@/lib/approvals';
 import { getQCInspections, getSafetyIncidents } from '@/lib/safety-qc';
-import { listProcurementDashboard, type ProcurementDashboardData } from '@/lib/procurement';
+import { listProcurementDashboard, type ProcurementDashboardData, listVendorProfiles, type VendorProfileRow } from '@/lib/procurement';
 import { listBudgetDashboard, type BudgetDashboardData } from '@/lib/budget';
+import { listVendorScorecards, type VendorScorecard } from '@/lib/erp/vendor/scorecard';
 import { formatIndianCurrency } from '@/utils/format-currency';
 import { SectionCard } from '@/components/ui/section-card';
 import { StatCard } from '@/components/ui/stat-card';
@@ -1045,7 +1047,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
           </td>
           <td style="padding: 10px;">${req.contractorName}</td>
           <td style="padding: 10px;">${req.submittedDate}</td>
-          <td style="padding: 10px; font-weight: bold; color: ${req.status === 'Approved' ? '#059669' : req.status === 'Failed' ? '#dc2626' : '#b68d40'};">
+          <td style="padding: 10px; font-weight: bold; color: ${req.status === 'Approved' ? '#059669' : req.status === 'Failed' ? '#dc2626' : '#e83e8c'};">
             ${req.status}
           </td>
           <td style="padding: 10px;">${req.approvedBy || req.assignedEngineer || '--'}</td>
@@ -1070,7 +1072,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
               display: flex;
               justify-content: space-between;
               align-items: center;
-              border-bottom: 2px solid #b68d40;
+              border-bottom: 2px solid #e83e8c;
               padding-bottom: 20px;
               margin-bottom: 30px;
             }
@@ -1124,12 +1126,12 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
         </head>
         <body>
           <div style="text-align: right; margin-bottom: 20px;">
-            <button onclick="window.print()" style="padding: 8px 16px; background-color: #b68d40; color: white; border: none; border-radius: 6px; font-weight: bold; cursor: pointer;">Print Report</button>
+            <button onclick="window.print()" style="padding: 8px 16px; background-color: #e83e8c; color: white; border: none; border-radius: 6px; font-weight: bold; cursor: pointer;">Print Report</button>
           </div>
           <div class="header">
             <div>
-              <div class="title">PRAMUKH GROUP ERP</div>
-              <div style="font-size: 14px; font-weight: 600; color: #b68d40; margin-top: 4px;">Quality Control & Audit Log Report</div>
+              <div class="title">JYOTI ERP</div>
+              <div style="font-size: 14px; font-weight: 600; color: #e83e8c; margin-top: 4px;">Quality Control & Audit Log Report</div>
             </div>
             <div style="text-align: right;">
               <div style="font-weight: 800;">PROJECT: ${project?.name}</div>
@@ -1852,21 +1854,71 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   const [logHours, setLogHours] = useState('');
   const [logFuel, setLogFuel] = useState('');
 
-  const { vendors: storeVendors, vendorBills, vendorPerformances } = useAppStore();
-  
-  // Filter vendor performances and properties for this project detail view
-  const vendors = storeVendors.map((vendor) => {
-    const projectPerf = vendorPerformances.find(
-      (p) => p.vendorId === vendor.id && p.projectId === project?.id
-    );
+  const { vendorBills } = useAppStore();
+
+  // Live vendor registry (vendor_profile_summary) — replaces the dead
+  // Zustand-only `vendors` store, which is never populated from Supabase.
+  const [liveVendorProfiles, setLiveVendorProfiles] = useState<VendorProfileRow[]>([]);
+  // OTIF + rejection-rate scorecards, keyed by vendor id, over a trailing window.
+  const [vendorScorecards, setVendorScorecards] = useState<Record<string, VendorScorecard>>({});
+
+  useEffect(() => {
+    if (!isLiveSupabase()) return;
+    listVendorProfiles()
+      .then(setLiveVendorProfiles)
+      .catch((err) => console.error('Failed to load vendor profiles:', err));
+  }, []);
+
+  useEffect(() => {
+    listVendorScorecards()
+      .then((cards) => {
+        const map: Record<string, VendorScorecard> = {};
+        cards.forEach((c) => { map[c.vendorId] = c; });
+        setVendorScorecards(map);
+      })
+      .catch((err) => console.error('Failed to load vendor scorecards:', err));
+  }, []);
+
+  // Vendor Performance & Ledger tab: build the supplier list from the live
+  // vendor registry when Supabase is configured; otherwise fall back to the
+  // identities behind the demo scorecards so the tab still has something real
+  // (rather than fabricated) to show. Either way, qualityPass/deliverySpeed
+  // are computed from the matching scorecard's rejection rate / OTIF percent
+  // — never hardcoded per-vendor-id numbers.
+  const vendors = (
+    liveVendorProfiles.length > 0
+      ? liveVendorProfiles.map((vp) => ({
+          id: vp.vendor_id,
+          name: vp.display_name || vp.legal_name,
+          category: vp.compliance_status
+            ? `${vp.compliance_status.charAt(0).toUpperCase()}${vp.compliance_status.slice(1)} Vendor`
+            : 'General Supplier',
+          baseRating: Number(vp.rating || 0) || null,
+        }))
+      : Object.values(vendorScorecards).map((c) => ({
+          id: c.vendorId,
+          name: c.vendorName,
+          category: 'General Supplier',
+          baseRating: null as number | null,
+        }))
+  ).map((v) => {
+    const card = vendorScorecards[v.id];
+    const qualityPass = card && card.rejectionRatePercent !== null ? Math.round(100 - card.rejectionRatePercent) : null;
+    const deliverySpeed = card && card.otifPercent !== null ? Math.round(card.otifPercent) : null;
+    const rating =
+      qualityPass !== null && deliverySpeed !== null
+        ? Math.round((qualityPass + deliverySpeed) / 2)
+        : v.baseRating ?? 75;
+    const status: 'PREMIUM' | 'APPROVED' | 'PROBATION' =
+      rating >= 90 ? 'PREMIUM' : rating >= 75 ? 'APPROVED' : 'PROBATION';
     return {
-      id: vendor.id,
-      name: vendor.name,
-      category: vendor.category,
-      qualityPass: projectPerf ? projectPerf.qualityScore : (vendor.id === 'v1' ? 99.5 : vendor.id === 'v2' ? 98.0 : vendor.id === 'v8' ? 94.2 : vendor.id === 'v9' ? 97.8 : 95),
-      deliverySpeed: projectPerf ? projectPerf.deliveryScore : (vendor.id === 'v1' ? 98 : vendor.id === 'v2' ? 92 : vendor.id === 'v8' ? 79 : vendor.id === 'v9' ? 95 : 90),
-      rating: vendor.rating || (vendor.id === 'v1' ? 94 : vendor.id === 'v2' ? 88 : vendor.id === 'v8' ? 72 : vendor.id === 'v9' ? 91 : 85),
-      status: vendor.id === 'v1' ? ('PREMIUM' as const) : vendor.id === 'v2' ? ('APPROVED' as const) : vendor.id === 'v8' ? ('PROBATION' as const) : ('APPROVED' as const),
+      id: v.id,
+      name: v.name,
+      category: v.category,
+      qualityPass,
+      deliverySpeed,
+      rating,
+      status,
     };
   });
 
@@ -3793,9 +3845,7 @@ Rules:
         {/* Top Logo Container (h-14 matching HeaderNavbar) */}
         <div className="flex items-center justify-center h-14 flex-shrink-0 border-b border-border bg-card">
           <Link href="/projects" title="Back to Projects" className="flex items-center justify-center w-full h-full hover:bg-muted/30 transition-colors group">
-            <svg className="w-6.5 h-6.5 text-[#b68d40] drop-shadow-md flex-shrink-0" viewBox="30 1 36 29" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path className="fill-[#b68d40]" d="M52.13,17.62v2.6s7.81,1.18,9,9.31h4.34a4.39,4.39,0,0,1-1.9-2.21C63,25.74,60.25,18.65,52.13,17.62ZM34.47,3.9H44.72V14.23C37.23,14.15,34.62,13.2,34.47,3.9ZM30,1.38A5.14,5.14,0,0,1,32,5.24v.63c.71,9.31,4.65,10.57,12.7,10.65V27.16h-.08s-.4,2.21-1.58,2.37h4.18V1.38H30ZM43.53,17.62v2.6s-7.8,1.18-8.91,9.31H30.29a4.07,4.07,0,0,0,1.81-2.21C32.65,25.74,35.49,18.65,43.53,17.62ZM51,14.23V3.9H61.28C61,13.2,58.44,14.15,51,14.23ZM63.8,1.38H48.5V29.53h4.1C51.5,29.37,51,27.16,51,27.16h0V16.52c8-0.08,12-1.34,12.61-10.65a1.71,1.71,0,0,0,.08-.63,4.93,4.93,0,0,1,2-3.86Z"/>
-            </svg>
+            <Image src="/jyoti-logo.png" alt="Jyoti" width={72} height={34} className="w-14 h-auto drop-shadow-md flex-shrink-0" />
           </Link>
         </div>
 
@@ -3819,7 +3869,7 @@ Rules:
                 onClick={() => setActiveTab(id as ProjectTab)}
                 className={`flex flex-col items-center justify-center gap-1.5 w-full py-3 transition-all duration-150 border-l-[3px] ${
                   isActive
-                    ? 'bg-[#b68d40]/10 text-[#b68d40] border-[#b68d40]'
+                    ? 'bg-[#e83e8c]/10 text-[#e83e8c] border-[#e83e8c]'
                     : 'text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-white border-transparent'
                 }`}
                 title={label}
@@ -3863,8 +3913,8 @@ Rules:
 
             {/* Brand Logo & Page Title Breadcrumb */}
             <div className="flex items-center gap-2 select-none">
-              <span className="text-[14px] font-heading font-black tracking-wider text-[#b68d40] leading-none uppercase">
-                PRAGATI
+              <span className="text-[14px] font-heading font-black tracking-wider text-primary leading-none uppercase">
+                JYOTI
               </span>
               <span className="text-muted-foreground/30 text-xs">/</span>
               <span className="text-[11px] font-extrabold text-muted-foreground uppercase tracking-widest leading-none">
@@ -3953,7 +4003,7 @@ Rules:
 
             {/* User Profile Selector Pill */}
             <div className="flex h-9 items-center gap-2 rounded-md px-2 select-none hover:bg-muted/40 transition-colors cursor-pointer">
-              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#b68d40]/15 text-[#b68d40] border border-[#b68d40]/30 text-[10px] font-extrabold font-heading">
+              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#e83e8c]/15 text-[#e83e8c] border border-[#e83e8c]/30 text-[10px] font-extrabold font-heading">
                 {currentUser?.name
                   ? currentUser.name.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase()
                   : 'ED'}
@@ -3962,7 +4012,7 @@ Rules:
                 <span className="block truncate text-xs font-bold text-foreground leading-none">
                   {currentUser?.name || 'Executive Director'}
                 </span>
-                <span className="mt-0.5 block truncate text-[9px] font-bold uppercase tracking-wider text-[#b68d40] leading-none">
+                <span className="mt-0.5 block truncate text-[9px] font-bold uppercase tracking-wider text-[#e83e8c] leading-none">
                   {ROLE_LABELS[activeRole as keyof typeof ROLE_LABELS] || 'UPPER MANAGEMENT'}
                 </span>
               </div>
@@ -4025,12 +4075,12 @@ Rules:
                      <p className="text-gray-500 dark:text-gray-400 text-xs font-medium">Ledger Spend</p>
                      <div className="mt-3">
                        <p className="font-heading text-3xl font-light text-gray-900 dark:text-white mb-4 tracking-tight"><span className="text-lg font-medium text-gray-400">$</span> {formatCurrency(project!.actualSpend).replace('INR ', '')}</p>
-                       <div className="w-full h-4 bg-[#f8e9d3] rounded-full flex overflow-hidden gap-1">
-                          <div className="w-[75%] h-full bg-[#dfb768] rounded-full"></div>
+                       <div className="w-full h-4 bg-[#fbe6ee] rounded-full flex overflow-hidden gap-1">
+                          <div className="w-[75%] h-full bg-[#f2679f] rounded-full"></div>
                           <div className="flex-1 h-full rounded-full flex gap-1">
-                            <div className="w-2 h-full bg-[#dfb768] rounded-full opacity-50"></div>
-                            <div className="w-2 h-full bg-[#dfb768] rounded-full opacity-30"></div>
-                            <div className="w-2 h-full bg-[#dfb768] rounded-full opacity-10"></div>
+                            <div className="w-2 h-full bg-[#f2679f] rounded-full opacity-50"></div>
+                            <div className="w-2 h-full bg-[#f2679f] rounded-full opacity-30"></div>
+                            <div className="w-2 h-full bg-[#f2679f] rounded-full opacity-10"></div>
                           </div>
                        </div>
                      </div>
@@ -4140,7 +4190,7 @@ Rules:
                                   </div>
                                </div>
                                <div className="px-3 pb-2 pt-1">
-                                  <p className="text-[10px] font-bold text-[#b68d40] mb-0.5">• {i === 1 ? 'Excavation' : i === 2 ? 'Foundation' : 'Structure'}</p>
+                                  <p className="text-[10px] font-bold text-[#e83e8c] mb-0.5">• {i === 1 ? 'Excavation' : i === 2 ? 'Foundation' : 'Structure'}</p>
                                   <p className="text-xs font-semibold text-gray-900 dark:text-white line-clamp-1">{project!.name}</p>
                                   <div className="flex justify-between mt-2 pt-2 border-t border-gray-100 dark:border-gray-800 text-[10px] text-gray-500">
                                      <span>{project!.location.split(',')[0]}</span>
@@ -4273,9 +4323,9 @@ Rules:
                       
                       {/* Map Pin / Radar effect */}
                       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center">
-                         <div className="w-56 h-56 bg-[#b68d40]/5 rounded-full animate-ping absolute"></div>
-                         <div className="w-36 h-36 bg-[#b68d40]/10 rounded-full absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2"></div>
-                         <div className="w-14 h-14 bg-gradient-to-b from-[#b68d40] to-[#8a6b30] text-white rounded-full flex items-center justify-center shadow-lg relative z-10 border-[3px] border-white dark:border-gray-900">
+                         <div className="w-56 h-56 bg-[#e83e8c]/5 rounded-full animate-ping absolute"></div>
+                         <div className="w-36 h-36 bg-[#e83e8c]/10 rounded-full absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2"></div>
+                         <div className="w-14 h-14 bg-gradient-to-b from-[#e83e8c] to-[#a3105c] text-white rounded-full flex items-center justify-center shadow-lg relative z-10 border-[3px] border-white dark:border-gray-900">
                            <span className="font-bold text-base">24</span>
                          </div>
                          <div className="mt-3 text-center">
@@ -4674,7 +4724,7 @@ Rules:
                         onClick={() => setOperationsSubTab(tab.id as any)}
                         className={`h-full flex items-center text-xs font-semibold px-1 border-b-2 transition-all duration-150 cursor-pointer ${
                           isActive
-                            ? 'border-[#b68d40] text-[#b68d40]'
+                            ? 'border-[#e83e8c] text-[#e83e8c]'
                             : 'border-transparent text-gray-500 hover:text-gray-900 dark:hover:text-white'
                         }`}
                       >
@@ -6399,7 +6449,7 @@ Rules:
                           Approve or raise purchase orders for material requests submitted from the site app.
                         </p>
                       </div>
-                      <span className="text-xs font-semibold bg-[#b68d40]/10 text-[#b68d40] px-3 py-1 rounded-full border border-[#b68d40]/25">
+                      <span className="text-xs font-semibold bg-[#e83e8c]/10 text-[#e83e8c] px-3 py-1 rounded-full border border-[#e83e8c]/25">
                         {prItems.length} Active Requests
                       </span>
                     </div>
@@ -6451,7 +6501,7 @@ Rules:
                                     {details.stage === 'Submitted' && (
                                       <button
                                         onClick={() => handleDashboardAdvancePR(pr.id, pr.itemName, 'Approved', pr.quantity, pr.unit)}
-                                        className="text-[10px] font-bold bg-[#b68d40] text-white px-2 py-1 rounded hover:bg-[#967332] transition-all cursor-pointer"
+                                        className="text-[10px] font-bold bg-[#e83e8c] text-white px-2 py-1 rounded hover:bg-[#c3006a] transition-all cursor-pointer"
                                       >
                                         Approve Request
                                       </button>
@@ -6964,7 +7014,7 @@ Rules:
                 <div className="bg-white dark:bg-gray-900 p-4 rounded-2xl border border-border/60 shadow-sm flex flex-col xl:flex-row xl:items-center justify-between gap-4">
                   <div>
                     <h3 className="font-heading font-black text-foreground text-sm uppercase tracking-wider flex items-center gap-1.5">
-                      <ShieldCheck className="w-5 h-5 text-[#b68d40] drop-shadow-[0_2px_8px_rgba(182,141,64,0.3)]" />
+                      <ShieldCheck className="w-5 h-5 text-[#e83e8c] drop-shadow-[0_2px_8px_rgba(182,141,64,0.3)]" />
                       Quality Assurance & Control (QA/QC)
                     </h3>
                     <p className="text-xs text-muted-foreground mt-0.5">Manage work completions, inspect quality checklists, upload verification evidence, and track rework.</p>
@@ -6974,7 +7024,7 @@ Rules:
                       onClick={() => setQcSubTab('dashboard')}
                       className={`px-3 py-1.5 text-[11px] font-bold rounded-lg transition-all cursor-pointer ${
                         qcSubTab === 'dashboard'
-                          ? 'bg-[#b68d40] text-white shadow-xs'
+                          ? 'bg-[#e83e8c] text-white shadow-xs'
                           : 'text-muted-foreground hover:text-foreground'
                       }`}
                     >
@@ -6984,7 +7034,7 @@ Rules:
                       onClick={() => setQcSubTab('completion')}
                       className={`px-3 py-1.5 text-[11px] font-bold rounded-lg transition-all cursor-pointer ${
                         qcSubTab === 'completion'
-                          ? 'bg-[#b68d40] text-white shadow-xs'
+                          ? 'bg-[#e83e8c] text-white shadow-xs'
                           : 'text-muted-foreground hover:text-foreground'
                       }`}
                     >
@@ -6994,7 +7044,7 @@ Rules:
                       onClick={() => setQcSubTab('inspections')}
                       className={`px-3 py-1.5 text-[11px] font-bold rounded-lg transition-all cursor-pointer ${
                         qcSubTab === 'inspections'
-                          ? 'bg-[#b68d40] text-white shadow-xs'
+                          ? 'bg-[#e83e8c] text-white shadow-xs'
                           : 'text-muted-foreground hover:text-foreground'
                       }`}
                     >
@@ -7004,7 +7054,7 @@ Rules:
                       onClick={() => setQcSubTab('history')}
                       className={`px-3 py-1.5 text-[11px] font-bold rounded-lg transition-all cursor-pointer ${
                         qcSubTab === 'history'
-                          ? 'bg-[#b68d40] text-white shadow-xs'
+                          ? 'bg-[#e83e8c] text-white shadow-xs'
                           : 'text-muted-foreground hover:text-foreground'
                       }`}
                     >
@@ -7063,7 +7113,7 @@ Rules:
                           <p className="text-xl font-heading font-extrabold text-foreground mt-1">
                             {qcRequests.filter(r => r.status === 'Pending QC Inspection' || r.status === 'Submitted').length} Requests
                           </p>
-                          <p className="text-[10px] text-[#b68d40] font-semibold mt-1">Dhruv Shah (QC) assigned</p>
+                          <p className="text-[10px] text-[#e83e8c] font-semibold mt-1">Dhruv Shah (QC) assigned</p>
                         </div>
                         <span className="p-2.5 rounded-xl bg-amber-500/10 text-amber-600">
                           <ClipboardList className="w-5 h-5" />
@@ -7170,7 +7220,7 @@ Rules:
                                   <div key={req.id} className="p-3 bg-muted/15 border border-border/60 rounded-xl space-y-2 flex flex-col sm:flex-row sm:items-center justify-between gap-2 hover:bg-muted/5 transition-all">
                                     <div>
                                       <div className="flex items-center gap-1.5 flex-wrap">
-                                        <span className="font-extrabold text-[#b68d40] text-xs">{req.id}</span>
+                                        <span className="font-extrabold text-[#e83e8c] text-xs">{req.id}</span>
                                         <span className="font-bold text-foreground text-xs">{req.activityName}</span>
                                         <span className={`text-[8px] font-black px-1.5 py-0.5 rounded uppercase tracking-wider ${
                                           req.priority === 'CRITICAL' ? 'bg-red-500/10 text-red-650' :
@@ -7205,8 +7255,8 @@ Rules:
                       </div>
                       <div className="flex flex-wrap gap-2">
                         {qcTemplates.map(tmpl => (
-                          <div key={tmpl.id} className="px-3 py-1.5 bg-muted/15 border border-border/60 rounded-xl hover:border-[#b68d40]/40 transition-all flex items-center gap-2">
-                            <span className="text-[8px] font-black px-1.5 py-0.5 rounded bg-[#b68d40]/10 text-[#b68d40] border border-[#b68d40]/20 uppercase tracking-wider">
+                          <div key={tmpl.id} className="px-3 py-1.5 bg-muted/15 border border-border/60 rounded-xl hover:border-[#e83e8c]/40 transition-all flex items-center gap-2">
+                            <span className="text-[8px] font-black px-1.5 py-0.5 rounded bg-[#e83e8c]/10 text-[#e83e8c] border border-[#e83e8c]/20 uppercase tracking-wider">
                               {tmpl.category}
                             </span>
                             <span className="text-xs font-bold text-foreground">{tmpl.title}</span>
@@ -7230,7 +7280,7 @@ Rules:
                           <div className="flex items-center gap-2">
                             <button
                               onClick={handleExportQCAuditReport}
-                              className="flex items-center gap-1.5 px-3 py-1 bg-[#b68d40] hover:bg-[#a57c30] text-white rounded-lg text-[10px] font-bold transition-all shadow-xs"
+                              className="flex items-center gap-1.5 px-3 py-1 bg-[#e83e8c] hover:bg-[#c3006a] text-white rounded-lg text-[10px] font-bold transition-all shadow-xs"
                             >
                               <Printer className="w-3.5 h-3.5" />
                               Export Audit Report
@@ -7270,7 +7320,7 @@ Rules:
                                 value={logSearch}
                                 onChange={e => setLogSearch(e.target.value)}
                                 placeholder="Search..."
-                                className="w-full p-2 rounded-lg border border-border bg-background text-foreground font-semibold text-xs outline-none focus:border-[#b68d40]"
+                                className="w-full p-2 rounded-lg border border-border bg-background text-foreground font-semibold text-xs outline-none focus:border-[#e83e8c]"
                               />
                             </label>
                             <label className="block space-y-1 text-[10px]">
@@ -7278,7 +7328,7 @@ Rules:
                               <select
                                 value={logStatus}
                                 onChange={e => setLogStatus(e.target.value)}
-                                className="w-full p-2 rounded-lg border border-border bg-background text-foreground font-semibold text-xs outline-none focus:border-[#b68d40]"
+                                className="w-full p-2 rounded-lg border border-border bg-background text-foreground font-semibold text-xs outline-none focus:border-[#e83e8c]"
                               >
                                 <option value="All">All Statuses</option>
                                 <option value="Approved">Approved (Pass)</option>
@@ -7293,7 +7343,7 @@ Rules:
                               <select
                                 value={logRework}
                                 onChange={e => setLogRework(e.target.value)}
-                                className="w-full p-2 rounded-lg border border-border bg-background text-foreground font-semibold text-xs outline-none focus:border-[#b68d40]"
+                                className="w-full p-2 rounded-lg border border-border bg-background text-foreground font-semibold text-xs outline-none focus:border-[#e83e8c]"
                               >
                                 <option value="All">All</option>
                                 <option value="Yes">Yes (Rework Active)</option>
@@ -7305,7 +7355,7 @@ Rules:
                               <select
                                 value={logPriority}
                                 onChange={e => setLogPriority(e.target.value)}
-                                className="w-full p-2 rounded-lg border border-border bg-background text-foreground font-semibold text-xs outline-none focus:border-[#b68d40]"
+                                className="w-full p-2 rounded-lg border border-border bg-background text-foreground font-semibold text-xs outline-none focus:border-[#e83e8c]"
                               >
                                 <option value="All">All Priorities</option>
                                 <option value="CRITICAL">Critical</option>
@@ -7359,7 +7409,7 @@ Rules:
                                         setAttachedPhotos(req.photos || []);
                                         setQcSubTab('completion');
                                       }}
-                                      className="border-b border-border/30 hover:bg-[#b68d40]/10 transition-all cursor-pointer group"
+                                      className="border-b border-border/30 hover:bg-[#e83e8c]/10 transition-all cursor-pointer group"
                                       title="Click to view full inspection details"
                                     >
                                       {/* Date & Time */}
@@ -7491,7 +7541,7 @@ Rules:
                                                   setEditWcId(completion.id);
                                                   setEditQtyValue(completion.completedQty);
                                                 }}
-                                                className="text-[#b68d40] hover:text-[#967332] font-black text-[10px] hover:underline cursor-pointer"
+                                                className="text-[#e83e8c] hover:text-[#c3006a] font-black text-[10px] hover:underline cursor-pointer"
                                               >
                                                 Edit
                                               </button>
@@ -7523,7 +7573,7 @@ Rules:
                                             setAttachedPhotos(req.photos || []);
                                             setQcSubTab('completion');
                                           }}
-                                          className="px-3 py-1.5 bg-[#b68d40] hover:bg-[#967332] active:scale-95 text-white transition-all text-[10px] font-bold rounded-lg cursor-pointer shadow-2xs inline-flex items-center gap-1.5"
+                                          className="px-3 py-1.5 bg-[#e83e8c] hover:bg-[#c3006a] active:scale-95 text-white transition-all text-[10px] font-bold rounded-lg cursor-pointer shadow-2xs inline-flex items-center gap-1.5"
                                         >
                                           <Eye className="w-3.5 h-3.5" />
                                           Inspect
@@ -7594,7 +7644,7 @@ Rules:
                                 <p className="text-[10px] text-muted-foreground font-bold tracking-wide uppercase">
                                   (Target/Planned: {req.scheduledDate || req.submittedDate}) and {req.assignedEngineer && req.assignedEngineer !== '-- Unassigned --' ? `Confirmed assignment to ${req.assignedEngineer}` : 'Awaiting QC inspector scheduling confirmation'}
                                 </p>
-                                <h4 className="font-heading font-black text-foreground text-lg uppercase tracking-wider mt-2 text-[#b68d40]">
+                                <h4 className="font-heading font-black text-foreground text-lg uppercase tracking-wider mt-2 text-[#e83e8c]">
                                   {req.category || 'Masonry & Plastering'}
                                 </h4>
                                 <p className="font-bold text-foreground text-sm mt-1">{req.activityName}</p>
@@ -7645,7 +7695,7 @@ Rules:
                                       value={cp.observation || ''}
                                       onChange={(e) => handleEditCheckpointObservation(req.id, idx, e.target.value)}
                                       placeholder={idx === 0 ? "Defect identified" : "Remarks / Corrections"}
-                                      className="w-full text-xs p-2.5 rounded-lg border border-border bg-background text-foreground outline-none focus:border-[#b68d40] font-semibold"
+                                      className="w-full text-xs p-2.5 rounded-lg border border-border bg-background text-foreground outline-none focus:border-[#e83e8c] font-semibold"
                                     />
                                   </div>
                                 ))}
@@ -7658,7 +7708,7 @@ Rules:
                                 Attachments Section
                               </h5>
                               <div className="flex flex-wrap gap-2">
-                                <label className="px-4 py-2 bg-secondary text-secondary-foreground hover:bg-[#b68d40] hover:text-white transition-colors text-xs font-bold rounded-lg cursor-pointer border border-border">
+                                <label className="px-4 py-2 bg-secondary text-secondary-foreground hover:bg-[#e83e8c] hover:text-white transition-colors text-xs font-bold rounded-lg cursor-pointer border border-border">
                                   📁 Add from Gallery
                                   <input
                                     type="file"
@@ -7668,7 +7718,7 @@ Rules:
                                     className="hidden"
                                   />
                                 </label>
-                                <label className="px-4 py-2 bg-secondary text-secondary-foreground hover:bg-[#b68d40] hover:text-white transition-colors text-xs font-bold rounded-lg cursor-pointer border border-border">
+                                <label className="px-4 py-2 bg-secondary text-secondary-foreground hover:bg-[#e83e8c] hover:text-white transition-colors text-xs font-bold rounded-lg cursor-pointer border border-border">
                                   📷 Capture Photo
                                   <input
                                     type="file"
@@ -7725,7 +7775,7 @@ Rules:
                                     type="date"
                                     value={reworkTargetDate}
                                     onChange={e => setReworkTargetDate(e.target.value)}
-                                    className="w-full text-xs p-2.5 rounded-lg border border-border bg-background text-foreground outline-none focus:border-[#b68d40] font-semibold"
+                                    className="w-full text-xs p-2.5 rounded-lg border border-border bg-background text-foreground outline-none focus:border-[#e83e8c] font-semibold"
                                   />
                                 </label>
                                 <label className="block space-y-1">
@@ -7735,7 +7785,7 @@ Rules:
                                     onChange={e => setReworkDesc(e.target.value)}
                                     rows={3}
                                     placeholder="Write instructions on how to patch, align, dismantle, or retest..."
-                                    className="w-full text-xs p-2.5 rounded-lg border border-border bg-background text-foreground outline-none focus:border-[#b68d40] font-semibold"
+                                    className="w-full text-xs p-2.5 rounded-lg border border-border bg-background text-foreground outline-none focus:border-[#e83e8c] font-semibold"
                                   />
                                 </label>
                               </div>
@@ -7772,7 +7822,7 @@ Rules:
                               Requests currently pending QC Inspection. Select Inspect Check to start verifying.
                             </p>
                           </div>
-                          <span className="bg-[#b68d40]/10 text-[#b68d40] px-2.5 py-1 rounded-full text-[10px] font-bold border border-[#b68d40]/25">
+                          <span className="bg-[#e83e8c]/10 text-[#e83e8c] px-2.5 py-1 rounded-full text-[10px] font-bold border border-[#e83e8c]/25">
                             {qcRequests.filter(r => r.status === 'Submitted' || r.status === 'Pending QC Inspection' || r.status === 'Failed' || r.status === 'Fail').length} Active Requests & Snags
                           </span>
                         </div>
@@ -7805,7 +7855,7 @@ Rules:
                                       <span className={`text-[10px] font-black px-1.5 py-0.5 rounded uppercase tracking-wider ${
                                         isSnagOrFailed
                                           ? 'bg-red-500/20 text-red-600 border border-red-500/30'
-                                          : 'bg-[#b68d40]/10 text-[#b68d40] border border-[#b68d40]/20'
+                                          : 'bg-[#e83e8c]/10 text-[#e83e8c] border border-[#e83e8c]/20'
                                       }`}>
                                         {isSnagOrFailed ? '⚠️ REPORTED SNAG / DEFECT' : (req.category || 'General')}
                                       </span>
@@ -7849,7 +7899,7 @@ Rules:
                                       className={`px-4 py-2 text-white transition-all text-xs font-bold rounded-lg cursor-pointer shadow-2xs ${
                                         isSnagOrFailed
                                           ? 'bg-red-600 hover:bg-red-700'
-                                          : 'bg-[#b68d40] hover:bg-[#967332]'
+                                          : 'bg-[#e83e8c] hover:bg-[#c3006a]'
                                       }`}
                                     >
                                       {isSnagOrFailed ? 'View & Rectify Defect' : 'Inspect Check'}
@@ -7901,7 +7951,7 @@ Rules:
                             value={newTemplateTitle}
                             onChange={e => setNewTemplateTitle(e.target.value)}
                             placeholder="e.g. Concrete Slump Check"
-                            className="w-full h-10 text-xs px-3 py-2 rounded-xl border border-border bg-background text-foreground outline-none focus:border-[#b68d40] focus:ring-1 focus:ring-[#b68d40] font-semibold transition-all shadow-2xs"
+                            className="w-full h-10 text-xs px-3 py-2 rounded-xl border border-border bg-background text-foreground outline-none focus:border-[#e83e8c] focus:ring-1 focus:ring-[#e83e8c] font-semibold transition-all shadow-2xs"
                             required
                           />
                         </div>
@@ -7915,7 +7965,7 @@ Rules:
                             value={newTemplatePoints}
                             onChange={e => setNewTemplatePoints(e.target.value)}
                             placeholder="e.g. Slump test value, Mortar ratio, Plumb level check"
-                            className="w-full h-10 text-xs px-3 py-2 rounded-xl border border-border bg-background text-foreground outline-none focus:border-[#b68d40] focus:ring-1 focus:ring-[#b68d40] font-semibold transition-all shadow-2xs"
+                            className="w-full h-10 text-xs px-3 py-2 rounded-xl border border-border bg-background text-foreground outline-none focus:border-[#e83e8c] focus:ring-1 focus:ring-[#e83e8c] font-semibold transition-all shadow-2xs"
                             required
                           />
                         </div>
@@ -7923,7 +7973,7 @@ Rules:
                         <div className="sm:col-span-2">
                           <button
                             type="submit"
-                            className="w-full h-10 bg-[#b68d40] hover:bg-[#967332] active:scale-[0.98] text-white transition-all text-xs font-bold rounded-xl cursor-pointer shadow-sm flex items-center justify-center gap-1.5"
+                            className="w-full h-10 bg-[#e83e8c] hover:bg-[#c3006a] active:scale-[0.98] text-white transition-all text-xs font-bold rounded-xl cursor-pointer shadow-sm flex items-center justify-center gap-1.5"
                           >
                             <Plus className="w-3.5 h-3.5" />
                             Create
@@ -7952,7 +8002,7 @@ Rules:
                               </div>
                               <span className="text-muted-foreground p-1 hover:text-foreground">
                                 {isExpanded ? (
-                                  <ChevronUp className="w-4 h-4 text-[#b68d40]" />
+                                  <ChevronUp className="w-4 h-4 text-[#e83e8c]" />
                                 ) : (
                                   <ChevronDown className="w-4 h-4" />
                                 )}
@@ -7970,7 +8020,7 @@ Rules:
                                         type="text"
                                         value={cp}
                                         onChange={(e) => handleUpdateTemplateCheckpoint(tmpl.id, cIdx, e.target.value)}
-                                        className="flex-1 text-xs px-1.5 py-0.5 rounded border border-transparent hover:border-border/30 bg-transparent focus:bg-background text-foreground focus:border-[#b68d40] outline-none transition-all font-medium"
+                                        className="flex-1 text-xs px-1.5 py-0.5 rounded border border-transparent hover:border-border/30 bg-transparent focus:bg-background text-foreground focus:border-[#e83e8c] outline-none transition-all font-medium"
                                       />
                                       <button
                                         type="button"
@@ -7990,7 +8040,7 @@ Rules:
                                     type="text"
                                     id={`add-cp-input-${tmpl.id}`}
                                     placeholder="Add checkpoint..."
-                                    className="flex-1 text-[11px] px-2 py-1 rounded border border-border/40 bg-background text-foreground focus:border-[#b68d40] outline-none font-semibold"
+                                    className="flex-1 text-[11px] px-2 py-1 rounded border border-border/40 bg-background text-foreground focus:border-[#e83e8c] outline-none font-semibold"
                                     onKeyDown={(e) => {
                                       if (e.key === 'Enter') {
                                         const val = (e.target as HTMLInputElement).value;
@@ -8010,7 +8060,7 @@ Rules:
                                         input.value = '';
                                       }
                                     }}
-                                    className="px-3 py-1 bg-secondary text-secondary-foreground hover:bg-[#b68d40] hover:text-white transition-colors text-xs font-bold rounded"
+                                    className="px-3 py-1 bg-secondary text-secondary-foreground hover:bg-[#e83e8c] hover:text-white transition-colors text-xs font-bold rounded"
                                   >
                                     Add
                                   </button>
@@ -8072,7 +8122,7 @@ Rules:
                                 <div>
                                   <div className="flex items-center gap-2 flex-wrap">
                                     {!isUuid && (
-                                      <span className="font-extrabold text-[#b68d40] text-xs">{req.id}</span>
+                                      <span className="font-extrabold text-[#e83e8c] text-xs">{req.id}</span>
                                     )}
                                     <span className={`text-[9px] font-black px-1.5 py-0.5 rounded border uppercase tracking-wider ${
                                       isFailed ? 'bg-red-500/10 text-red-600 border-red-500/20' : 'bg-emerald-500/10 text-emerald-650 border-emerald-500/20'
@@ -8137,7 +8187,7 @@ Rules:
                                     <div className="space-y-1.5 pt-2 border-t border-border/20">
                                       <p className="text-[10px] text-muted-foreground uppercase font-bold flex items-center gap-1.5">
                                         <span>📷 Inspection Photo Proof ({req.photos.length}):</span>
-                                        <span className="text-[9px] text-[#b68d40] lowercase font-normal">(click photo to enlarge)</span>
+                                        <span className="text-[9px] text-[#e83e8c] lowercase font-normal">(click photo to enlarge)</span>
                                       </p>
                                       <div className="flex flex-wrap gap-2">
                                         {req.photos.map((p: string, pIdx: number) => {
@@ -8250,9 +8300,9 @@ Rules:
                                   <div>
                                     <div className="flex items-center gap-2 flex-wrap">
                                       {!isUuid && (
-                                        <span className="font-extrabold text-[#b68d40] text-xs">{rw.id}</span>
+                                        <span className="font-extrabold text-[#e83e8c] text-xs">{rw.id}</span>
                                       )}
-                                      <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-[#b68d40]/10 text-[#b68d40] border border-[#b68d40]/20 uppercase tracking-wider">
+                                      <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-[#e83e8c]/10 text-[#e83e8c] border border-[#e83e8c]/20 uppercase tracking-wider">
                                         {rw.category || 'General'}
                                       </span>
                                     </div>
@@ -8303,7 +8353,7 @@ Rules:
                                       <div className="space-y-1.5 pt-2 border-t border-border/20">
                                         <p className="text-[10px] text-muted-foreground uppercase font-bold flex items-center gap-1.5">
                                           <span>📷 Defect Photo Evidence ({((rw.correctionPhotos && rw.correctionPhotos.length > 0 ? rw.correctionPhotos : req.photos) || []).length}):</span>
-                                          <span className="text-[9px] text-[#b68d40] lowercase font-normal">(click photo to enlarge)</span>
+                                          <span className="text-[9px] text-[#e83e8c] lowercase font-normal">(click photo to enlarge)</span>
                                         </p>
                                         <div className="flex flex-wrap gap-2">
                                           {(rw.correctionPhotos && rw.correctionPhotos.length > 0 ? rw.correctionPhotos : req.photos).map((p: string, pIdx: number) => {
@@ -8379,7 +8429,7 @@ Rules:
                                         <button
                                           type="button"
                                           onClick={() => handleMarkReworkCorrected(rw.id)}
-                                          className="text-[10px] font-bold bg-[#b68d40] hover:bg-[#967332] text-white px-3 py-1.5 rounded-lg transition-all cursor-pointer"
+                                          className="text-[10px] font-bold bg-[#e83e8c] hover:bg-[#c3006a] text-white px-3 py-1.5 rounded-lg transition-all cursor-pointer"
                                         >
                                           Mark Corrected
                                         </button>
@@ -8416,7 +8466,7 @@ Rules:
                     <h3 className="font-heading font-bold text-foreground text-xs uppercase tracking-wider">Vendor Performance & Ledger</h3>
                     <p className="text-xs text-muted-foreground mt-0.5">Track procurement supplier scorecards, delivery logistics ratings, and recent contract accounts payable.</p>
                   </div>
-                  <span className="text-xs font-semibold bg-[#b68d40]/10 text-[#b68d40] px-3 py-1 rounded-full border border-[#b68d40]/25">
+                  <span className="text-xs font-semibold bg-[#e83e8c]/10 text-[#e83e8c] px-3 py-1 rounded-full border border-[#e83e8c]/25">
                     {vendors.length} Registered Suppliers
                   </span>
                 </div>
@@ -8446,20 +8496,28 @@ Rules:
                               <td className="py-3 font-bold text-foreground">{vendor.name}</td>
                               <td className="py-3 text-muted-foreground">{vendor.category}</td>
                               <td className="py-3">
-                                <div className="flex items-center gap-1.5">
-                                  <div className="w-16 bg-muted h-1.5 rounded-full overflow-hidden">
-                                    <div className="bg-emerald-500 h-full rounded-full" style={{ width: `${vendor.qualityPass}%` }} />
+                                {vendor.qualityPass === null ? (
+                                  <span className="font-semibold text-[10px] text-muted-foreground">N/A</span>
+                                ) : (
+                                  <div className="flex items-center gap-1.5">
+                                    <div className="w-16 bg-muted h-1.5 rounded-full overflow-hidden">
+                                      <div className="bg-emerald-500 h-full rounded-full" style={{ width: `${vendor.qualityPass}%` }} />
+                                    </div>
+                                    <span className="font-semibold text-[10px]">{vendor.qualityPass}%</span>
                                   </div>
-                                  <span className="font-semibold text-[10px]">{vendor.qualityPass}%</span>
-                                </div>
+                                )}
                               </td>
                               <td className="py-3">
-                                <div className="flex items-center gap-1.5">
-                                  <div className="w-16 bg-muted h-1.5 rounded-full overflow-hidden">
-                                    <div className="bg-[#b68d40] h-full rounded-full" style={{ width: `${vendor.deliverySpeed}%` }} />
+                                {vendor.deliverySpeed === null ? (
+                                  <span className="font-semibold text-[10px] text-muted-foreground">N/A</span>
+                                ) : (
+                                  <div className="flex items-center gap-1.5">
+                                    <div className="w-16 bg-muted h-1.5 rounded-full overflow-hidden">
+                                      <div className="bg-[#e83e8c] h-full rounded-full" style={{ width: `${vendor.deliverySpeed}%` }} />
+                                    </div>
+                                    <span className="font-semibold text-[10px]">{vendor.deliverySpeed}% On-time</span>
                                   </div>
-                                  <span className="font-semibold text-[10px]">{vendor.deliverySpeed}% On-time</span>
-                                </div>
+                                )}
                               </td>
                               <td className="py-3">
                                 <span className={`px-2 py-0.5 rounded font-bold text-[10px] ${
@@ -8475,7 +8533,7 @@ Rules:
                               <td className="py-3 text-right">
                                 <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold border ${
                                   vendor.status === 'PREMIUM'
-                                    ? 'bg-[#b68d40]/10 text-[#b68d40] border-[#b68d40]/25'
+                                    ? 'bg-[#e83e8c]/10 text-[#e83e8c] border-[#e83e8c]/25'
                                     : vendor.status === 'APPROVED'
                                       ? 'bg-blue-500/10 text-blue-600 border-blue-500/25'
                                       : 'bg-amber-500/10 text-amber-600 border-amber-500/25'
@@ -8501,7 +8559,7 @@ Rules:
                         <div key={pay.id} className="p-3 border border-border/40 rounded-xl space-y-1.5 text-xs">
                           <div className="flex justify-between items-center font-bold">
                             <span className="text-foreground truncate max-w-[150px]">{pay.vendor}</span>
-                            <span className="text-[#b68d40]">{formatCurrency(pay.amount)}</span>
+                            <span className="text-[#e83e8c]">{formatCurrency(pay.amount)}</span>
                           </div>
                           <div className="flex justify-between items-center text-muted-foreground text-[10px]">
                             <span>Date: {pay.date} | Ref: {pay.ref}</span>
@@ -8532,7 +8590,7 @@ Rules:
                     <h3 className="font-heading font-bold text-foreground text-xs uppercase tracking-wider">Drawing Registry & Document Control</h3>
                     <p className="text-xs text-muted-foreground mt-0.5">Access structural blueprints, RERA certificates, municipal approvals, and drawing revisions logs.</p>
                   </div>
-                  <span className="text-xs font-semibold bg-[#b68d40]/10 text-[#b68d40] px-3 py-1 rounded-full border border-[#b68d40]/25">
+                  <span className="text-xs font-semibold bg-[#e83e8c]/10 text-[#e83e8c] px-3 py-1 rounded-full border border-[#e83e8c]/25">
                     {localDocs.length} Active Drawings
                   </span>
                 </div>
@@ -8545,7 +8603,7 @@ Rules:
                     className="w-full flex items-center justify-between p-4 font-heading hover:bg-muted/10 transition-colors"
                   >
                     <div className="flex items-center gap-2.5">
-                      <div className="p-2 rounded-lg bg-[#b68d40]/10 text-[#b68d40]">
+                      <div className="p-2 rounded-lg bg-[#e83e8c]/10 text-[#e83e8c]">
                         <ImageIcon className="w-5 h-5" />
                       </div>
                       <div className="text-left">
@@ -8581,7 +8639,7 @@ Rules:
                         <div className="border-t border-border/60 p-4 bg-muted/5">
                           {galleryLoading ? (
                             <div className="flex flex-col items-center justify-center py-10 space-y-2">
-                              <div className="w-8 h-8 border-4 border-[#b68d40]/25 border-t-[#b68d40] rounded-full animate-spin"></div>
+                              <div className="w-8 h-8 border-4 border-[#e83e8c]/25 border-t-[#e83e8c] rounded-full animate-spin"></div>
                               <span className="text-xs text-muted-foreground">Loading site attachments...</span>
                             </div>
                           ) : galleryMedia.length === 0 ? (
@@ -8598,7 +8656,7 @@ Rules:
                                 <div
                                   key={media.id}
                                   onClick={() => setActiveLightboxMedia(media)}
-                                  className="group aspect-square rounded-xl overflow-hidden bg-background border border-border/60 relative cursor-pointer shadow-sm hover:shadow-md hover:border-[#b68d40]/40 transition-all duration-300"
+                                  className="group aspect-square rounded-xl overflow-hidden bg-background border border-border/60 relative cursor-pointer shadow-sm hover:shadow-md hover:border-[#e83e8c]/40 transition-all duration-300"
                                 >
                                   {media.type === 'video' ? (
                                     <div className="w-full h-full relative">
@@ -8609,7 +8667,7 @@ Rules:
                                         playsInline
                                       />
                                       <div className="absolute inset-0 bg-black/20 group-hover:bg-black/35 flex items-center justify-center transition-colors">
-                                        <div className="p-2.5 rounded-full bg-[#b68d40] text-white shadow-lg shadow-[#b68d40]/30 transform group-hover:scale-110 transition-transform duration-300">
+                                        <div className="p-2.5 rounded-full bg-[#e83e8c] text-white shadow-lg shadow-[#e83e8c]/30 transform group-hover:scale-110 transition-transform duration-300">
                                           <Play className="w-3.5 h-3.5 fill-current" />
                                         </div>
                                       </div>
@@ -8670,7 +8728,7 @@ Rules:
                           {localDocs.map(doc => (
                             <tr key={doc.id} className="border-b border-border/30 hover:bg-muted/10 transition-colors">
                               <td className="py-3 font-bold text-foreground flex items-center gap-1.5">
-                                <FileText className="w-4 h-4 text-[#b68d40]" />
+                                <FileText className="w-4 h-4 text-[#e83e8c]" />
                                 {doc.name}
                               </td>
                               <td className="py-3">
@@ -8695,7 +8753,7 @@ Rules:
                                 <a 
                                   href="#" 
                                   onClick={(e) => { e.preventDefault(); alert(`Downloading ${doc.name} ${doc.version}`); }}
-                                  className="text-[10px] font-bold bg-[#b68d40] text-white px-2 py-1 rounded hover:bg-[#967332] transition-all cursor-pointer"
+                                  className="text-[10px] font-bold bg-[#e83e8c] text-white px-2 py-1 rounded hover:bg-[#c3006a] transition-all cursor-pointer"
                                 >
                                   View Sheet
                                 </a>
@@ -8728,7 +8786,7 @@ Rules:
                         value={newDocName} 
                         onChange={e => setNewDocName(e.target.value)} 
                         placeholder="e.g. Tower B Structural Reinforcement" 
-                        className="w-full text-xs p-2.5 rounded-lg border border-border bg-background outline-none focus:border-[#b68d40]" 
+                        className="w-full text-xs p-2.5 rounded-lg border border-border bg-background outline-none focus:border-[#e83e8c]" 
                         required 
                       />
                     </label>
@@ -8739,7 +8797,7 @@ Rules:
                         <select 
                           value={newDocCategory} 
                           onChange={e => setNewDocCategory(e.target.value as any)} 
-                          className="w-full text-xs p-2.5 rounded-lg border border-border bg-background outline-none focus:border-[#b68d40]"
+                          className="w-full text-xs p-2.5 rounded-lg border border-border bg-background outline-none focus:border-[#e83e8c]"
                         >
                           <option value="DRAWING">Drawing Sheet</option>
                           <option value="BOQ">BOQ Sheet</option>
@@ -8755,13 +8813,13 @@ Rules:
                           value={newDocVersion} 
                           onChange={e => setNewDocVersion(e.target.value)} 
                           placeholder="e.g. V4.2.0" 
-                          className="w-full text-xs p-2.5 rounded-lg border border-border bg-background outline-none focus:border-[#b68d40]" 
+                          className="w-full text-xs p-2.5 rounded-lg border border-border bg-background outline-none focus:border-[#e83e8c]" 
                           required 
                         />
                       </label>
                     </div>
 
-                    <button type="submit" className="w-full text-xs font-bold bg-[#b68d40] text-white py-2.5 rounded-lg hover:bg-[#967332] transition-all cursor-pointer">
+                    <button type="submit" className="w-full text-xs font-bold bg-[#e83e8c] text-white py-2.5 rounded-lg hover:bg-[#c3006a] transition-all cursor-pointer">
                       Log Revision Sheet
                     </button>
                   </form>
@@ -8778,7 +8836,7 @@ Rules:
                     <h3 className="font-heading font-bold text-foreground text-xs uppercase tracking-wider">Heavy Machinery Fleet Registry</h3>
                     <p className="text-xs text-muted-foreground mt-0.5">Monitor operational utilization hours, diesel fuel consumption burn rate, and equipment maintenance schedules.</p>
                   </div>
-                  <span className="text-xs font-semibold bg-[#b68d40]/10 text-[#b68d40] px-3 py-1 rounded-full border border-[#b68d40]/25">
+                  <span className="text-xs font-semibold bg-[#e83e8c]/10 text-[#e83e8c] px-3 py-1 rounded-full border border-[#e83e8c]/25">
                     {localEquip.length} Machinery Units Active
                   </span>
                 </div>
@@ -8806,14 +8864,14 @@ Rules:
                           {localEquip.map(eq => (
                             <tr key={eq.id} className="border-b border-border/30 hover:bg-muted/10 transition-colors">
                               <td className="py-3 font-bold text-foreground flex items-center gap-1.5">
-                                <Truck className="w-4 h-4 text-[#b68d40]" />
+                                <Truck className="w-4 h-4 text-[#e83e8c]" />
                                 {eq.name}
                               </td>
                               <td className="py-3 font-semibold text-foreground">{eq.usageHours} Hours</td>
                               <td className="py-3 font-semibold text-foreground text-[10px]">
                                 {eq.name.toLowerCase().includes('crane') ? '12 L / Hr' : eq.name.toLowerCase().includes('generator') ? '22 L / Hr' : '18 L / Hr'}
                               </td>
-                              <td className="py-3 font-semibold text-[#b68d40]">{eq.fuelConsumed} Liters</td>
+                              <td className="py-3 font-semibold text-[#e83e8c]">{eq.fuelConsumed} Liters</td>
                               <td className="py-3 text-muted-foreground">{eq.lastMaintenance || '2026-05-15'}</td>
                               <td className="py-3 text-right">
                                 <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold border ${
@@ -8852,7 +8910,7 @@ Rules:
                       <select 
                         value={logEquipId} 
                         onChange={e => setLogEquipId(e.target.value)} 
-                        className="w-full text-xs p-2.5 rounded-lg border border-border bg-background outline-none focus:border-[#b68d40]"
+                        className="w-full text-xs p-2.5 rounded-lg border border-border bg-background outline-none focus:border-[#e83e8c]"
                         required
                       >
                         <option value="">-- Choose Asset --</option>
@@ -8871,7 +8929,7 @@ Rules:
                           onChange={e => setLogHours(e.target.value)} 
                           placeholder="e.g. 8" 
                           min="0"
-                          className="w-full text-xs p-2.5 rounded-lg border border-border bg-background outline-none focus:border-[#b68d40]" 
+                          className="w-full text-xs p-2.5 rounded-lg border border-border bg-background outline-none focus:border-[#e83e8c]" 
                           required 
                         />
                       </label>
@@ -8883,13 +8941,13 @@ Rules:
                           onChange={e => setLogFuel(e.target.value)} 
                           placeholder="e.g. 150" 
                           min="0"
-                          className="w-full text-xs p-2.5 rounded-lg border border-border bg-background outline-none focus:border-[#b68d40]" 
+                          className="w-full text-xs p-2.5 rounded-lg border border-border bg-background outline-none focus:border-[#e83e8c]" 
                           required 
                         />
                       </label>
                     </div>
 
-                    <button type="submit" className="w-full text-xs font-bold bg-[#b68d40] text-white py-2.5 rounded-xl cursor-pointer hover:bg-[#967332] transition-colors">
+                    <button type="submit" className="w-full text-xs font-bold bg-[#e83e8c] text-white py-2.5 rounded-xl cursor-pointer hover:bg-[#c3006a] transition-colors">
                       Register Equipment Telemetry
                     </button>
                   </form>
@@ -9041,7 +9099,7 @@ Rules:
             {/* Top Bar (Actions & Title) */}
             <div className="absolute top-0 inset-x-0 p-4 bg-gradient-to-b from-black/80 to-transparent flex items-center justify-between z-10">
               <div className="text-white">
-                <p className="text-xs font-bold uppercase tracking-wider text-[#b68d40]">{activeLightboxMedia.name}</p>
+                <p className="text-xs font-bold uppercase tracking-wider text-[#e83e8c]">{activeLightboxMedia.name}</p>
                 <p className="text-[10px] opacity-75 mt-0.5">
                   Uploaded {new Date(activeLightboxMedia.createdAt).toLocaleString()}
                 </p>
