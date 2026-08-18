@@ -1965,11 +1965,11 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
                           />
                         </td>
                         {/* Discount/Unit (₹) */}
-                        <td className="px-2.5 py-2 border-r border-border/40 align-middle" title={`Discount/Unit: ₹${item.discount_amt.toFixed(2)}`}>
+                        <td className="px-2.5 py-2 border-r border-border/40 align-middle" title={`Discount/Unit: ₹${(Number(item.discount_amt) || 0).toFixed(2)}`}>
                           <input
                             type="number"
                             step="0.01"
-                            value={item.discount_amt === 0 ? '' : item.discount_amt.toFixed(2)}
+                            value={!item.discount_amt ? '' : (Number(item.discount_amt) || 0).toFixed(2)}
                             placeholder="0"
                             onChange={(e) => {
                               const clean = e.target.value.replace(/^0+(?=\d)/, '');
@@ -1986,21 +1986,21 @@ export function PoForm({ po, vendorOptions = [], onSubmit, onPrint, onCancel, ca
                           />
                         </td>
                         {/* Rate After Disc (Single Unit Amt After Disc) */}
-                        <td className="px-2.5 py-2 border-r border-border/40 align-middle text-right font-extrabold text-primary" title={`Single Unit Amt After Disc: ₹${item.rate.toFixed(2)}`}>
+                        <td className="px-2.5 py-2 border-r border-border/40 align-middle text-right font-extrabold text-primary" title={`Single Unit Amt After Disc: ₹${(Number(item.rate) || 0).toFixed(2)}`}>
                           <input
                             type="number"
                             step="0.01"
                             readOnly
-                            value={item.rate === 0 ? '0.00' : item.rate.toFixed(2)}
+                            value={(Number(item.rate) || 0).toFixed(2)}
                             className="w-20 rounded border border-border/80 bg-muted/40 px-1.5 py-1 text-right text-xs font-extrabold text-primary"
                           />
                         </td>
                         {/* Discount Amt (₹) */}
-                        <td className="px-2.5 py-2 border-r border-border/40 align-middle" title={`Discount Amt: ₹${(item.discount_amt * item.approved_qty).toFixed(2)}`}>
+                        <td className="px-2.5 py-2 border-r border-border/40 align-middle" title={`Discount Amt: ₹${((Number(item.discount_amt) || 0) * (Number(item.approved_qty) || 0)).toFixed(2)}`}>
                           <input
                             type="number"
                             step="0.01"
-                            value={item.discount_amt * item.approved_qty === 0 ? '' : (item.discount_amt * item.approved_qty).toFixed(2)}
+                            value={!item.discount_amt || !item.approved_qty ? '' : ((Number(item.discount_amt) || 0) * (Number(item.approved_qty) || 0)).toFixed(2)}
                             placeholder="0"
                             onChange={(e) => {
                               const clean = e.target.value.replace(/^0+(?=\d)/, '');

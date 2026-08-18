@@ -26,39 +26,62 @@ export async function createChatSession(
   title?: string,
   projectId?: string | null
 ): Promise<ChatSession | null> {
+  try {
+    const { data, error } = await supabase
+      .from('ai_chat_sessions')
+      .insert({
+        user_id: userId,
+        title: title ?? null,
+        project_id: projectId ?? null,
+      })
+      .select()
+      .single();
 
-  const { data, error } = await supabase
-    .from('ai_chat_sessions')
-    .insert({
+    if (error) {
+      console.warn('[ai-chat] createChatSession notice:', error.message);
+      return {
+        id: `session-local-${Date.now()}`,
+        user_id: userId,
+        title: title || 'Local Session',
+        project_id: projectId || null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        is_archived: false,
+      };
+    }
+    return data;
+  } catch (err) {
+    console.warn('[ai-chat] Offline mode for createChatSession');
+    return {
+      id: `session-local-${Date.now()}`,
       user_id: userId,
-      title: title ?? null,
-      project_id: projectId ?? null,
-    })
-    .select()
-    .single();
-
-  if (error) {
-    console.error('[ai-chat] createChatSession error:', error.message);
-    return null;
+      title: title || 'Local Session',
+      project_id: projectId || null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      is_archived: false,
+    };
   }
-  return data;
 }
 
 /** Load all sessions for a user (most recent first) */
 export async function loadChatSessions(userId: string): Promise<ChatSession[]> {
+  try {
+    const { data, error } = await supabase
+      .from('ai_chat_sessions')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('is_archived', false)
+      .order('updated_at', { ascending: false });
 
-  const { data, error } = await supabase
-    .from('ai_chat_sessions')
-    .select('*')
-    .eq('user_id', userId)
-    .eq('is_archived', false)
-    .order('updated_at', { ascending: false });
-
-  if (error) {
-    console.error('[ai-chat] loadChatSessions error:', error.message);
+    if (error) {
+      console.warn('[ai-chat] loadChatSessions notice:', error.message);
+      return [];
+    }
+    return data ?? [];
+  } catch {
     return [];
   }
-  return data ?? [];
 }
 
 /** Update session title (auto-generated from first user message) */
@@ -66,20 +89,26 @@ export async function updateSessionTitle(
   sessionId: string,
   title: string
 ): Promise<void> {
-
-  await supabase
-    .from('ai_chat_sessions')
-    .update({ title })
-    .eq('id', sessionId);
+  try {
+    await supabase
+      .from('ai_chat_sessions')
+      .update({ title })
+      .eq('id', sessionId);
+  } catch {
+    // Offline mode
+  }
 }
 
 /** Archive (soft-delete) a session */
 export async function archiveChatSession(sessionId: string): Promise<void> {
-
-  await supabase
-    .from('ai_chat_sessions')
-    .update({ is_archived: true })
-    .eq('id', sessionId);
+  try {
+    await supabase
+      .from('ai_chat_sessions')
+      .update({ is_archived: true })
+      .eq('id', sessionId);
+  } catch {
+    // Offline mode
+  }
 }
 
 // ─── Messages ─────────────────────────────────────────────────────────────────
@@ -91,46 +120,55 @@ export async function saveChatMessage(
   content: string,
   tokensUsed?: number
 ): Promise<ChatMessage | null> {
+  try {
+    const { data, error } = await supabase
+      .from('ai_chat_messages')
+      .insert({
+        session_id: sessionId,
+        role,
+        content,
+        tokens_used: tokensUsed ?? null,
+      })
+      .select()
+      .single();
 
-  const { data, error } = await supabase
-    .from('ai_chat_messages')
-    .insert({
-      session_id: sessionId,
-      role,
-      content,
-      tokens_used: tokensUsed ?? null,
-    })
-    .select()
-    .single();
-
-  if (error) {
-    console.error('[ai-chat] saveChatMessage error:', error.message);
+    if (error) {
+      console.warn('[ai-chat] saveChatMessage notice:', error.message);
+      return null;
+    }
+    return data;
+  } catch {
     return null;
   }
-  return data;
 }
 
 /** Load all messages for a session (oldest first) */
 export async function loadChatMessages(sessionId: string): Promise<ChatMessage[]> {
+  try {
+    const { data, error } = await supabase
+      .from('ai_chat_messages')
+      .select('*')
+      .eq('session_id', sessionId)
+      .order('created_at', { ascending: true });
 
-  const { data, error } = await supabase
-    .from('ai_chat_messages')
-    .select('*')
-    .eq('session_id', sessionId)
-    .order('created_at', { ascending: true });
-
-  if (error) {
-    console.error('[ai-chat] loadChatMessages error:', error.message);
+    if (error) {
+      console.warn('[ai-chat] loadChatMessages notice:', error.message);
+      return [];
+    }
+    return data ?? [];
+  } catch {
     return [];
   }
-  return data ?? [];
 }
 
 /** Delete all messages in a session (used by clear chat) */
 export async function clearChatMessages(sessionId: string): Promise<void> {
-
-  await supabase
-    .from('ai_chat_messages')
-    .delete()
-    .eq('session_id', sessionId);
+  try {
+    await supabase
+      .from('ai_chat_messages')
+      .delete()
+      .eq('session_id', sessionId);
+  } catch {
+    // Offline mode
+  }
 }
